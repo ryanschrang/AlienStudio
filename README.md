@@ -45,6 +45,9 @@ The long-term differentiator is **one shared project and audio engine** across a
 
 ### Phase 4 — Professional ecosystem
 - [ ] VST3 hosting subject to SDK licensing and compatibility review.
+- [ ] Publish an Alien Studio Plugin SDK with versioned APIs, documentation, and example synth, audio-effect, and MIDI-tool projects.
+- [ ] Design safe extension boundaries for third-party plugins, including validation, crash isolation where feasible, and permission controls for non-audio extensions.
+- [ ] Provide a community plugin manager for discovering, installing, updating, and disabling extensions, with clear provenance and trust warnings.
 - [ ] Advanced MIDI tools, routing, comping, editing, and mixing workflows.
 - [ ] Additional instruments, modulation, mastering tools, and performance optimization.
 - [ ] Optional AI-assisted features where feasible, with clear privacy and licensing controls.
