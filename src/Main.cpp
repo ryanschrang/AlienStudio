@@ -69,14 +69,14 @@ public:
         engine.steps[4].store(true); pads[4]->setToggleState(true, juce::dontSendNotification);
         engine.steps[8].store(true); pads[8]->setToggleState(true, juce::dontSendNotification);
         engine.steps[12].store(true); pads[12]->setToggleState(true, juce::dontSendNotification);
-        audio.setAudioChannels(0, 2);
-        audio.deviceManager.addAudioCallback(&engine);
+        audio.initialiseWithDefaultDevices(0, 2);
+        audio.addAudioCallback(&engine);
         startTimerHz(20);
     }
     ~MainComponent() override {
         stopTimer();
-        audio.deviceManager.removeAudioCallback(&engine);
-        audio.shutdownAudio();
+        audio.removeAudioCallback(&engine);
+        audio.closeAudioDevice();
     }
     void resized() override {
         title.setBounds(20, 20, getWidth() - 40, 50);
