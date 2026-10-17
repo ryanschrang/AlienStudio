@@ -183,6 +183,244 @@ static void checkPianoRollEditor() {
     std::cout << "PASS: piano roll drawing, editing, snap, velocity, focus and safe preview release\n";
 }
 
+static void checkPianoRollProcessing() {
+    juce::Component host;
+    alien::PianoRollEditor roll;
+    host.setBounds(0, 0, 1050, 510);
+    host.setFocusContainerType(juce::Component::FocusContainerType::keyboardFocusContainer);
+    host.addAndMakeVisible(roll);
+    roll.setBounds(0, 0, 1050, 460);
+    host.addToDesktop(0);
+    host.setVisible(true);
+    host.getPeer()->handleFocusGain();
+    juce::MidiKeyboardState keyboard;
+    Counter notes;
+    keyboard.addListener(&notes);
+    std::set<int> held;
+    TypingPianoRouter router(host, keyboard, [&](int k) { return held.count(k) != 0; });
+    roll.grabKeyboardFocus();
+    pump();
+
+    auto control = [&](const juce::String& name) -> juce::Component* {
+        for (auto* child : roll.getChildren()) if (child->getName() == name) return child;
+        require(false, "missing accessible processing control");
+        return nullptr;
+    };
+    auto click = [&](const juce::String& name) {
+        auto* button = dynamic_cast<juce::Button*>(control(name));
+        require(button != nullptr && button->isShowing() && button->isEnabled(),
+            "processing action must be available to users");
+        button->triggerClick();
+        pump();
+    };
+    auto setValue = [&](const juce::String& name, double value) {
+        auto* slider = dynamic_cast<juce::Slider*>(control(name));
+        require(slider != nullptr && slider->isShowing(), "processing parameter must be visible");
+        slider->setValue(value, juce::sendNotificationSync);
+    };
+    auto shortcut = [&](int key, juce::ModifierKeys modifiers) {
+        host.getPeer()->handleKeyPress(juce::KeyPress(key, modifiers, static_cast<juce::juce_wchar>(key)));
+        pump();
+    };
+    constexpr float gridX = 64, gridY = 68, stepWidth = 15, rowHeight = 266.0f / 24;
+    auto point = [](int pitch, float step) {
+        return juce::Point<float>(gridX + step * stepWidth, gridY + (71 - pitch + 0.5f) * rowHeight);
+    };
+    auto event = [&](juce::Point<float> p, bool dragged = false,
+                     juce::ModifierKeys mods = juce::ModifierKeys::leftButtonModifier) {
+        const auto now = juce::Time::getCurrentTime();
+        return juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(), p, mods,
+            1.0f, 0.0f, 0.0f, 0.0f, 0.0f, &roll, &roll, now, p, now, 1, dragged);
+    };
+    alien::PianoRollPattern source;
+    const auto low = source.add(60, 4, 4, 0.4f);
+    const auto high = source.add(64, 4, 4, 0.8f);
+    const auto untouched = source.add(67, 12, 4, 0.6f);
+    roll.setPattern(source);
+    require(!roll.canUndo(), "loading a replacement clip starts fresh history");
+    roll.mouseDown(event(point(60, 4.5f)));
+    roll.mouseUp(event(point(60, 4.5f)));
+    roll.mouseDown(event(point(64, 4.5f), false,
+        juce::ModifierKeys::leftButtonModifier | juce::ModifierKeys::ctrlModifier));
+    roll.mouseUp(event(point(64, 4.5f)));
+    require(roll.getSelectedIds().size() == 2 && !roll.canUndo(),
+        "Ctrl-click selects two notes without creating edit history");
+    roll.mouseDown(event(point(60, 4.5f)));
+    roll.mouseDrag(event(point(61, 5.5f), true));
+    roll.mouseDrag(event(point(61, 6.5f), true));
+    roll.mouseUp(event(point(61, 6.5f)));
+    require(roll.getPattern().find(low)->startStep == 6 && roll.getPattern().find(high)->startStep == 6
+        && roll.getPattern().find(low)->pitch == 61 && roll.getPattern().find(high)->pitch == 65
+        && roll.getPattern().find(untouched)->startStep == 12,
+        "dragging a selection preserves its intervals and leaves other notes untouched");
+    shortcut('z', juce::ModifierKeys::ctrlModifier);
+    require(alien::samePianoRollPattern(roll.getPattern(), source) && !roll.canUndo()
+        && roll.getSelectedIds().size() == 2, "one undo restores an entire drag and its selection");
+    shortcut('y', juce::ModifierKeys::ctrlModifier);
+    require(roll.getPattern().find(low)->startStep == 6, "Ctrl-Y redoes group drag");
+    roll.undo();
+
+    roll.mouseDown(event(point(69, 3)));
+    roll.mouseDrag(event(point(59, 9), true));
+    roll.mouseUp(event(point(59, 9)));
+    require(roll.getSelectedIds().size() == 2 && !roll.canUndo(),
+        "empty-grid marquee selects its enclosed chord without editing notes");
+    setValue("Selected note velocity", 32);
+    require(std::abs(roll.getPattern().find(low)->velocity - 32.0f / 127) < 0.00001f
+        && roll.getPattern().find(high)->velocity == roll.getPattern().find(low)->velocity
+        && roll.getPattern().find(untouched)->velocity == source.find(untouched)->velocity,
+        "velocity slider affects only selected notes");
+    roll.undo();
+    require(alien::samePianoRollPattern(roll.getPattern(), source), "undo restores batch velocities");
+
+    // Open from a toolbar descendant, not just from the grid itself.
+    control("Selected note velocity")->grabKeyboardFocus();
+    shortcut('s', juce::ModifierKeys::altModifier);
+    require(roll.isProcessingPanelOpen(), "Alt-S opens Strum from a focused toolbar control");
+    const auto beforeCancel = roll.getPattern();
+    setValue("Strum delay ticks", 30);
+    setValue("Strum velocity variation percent", 0);
+    click("Cancel piano roll processing");
+    require(!roll.isProcessingPanelOpen() && !roll.canUndo()
+        && alien::samePianoRollPattern(beforeCancel, roll.getPattern()), "Cancel changes neither notes nor history");
+    roll.grabKeyboardFocus();
+    shortcut('s', juce::ModifierKeys::altModifier);
+    setValue("Strum delay ticks", 30);
+    setValue("Strum velocity variation percent", 0);
+    click("Apply piano roll processing");
+    require(!roll.isProcessingPanelOpen() && roll.getPattern().find(low)->startStep == 4
+        && roll.getPattern().find(high)->startStep == 4.125
+        && roll.getPattern().find(untouched)->startStep == 12, "Apply strums only the selected chord at substep timing");
+    const auto strummed = roll.getPattern();
+    roll.undo();
+    require(alien::samePianoRollPattern(roll.getPattern(), source) && !roll.canUndo(), "Strum Apply is one undo step");
+    roll.redo();
+    require(alien::samePianoRollPattern(roll.getPattern(), strummed), "redo exactly restores strummed timing");
+
+    roll.grabKeyboardFocus();
+    shortcut('u', juce::ModifierKeys::altModifier);
+    setValue("Chop slice ticks", 120);
+    setValue("Chop gate percent", 50);
+    click("Apply piano roll processing");
+    require(roll.getPattern().count == 17 && roll.getSelectedIds().size() == 16
+        && roll.getPattern().find(untouched)->lengthSteps == 4, "Chop selects all fragments and preserves unselected melody");
+    roll.undo();
+    require(alien::samePianoRollPattern(roll.getPattern(), strummed) && roll.getSelectedIds().size() == 2,
+        "one Chop undo restores source notes and selection");
+    roll.undo();
+
+    auto randomize = [&] {
+        roll.grabKeyboardFocus();
+        shortcut('r', juce::ModifierKeys::altModifier);
+        setValue("Randomize timing ticks", 30);
+        setValue("Randomize velocity variation percent", 12);
+        setValue("Randomize pitch semitones", 2);
+        setValue("Processing random seed", 73);
+        click("Apply piano roll processing");
+    };
+    randomize();
+    const auto randomized = roll.getPattern();
+    require(!alien::samePianoRollPattern(randomized, source), "Randomize changes selected notes");
+    roll.undo();
+    randomize();
+    require(alien::samePianoRollPattern(randomized, roll.getPattern()), "same GUI settings and seed reproduce random edits after undo");
+
+    roll.grabKeyboardFocus();
+    shortcut('q', juce::ModifierKeys::altModifier);
+    require(roll.isProcessingPanelOpen(), "Alt-Q opens Quantize");
+    setValue("Quantize grid ticks", 240);
+    setValue("Quantize strength percent", 100);
+    setValue("Quantize swing percent", 25);
+    shortcut(juce::KeyPress::tabKey, {});
+    require(roll.hasKeyboardFocus(true), "Tab remains inside the editor's accessible processing controls");
+    click("Apply piano roll processing");
+    require(roll.getPattern().find(low)->startStep == 4 && roll.getPattern().find(high)->startStep == 4,
+        "Quantize applies grid settings to selected randomized starts");
+    roll.undo();
+    require(alien::samePianoRollPattern(roll.getPattern(), randomized), "Quantize undo restores fractional timing");
+
+    // Text fields keep their editing shortcuts; unrelated notes must not change.
+    roll.grabKeyboardFocus();
+    shortcut('r', juce::ModifierKeys::altModifier);
+    auto* seed = dynamic_cast<juce::Slider*>(control("Processing random seed"));
+    juce::Label* textBox = nullptr;
+    for (auto* child : seed->getChildren()) if (auto* label = dynamic_cast<juce::Label*>(child)) textBox = label;
+    require(textBox != nullptr, "seed slider has an editable numeric field");
+    textBox->showEditor();
+    pump();
+    auto* text = textBox->getCurrentTextEditor();
+    require(text != nullptr, "seed text editor opens for accessible text entry");
+    text->grabKeyboardFocus();
+    require(!roll.keyPressed(juce::KeyPress('z', juce::ModifierKeys::ctrlModifier, 'z')),
+        "piano-roll undo must not consume text editor undo");
+    shortcut('a', juce::ModifierKeys::ctrlModifier);
+    require(alien::samePianoRollPattern(roll.getPattern(), randomized)
+        && roll.getSelectedIds().size() == 2 && notes.ons == 0, "text shortcuts and Alt tools do not play typing notes or select the whole clip");
+    textBox->hideEditor(true);
+    click("Cancel piano roll processing");
+
+    roll.grabKeyboardFocus();
+    shortcut('a', juce::ModifierKeys::ctrlModifier);
+    require(roll.getSelectedIds().size() == 3, "Ctrl-A selects the entire clip outside text fields");
+    shortcut(juce::KeyPress::deleteKey, {});
+    require(roll.getPattern().count == 0, "Delete removes the selected group");
+    shortcut('z', juce::ModifierKeys::ctrlModifier);
+    require(roll.getPattern().count == 3, "group deletion is one undo step");
+    held.insert('A');
+    host.getPeer()->handleKeyUpOrDown(true);
+    shortcut('a', {});
+    require(keyboard.isNoteOn(2, 60), "typing piano works again after processing and Tab navigation");
+    held.clear();
+    host.getPeer()->handleKeyUpOrDown(false);
+    require(!keyboard.isNoteOn(2, 60) && notes.ons == notes.offs,
+        "typing note-off remains balanced after processing shortcuts");
+
+    alien::PianoRollPattern full;
+    for (int pitch = 0; pitch < 128; ++pitch) full.add(pitch, 0, 4);
+    roll.setPattern(full);
+    shortcut('a', juce::ModifierKeys::ctrlModifier);
+    shortcut('u', juce::ModifierKeys::altModifier);
+    setValue("Chop slice ticks", 60);
+    click("Apply piano roll processing");
+    require(roll.isProcessingPanelOpen() && !roll.canUndo()
+        && alien::samePianoRollPattern(roll.getPattern(), full),
+        "over-capacity Chop stays open and leaves the complete clip and history intact");
+    click("Cancel piano roll processing");
+    roll.setPattern(source);
+    shortcut('a', juce::ModifierKeys::ctrlModifier);
+    shortcut('q', juce::ModifierKeys::altModifier);
+    setValue("Quantize grid ticks", 240);
+    setValue("Quantize strength percent", 100);
+    setValue("Quantize swing percent", 0);
+    click("Apply piano roll processing");
+    require(roll.isProcessingPanelOpen() && !roll.canUndo()
+        && alien::samePianoRollPattern(roll.getPattern(), source), "no-op Apply adds no undo entry");
+    shortcut(juce::KeyPress::escapeKey, {});
+    require(!roll.isProcessingPanelOpen(), "Escape closes tool settings from a focused parameter");
+
+    const std::array<std::uint32_t, 1> oneNote{low};
+    roll.setSelection(oneNote);
+    roll.grabKeyboardFocus();
+    for (int i = 0; i < 65; ++i) roll.keyPressed(juce::KeyPress(juce::KeyPress::upKey));
+    for (int i = 0; i < 64; ++i) roll.undo();
+    require(!roll.canUndo() && roll.getPattern().find(low)->pitch == 61,
+        "bounded history retains the latest 64 edits");
+    require(roll.canRedo(), "undo retains a redo branch");
+    roll.keyPressed(juce::KeyPress(juce::KeyPress::rightKey));
+    require(!roll.canRedo(), "new editing discards the redo branch");
+
+    roll.setSize(914, 334); // Piano-roll content inside the smallest app window.
+    for (const auto* name : {"Undo piano roll edit", "Redo piano roll edit", "Open piano roll processing settings"})
+        require(roll.getLocalBounds().contains(control(name)->getBounds()), "toolbar actions fit the minimum window width");
+    shortcut('r', juce::ModifierKeys::altModifier);
+    for (const auto* name : {"Apply piano roll processing", "Cancel piano roll processing", "Randomize pitch semitones"})
+        require(roll.getLocalBounds().contains(control(name)->getBounds()), "processing controls fit the minimum window size");
+    shortcut(juce::KeyPress::escapeKey, {});
+    keyboard.removeListener(&notes);
+    host.removeFromDesktop();
+    std::cout << "PASS: selection, batch edits, gesture undo, processing settings and shortcut focus\n";
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     juce::Component shell, root, piano, outside;
@@ -276,5 +514,6 @@ int main() {
     shell.removeFromDesktop();
     outside.removeFromDesktop();
     checkPianoRollEditor();
+    checkPianoRollProcessing();
     std::cout << "PASS: Tab routing, editor exclusion, octave recovery, release and listener lifecycle\n";
 }

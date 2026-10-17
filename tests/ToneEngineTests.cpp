@@ -1,4 +1,5 @@
 #include "ToneEngine.h"
+#include "PianoRollProcessing.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -158,10 +159,59 @@ static void liveKeyboardIsolationTests() {
     require(offline.settledEnergy() == 0, "stopped-transport keyboard note-off remains functional");
 }
 
+static void processedPatternTests() {
+    OfflineEngine offline;
+    auto& engine = offline.engine;
+    alien::PianoRollPattern pattern;
+    alien::PianoRollSelection selection;
+    selection.add(pattern.add(60, 0.5, 3));
+    selection.add(pattern.add(64, 0.5, 3));
+    selection.add(pattern.add(67, 0.5, 3));
+    alien::StrumSettings strum;
+    strum.delaySteps = 0.125;
+    require(alien::processStrum(pattern, selection, strum).changed(), "strum chord for real callback");
+    require(engine.pianoRollNotes.publish(pattern), "publish substep strum snapshot");
+    engine.patternMode.store(1);
+    engine.playing.store(true);
+    require(offline.render(3000) == 0, "substep note must not sound before its exact half-step start");
+    require(offline.render(2048) > 0.001, "processed fractional chord sounds through the real callback");
+
+    // Replace sounding notes using the same snapshots published by the editor.
+    // Removing the result must release every old and new pitch, including rapid
+    // chopper fragments and randomized timing/pitch changes.
+    alien::ChopSettings chop;
+    chop.divisionSteps = 0.25;
+    chop.gate = 0.5;
+    const auto chopped = alien::processChop(pattern, selection, chop);
+    require(chopped.changed() && pattern.count == 36, "chop creates bounded fractional fragments");
+    require(engine.pianoRollNotes.publish(pattern), "publish chopped active clip");
+    require(offline.render(24000) > 0.001, "rapid chopped notes render finite audio");
+    alien::RandomizeSettings randomize;
+    randomize.pitchSemitones = 12;
+    randomize.timingSteps = 0.125;
+    randomize.seed = 287;
+    require(alien::processRandomize(pattern, chopped.selection, randomize).changed(),
+        "randomize a sounding chopped clip");
+    engine.pianoRollNotes.publish(pattern);
+    offline.render(1024);
+    alien::QuantizeSettings quantize;
+    quantize.gridSteps = 0.5;
+    quantize.swing = 0.3;
+    alien::processQuantize(pattern, chopped.selection, quantize);
+    require(engine.pianoRollNotes.publish(pattern), "publish swung quantized snapshot");
+    offline.render(12000);
+    pattern.clear();
+    engine.pianoRollNotes.publish(pattern);
+    require(offline.settledEnergy() == 0, "processing then clearing must leave no held old or new pitch");
+    engine.playing.store(false);
+    require(offline.render(256) == 0, "transport stop after processing remains silent");
+}
+
 int main() {
     playbackStopAndRestartTests();
     activeEditingTests();
     panicPresetAndSourceTests();
     liveKeyboardIsolationTests();
+    processedPatternTests();
     std::cout << "Offline audio callback playback, edits, panic, transport, source switching and keyboard isolation passed\n";
 }

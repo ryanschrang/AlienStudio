@@ -4,7 +4,7 @@
 
 Alien Studio is an **independent, original application**, not affiliated with or endorsed by any of those products. We aim to learn from broadly useful workflows without copying proprietary code, artwork, branding, or protected assets.
 
-> **Project status:** Early prototype. The current code implements a 16-step synthesizer sequencer with play/stop and tempo controls, a 16-voice synth, an on-screen keyboard, and lead/bass/pluck presets. Professional DAW features below are **planned**, not yet implemented. Windows CI compilation is being validated; a successful build and runtime behavior have not yet been confirmed.
+> **Project status:** Early prototype with a 16-step synthesizer sequencer, a four-bar piano roll, note-processing tools, a 16-voice synth, mouse/computer-keyboard input and lead/bass/pluck presets. Windows Debug/Release builds and automated tests run in GitHub Actions. The broader professional DAW features below are **planned**; native audio-device behavior still requires hands-on testing.
 
 ## Product vision: three connected workspaces
 
@@ -136,7 +136,7 @@ smaller displays.
   to erase it.
 - Choose 1/16, 1/8 or 1/4 snapping. Selected-note arrow keys move time/pitch;
   Shift+Left/Right changes duration. Page Up/Down or the wheel/scrollbar changes
-  the visible pitch range (five octaves, C2–B6).
+  the visible pitch range (all 128 MIDI pitches, C−1–G9).
 - Drag a velocity stem, or use the selected-note Velocity control (1–127).
   Notes at the same start time can be selected individually in the grid before
   changing their velocity.
@@ -147,7 +147,7 @@ smaller displays.
 
 This first version stores one clip in memory for the current session; closing
 Alien Studio discards it. Project saving, MIDI recording, multiple clips,
-arrangement playback, undo and layered drum/synth tracks remain future work.
+arrangement playback and layered drum/synth tracks remain future work.
 Same-pitch overlaps share one gate until the last overlap ends; velocity changes
 to a sounding note apply at its next trigger. Notes end at the four-bar boundary.
 Edits publish at audio-block boundaries; stop, source changes, preset changes and
@@ -169,6 +169,65 @@ snap. Check the loop boundary and Stop for hanging notes. Switch between tabs,
 change presets, audition piano keys, and Alt-Tab while holding typing/mouse notes.
 Return and play again. Confirm the original 16 pads and typing octave controls
 still work; verify the UI at the minimum window size and normal display scaling.
+
+### Piano-roll processing tools
+
+Select notes before processing: click a note, Ctrl+click to toggle individual
+notes, drag an empty area to select a rectangle, or Ctrl+A to select the clip.
+Ctrl+drag adds a rectangle to the selection. Dragging a selected note moves the
+group; Delete and the Velocity control also apply to the selection. The grid's
+snap setting controls ordinary move/resize gestures.
+
+Choose a tool in the toolbar and open its settings, or use these shortcuts while
+focus is inside the piano roll:
+
+| Shortcut | Tool | Controls |
+| --- | --- | --- |
+| Alt+S | Strum | Delay between chord pitches, up/down direction, velocity variation and seed. Each chord is grouped by its original start time. |
+| Alt+U | Chop | Slice duration and gate percentage. The final fragment stays within the original note; all fragments become selected. |
+| Alt+R | Randomize | Symmetric timing, velocity and semitone variation, with a repeatable seed. |
+| Alt+Q | Quantize | Grid, strength and swing. Swing delays alternate grid points; strength blends toward the nearest point on that swung grid. |
+
+Time controls use ticks: **240 ticks = one 1/16 note**, 120 = 1/32,
+60 = 1/64, and 30 = 1/128. At 120 BPM, 30 ticks is 15.625 ms.
+Strum and Randomize preserve note lengths while keeping them inside the loop.
+Pitch and velocity stay inside MIDI bounds. A fixed seed and the same source
+notes/settings produce the same random result; applying again processes the
+already edited notes, so Undo first when comparing settings from the same source.
+
+**Apply** commits the result; **Cancel** or Escape closes settings without changing
+notes. Each Apply is one undo step, and each mouse gesture is one step. Use the
+Undo/Redo buttons, Ctrl+Z and Ctrl+Y (or Ctrl+Shift+Z). Up to 64 edits are retained
+for this session. Selection is restored with each edit. A new edit discards the
+redo branch. No-op tools do not add history. Settings fields retain their normal
+text editing and Tab/Shift+Tab navigation.
+
+The clip has a 128-note limit. If Chop would exceed it, the whole operation is
+rejected with an explanation; no notes are lost. Processing affects selected
+notes only. Edits and undo/redo publish through the same audio snapshot path as
+ordinary editing, releasing removed/moved notes during playback. Same-pitch
+overlaps retain the shared-gate behavior described above.
+
+Regression coverage includes deterministic selected-note transforms, chopped
+fragment IDs/capacity handling, swing/strength, sub-sixteenth sample timing,
+loop-edge releases, processing during offline callback playback, selection,
+gesture undo/redo, Cancel, and shortcut/text-field/Tab routing. Native Windows
+listening remains a manual check:
+
+1. Create a chord and a separate unselected melody. Strum the chord in both
+   directions, vary velocity, then undo/redo. Confirm the melody is unchanged.
+2. Chop a long note at 60 ticks with a 50% gate. Listen to individual attacks;
+   undo once to restore the full note. Try a full clip and confirm the capacity
+   message leaves all notes intact.
+3. Randomize timing/velocity/pitch, undo, and reapply with the same seed. Compare
+   results. Quantize partially, then fully, with swing; check loop-edge notes.
+4. Apply, undo, delete and clear while playing; Stop/restart and switch tabs or
+   presets. Confirm no hanging notes. Test typing piano and octave controls after
+   Tab, after closing tool settings, and after Alt-Tab.
+
+Ghost channels, multiple instruments, per-note slides/expression, chord/scale
+helpers and riff generation are separate future additions. These processing
+tools operate on the existing synth clip and do not add plugin hosting.
 
 
 ### Computer keyboard piano

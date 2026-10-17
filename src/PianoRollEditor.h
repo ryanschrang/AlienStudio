@@ -2,8 +2,11 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "PianoRollSequence.h"
+#include "PianoRollProcessing.h"
 #include <cmath>
 #include <functional>
+#include <span>
+#include <vector>
 
 namespace alien {
 
@@ -16,8 +19,10 @@ public:
         setTitle("Piano roll");
         setDescription("Four bar MIDI note grid with a piano keyboard and velocity lane");
         setHelpText("Double-click to draw a note. Drag to move; drag its right edge to resize. "
-                    "Delete erases the selected note. Arrow keys move a selected note; "
-                    "Shift Left or Right changes its length. Tab moves between controls.");
+                    "Ctrl-click toggles note selection; drag empty space to select a group. "
+                    "Delete erases selected notes. Arrow keys move selected notes; "
+                    "Shift Left or Right changes their length. Ctrl A selects all, Ctrl Z undoes, "
+                    "and Ctrl Y redoes. Alt S, U, R, Q open processing settings. Tab moves between controls.");
         setWantsKeyboardFocus(true);
         setMouseClickGrabsKeyboardFocus(true);
 
@@ -38,18 +43,21 @@ public:
         velocityLabel.attachToComponent(&velocity, true);
         addAndMakeVisible(velocity);
         velocity.setName("Selected note velocity");
-        velocity.setTooltip("Velocity of the selected note, from 1 to 127");
+        velocity.setTooltip("Set the velocity of every selected note, from 1 to 127");
         velocity.setSliderStyle(juce::Slider::LinearHorizontal);
+        velocity.setWantsKeyboardFocus(true);
         velocity.setTextBoxStyle(juce::Slider::TextBoxRight, false, 40, 24);
         velocity.setRange(1, 127, 1);
         velocity.setValue(102, juce::dontSendNotification);
         velocity.setEnabled(false);
         velocity.onValueChange = [this] {
-            if (const auto* note = pattern.find(selected)) {
-                const auto value = static_cast<float>(velocity.getValue() / 127.0);
-                if (note->velocity != value && pattern.setVelocity(selected, value)) changed();
-            }
+            const bool singleEdit = !editOpen;
+            if (singleEdit) beginEdit();
+            setSelectedVelocity(static_cast<float>(velocity.getValue() / 127.0));
+            if (singleEdit) endEdit();
         };
+        velocity.onDragStart = [this] { beginEdit(); };
+        velocity.onDragEnd = [this] { endEdit(); };
 
         addAndMakeVisible(clearButton);
         clearButton.setButtonText("Clear");
@@ -58,16 +66,74 @@ public:
         clearButton.onClick = [this] {
             if (pattern.count == 0) return;
             releaseAudition();
+            beginEdit();
             pattern.clear();
-            selected = 0;
+            selection.clear();
+            activeId = 0;
             drag = Drag::none;
             changed();
+            endEdit();
         };
         addAndMakeVisible(exampleButton);
         exampleButton.setButtonText("Load example");
         exampleButton.setName("Load example piano roll melody");
         exampleButton.setTooltip("Add an original example to an empty loop; clear existing notes first");
         exampleButton.onClick = [this] { loadExample(); };
+
+        addAndMakeVisible(tools);
+        tools.setName("Piano roll processing tool");
+        tools.addItem("Strum", 1);
+        tools.addItem("Chop", 2);
+        tools.addItem("Randomize", 3);
+        tools.addItem("Quantize", 4);
+        tools.setSelectedId(1, juce::dontSendNotification);
+        tools.setTooltip("Choose a note processing tool, then open its settings");
+        tools.onChange = [this] { if (panelOpen) configureToolPanel(); };
+        configureButton(toolButton, "Edit...", "Open piano roll processing settings");
+        toolButton.onClick = [this] { openToolPanel(tools.getSelectedId()); };
+        configureButton(undoButton, "Undo", "Undo piano roll edit");
+        undoButton.setTooltip("Undo the last piano roll edit (Ctrl Z)");
+        undoButton.onClick = [this] { undo(); };
+        configureButton(redoButton, "Redo", "Redo piano roll edit");
+        redoButton.setTooltip("Redo a piano roll edit (Ctrl Y)");
+        redoButton.onClick = [this] { redo(); };
+
+        addChildComponent(panelTitle);
+        addChildComponent(panelHelp);
+        panelTitle.setName("Piano roll processing settings title");
+        panelHelp.setName("Piano roll processing settings help");
+        panelHelp.setText("240 ticks = one 1/16 note. Changes apply to selected notes only.", juce::dontSendNotification);
+        for (std::size_t i = 0; i < parameters.size(); ++i) {
+            addChildComponent(parameters[i]);
+            addChildComponent(parameterLabels[i]);
+            parameters[i].setSliderStyle(juce::Slider::LinearHorizontal);
+            parameters[i].setWantsKeyboardFocus(true);
+            parameters[i].setTextBoxStyle(juce::Slider::TextBoxRight, false, 62, 25);
+            parameterLabels[i].setJustificationType(juce::Justification::centredRight);
+            parameterLabels[i].setFont(juce::FontOptions(12.0f));
+        }
+        addChildComponent(seed);
+        addChildComponent(seedLabel);
+        seed.setName("Processing random seed");
+        seed.setTooltip("The same seed and notes reproduce the same randomized result");
+        seed.setSliderStyle(juce::Slider::IncDecButtons);
+        seed.setWantsKeyboardFocus(true);
+        seed.setTextBoxStyle(juce::Slider::TextBoxRight, false, 125, 25);
+        seed.setRange(1, 999999999, 1);
+        seedLabel.setText("Random seed", juce::dontSendNotification);
+        seedLabel.setJustificationType(juce::Justification::centredRight);
+        addChildComponent(descending);
+        descending.setButtonText("High to low");
+        descending.setName("Strum from high pitch to low pitch");
+        addChildComponent(applyButton);
+        applyButton.setButtonText("Apply");
+        applyButton.setName("Apply piano roll processing");
+        applyButton.onClick = [this] { applyTool(); };
+        addChildComponent(cancelButton);
+        cancelButton.setButtonText("Cancel");
+        cancelButton.setName("Cancel piano roll processing");
+        cancelButton.onClick = [this] { closeToolPanel(); };
+        history.reserve(historyLimit);
 
         addAndMakeVisible(pitchScroll);
         pitchScroll.setName("Piano roll pitch range");
@@ -96,12 +162,37 @@ public:
 
     const PianoRollPattern& getPattern() const noexcept { return pattern; }
 
+    std::span<const std::uint32_t> getSelectedIds() const noexcept { return { selection.ids.data(), selection.count }; }
+    void setSelection(std::span<const std::uint32_t> ids) {
+        selection.clear();
+        for (const auto id : ids) if (pattern.find(id) != nullptr) selection.add(id);
+        activeId = selection.count != 0 ? selection.ids[0] : 0;
+        updateSelection();
+    }
+    bool canUndo() const noexcept { return historyPosition != 0; }
+    bool canRedo() const noexcept { return historyPosition < history.size(); }
+    bool isProcessingPanelOpen() const noexcept { return panelOpen; }
+    void undo() {
+        endEdit();
+        if (!canUndo()) return;
+        restore(history[--historyPosition].before);
+    }
+    void redo() {
+        endEdit();
+        if (!canRedo()) return;
+        restore(history[historyPosition++].after);
+    }
+
     void setPattern(const PianoRollPattern& replacement) {
         if (!replacement.valid()) return;
         releaseAudition();
         pattern = replacement;
-        selected = 0;
+        selection.clear();
+        activeId = 0;
         drag = Drag::none;
+        editOpen = false;
+        history.clear();
+        historyPosition = 0;
         changed();
     }
 
@@ -123,6 +214,32 @@ public:
         velocityLabel.setBounds(272, 8, 56, 28);
         clearButton.setBounds(503, 8, 70, 28);
         exampleButton.setBounds(583, 8, 112, 28);
+        tools.setBounds(705, 8, 90, 28);
+        toolButton.setBounds(803, 8, 47, 28);
+        undoButton.setBounds(858, 8, 45, 28);
+        redoButton.setBounds(908, 8, 45, 28);
+        if (getWidth() < 980) {
+            int right = getWidth() - 8;
+            redoButton.setBounds(right - 43, 8, 43, 28); right -= 50;
+            undoButton.setBounds(right - 43, 8, 43, 28); right -= 50;
+            toolButton.setBounds(right - 47, 8, 47, 28); right -= 55;
+            tools.setBounds(right - 90, 8, 90, 28); right -= 98;
+            exampleButton.setBounds(right - 93, 8, 93, 28); right -= 101;
+            clearButton.setBounds(right - 52, 8, 52, 28);
+        }
+        panelTitle.setBounds(20, 48, getWidth() - 40, 24);
+        for (std::size_t i = 0; i < parameters.size(); ++i) {
+            const int x = 16 + static_cast<int>(i) * ((getWidth() - 32) / 3);
+            const int width = (getWidth() - 32) / 3;
+            parameterLabels[i].setBounds(x, 78, 106, 26);
+            parameters[i].setBounds(x + 112, 78, width - 120, 26);
+        }
+        seedLabel.setBounds(16, 113, 106, 26);
+        seed.setBounds(128, 113, 190, 26);
+        descending.setBounds(336, 113, 150, 26);
+        applyButton.setBounds(getWidth() - 184, 113, 78, 28);
+        cancelButton.setBounds(getWidth() - 98, 113, 78, 28);
+        panelHelp.setBounds(20, 145, getWidth() - 40, 22);
         const auto a = areas();
         pitchScroll.setBounds(a.grid.getRight() + 4, a.grid.getY(), 12, a.grid.getHeight());
     }
@@ -133,6 +250,13 @@ public:
         g.setColour(juce::Colour(0xff8ff2b2));
         g.setFont(juce::FontOptions(16.0f, juce::Font::bold));
         g.drawText("PIANO ROLL", 12, 7, 132, 29, juce::Justification::centredLeft);
+
+        if (panelOpen) {
+            g.setColour(juce::Colour(0xff203342));
+            g.fillRoundedRectangle(10.0f, 44.0f, static_cast<float>(getWidth() - 20), 128.0f, 5.0f);
+            g.setColour(juce::Colour(0xff426572));
+            g.drawRoundedRectangle(10.0f, 44.0f, static_cast<float>(getWidth() - 20), 128.0f, 5.0f, 1.0f);
+        }
 
         g.setColour(juce::Colour(0xff1c2d3d));
         g.fillRect(a.ruler);
@@ -184,8 +308,15 @@ public:
             }
         }
         for (std::size_t i = 0; i < pattern.count; ++i)
-            if (pattern.notes[i].id != selected) paintNote(g, pattern.notes[i], a, false);
-        if (const auto* note = pattern.find(selected)) paintNote(g, *note, a, true);
+            if (!selection.contains(pattern.notes[i].id)) paintNote(g, pattern.notes[i], a, false);
+        for (std::size_t i = 0; i < pattern.count; ++i)
+            if (selection.contains(pattern.notes[i].id)) paintNote(g, pattern.notes[i], a, true);
+        if (drag == Drag::marquee) {
+            g.setColour(juce::Colour(0x304ce3cb));
+            g.fillRect(marquee);
+            g.setColour(juce::Colour(0xff6be6d4));
+            g.drawRect(marquee, 1.0f);
+        }
 
         g.setColour(juce::Colour(0xff172735));
         g.fillRect(a.velocity);
@@ -200,8 +331,9 @@ public:
                                  static_cast<float>(a.velocity.getRight()));
         }
         for (std::size_t i = 0; i < pattern.count; ++i)
-            if (pattern.notes[i].id != selected) paintVelocity(g, pattern.notes[i], a, false);
-        if (const auto* note = pattern.find(selected)) paintVelocity(g, *note, a, true);
+            if (!selection.contains(pattern.notes[i].id)) paintVelocity(g, pattern.notes[i], a, false);
+        for (std::size_t i = 0; i < pattern.count; ++i)
+            if (selection.contains(pattern.notes[i].id)) paintVelocity(g, pattern.notes[i], a, true);
 
         if (std::isfinite(playhead) && playhead >= 0 && playhead < pattern.loopSteps) {
             const auto x = stepX(playhead, a);
@@ -216,21 +348,26 @@ public:
         juce::String status = juce::String(pattern.loopSteps / 16.0, 0) + "-bar loop (session only)  |  "
             + noteName(lowestVisiblePitch) + " - " + noteName(topPitch()) + "  |  "
             + juce::String(static_cast<int>(pattern.count)) + "/128 notes";
-        if (const auto* note = pattern.find(selected))
-            status += "  |  Selected " + noteName(note->pitch) + ": step " + juce::String(note->startStep + 1)
-                   + ", length " + juce::String(note->lengthSteps) + ", velocity "
+        status += "  |  " + juce::String(static_cast<int>(selection.count)) + " selected";
+        if (const auto* note = pattern.find(activeId))
+            status += "  |  " + noteName(note->pitch) + ": step " + juce::String(note->startStep + 1, 3)
+                   + ", length " + juce::String(note->lengthSteps, 3) + ", velocity "
                    + juce::String(juce::roundToInt(note->velocity * 127.0f));
+        if (statusMessage.isNotEmpty()) status = statusMessage;
         g.drawText(status, 12, a.velocity.getBottom() + 4, getWidth() - 24, 17,
                    juce::Justification::centredLeft);
         g.setColour(juce::Colour(0xff91abb8));
-        g.drawText("Double-click: draw   |   Drag: move   |   Right edge: resize   |   Del / right-click: erase   |   Wheel: pitch range",
-                   12, a.velocity.getBottom() + 21, getWidth() - 24, 17, juce::Justification::centredLeft);
+        if (!compactPanel())
+            g.drawText("Double-click: draw  |  Ctrl-click / empty drag: select  |  Drag / edge: move / resize  |  Del: erase  |  Ctrl Z / Y: undo / redo  |  Alt S / U / R / Q: tools",
+                       12, a.velocity.getBottom() + 21, getWidth() - 24, 17, juce::Justification::centredLeft);
     }
 
     void mouseDown(const juce::MouseEvent& e) override {
+        endEdit();
         grabKeyboardFocus();
         const auto a = areas();
         drag = Drag::none;
+        statusMessage.clear();
         if (a.piano.contains(e.getPosition())) {
             if (!e.mods.isPopupMenu()) {
                 drag = Drag::audition;
@@ -239,8 +376,11 @@ public:
             return;
         }
         if (a.velocity.contains(e.getPosition())) {
-            selected = hitVelocity(e.position.x, a);
-            if (selected != 0 && !e.mods.isPopupMenu()) {
+            const auto hit = hitVelocity(e.position.x, a);
+            if (hit != 0 && !selection.contains(hit)) selectOnly(hit);
+            activeId = hit;
+            if (hit != 0 && !e.mods.isPopupMenu()) {
+                beginEdit();
                 drag = Drag::velocity;
                 changeVelocity(e.position.y, a);
             }
@@ -248,14 +388,32 @@ public:
             return;
         }
         if (!a.grid.contains(e.getPosition())) return;
-        selected = hitNote(e.position, a);
+        const auto hit = hitNote(e.position, a);
         if (e.mods.isPopupMenu()) {
+            if (hit == 0) return;
+            if (!selection.contains(hit)) selectOnly(hit);
             eraseSelected();
             return;
         }
-        if (const auto* note = pattern.find(selected)) {
+        dragOrigin = e.position;
+        if (hit == 0) {
+            marqueeBase = e.mods.isCtrlDown() || e.mods.isCommandDown() ? selection : PianoRollSelection {};
+            selection = marqueeBase;
+            activeId = selection.count != 0 ? selection.ids[0] : 0;
+            marquee = {};
+            drag = Drag::marquee;
+        } else if (e.mods.isCtrlDown() || e.mods.isCommandDown()) {
+            selection.toggle(hit);
+            activeId = selection.contains(hit) ? hit : selection.count != 0 ? selection.ids[0] : 0;
+        } else {
+            if (!selection.contains(hit)) selectOnly(hit);
+            activeId = hit;
+        }
+        if (hit != 0 && selection.contains(hit)) {
+            const auto* note = pattern.find(hit);
             dragOriginal = *note;
-            dragOrigin = e.position;
+            dragPattern = pattern;
+            beginEdit();
             const auto bounds = noteBounds(*note, a);
             drag = e.position.x >= bounds.getRight() - juce::jmin(6.0f, bounds.getWidth() * 0.4f)
                  ? Drag::resize : Drag::move;
@@ -266,11 +424,15 @@ public:
     void mouseDoubleClick(const juce::MouseEvent& e) override {
         const auto a = areas();
         if (e.mods.isPopupMenu() || !a.grid.contains(e.getPosition()) || hitNote(e.position, a) != 0) return;
+        endEdit();
+        beginEdit();
         const auto start = snapStep(e.position.x, a);
-        selected = pattern.add(pitchAt(e.position.y, a), start, snapSteps(), 0.8f);
+        const auto created = pattern.add(pitchAt(e.position.y, a), start, snapSteps(), 0.8f);
+        selectOnly(created);
         drag = Drag::none;
-        if (selected != 0) changed();
+        if (created != 0) changed();
         else updateSelection();
+        endEdit();
     }
 
     void mouseDrag(const juce::MouseEvent& e) override {
@@ -280,29 +442,35 @@ public:
             else releaseAudition();
             return;
         }
+        if (drag == Drag::marquee) {
+            marquee = juce::Rectangle<float>(dragOrigin, e.position).getIntersection(a.grid.toFloat());
+            selection = marqueeBase;
+            for (std::size_t i = 0; i < pattern.count; ++i)
+                if (noteBounds(pattern.notes[i], a).intersects(marquee)) selection.add(pattern.notes[i].id);
+            activeId = selection.count != 0 ? selection.ids[0] : 0;
+            updateSelection();
+            return;
+        }
         if (drag == Drag::velocity) { changeVelocity(e.position.y, a); return; }
-        const auto* current = pattern.find(selected);
+        const auto* current = pattern.find(activeId);
         if (current == nullptr) return;
         const auto delta = (e.position.x - dragOrigin.x) / stepSize(a);
         if (drag == Drag::move) {
-            const auto lastSnappedStart = (pattern.loopSteps - dragOriginal.lengthSteps) / snapSteps() * snapSteps();
-            const auto start = juce::jlimit(0, lastSnappedStart,
-                juce::roundToInt((dragOriginal.startStep + delta) / snapSteps()) * snapSteps());
-            const auto pitch = juce::jlimit(lowestPitch, highestPitch,
-                dragOriginal.pitch - juce::roundToInt((e.position.y - dragOrigin.y) / rowSize(a)));
-            if ((current->startStep != start || current->pitch != pitch) && pattern.move(selected, pitch, start))
-                changed();
+            moveSelection(dragPattern,
+                std::round((dragOriginal.startStep + delta) / snapSteps()) * snapSteps() - dragOriginal.startStep,
+                -juce::roundToInt((e.position.y - dragOrigin.y) / rowSize(a)), true);
         } else if (drag == Drag::resize) {
-            const auto end = juce::roundToInt((dragOriginal.startStep + dragOriginal.lengthSteps + delta)
-                                            / snapSteps()) * snapSteps();
-            const auto length = juce::jlimit(1, pattern.loopSteps - current->startStep, end - current->startStep);
-            if (current->lengthSteps != length && pattern.resize(selected, length)) changed();
+            const auto end = std::round((dragOriginal.startStep + dragOriginal.lengthSteps + delta)
+                                       / snapSteps()) * snapSteps();
+            resizeSelection(dragPattern, end - dragOriginal.startStep - dragOriginal.lengthSteps);
         }
     }
 
     void mouseUp(const juce::MouseEvent&) override {
         releaseAudition();
         drag = Drag::none;
+        endEdit();
+        repaint();
     }
 
     void mouseExit(const juce::MouseEvent&) override { releaseAudition(); }
@@ -321,14 +489,34 @@ public:
     }
 
     bool keyPressed(const juce::KeyPress& key) override {
-        if (!hasKeyboardFocus(false) || key.getModifiers().isCtrlDown()
-            || key.getModifiers().isAltDown() || key.getModifiers().isCommandDown()) return false;
+        if (!hasKeyboardFocus(true)) return false;
         const auto code = key.getKeyCode();
+        const auto letter = code >= 'a' && code <= 'z' ? code - 'a' + 'A' : code;
+        auto* focused = juce::Component::getCurrentlyFocusedComponent();
+        bool textEntry = false;
+        for (auto* c = focused; c != nullptr && c != this; c = c->getParentComponent())
+            textEntry = textEntry || dynamic_cast<juce::TextEditor*>(c) != nullptr;
+        if (panelOpen && code == juce::KeyPress::escapeKey && !textEntry) { closeToolPanel(); return true; }
+        if (key.getModifiers().isAltDown() && !key.getModifiers().isCtrlDown()
+            && !key.getModifiers().isCommandDown()) {
+            const auto tool = letter == 'S' ? 1 : letter == 'U' ? 2 : letter == 'R' ? 3 : letter == 'Q' ? 4 : 0;
+            if (tool != 0 && !textEntry) { openToolPanel(tool); return true; }
+            return false;
+        }
+        if ((key.getModifiers().isCtrlDown() || key.getModifiers().isCommandDown())
+            && !key.getModifiers().isAltDown() && !textEntry) {
+            if (letter == 'Z') { if (key.getModifiers().isShiftDown()) redo(); else undo(); return true; }
+            if (letter == 'Y') { redo(); return true; }
+            if (letter == 'A') { selection.selectAll(pattern); activeId = selection.count ? selection.ids[0] : 0; updateSelection(); return true; }
+            return false;
+        }
+        if (!hasKeyboardFocus(false)
+            || (key.getModifiers().isAnyModifierKeyDown() && !key.getModifiers().isShiftDown())) return false;
         if (code == juce::KeyPress::pageUpKey || code == juce::KeyPress::pageDownKey) {
             setLowestVisible(lowestVisiblePitch + (code == juce::KeyPress::pageUpKey ? 12 : -12));
             return true;
         }
-        const auto* note = pattern.find(selected);
+        const auto* note = pattern.find(activeId);
         if (note == nullptr) return false;
         if (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) {
             eraseSelected();
@@ -336,38 +524,41 @@ public:
         }
         if (code != juce::KeyPress::leftKey && code != juce::KeyPress::rightKey
             && code != juce::KeyPress::upKey && code != juce::KeyPress::downKey) return false;
+        beginEdit();
+        const auto before = pattern;
         if (key.getModifiers().isShiftDown() && (code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey)) {
-            const auto length = juce::jlimit(1, pattern.loopSteps - note->startStep,
-                note->lengthSteps + (code == juce::KeyPress::rightKey ? snapSteps() : -snapSteps()));
-            if (length != note->lengthSteps && pattern.resize(selected, length)) changed();
+            resizeSelection(before, code == juce::KeyPress::rightKey ? snapSteps() : -snapSteps());
         } else {
-            const auto pitch = juce::jlimit(lowestPitch, highestPitch, note->pitch
-                + (code == juce::KeyPress::upKey ? 1 : code == juce::KeyPress::downKey ? -1 : 0));
-            const auto start = juce::jlimit(0, pattern.loopSteps - note->lengthSteps, note->startStep
-                + (code == juce::KeyPress::rightKey ? snapSteps() : code == juce::KeyPress::leftKey ? -snapSteps() : 0));
-            if ((pitch != note->pitch || start != note->startStep) && pattern.move(selected, pitch, start)) {
-                if (pitch < lowestVisiblePitch) setLowestVisible(pitch);
-                if (pitch > topPitch()) setLowestVisible(pitch - visiblePitches + 1);
-                changed();
+            moveSelection(before,
+                code == juce::KeyPress::rightKey ? snapSteps() : code == juce::KeyPress::leftKey ? -snapSteps() : 0,
+                code == juce::KeyPress::upKey ? 1 : code == juce::KeyPress::downKey ? -1 : 0, false);
+            if (const auto* moved = pattern.find(activeId)) {
+                if (moved->pitch < lowestVisiblePitch) setLowestVisible(moved->pitch);
+                if (moved->pitch > topPitch()) setLowestVisible(moved->pitch - visiblePitches + 1);
             }
         }
+        endEdit();
         return true;
     }
 
-    void focusLost(FocusChangeType) override { releaseAudition(); repaint(); }
+    void focusLost(FocusChangeType) override { releaseAudition(); endEdit(); drag = Drag::none; repaint(); }
     void focusGained(FocusChangeType) override { repaint(); }
-    void visibilityChanged() override { if (!isShowing()) releaseAudition(); }
+    void visibilityChanged() override { if (!isShowing()) { releaseAudition(); endEdit(); drag = Drag::none; } }
 
 private:
     struct Areas { juce::Rectangle<int> ruler, piano, grid, velocity; };
-    enum class Drag { none, move, resize, velocity, audition };
-    static constexpr int lowestPitch = 36, highestPitch = 95, visiblePitches = 24;
+    enum class Drag { none, move, resize, velocity, audition, marquee };
+    static constexpr int lowestPitch = 0, highestPitch = 127, visiblePitches = 24;
+    bool compactPanel() const { return panelOpen && getHeight() < 378; }
 
     Areas areas() const {
-        const int gridX = 64, gridY = 68, gridWidth = juce::jmax(64, getWidth() - gridX - 26);
-        const int gridHeight = juce::jmax(48, getHeight() - gridY - 76 - 44 - 6);
-        return { { gridX, 44, gridWidth, 24 }, { 10, gridY, 54, gridHeight },
-                 { gridX, gridY, gridWidth, gridHeight }, { gridX, gridY + gridHeight + 6, gridWidth, 76 } };
+        const int panelOffset = panelOpen ? 136 : 0;
+        const int gridX = 64, gridY = 68 + panelOffset, gridWidth = juce::jmax(64, getWidth() - gridX - 26);
+        const int velocityHeight = compactPanel() ? 50 : 76;
+        const int footerHeight = compactPanel() ? 24 : 44;
+        const int gridHeight = juce::jmax(48, getHeight() - gridY - velocityHeight - footerHeight - 6);
+        return { { gridX, 44 + panelOffset, gridWidth, 24 }, { 10, gridY, 54, gridHeight },
+                 { gridX, gridY, gridWidth, gridHeight }, { gridX, gridY + gridHeight + 6, gridWidth, velocityHeight } };
     }
     float stepSize(const Areas& a) const { return a.grid.getWidth() / static_cast<float>(juce::jmax(1, pattern.loopSteps)); }
     static float rowSize(const Areas& a) { return a.grid.getHeight() / static_cast<float>(visiblePitches); }
@@ -392,12 +583,12 @@ private:
     juce::Rectangle<float> noteBounds(const PianoRollNote& note, const Areas& a) const {
         return { stepX(note.startStep, a) + 1.0f,
                  a.grid.getY() + (topPitch() - note.pitch) * rowSize(a) + 1.0f,
-                 juce::jmax(2.0f, note.lengthSteps * stepSize(a) - 2.0f), juce::jmax(2.0f, rowSize(a) - 2.0f) };
+                 juce::jmax(2.0f, static_cast<float>(note.lengthSteps) * stepSize(a) - 2.0f), juce::jmax(2.0f, rowSize(a) - 2.0f) };
     }
     std::uint32_t hitNote(juce::Point<float> position, const Areas& a) const {
         if (!a.grid.toFloat().contains(position)) return 0;
-        if (const auto* note = pattern.find(selected))
-            if (noteBounds(*note, a).contains(position)) return selected;
+        if (const auto* note = pattern.find(activeId))
+            if (noteBounds(*note, a).contains(position)) return activeId;
         for (auto i = pattern.count; i > 0; --i)
             if (noteBounds(pattern.notes[i - 1], a).contains(position)) return pattern.notes[i - 1].id;
         return 0;
@@ -408,8 +599,8 @@ private:
     }
     std::uint32_t hitVelocity(float x, const Areas& a) const {
         const auto radius = juce::jmax(7.0f, stepSize(a) * 0.45f);
-        if (const auto* note = pattern.find(selected))
-            if (std::abs(velocityX(*note, a) - x) <= radius) return selected;
+        if (const auto* note = pattern.find(activeId))
+            if (std::abs(velocityX(*note, a) - x) <= radius) return activeId;
         auto distance = radius;
         std::uint32_t found = 0;
         for (auto i = pattern.count; i > 0; --i) {
@@ -439,24 +630,46 @@ private:
         g.fillEllipse(x - 2.5f, y - 2.5f, 5.0f, 5.0f);
     }
     void changeVelocity(float y, const Areas& a) {
-        const auto* note = pattern.find(selected);
-        if (note == nullptr) return;
         const auto value = juce::jlimit(1.0f / 127.0f, 1.0f,
             (a.velocity.getBottom() - 8.0f - y) / (a.velocity.getHeight() - 18.0f));
-        if (note->velocity != value && pattern.setVelocity(selected, value)) changed();
+        setSelectedVelocity(value);
+    }
+    void setSelectedVelocity(float value) {
+        bool edited = false;
+        for (std::size_t i = 0; i < selection.count; ++i)
+            if (const auto* note = pattern.find(selection.ids[i]))
+                if (note->velocity != value) edited = pattern.setVelocity(note->id, value) || edited;
+        if (edited) changed();
     }
     void eraseSelected() {
-        if (!pattern.erase(selected)) { updateSelection(); return; }
-        selected = 0;
+        if (selection.count == 0) return;
+        beginEdit();
+        for (std::size_t i = 0; i < selection.count; ++i) pattern.erase(selection.ids[i]);
+        selection.clear();
+        activeId = 0;
         drag = Drag::none;
         changed();
+        endEdit();
+    }
+    void selectOnly(std::uint32_t id) {
+        selection.clear();
+        if (pattern.find(id) != nullptr) selection.add(id);
+        activeId = selection.count != 0 ? id : 0;
     }
     void updateSelection() {
-        const auto* note = pattern.find(selected);
+        selection.retain(pattern);
+        if (!selection.contains(activeId)) activeId = selection.count != 0 ? selection.ids[0] : 0;
+        const auto* note = pattern.find(activeId);
         velocity.setEnabled(note != nullptr);
         if (note != nullptr) velocity.setValue(juce::roundToInt(note->velocity * 127.0f), juce::dontSendNotification);
         clearButton.setEnabled(pattern.count != 0);
         exampleButton.setEnabled(pattern.count == 0);
+        undoButton.setEnabled(canUndo());
+        redoButton.setEnabled(canRedo());
+        applyButton.setEnabled(selection.count != 0);
+        if (panelOpen)
+            panelTitle.setText(tools.getText() + " selected notes  |  "
+                               + juce::String(static_cast<int>(selection.count)) + " selected", juce::dontSendNotification);
         repaint();
     }
     void changed() {
@@ -478,11 +691,209 @@ private:
     }
     void loadExample() {
         if (pattern.count != 0) return;
+        beginEdit();
         static constexpr int pitches[] { 60, 64, 67, 64, 62, 65, 69, 65, 64, 67, 71, 67, 62, 65, 67, 60 };
         for (int i = 0; i < 16; ++i)
             pattern.add(pitches[i], i * 4, i == 15 ? 4 : 3, i % 4 == 0 ? 0.86f : 0.65f);
-        selected = pattern.count != 0 ? pattern.notes[0].id : 0;
+        selectOnly(pattern.count != 0 ? pattern.notes[0].id : 0);
         changed();
+        endEdit();
+    }
+
+    void moveSelection(const PianoRollPattern& original, double deltaTime, int deltaPitch, bool alignAnchor) {
+        double earliest = -original.loopSteps, latest = original.loopSteps;
+        int minimumPitch = -127, maximumPitch = 127;
+        for (std::size_t i = 0; i < selection.count; ++i) if (const auto* note = original.find(selection.ids[i])) {
+            earliest = std::max(earliest, -note->startStep);
+            latest = std::min(latest, original.loopSteps - note->startStep - note->lengthSteps);
+            minimumPitch = std::max(minimumPitch, lowestPitch - note->pitch);
+            maximumPitch = std::min(maximumPitch, highestPitch - note->pitch);
+        }
+        // Each note limits the same group offset so relative chord timing,
+        // pitch intervals and durations stay intact at the clip boundaries.
+        deltaTime = juce::jlimit(earliest, latest, deltaTime);
+        if (alignAnchor) if (const auto* anchor = original.find(activeId)) {
+            const auto firstGrid = std::ceil((anchor->startStep + earliest) / snapSteps()) * snapSteps();
+            const auto lastGrid = std::floor((anchor->startStep + latest) / snapSteps()) * snapSteps();
+            if (firstGrid <= lastGrid)
+                deltaTime = juce::jlimit(firstGrid, lastGrid, anchor->startStep + deltaTime) - anchor->startStep;
+        }
+        deltaPitch = juce::jlimit(minimumPitch, maximumPitch, deltaPitch);
+        bool edited = false;
+        for (std::size_t i = 0; i < selection.count; ++i) {
+            const auto* note = original.find(selection.ids[i]);
+            const auto* current = pattern.find(selection.ids[i]);
+            if (note == nullptr || current == nullptr) continue;
+            const auto start = PianoRollPattern::fromTicks(PianoRollPattern::toTicks(note->startStep + deltaTime));
+            const auto pitch = note->pitch + deltaPitch;
+            if (current->startStep != start || current->pitch != pitch)
+                edited = pattern.move(note->id, pitch, start) || edited;
+        }
+        if (edited) changed();
+    }
+    void resizeSelection(const PianoRollPattern& original, double deltaLength) {
+        double minimum = -original.loopSteps, maximum = original.loopSteps;
+        for (std::size_t i = 0; i < selection.count; ++i) if (const auto* note = original.find(selection.ids[i])) {
+            minimum = std::max(minimum, PianoRollPattern::minLength - note->lengthSteps);
+            maximum = std::min(maximum, original.loopSteps - note->startStep - note->lengthSteps);
+        }
+        deltaLength = juce::jlimit(minimum, maximum, deltaLength);
+        bool edited = false;
+        for (std::size_t i = 0; i < selection.count; ++i) {
+            const auto* note = original.find(selection.ids[i]);
+            const auto* current = pattern.find(selection.ids[i]);
+            if (note == nullptr || current == nullptr) continue;
+            const auto length = PianoRollPattern::fromTicks(PianoRollPattern::toTicks(note->lengthSteps + deltaLength));
+            if (current->lengthSteps != length) edited = pattern.resize(note->id, length) || edited;
+        }
+        if (edited) changed();
+    }
+
+    struct Snapshot {
+        PianoRollPattern pattern;
+        PianoRollSelection selection;
+        std::uint32_t active {};
+    };
+    struct HistoryEntry { Snapshot before, after; };
+    static constexpr std::size_t historyLimit = 64;
+    Snapshot snapshot() const { return { pattern, selection, activeId }; }
+    void beginEdit() {
+        if (editOpen) return;
+        editBefore = snapshot();
+        editOpen = true;
+        statusMessage.clear();
+    }
+    void endEdit() {
+        if (!editOpen) return;
+        editOpen = false;
+        if (samePianoRollPattern(editBefore.pattern, pattern)) return;
+        history.resize(historyPosition);
+        if (history.size() == historyLimit) { history.erase(history.begin()); --historyPosition; }
+        history.push_back({ editBefore, snapshot() });
+        historyPosition = history.size();
+        updateSelection();
+    }
+    void restore(const Snapshot& state) {
+        releaseAudition();
+        drag = Drag::none;
+        pattern = state.pattern;
+        selection = state.selection;
+        activeId = state.active;
+        statusMessage.clear();
+        changed();
+    }
+
+    void configureButton(juce::TextButton& button, const char* text, const char* name) {
+        addAndMakeVisible(button);
+        button.setButtonText(text);
+        button.setName(name);
+    }
+    void configureParameter(std::size_t index, const char* text, const char* name,
+                            double minimum, double maximum, double value) {
+        auto& slider = parameters[index];
+        parameterLabels[index].setText(text, juce::dontSendNotification);
+        slider.setName(name);
+        slider.setRange(minimum, maximum, 1.0);
+        slider.setSkewFactor(1.0);
+        if (maximum > 960.0) slider.setSkewFactorFromMidPoint(240.0);
+        else if (maximum == 960.0) slider.setSkewFactorFromMidPoint(120.0);
+        slider.setValue(value, juce::dontSendNotification);
+        slider.setVisible(true);
+        parameterLabels[index].setVisible(true);
+    }
+    void configureToolPanel() {
+        for (std::size_t i = 0; i < parameters.size(); ++i) {
+            parameters[i].setVisible(false);
+            parameterLabels[i].setVisible(false);
+        }
+        const auto tool = tools.getSelectedId();
+        panelTitle.setText(tools.getText() + " selected notes  |  " + juce::String(static_cast<int>(selection.count))
+                           + " selected", juce::dontSendNotification);
+        panelHelp.setText("240 ticks = one 1/16 note. Changes apply to selected notes only.", juce::dontSendNotification);
+        seed.setVisible(tool == 1 || tool == 3);
+        seedLabel.setVisible(seed.isVisible());
+        descending.setVisible(tool == 1);
+        if (tool == 1) {
+            configureParameter(0, "Delay (ticks)", "Strum delay ticks", 0, 960, strumSettings.delaySteps * 240.0);
+            configureParameter(1, "Velocity +/- %", "Strum velocity variation percent", 0, 100, strumSettings.velocityVariation * 100.0);
+            seed.setValue(strumSettings.seed, juce::dontSendNotification);
+            descending.setToggleState(strumSettings.descending, juce::dontSendNotification);
+        } else if (tool == 2) {
+            configureParameter(0, "Slice (ticks)", "Chop slice ticks", 1, 61440, chopSettings.divisionSteps * 240.0);
+            configureParameter(1, "Gate (%)", "Chop gate percent", 5, 100, chopSettings.gate * 100.0);
+        } else if (tool == 3) {
+            configureParameter(0, "Timing +/- ticks", "Randomize timing ticks", 0, 960, randomizeSettings.timingSteps * 240.0);
+            configureParameter(1, "Velocity +/- %", "Randomize velocity variation percent", 0, 100, randomizeSettings.velocityVariation * 100.0);
+            configureParameter(2, "Pitch +/- st", "Randomize pitch semitones", 0, 24, randomizeSettings.pitchSemitones);
+            seed.setValue(randomizeSettings.seed, juce::dontSendNotification);
+        } else {
+            configureParameter(0, "Grid (ticks)", "Quantize grid ticks", 1, 61440, quantizeSettings.gridSteps * 240.0);
+            configureParameter(1, "Strength (%)", "Quantize strength percent", 0, 100, quantizeSettings.strength * 100.0);
+            configureParameter(2, "Swing (%)", "Quantize swing percent", 0, 75, quantizeSettings.swing * 100.0);
+        }
+        updateSelection();
+    }
+    void openToolPanel(int tool) {
+        endEdit();
+        releaseAudition();
+        drag = Drag::none;
+        tools.setSelectedId(tool, juce::dontSendNotification);
+        statusMessage.clear();
+        panelOpen = true;
+        for (auto* child : std::initializer_list<juce::Component*> { &panelTitle, &panelHelp, &applyButton, &cancelButton })
+            child->setVisible(true);
+        configureToolPanel();
+        resized();
+        repaint();
+        parameters[0].grabKeyboardFocus();
+    }
+    void closeToolPanel() {
+        panelOpen = false;
+        for (auto* child : std::initializer_list<juce::Component*> { &panelTitle, &panelHelp, &applyButton,
+                                                                 &cancelButton, &seed, &seedLabel, &descending })
+            child->setVisible(false);
+        for (std::size_t i = 0; i < parameters.size(); ++i) {
+            parameters[i].setVisible(false);
+            parameterLabels[i].setVisible(false);
+        }
+        resized();
+        repaint();
+        grabKeyboardFocus();
+    }
+    void applyTool() {
+        endEdit();
+        beginEdit();
+        ProcessingResult result;
+        const auto value = [this](std::size_t i) { return parameters[i].getValue(); };
+        const auto randomSeed = static_cast<std::uint32_t>(seed.getValue());
+        if (tools.getSelectedId() == 1) {
+            strumSettings = { value(0) / 240.0, static_cast<float>(value(1) / 100.0), descending.getToggleState(), randomSeed };
+            result = processStrum(pattern, selection, strumSettings);
+        } else if (tools.getSelectedId() == 2) {
+            chopSettings = { value(0) / 240.0, value(1) / 100.0 };
+            result = processChop(pattern, selection, chopSettings);
+        } else if (tools.getSelectedId() == 3) {
+            randomizeSettings = { value(0) / 240.0, static_cast<float>(value(1) / 100.0), static_cast<int>(value(2)), randomSeed };
+            result = processRandomize(pattern, selection, randomizeSettings);
+        } else {
+            quantizeSettings = { value(0) / 240.0, value(1) / 100.0, value(2) / 100.0 };
+            result = processQuantize(pattern, selection, quantizeSettings);
+        }
+        selection = result.selection;
+        if (result.changed()) {
+            changed();
+            endEdit();
+            closeToolPanel();
+        } else {
+            endEdit();
+            const auto message = result.status == ProcessingStatus::capacityExceeded
+                ? "No changes: processing would exceed the 128-note limit. Increase slice length or select fewer notes."
+                : result.status == ProcessingStatus::invalidInput ? "No changes: the processing settings are invalid."
+                : "No changes: selected notes already match these settings.";
+            panelHelp.setText(message, juce::dontSendNotification);
+            statusMessage = message;
+            updateSelection();
+        }
     }
     void setLowestVisible(int pitch) {
         const auto next = juce::jlimit(lowestPitch, highestPitch - visiblePitches + 1, pitch);
@@ -500,15 +911,32 @@ private:
     }
 
     PianoRollPattern pattern;
-    juce::ComboBox snap;
+    juce::ComboBox snap, tools;
     juce::Label snapLabel, velocityLabel;
     juce::Slider velocity;
-    juce::TextButton clearButton, exampleButton;
+    juce::TextButton clearButton, exampleButton, toolButton, undoButton, redoButton, applyButton, cancelButton;
+    juce::Label panelTitle, panelHelp, seedLabel;
+    std::array<juce::Label, 3> parameterLabels;
+    std::array<juce::Slider, 3> parameters;
+    juce::Slider seed;
+    juce::ToggleButton descending;
     juce::ScrollBar pitchScroll { true };
-    std::uint32_t selected {};
+    PianoRollSelection selection, marqueeBase;
+    std::uint32_t activeId {};
+    PianoRollPattern dragPattern;
     PianoRollNote dragOriginal {};
     juce::Point<float> dragOrigin;
+    juce::Rectangle<float> marquee;
     Drag drag { Drag::none };
+    std::vector<HistoryEntry> history;
+    std::size_t historyPosition {};
+    Snapshot editBefore;
+    bool editOpen {}, panelOpen {};
+    juce::String statusMessage;
+    StrumSettings strumSettings;
+    ChopSettings chopSettings;
+    RandomizeSettings randomizeSettings;
+    QuantizeSettings quantizeSettings;
     int lowestVisiblePitch { 48 }, auditionPitch { -1 };
     double playhead { -1.0 };
 };

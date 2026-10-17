@@ -36,26 +36,53 @@ static void modelTests() {
     require(pattern.valid() && pattern.count == 0 && pattern.loopSteps == 64, "empty four-bar clip");
     const auto first = pattern.add(-12, -9, 0, -2.0f);
     require(first != 0 && pattern.find(first)->pitch == 0 && pattern.find(first)->startStep == 0
-        && pattern.find(first)->lengthSteps == 1 && pattern.find(first)->velocity > 0, "creation clamps lower bounds");
+        && pattern.find(first)->lengthSteps == PianoRollPattern::minLength && pattern.find(first)->velocity > 0, "creation clamps lower bounds");
     const auto last = pattern.add(200, 100, 200, 2.0f);
-    require(pattern.find(last)->pitch == 127 && pattern.find(last)->startStep == 63
-        && pattern.find(last)->lengthSteps == 1 && pattern.find(last)->velocity == 1, "creation clamps clip and MIDI upper bounds");
+    require(pattern.find(last)->pitch == 127 && PianoRollPattern::toTicks(pattern.find(last)->startStep) == 64 * 240 - 1
+        && pattern.find(last)->lengthSteps == PianoRollPattern::minLength && pattern.find(last)->velocity == 1, "creation clamps clip and MIDI upper bounds");
     require(pattern.resize(first, 4) && pattern.move(first, 60, 64), "move and resize find stable ID");
     require(pattern.find(first)->startStep == 60 && pattern.find(first)->lengthSteps == 4, "move preserves duration at clip edge");
     require(pattern.resize(first, 100) && pattern.find(first)->lengthSteps == 4, "resize cannot extend beyond clip");
-    require(pattern.resize(first, -10) && pattern.find(first)->lengthSteps == 1, "resize has one-step minimum");
+    require(pattern.resize(first, -10) && pattern.find(first)->lengthSteps == PianoRollPattern::minLength, "resize has one-tick minimum");
     require(!pattern.setVelocity(first, std::numeric_limits<float>::quiet_NaN())
         && pattern.setVelocity(first, 0) && pattern.find(first)->velocity > 0, "velocity is finite and audible");
     require(pattern.add(60, 0, 1, std::numeric_limits<float>::infinity()) == 0, "invalid velocity rejected");
     require(pattern.erase(first) && !pattern.erase(first) && pattern.find(last), "erase preserves other IDs");
     require(!pattern.move(first, 60, 0) && !pattern.resize(first, 1), "stale selection cannot edit another note");
     pattern.setLoopSteps(16);
-    require(pattern.find(last)->startStep == 15 && pattern.valid(), "shorter clip clamps existing notes");
+    require(PianoRollPattern::toTicks(pattern.find(last)->startStep) == 16 * 240 - 1 && pattern.valid(), "shorter clip clamps existing notes");
     pattern.clear();
     for (std::size_t i = 0; i < PianoRollPattern::maxNotes; ++i)
         require(pattern.add(static_cast<int>(i), 0, 1) != 0, "fixed note capacity");
     require(pattern.valid() && pattern.add(0, 0, 1) == 0, "capacity cannot overflow storage");
     pattern.clear(); require(pattern.valid() && pattern.count == 0, "clear valid empty pattern");
+}
+
+static void fractionalModelTests() {
+    PianoRollPattern pattern;
+    const auto id = pattern.add(60, 0.503, 0.127);
+    require(id != 0 && PianoRollPattern::toTicks(pattern.find(id)->startStep) == 121
+        && PianoRollPattern::toTicks(pattern.find(id)->lengthSteps) == 30,
+        "fractional note geometry rounds to nearest 960-PPQ tick");
+    require(pattern.move(id, 61, 1.0 / 240) && pattern.find(id)->startStep == PianoRollPattern::timeQuantum,
+        "moving retains genuine sub-sixteenth timing");
+    require(pattern.resize(id, 0.01) && PianoRollPattern::toTicks(pattern.find(id)->lengthSteps) == 2,
+        "short chopped duration is represented by multiple ticks");
+    require(!pattern.move(id, 70, std::numeric_limits<double>::quiet_NaN())
+        && !pattern.resize(id, std::numeric_limits<double>::infinity())
+        && pattern.add(60, std::numeric_limits<double>::infinity(), 1) == 0,
+        "non-finite timing rejected without corrupting a valid clip");
+    auto malformed = pattern;
+    malformed.find(id)->startStep = 0.001;
+    require(!malformed.valid(), "off-tick snapshot rejected");
+    require(pattern.resize(id, -1) && pattern.find(id)->lengthSteps == PianoRollPattern::minLength,
+        "minimum length is one tick rather than a whole sixteenth");
+    require(pattern.move(id, 61, 1000)
+        && PianoRollPattern::toTicks(pattern.find(id)->startStep) == 64 * 240 - 1,
+        "fractional move respects final legal tick");
+    pattern.setLoopSteps(4);
+    require(pattern.valid() && PianoRollPattern::toTicks(pattern.find(id)->startStep) == 4 * 240 - 1,
+        "clip-length change preserves final one-tick note without cropping its duration to zero");
 }
 
 static void mailboxTests() {
@@ -149,6 +176,181 @@ static void timingTests() {
     require(changingTempo.nextSample(changes) == 1, "tempo change does not reset transport");
     for (int i = 1; i < 200; ++i) require(changingTempo.nextSample(changes) == -1, "new tempo duration");
     require(changingTempo.nextSample(changes) == 2, "tempo change takes effect at next step without accumulating drift");
+}
+
+static void fractionalTimingTests() {
+    PianoRollPattern pattern;
+    pattern.setLoopSteps(4);
+    pattern.add(60, 0.125, 0.25);
+    pattern.add(61, 0.5, PianoRollPattern::timeQuantum);
+    pattern.add(62, 0.75, 0.125);
+    pattern.add(63, 1.75, 0.5);
+    pattern.add(64, 3.9, 0.1); // End exactly at the four-step loop boundary.
+    pattern.add(67, 0.25, 0.25);
+    pattern.add(67, 0.5, 0.25); // Adjacent same-pitch fractional gates.
+    PianoRollMailbox mailbox;
+    require(mailbox.publish(pattern), "fractional timing clip valid");
+    PianoRollScheduler scheduler;
+    Recorder record;
+    constexpr double interval = 48000.0 * 60 / (137 * 4);
+    const int sampleCount = static_cast<int>(std::ceil(12 * interval)) + 1;
+    for (record.sample = 0; record.sample < sampleCount; ++record.sample) {
+        if (record.sample % 113 == 0) scheduler.beginBlock(mailbox, true, 48000, 137, record);
+        scheduler.nextSample(record);
+    }
+    require(record.count == pattern.count * 2 * 3, "all fractional notes release across three loop wraps");
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        for (std::size_t n = 0; n < pattern.count; ++n) {
+            const auto& note = pattern.notes[n];
+            for (int gate = 0; gate < 2; ++gate) {
+                const double ideal = (cycle * 4 + note.startStep + (gate == 0 ? 0 : note.lengthSteps)) * interval;
+                int matches = 0;
+                for (std::size_t e = 0; e < record.count; ++e) {
+                    const auto& event = record.events[e];
+                    if (event.pitch == note.pitch && event.on == (gate == 0)
+                        && event.sample >= ideal - 1e-6 && event.sample < ideal + 1.000001) ++matches;
+                }
+                require(matches == 1, "fractional start and duration release occur at first sample on or after ideal tick");
+            }
+        }
+    }
+    bool sawOn = false;
+    int sample = -1;
+    for (std::size_t i = 0; i < record.count; ++i) {
+        const auto& event = record.events[i];
+        if (event.sample != sample) { sample = event.sample; sawOn = false; }
+        require(event.on || !sawOn, "all same-sample fractional note-offs precede note-ons");
+        sawOn |= event.on;
+    }
+    const auto beforeStop = record.count;
+    scheduler.stop(record);
+    require(record.count == beforeStop, "fractional final-loop releases leave no held pitches");
+
+    PianoRollPattern tempoPattern;
+    tempoPattern.setLoopSteps(2);
+    tempoPattern.add(70, 0.75, 0.5);
+    PianoRollMailbox tempoMailbox;
+    tempoMailbox.publish(tempoPattern);
+    PianoRollScheduler changingTempo;
+    Recorder changes;
+    changingTempo.beginBlock(tempoMailbox, true, 48000, 120, changes);
+    for (changes.sample = 0; changes.sample < 10000; ++changes.sample) {
+        if (changes.sample == 3000) changingTempo.beginBlock(tempoMailbox, true, 48000, 60, changes);
+        changingTempo.nextSample(changes);
+    }
+    require(changes.count == 2 && changes.events[0].on && changes.events[0].sample == 4500
+        && !changes.events[1].on && changes.events[1].sample == 9000,
+        "substep start keeps pending tempo interval and note-off follows changed next-step tempo");
+}
+
+static void fractionalSnapshotTests() {
+    PianoRollPattern pattern;
+    const auto edited = pattern.add(60, 0.25, 0.5);
+    const auto retained = pattern.add(64, 0, 2);
+    const auto beforeEdit = pattern;
+    PianoRollMailbox mailbox;
+    mailbox.publish(pattern);
+    PianoRollScheduler scheduler;
+    Recorder record;
+    scheduler.beginBlock(mailbox, true, 48000, 120, record);
+    for (record.sample = 0; record.sample < 3000; ++record.sample) scheduler.nextSample(record);
+    require(record.count == 2 && record.events[1].pitch == 60 && record.events[1].sample == 1500,
+        "fractional clip plays before snapshot edit");
+    pattern.resize(edited, 0.24); // Edited end now precedes the fractional cursor 0.5.
+    pattern.add(67, 0.6, 0.2);
+    pattern.add(69, 0.4, 0.2);
+    mailbox.publish(pattern);
+    scheduler.beginBlock(mailbox, true, 48000, 120, record);
+    require(record.count == 3 && !record.events[2].on && record.events[2].pitch == 60,
+        "shortening a held note to before fractional cursor releases immediately");
+    scheduler.nextSample(record);
+    require(record.count == 4 && record.events[3].on && record.events[3].pitch == 69,
+        "snapshot catches up only inserted notes covering the actual fractional cursor");
+    for (record.sample = 3001; record.sample < 3600; ++record.sample) scheduler.nextSample(record);
+    require(record.count == 4, "future fractional note does not start early after snapshot replacement");
+    pattern.add(75, 0.6, 0.1);
+    mailbox.publish(pattern);
+    scheduler.beginBlock(mailbox, true, 48000, 120, record);
+    scheduler.nextSample(record);
+    require(record.count == 7 && !record.events[4].on && record.events[4].pitch == 69
+        && record.events[5].on && record.events[5].pitch == 67
+        && record.events[6].on && record.events[6].pitch == 75,
+        "snapshot exactly at fractional boundary retains due off and starts each new note once");
+    for (record.sample = 3601; record.sample < 3700; ++record.sample) scheduler.nextSample(record);
+    mailbox.publish(beforeEdit); // Restoring a history snapshot keeps IDs stable.
+    scheduler.beginBlock(mailbox, true, 48000, 120, record);
+    scheduler.nextSample(record);
+    require(record.count == 10 && !record.events[7].on && !record.events[8].on
+        && record.events[9].on && record.events[9].pitch == 60,
+        "undo-style snapshot releases removed fractional notes and restores currently covering note");
+    int retainedEvents = 0;
+    for (std::size_t i = 0; i < record.count; ++i) retainedEvents += record.events[i].pitch == beforeEdit.find(retained)->pitch;
+    require(retainedEvents == 1, "unchanged held ID survives fractional edit and undo snapshots without retrigger");
+    for (record.sample = 3701; record.sample <= 4500; ++record.sample) scheduler.nextSample(record);
+    require(!record.events[record.count - 1].on && record.events[record.count - 1].pitch == 60
+        && record.events[record.count - 1].sample == 4500, "restored fractional duration releases at original boundary");
+    scheduler.stop(record);
+}
+
+static void snapshotCrossedEndTests() {
+    PianoRollPattern pattern;
+    const auto id = pattern.add(60, 0, PianoRollPattern::fromTicks(119));
+    PianoRollMailbox mailbox;
+    mailbox.publish(pattern);
+    PianoRollScheduler scheduler;
+    Recorder record;
+    scheduler.beginBlock(mailbox, true, 800, 120, record);
+    for (record.sample = 0; record.sample < 50; ++record.sample) scheduler.nextSample(record);
+    require(record.count == 1 && std::abs(scheduler.positionStep() - 0.5) < 1e-9,
+        "last rendered sample precedes fractional end while upcoming sample follows it");
+    pattern.setVelocity(id, 0.2f); // Geometry and ID unchanged in this snapshot.
+    pattern.add(64, 0.6, 0.1); // Unrelated edit also must not lose a pending off.
+    mailbox.publish(pattern);
+    scheduler.beginBlock(mailbox, true, 800, 120, record);
+    require(record.count == 2 && !record.events[1].on && record.events[1].pitch == 60
+        && record.events[1].sample == 50,
+        "snapshot seek releases geometrically unchanged held note whose end crossed between rendered samples");
+    scheduler.nextSample(record);
+    require(record.count == 2, "crossed-end note cannot restart during snapshot reconciliation");
+    for (record.sample = 51; record.sample <= 70; ++record.sample) scheduler.nextSample(record);
+    require(record.count == 4 && record.events[2].on && record.events[2].pitch == 64
+        && record.events[2].sample == 60 && !record.events[3].on && record.events[3].sample == 70,
+        "unrelated future fractional events survive crossed-end cleanup");
+    scheduler.stop(record);
+    require(record.count == 4, "snapshot cannot strand a held pitch until loop wrap");
+}
+
+static void subSampleGateTests() {
+    PianoRollPattern pattern;
+    pattern.setLoopSteps(1);
+    pattern.add(60, 0, PianoRollPattern::timeQuantum);
+    pattern.add(61, PianoRollPattern::fromTicks(1), PianoRollPattern::timeQuantum);
+    pattern.add(62, PianoRollPattern::fromTicks(2), PianoRollPattern::fromTicks(2));
+    pattern.add(63, PianoRollPattern::fromTicks(3), PianoRollPattern::fromTicks(3));
+    pattern.add(64, PianoRollPattern::fromTicks(239), PianoRollPattern::timeQuantum);
+    PianoRollMailbox mailbox;
+    mailbox.publish(pattern);
+    PianoRollScheduler scheduler;
+    Recorder record;
+    scheduler.beginBlock(mailbox, true, 800, 120, record); // One tick is less than one sample here.
+    for (record.sample = 0; record.sample < 105; ++record.sample) scheduler.nextSample(record);
+    require(record.count == 12, "two low-rate cycles contain only gates covering rendered samples");
+    for (std::size_t i = 0; i < record.count; ++i)
+        require(record.events[i].pitch != 61 && record.events[i].pitch != 64,
+            "gates falling wholly between samples are silent and never left held");
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        const auto first = static_cast<std::size_t>(cycle * 6);
+        require(record.events[first].on && record.events[first].pitch == 60 && record.events[first].sample == cycle * 100
+            && !record.events[first + 1].on && record.events[first + 1].sample == cycle * 100 + 1
+            && record.events[first + 2].on && record.events[first + 2].pitch == 62 && record.events[first + 2].sample == cycle * 100 + 1
+            && !record.events[first + 3].on && record.events[first + 3].sample == cycle * 100 + 2
+            && record.events[first + 4].on && record.events[first + 4].pitch == 63 && record.events[first + 4].sample == cycle * 100 + 2
+            && !record.events[first + 5].on && record.events[first + 5].sample == cycle * 100 + 3,
+            "different tick times rounded to same sample release before starting notes");
+    }
+    const auto beforeStop = record.count;
+    scheduler.stop(record);
+    require(record.count == beforeStop, "subsample and loop-end gates do not leave stuck voices");
 }
 
 static void overlapAndLoopTests() {
@@ -294,7 +496,8 @@ static void editingAndAllocationTests() {
     require(synth.activeVoices() == 1, "clip stop leaves computer keyboard note held");
     for (int iteration = 0; iteration < 100; ++iteration) {
         pattern.clear();
-        for (int n = 0; n < 16; ++n) pattern.add(n + 48, n % 4, 2);
+        for (int n = 0; n < 16; ++n) pattern.add(n + 48, n % 4 + (n % 3) * PianoRollPattern::timeQuantum,
+                0.5 + (n % 5) * PianoRollPattern::timeQuantum);
         mailbox.publish(pattern);
         scheduler.beginBlock(mailbox, true, 48000, 137, send);
         for (int sample = 0; sample < 1000; ++sample) {
@@ -308,10 +511,15 @@ static void editingAndAllocationTests() {
 
 int main() {
     modelTests();
+    fractionalModelTests();
     mailboxTests();
     timingTests();
+    fractionalTimingTests();
+    fractionalSnapshotTests();
+    snapshotCrossedEndTests();
+    subSampleGateTests();
     overlapAndLoopTests();
     overlapEditAndRestartTests();
     editingAndAllocationTests();
-    std::cout << "Piano-roll edits, mailbox concurrency, timing, overlap, transport and allocation passed\n";
+    std::cout << "Piano-roll ticks, fractional timing/edits, mailbox concurrency, overlap, transport and allocation passed\n";
 }
