@@ -4,7 +4,7 @@
 
 Alien Studio is an **independent, original application**, not affiliated with or endorsed by any of those products. We aim to learn from broadly useful workflows without copying proprietary code, artwork, branding, or protected assets.
 
-> **Project status:** Early prototype. The current code implements a basic 16-step tone sequencer with play/stop and tempo controls. Professional DAW features below are **planned**, not yet implemented. Windows CI compilation is being validated; a successful build and runtime behavior have not yet been confirmed.
+> **Project status:** Early prototype. The current code implements a 16-step synthesizer sequencer with play/stop and tempo controls, a 16-voice synth, an on-screen keyboard, and lead/bass/pluck presets. Professional DAW features below are **planned**, not yet implemented. Windows CI compilation is being validated; a successful build and runtime behavior have not yet been confirmed.
 
 ## Product vision: three connected workspaces
 
@@ -78,3 +78,47 @@ Our goal is a fully usable, no-subscription DAW with no feature paywalls. Before
 - **Creative continuity:** patterns, clips, tracks, and timeline all share one project model.
 - **Accessible workflow:** efficient keyboard shortcuts, MIDI controllers, and clear UI.
 - **Honest milestones:** distinguish working code, passing builds, tested features, and future plans.
+
+## Synthesizer prototype (Issue #3)
+
+Select **Lead (saw)**, **Bass (square)**, or **Pluck (sine)**, then click the
+on-screen keyboard. Vertical position controls velocity; JUCE's computer-keyboard
+mapping also works when the keyboard has focus. Multiple held keys sound together.
+The original 16 pads still sequence A3 at sixteenth-note intervals, with half-step
+note gates. Stop silences voices and resets the sequence to step 1. The keyboard
+can be played while the transport is stopped. Device restarts clear synth voices.
+External MIDI device selection/input is a separate roadmap task.
+
+The audio-thread-owned DSP has 16 fixed voices, linear ADSR envelopes, velocity
+gain, PolyBLEP saw/square oscillators, sine oscillators, and a one-pole low-pass
+filter per voice. Presets affect new notes; held notes retain their patch.
+Allocation uses idle voices first, then the oldest released voice, then the oldest
+held voice. Repeated note-ons may overlap; note-off releases all matching notes
+from that source. Sequencer and keyboard notes have independent ownership.
+Stealing resets the selected voice immediately; listening tests should assess
+clicks under sustained overload. Fixed 1/16 output scaling provides chord headroom.
+
+GUI notes cross a bounded single-producer/single-consumer queue. Queue overflow
+requests all-sound-off, preventing a dropped note-off from leaving stuck voices.
+DSP and audio callbacks contain no heap allocation, locks, logging, or blocking I/O.
+
+After building, run automated tests in either Windows configuration:
+
+```powershell
+ctest --test-dir build -C Debug --output-on-failure --no-tests=error
+ctest --test-dir build -C Release --output-on-failure --no-tests=error
+```
+
+Tests cover sample-counted ADSR boundaries and early release, note lifecycle,
+repeated notes, velocity gain, all presets, pitch at multiple sample rates,
+voice stealing, source isolation, panic/device reset, fractional step timing,
+queue overflow/wraparound, finite bounded rendering, and DSP heap allocation.
+Windows CI runs tests in both configurations.
+
+Hands-on testing still required on Windows 11: listen to all three presets,
+play chords beyond 16 notes, test short/long key presses and rapid retriggers,
+change presets during held notes, stop/restart transport, change/restart the
+audio device, and confirm silence without stuck notes or objectionable artifacts.
+Physical MIDI input testing will be required when device input is implemented.
+Compilation, synthetic DSP tests, and a GUI smoke test do not verify audible
+output, hardware MIDI, or real-time performance on Windows.
