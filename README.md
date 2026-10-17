@@ -234,3 +234,11 @@ no notes should play there. Tab back to a button and play a chord. While holding
 it, Tab or Alt-Tab away; notes/highlights must clear. Release the keys, return and
 play again. Repeat after closing/reopening the app, and check mouse notes,
 presets, transport and the 16-step sequencer.
+
+### Windows branding
+
+The corrected official icon lives in [`assets/branding`](assets/branding/README.md).
+Windows builds embed the supplied multi-resolution ICO directly, retaining all
+seven sizes and the complete padded artwork. See that directory's README for
+asset updates, Explorer/title-bar/taskbar checks at different Windows sizes, and
+icon-cache refresh instructions. No startup splash is introduced.

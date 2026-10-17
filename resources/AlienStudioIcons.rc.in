@@ -1,0 +1,4 @@
+// JUCE's native window class reads executable icon groups at indices 0 and 1.
+// Embed the approved ICO directly: JUCE's icon generator would discard sizes.
+1 ICON DISCARDABLE "@ALIEN_STUDIO_WINDOWS_ICON@"
+2 ICON DISCARDABLE "@ALIEN_STUDIO_WINDOWS_ICON@"
