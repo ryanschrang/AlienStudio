@@ -2,7 +2,7 @@
 #include "SynthEngine.h"
 #include "NoteQueue.h"
 #include "StepClock.h"
-#include "TypingPiano.h"
+#include "TypingPianoRouter.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -69,56 +69,10 @@ private:
     bool wasPlaying{};
 };
 
-// Typing is deliberately scoped to piano focus so editors and shortcuts keep their keys.
-class PianoComponent : public juce::MidiKeyboardComponent {
-public:
-    explicit PianoComponent(juce::MidiKeyboardState& s)
-        : MidiKeyboardComponent(s, horizontalKeyboard), state(s) { clearKeyMappings(); }
-    TypingPiano typing;
-    std::function<void()> octaveChanged;
-    void releaseTyping() { typing.releaseAll([this](int n, bool on) { send(n, on); }); }
-    bool keyPressed(const juce::KeyPress& key) override {
-        if (key.getModifiers().isCommandDown() || key.getModifiers().isCtrlDown()
-            || key.getModifiers().isAltDown() || key.getModifiers().isShiftDown()) return false;
-        if (key.getKeyCode() == 'Z' || key.getKeyCode() == 'X') return true;
-        return typing.press(key.getKeyCode(), [this](int n, bool on) { send(n, on); });
-    }
-    bool keyStateChanged(bool down) override {
-        typing.releaseMissing([](int k) { return juce::KeyPress::isKeyCurrentlyDown(k); },
-                              [this](int n, bool on) { send(n, on); });
-        const auto mods = juce::ModifierKeys::getCurrentModifiersRealtime();
-        const bool allowed = !mods.isAnyModifierKeyDown();
-        for (int i = 0; i < 2; ++i) {
-            const bool now = juce::KeyPress::isKeyCurrentlyDown(i == 0 ? 'Z' : 'X');
-            if (now && !octaveHeld[i] && allowed) {
-                typing.shift(i == 0 ? -1 : 1);
-                if (octaveChanged) octaveChanged();
-            }
-            octaveHeld[i] = now;
-        }
-        bool used = false;
-        if (down && allowed)
-            for (int k : TypingPiano::keys)
-                if (juce::KeyPress::isKeyCurrentlyDown(k))
-                    used |= typing.press(k, [this](int n, bool on) { send(n, on); });
-        return used;
-    }
-    void focusLost(FocusChangeType cause) override {
-        releaseTyping();
-        octaveHeld.fill(false);
-        MidiKeyboardComponent::focusLost(cause);
-    }
-private:
-    void send(int n, bool on) { if (on) state.noteOn(2, n, .8f); else state.noteOff(2, n, 0); }
-    juce::MidiKeyboardState& state;
-    std::array<bool, 2> octaveHeld{};
-};
-
 class MainComponent : public juce::Component, private juce::Timer, private juce::MidiKeyboardState::Listener {
 public:
     MainComponent() {
         setSize(960, 550);
-        addMouseListener(this, true);
         addAndMakeVisible(title);
         title.setText("ALIEN STUDIO  |  Step Sequencer Prototype", juce::dontSendNotification);
         title.setJustificationType(juce::Justification::centred);
@@ -145,16 +99,17 @@ public:
         preset.setSelectedId(1);
         preset.onChange = [this] { releaseNotes(); engine.preset.store(preset.getSelectedId() - 1); };
         addAndMakeVisible(keyboard);
+        keyboard.clearKeyMappings();
         keyboard.setAvailableRange(12, 119);
         keyboard.setOctaveForMiddleC(4);
         keyboard.setLowestVisibleKey(48);
-        keyboard.octaveChanged = [this] { updateOctave(); };
+        typingInput.octaveChanged = [this] { updateOctave(); };
         for (auto* b : {&octaveDown, &octaveUp}) {
-            addAndMakeVisible(b); b->setWantsKeyboardFocus(false);
+            addAndMakeVisible(b);
         }
         octaveDown.setButtonText("Octave -"); octaveUp.setButtonText("Octave +");
-        octaveDown.onClick = [this] { keyboard.typing.shift(-1); updateOctave(); };
-        octaveUp.onClick = [this] { keyboard.typing.shift(1); updateOctave(); };
+        octaveDown.onClick = [this] { typingInput.typing.shift(-1); updateOctave(); };
+        octaveUp.onClick = [this] { typingInput.typing.shift(1); updateOctave(); };
         addAndMakeVisible(help);
         updateOctave();
         keyboard.setVelocity(0.8f, true);
@@ -189,24 +144,16 @@ public:
         g.drawText("BPM: " + juce::String(engine.bpm.load()) + "   |   Active step: " +
             juce::String(engine.currentStep.load() + 1), 470, 95, 440, 40, juce::Justification::centredLeft);
     }
-    void mouseDown(const juce::MouseEvent& event) override {
-        if (event.originalComponent != &keyboard && !keyboard.isParentOf(event.originalComponent)
-            && event.originalComponent != &octaveDown && event.originalComponent != &octaveUp) {
-            keyboard.releaseTyping();
-            if (keyboard.hasKeyboardFocus(false)) keyboard.giveAwayKeyboardFocus();
-        }
-    }
     void releaseNotes() {
-        keyboard.releaseTyping();
+        typingInput.release();
         keyboardState.allNotesOff(0);
         engine.notes.panic.store(true);
     }
 private:
     void updateOctave() {
-        help.setText("Click piano to play: A W S E D F T G Y H U J | Z/X octave | C"
-                     + juce::String(keyboard.typing.octave()), juce::dontSendNotification);
-        keyboard.setLowestVisibleKey(12 * (keyboard.typing.octave() + 1));
-        if (keyboard.isShowing()) keyboard.grabKeyboardFocus();
+        help.setText("Play notes (outside text fields): A W S E D F T G Y H U J | Z/X octave | C"
+                     + juce::String(typingInput.typing.octave()), juce::dontSendNotification);
+        keyboard.setLowestVisibleKey(12 * (typingInput.typing.octave() + 1));
     }
     void timerCallback() override { repaint(); }
     void handleNoteOn(juce::MidiKeyboardState*, int, int note, float velocity) override {
@@ -219,7 +166,7 @@ private:
     ToneEngine engine;
     juce::AudioDeviceManager audio;
     juce::MidiKeyboardState keyboardState;
-    PianoComponent keyboard{keyboardState};
+    juce::MidiKeyboardComponent keyboard{keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard};
     juce::TextButton octaveDown, octaveUp;
     juce::Label help;
     juce::ComboBox preset;
@@ -227,6 +174,7 @@ private:
     juce::TextButton play;
     juce::Slider tempo{juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight};
     juce::OwnedArray<juce::ToggleButton> pads;
+    TypingPianoRouter typingInput{*this, keyboardState};
 };
 
 class AlienStudioApp : public juce::JUCEApplication {
