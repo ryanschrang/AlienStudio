@@ -213,7 +213,7 @@ public:
         g.drawRect(a.grid);
         g.setFont(juce::FontOptions(11.0f));
         g.setColour(juce::Colour(0xffc0d7db));
-        juce::String status = juce::String(pattern.loopSteps / 16.0, 0) + "-bar loop  |  "
+        juce::String status = juce::String(pattern.loopSteps / 16.0, 0) + "-bar loop (session only)  |  "
             + noteName(lowestVisiblePitch) + " - " + noteName(topPitch()) + "  |  "
             + juce::String(static_cast<int>(pattern.count)) + "/128 notes";
         if (const auto* note = pattern.find(selected))
