@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <functional>
 
 class ToneEngine : public juce::AudioIODeviceCallback {
 public:
@@ -145,6 +146,7 @@ public:
         preset.onChange = [this] { releaseNotes(); engine.preset.store(preset.getSelectedId() - 1); };
         addAndMakeVisible(keyboard);
         keyboard.setAvailableRange(12, 119);
+        keyboard.setOctaveForMiddleC(4);
         keyboard.setLowestVisibleKey(48);
         keyboard.octaveChanged = [this] { updateOctave(); };
         for (auto* b : {&octaveDown, &octaveUp}) {
@@ -187,7 +189,6 @@ public:
         g.drawText("BPM: " + juce::String(engine.bpm.load()) + "   |   Active step: " +
             juce::String(engine.currentStep.load() + 1), 470, 95, 440, 40, juce::Justification::centredLeft);
     }
-public:
     void mouseDown(const juce::MouseEvent& event) override {
         if (event.originalComponent != &keyboard && !keyboard.isParentOf(event.originalComponent)
             && event.originalComponent != &octaveDown && event.originalComponent != &octaveUp) {
