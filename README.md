@@ -4,7 +4,7 @@
 
 Alien Studio is an **independent, original application**, not affiliated with or endorsed by any of those products. We aim to learn from broadly useful workflows without copying proprietary code, artwork, branding, or protected assets.
 
-> **Project status:** Early prototype. The current code implements a basic 16-step tone sequencer with play/stop and tempo controls. Professional DAW features below are **planned**, not yet implemented. Windows CI compilation is being validated; a successful build and runtime behavior have not yet been confirmed.
+> **Project status:** Early prototype. The current code implements a 16-step sequencer and a 16-voice synthesizer with saw/sine/square oscillators, velocity, ADSR, voice stealing and Lead/Bass/Pluck presets. Hold the on-screen notes or chord to audition. Professional DAW features below remain **planned**. Automated builds/tests and hands-on audio validation are tracked separately; see [synth testing](docs/SYNTH_TESTING.md).
 
 ## Product vision: three connected workspaces
 
@@ -66,6 +66,8 @@ cmake --build build --config Release
 ```
 
 CMake fetches JUCE during configuration, so internet access is needed on the first configure. Windows build runs and downloadable artifacts, when available, are tracked in [GitHub Actions](https://github.com/ryanschrang/AlienStudio/actions). **A green CI build is not the same as completed hands-on audio testing.**
+
+Run automated synth and sequencer tests with `ctest --test-dir build -C Release --output-on-failure`. The Windows CI matrix runs both Debug and Release. For tests without JUCE, configure with `-DALIEN_BUILD_APP=OFF`. See [synth architecture and test instructions](docs/SYNTH_TESTING.md) for real-time ownership, MIDI scope and required manual checks.
 
 ## Free and open-source commitment
 

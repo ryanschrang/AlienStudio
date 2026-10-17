@@ -20,4 +20,10 @@ jobs:
       - name: Build
         run: cmake --build build --config ${{ matrix.config }} --parallel 2
       - name: Test
-        run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
+        run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure --no-tests=error
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: AlienStudio-${{ matrix.config }}
+          path: build/AlienStudio_artefacts/${{ matrix.config }}/*.exe
+          if-no-files-found: error
