@@ -11,6 +11,17 @@ target_compile_definitions(AlienStudio PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=
 target_link_libraries(AlienStudio PRIVATE juce::juce_audio_utils juce::juce_gui_extra)
 juce_generate_juce_header(AlienStudio)
 
+if(WIN32)
+    enable_language(RC)
+    set(ALIEN_STUDIO_WINDOWS_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/branding/AlienStudio_Icon_Corrected.ico")
+    configure_file(resources/AlienStudioIcons.rc.in
+        "${CMAKE_CURRENT_BINARY_DIR}/AlienStudioIcons.rc" @ONLY)
+    # Keep JUCE's generated VERSIONINFO, and compile the supplied ICO unchanged.
+    target_sources(AlienStudio PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/AlienStudioIcons.rc")
+    set_property(SOURCE "${CMAKE_CURRENT_BINARY_DIR}/AlienStudioIcons.rc" APPEND
+        PROPERTY OBJECT_DEPENDS "${ALIEN_STUDIO_WINDOWS_ICON}")
+endif()
+
 include(CTest)
 if(BUILD_TESTING)
     add_executable(SynthEngineTests tests/SynthEngineTests.cpp)
@@ -31,4 +42,16 @@ if(BUILD_TESTING)
     target_link_libraries(TypingPianoFocusTests PRIVATE juce::juce_gui_basics juce::juce_audio_basics)
     add_test(NAME TypingPianoFocusTests COMMAND TypingPianoFocusTests)
     set_tests_properties(TypingPianoFocusTests PROPERTIES TIMEOUT 30)
+endif()
+
+if(BUILD_TESTING)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    set(ALIEN_STUDIO_BRANDING_TEST_ARGS
+        --assets "${CMAKE_CURRENT_SOURCE_DIR}/assets/branding")
+    if(WIN32)
+        list(APPEND ALIEN_STUDIO_BRANDING_TEST_ARGS --exe "$<TARGET_FILE:AlienStudio>")
+    endif()
+    add_test(NAME BrandingAssets
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_branding.py"
+            ${ALIEN_STUDIO_BRANDING_TEST_ARGS})
 endif()
