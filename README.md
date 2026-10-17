@@ -122,3 +122,33 @@ audio device, and confirm silence without stuck notes or objectionable artifacts
 Physical MIDI input testing will be required when device input is implemented.
 Compilation, synthetic DSP tests, and a GUI smoke test do not verify audible
 output, hardware MIDI, or real-time performance on Windows.
+
+### Computer keyboard piano
+
+Click the on-screen piano to focus typing input. Play chromatic notes with
+**A W S E D F T G Y H U J** (C through B); hold several keys for chords.
+**Z / X** or the Octave − / + buttons change the starting octave (C0–C8,
+initially C4). The help line shows the current octave. Held notes retain their
+original pitch when switching octaves, and the piano highlights held pitches.
+Mouse and typing can hold the same pitch independently.
+
+Typing input only works while the piano has focus, with no modifiers, so tempo
+text entry, preset selection and application shortcuts retain their keys.
+Focus loss, window deactivation, preset changes and Play / Stop release notes.
+
+Manual test plan (Windows Release artifact from the PR's Windows C++ CI run):
+
+1. Click piano, hold A/D/G for a chord, release individually; check highlights
+   and sound stop. Hold A through OS key repeat; it should not retrigger.
+2. Hold A, press X, then release A: the original C must stop. Press A again
+   for the higher C. Check Z/X and octave buttons at both octave limits.
+3. Hold a chord and Alt-Tab, click tempo/preset, change preset, or stop transport;
+   check no lingering highlights or sound. Return and play again.
+4. Type in the tempo field and use modified shortcuts; no piano notes should play.
+5. Test mouse press/drag/release, then hold a mouse note and the matching typing
+   note: releasing either source must leave the other held until its release.
+6. Check all three presets and the 16-step sequencer still play correctly.
+
+Automated mapping/lifecycle/polyphony tests run with `ctest --test-dir build
+-C Debug --output-on-failure` (or `-C Release`). GUI and audio-device behavior
+still require the manual checks above on Windows hardware.
