@@ -82,8 +82,8 @@ Our goal is a fully usable, no-subscription DAW with no feature paywalls. Before
 ## Synthesizer prototype (Issue #3)
 
 Select **Lead (saw)**, **Bass (square)**, or **Pluck (sine)**, then click the
-on-screen keyboard. Vertical position controls velocity; JUCE's computer-keyboard
-mapping also works when the keyboard has focus. Multiple held keys sound together.
+on-screen keyboard. Vertical position controls velocity; computer-keyboard
+notes also work outside text fields and preset selectors. Multiple held keys sound together.
 The original 16 pads still sequence A3 at sixteenth-note intervals, with half-step
 note gates. Stop silences voices and resets the sequence to step 1. The keyboard
 can be played while the transport is stopped. Device restarts clear synth voices.
@@ -125,15 +125,18 @@ output, hardware MIDI, or real-time performance on Windows.
 
 ### Computer keyboard piano
 
-Click the on-screen piano to focus typing input. Play chromatic notes with
+Play chromatic notes while the piano or an ordinary control has focus with
 **A W S E D F T G Y H U J** (C through B); hold several keys for chords.
 **Z / X** or the Octave − / + buttons change the starting octave (C0–C8,
 initially C4). The help line shows the current octave. Held notes retain their
 original pitch when switching octaves, and the piano highlights held pitches.
 Mouse and typing can hold the same pitch independently.
 
-Typing input only works while the piano has focus, with no modifiers, so tempo
-text entry, preset selection and application shortcuts retain their keys.
+Typing input follows focus within the window, with no modifiers. Tab and
+Shift-Tab navigate normally, including the octave buttons; moving to an ordinary
+button does not disable notes. Tempo text entry, preset combo boxes, popup menus
+and application shortcuts retain their keys. Returning from an editor to an
+ordinary control restores note input without clicking an octave button.
 Focus loss, window deactivation, preset changes and Play / Stop release notes.
 
 Manual test plan (Windows Release artifact from the PR's Windows C++ CI run):
@@ -152,3 +155,34 @@ Manual test plan (Windows Release artifact from the PR's Windows C++ CI run):
 Automated mapping/lifecycle/polyphony tests run with `ctest --test-dir build
 -C Debug --output-on-failure` (or `-C Release`). GUI and audio-device behavior
 still require the manual checks above on Windows hardware.
+
+
+### Keyboard focus regression checks (Issue #10)
+
+PR #7 handled typing only in the piano component. Tab moved key events to other
+controls, while octave updates called `grabKeyboardFocus()` and appeared to repair
+input. The fix follows window focus with one listener and removes that focus
+side effect. Held keys are released on focus changes; keys held through a focus
+change or panic must be lifted before they can play again. There is no persistent
+keyboard enable/disable setting, and the listener follows the native window hierarchy and is removed on destruction.
+
+`TypingPianoFocusTests` uses real JUCE components, focus traversal and peer event
+dispatch with simulated physical key state. It checks Tab/Shift-Tab, notes from
+ordinary controls, octave-button activation without focus stealing, octave repeat
+suppression, native-window focus/letter-code casing, reparenting,
+editor/combo/shortcut exclusion, chords,
+blur release and listener
+teardown/recreation. On Linux, run the GUI test with a display and window manager (or initialize
+the usual WM atoms in a bare Xvfb session), then run
+`ctest --test-dir build --output-on-failure`. Windows CI runs all tests
+in both Debug and Release. These are event/focus simulation tests, not native
+Windows key injection or an audible hardware playback test.
+
+Manual Windows check: play A/S/D/F, Tab to a button, then play again. Repeat using
+Shift-Tab; both directions must move focus and notes must still work on ordinary
+controls. Tab to Octave Up and activate it with Enter: focus stays on the button,
+and the next A uses the new octave. Type in the tempo field and preset selector:
+no notes should play there. Tab back to a button and play a chord. While holding
+it, Tab or Alt-Tab away; notes/highlights must clear. Release the keys, return and
+play again. Repeat after closing/reopening the app, and check mouse notes,
+presets, transport and the 16-step sequencer.
