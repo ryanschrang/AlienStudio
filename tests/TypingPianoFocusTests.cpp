@@ -14,7 +14,7 @@ struct Counter : juce::MidiKeyboardState::Listener {
 };
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
-    juce::Component root, piano, outside;
+    juce::Component shell, root, piano, outside;
     juce::TextButton play{"Play"}, octaveUp{"Octave Up"};
     juce::TextEditor editor;
     juce::ComboBox presets;
@@ -30,9 +30,13 @@ int main() {
         c->setWantsKeyboardFocus(true);
         c->setExplicitFocusOrder(index++);
     }
-    root.addToDesktop(0);
-    root.setVisible(true);
-    root.getPeer()->handleFocusGain();
+    shell.setBounds(0, 0, 600, 300);
+    shell.setWantsKeyboardFocus(true);
+    shell.setFocusContainerType(juce::Component::FocusContainerType::keyboardFocusContainer);
+    shell.addAndMakeVisible(root);
+    shell.addToDesktop(0);
+    shell.setVisible(true);
+    shell.getPeer()->handleFocusGain();
     juce::MidiKeyboardState state;
     Counter count;
     state.addListener(&count);
@@ -49,15 +53,19 @@ int main() {
     {
         TypingPianoRouter router(root, state, [&](int k) { return held.count(k) != 0; });
         octaveUp.onClick = [&] { router.typing.shift(1); };
+        focus(shell);
+        press('A'); require(state.isNoteOn(2, 60), "notes with native window itself focused"); lift('A');
+        shell.setWantsKeyboardFocus(false); // like a DocumentWindow, only content joins Tab order
+        const int initialOns = count.ons;
         focus(piano);
         press('A'); press('A');
         root.getPeer()->handleKeyPress(juce::KeyPress('A')); // upper-case peer codes too
         pump();
-        require(state.isNoteOn(2, 60) && count.ons == 1, "initial note/repeat suppression");
+        require(state.isNoteOn(2, 60) && count.ons == initialOns + 1, "initial note/repeat suppression");
         root.getPeer()->handleKeyPress(juce::KeyPress(juce::KeyPress::tabKey)); pump();
         require(play.hasKeyboardFocus(false), "Tab must traverse, not be swallowed");
         require(!state.isNoteOn(2, 60), "Tab must release old held notes");
-        press('A'); require(count.ons == 1, "held key repeat after focus change must not restart"); lift('A');
+        press('A'); require(count.ons == initialOns + 1, "held key repeat after focus change must not restart"); lift('A');
         press('A'); require(state.isNoteOn(2, 60), "piano input must recover on ordinary control after Tab"); lift('A');
         root.getPeer()->handleKeyPress(juce::KeyPress(juce::KeyPress::tabKey, juce::ModifierKeys::shiftModifier, 0)); pump();
         require(piano.hasKeyboardFocus(false), "Shift-Tab must traverse backwards");
@@ -87,11 +95,14 @@ int main() {
     // Destroy/recreate must detach the old listener, not duplicate deliveries.
     {
         TypingPianoRouter router(root, state, [&](int k) { return held.count(k) != 0; });
+        shell.removeChildComponent(&root);
+        shell.addAndMakeVisible(root); // production content attachment/reparenting path
+        pump();
         focus(play); const int before = count.ons;
         press('A'); require(count.ons == before + 1, "listener lifecycle duplicates handlers"); lift('A');
     }
     state.removeListener(&count);
-    root.removeFromDesktop();
+    shell.removeFromDesktop();
     outside.removeFromDesktop();
     std::cout << "PASS: Tab routing, editor exclusion, octave recovery, release and listener lifecycle\n";
 }

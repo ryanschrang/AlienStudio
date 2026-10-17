@@ -6,19 +6,21 @@
 
 // One window-scoped message-thread listener routes unhandled keys. Editable controls
 // keep their typing keys; Tab/Shift-Tab and other navigation are never consumed.
-class TypingPianoRouter final : private juce::KeyListener, private juce::FocusChangeListener {
+class TypingPianoRouter final : private juce::KeyListener, private juce::FocusChangeListener, private juce::ComponentListener {
 public:
     using KeyDown = std::function<bool(int)>;
     TypingPianoRouter(juce::Component& owner, juce::MidiKeyboardState& notes,
                       KeyDown keyDown = juce::KeyPress::isKeyCurrentlyDown)
         : root(owner), state(notes), isDown(std::move(keyDown)) {
-        root.addKeyListener(this);
+        root.addComponentListener(this);
+        attachToWindow();
         juce::Desktop::getInstance().addFocusChangeListener(this);
         globalFocusChanged(juce::Component::getCurrentlyFocusedComponent());
     }
     ~TypingPianoRouter() override {
         juce::Desktop::getInstance().removeFocusChangeListener(this);
-        root.removeKeyListener(this);
+        root.removeComponentListener(this);
+        if (eventSource != nullptr) eventSource->removeKeyListener(this);
         release();
     }
     TypingPiano typing;
@@ -30,8 +32,16 @@ public:
     }
 private:
     static constexpr std::array<int, 14> watched{'A','W','S','E','D','F','T','G','Y','H','U','J','Z','X'};
+    void attachToWindow() {
+        auto* window = root.getTopLevelComponent();
+        if (window == eventSource.getComponent()) return;
+        if (eventSource != nullptr) eventSource->removeKeyListener(this);
+        eventSource = window;
+        window->addKeyListener(this);
+    }
+    void componentParentHierarchyChanged(juce::Component&) override { attachToWindow(); }
     bool accepts(juce::Component* c) const {
-        if (c == nullptr || !(c == &root || root.isParentOf(c))
+        if (c == nullptr || !(c == &root || c == root.getTopLevelComponent() || root.isParentOf(c))
             || c->isCurrentlyBlockedByAnotherModalComponent()) return false;
         for (auto* p = c; p != nullptr; p = p->getParentComponent())
             if (dynamic_cast<juce::TextEditor*>(p) != nullptr
@@ -45,9 +55,9 @@ private:
         target = current;
     }
     void globalFocusChanged(juce::Component*) override { refreshFocus(); }
-    bool keyPressed(const juce::KeyPress& key, juce::Component*) override {
+    bool keyPressed(const juce::KeyPress& key, juce::Component* origin) override {
         refreshFocus();
-        if (!accepts(target.getComponent()) || key.getModifiers().isAnyModifierKeyDown()) return false;
+        if (!accepts(target != nullptr ? target.getComponent() : origin) || key.getModifiers().isAnyModifierKeyDown()) return false;
         const int code = key.getKeyCode();
         // Native peers may report unmodified letters as lower-case key codes.
         const int k = code >= 'a' && code <= 'z' ? code - 'a' + 'A' : code;
@@ -78,6 +88,6 @@ private:
     juce::Component& root;
     juce::MidiKeyboardState& state;
     KeyDown isDown;
-    juce::Component::SafePointer<juce::Component> target;
+    juce::Component::SafePointer<juce::Component> target, eventSource;
     std::array<bool, watched.size()> blocked{};
 };

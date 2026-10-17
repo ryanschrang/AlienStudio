@@ -164,12 +164,13 @@ controls, while octave updates called `grabKeyboardFocus()` and appeared to repa
 input. The fix follows window focus with one listener and removes that focus
 side effect. Held keys are released on focus changes; keys held through a focus
 change or panic must be lifted before they can play again. There is no persistent
-keyboard enable/disable setting, and the listener is removed on destruction.
+keyboard enable/disable setting, and the listener follows the native window hierarchy and is removed on destruction.
 
 `TypingPianoFocusTests` uses real JUCE components, focus traversal and peer event
 dispatch with simulated physical key state. It checks Tab/Shift-Tab, notes from
 ordinary controls, octave-button activation without focus stealing, octave repeat
-suppression, native letter-code casing, editor/combo/shortcut exclusion, chords,
+suppression, native-window focus/letter-code casing, reparenting,
+editor/combo/shortcut exclusion, chords,
 blur release and listener
 teardown/recreation. On Linux, run the GUI test with a display and window manager (or initialize
 the usual WM atoms in a bare Xvfb session), then run
@@ -179,7 +180,7 @@ Windows key injection or an audible hardware playback test.
 
 Manual Windows check: play A/S/D/F, Tab to a button, then play again. Repeat using
 Shift-Tab; both directions must move focus and notes must still work on ordinary
-controls. Tab to Octave Up and activate it with Space: focus stays on the button,
+controls. Tab to Octave Up and activate it with Enter: focus stays on the button,
 and the next A uses the new octave. Type in the tempo field and preset selector:
 no notes should play there. Tab back to a button and play a chord. While holding
 it, Tab or Alt-Tab away; notes/highlights must clear. Release the keys, return and
