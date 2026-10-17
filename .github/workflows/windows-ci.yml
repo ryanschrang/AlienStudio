@@ -21,3 +21,10 @@ jobs:
         run: cmake --build build --config ${{ matrix.config }} --parallel 2
       - name: Test
         run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure --no-tests=error
+      - name: Upload Windows Release
+        if: matrix.config == 'Release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: AlienStudio-Windows-Release
+          path: build/AlienStudio_artefacts/Release/*.exe
+          if-no-files-found: error

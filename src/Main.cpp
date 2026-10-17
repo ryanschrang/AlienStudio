@@ -2,6 +2,7 @@
 #include "SynthEngine.h"
 #include "NoteQueue.h"
 #include "StepClock.h"
+#include "TypingPiano.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -67,16 +68,62 @@ private:
     bool wasPlaying{};
 };
 
+// Typing is deliberately scoped to piano focus so editors and shortcuts keep their keys.
+class PianoComponent : public juce::MidiKeyboardComponent {
+public:
+    explicit PianoComponent(juce::MidiKeyboardState& s)
+        : MidiKeyboardComponent(s, horizontalKeyboard), state(s) { clearKeyMappings(); }
+    TypingPiano typing;
+    std::function<void()> octaveChanged;
+    void releaseTyping() { typing.releaseAll([this](int n, bool on) { send(n, on); }); }
+    bool keyPressed(const juce::KeyPress& key) override {
+        if (key.getModifiers().isCommandDown() || key.getModifiers().isCtrlDown()
+            || key.getModifiers().isAltDown() || key.getModifiers().isShiftDown()) return false;
+        if (key.getKeyCode() == 'Z' || key.getKeyCode() == 'X') return true;
+        return typing.press(key.getKeyCode(), [this](int n, bool on) { send(n, on); });
+    }
+    bool keyStateChanged(bool down) override {
+        typing.releaseMissing([](int k) { return juce::KeyPress::isKeyCurrentlyDown(k); },
+                              [this](int n, bool on) { send(n, on); });
+        const auto mods = juce::ModifierKeys::getCurrentModifiersRealtime();
+        const bool allowed = !mods.isAnyModifierKeyDown();
+        for (int i = 0; i < 2; ++i) {
+            const bool now = juce::KeyPress::isKeyCurrentlyDown(i == 0 ? 'Z' : 'X');
+            if (now && !octaveHeld[i] && allowed) {
+                typing.shift(i == 0 ? -1 : 1);
+                if (octaveChanged) octaveChanged();
+            }
+            octaveHeld[i] = now;
+        }
+        bool used = false;
+        if (down && allowed)
+            for (int k : TypingPiano::keys)
+                if (juce::KeyPress::isKeyCurrentlyDown(k))
+                    used |= typing.press(k, [this](int n, bool on) { send(n, on); });
+        return used;
+    }
+    void focusLost(FocusChangeType cause) override {
+        releaseTyping();
+        octaveHeld.fill(false);
+        MidiKeyboardComponent::focusLost(cause);
+    }
+private:
+    void send(int n, bool on) { if (on) state.noteOn(2, n, .8f); else state.noteOff(2, n, 0); }
+    juce::MidiKeyboardState& state;
+    std::array<bool, 2> octaveHeld{};
+};
+
 class MainComponent : public juce::Component, private juce::Timer, private juce::MidiKeyboardState::Listener {
 public:
     MainComponent() {
-        setSize(960, 510);
+        setSize(960, 550);
+        addMouseListener(this, true);
         addAndMakeVisible(title);
         title.setText("ALIEN STUDIO  |  Step Sequencer Prototype", juce::dontSendNotification);
         title.setJustificationType(juce::Justification::centred);
         addAndMakeVisible(play);
         play.setButtonText("Play / Stop");
-        play.onClick = [this] { engine.playing.store(!engine.playing.load()); };
+        play.onClick = [this] { releaseNotes(); engine.playing.store(!engine.playing.load()); };
         addAndMakeVisible(tempo);
         tempo.setRange(60, 200, 1);
         tempo.setValue(120);
@@ -95,9 +142,19 @@ public:
         preset.addItem("Bass (square)", 2);
         preset.addItem("Pluck (sine)", 3);
         preset.setSelectedId(1);
-        preset.onChange = [this] { engine.preset.store(preset.getSelectedId() - 1); };
+        preset.onChange = [this] { releaseNotes(); engine.preset.store(preset.getSelectedId() - 1); };
         addAndMakeVisible(keyboard);
-        keyboard.setAvailableRange(48, 84);
+        keyboard.setAvailableRange(12, 119);
+        keyboard.setLowestVisibleKey(48);
+        keyboard.octaveChanged = [this] { updateOctave(); };
+        for (auto* b : {&octaveDown, &octaveUp}) {
+            addAndMakeVisible(b); b->setWantsKeyboardFocus(false);
+        }
+        octaveDown.setButtonText("Octave -"); octaveUp.setButtonText("Octave +");
+        octaveDown.onClick = [this] { keyboard.typing.shift(-1); updateOctave(); };
+        octaveUp.onClick = [this] { keyboard.typing.shift(1); updateOctave(); };
+        addAndMakeVisible(help);
+        updateOctave();
         keyboard.setVelocity(0.8f, true);
         keyboardState.addListener(this);
         audio.initialiseWithDefaultDevices(0, 2);
@@ -106,6 +163,7 @@ public:
     }
     ~MainComponent() override {
         stopTimer();
+        releaseNotes();
         keyboardState.removeListener(this);
         audio.removeAudioCallback(&engine);
         audio.closeAudioDevice();
@@ -115,7 +173,10 @@ public:
         play.setBounds(30, 95, 130, 38);
         tempo.setBounds(180, 95, 260, 38);
         preset.setBounds(30, 325, 240, 32);
-        keyboard.setBounds(30, 375, getWidth() - 60, 100);
+        octaveDown.setBounds(290, 325, 100, 32);
+        octaveUp.setBounds(400, 325, 100, 32);
+        help.setBounds(30, 363, getWidth() - 60, 40);
+        keyboard.setBounds(30, 410, getWidth() - 60, 100);
         const int width = (getWidth() - 60) / 8;
         for (int i = 0; i < pads.size(); ++i)
             pads[i]->setBounds(30 + (i % 8) * width, 175 + (i / 8) * 65, width - 6, 50);
@@ -126,18 +187,40 @@ public:
         g.drawText("BPM: " + juce::String(engine.bpm.load()) + "   |   Active step: " +
             juce::String(engine.currentStep.load() + 1), 470, 95, 440, 40, juce::Justification::centredLeft);
     }
+public:
+    void mouseDown(const juce::MouseEvent& event) override {
+        if (event.originalComponent != &keyboard && !keyboard.isParentOf(event.originalComponent)
+            && event.originalComponent != &octaveDown && event.originalComponent != &octaveUp) {
+            keyboard.releaseTyping();
+            if (keyboard.hasKeyboardFocus(false)) keyboard.giveAwayKeyboardFocus();
+        }
+    }
+    void releaseNotes() {
+        keyboard.releaseTyping();
+        keyboardState.allNotesOff(0);
+        engine.notes.panic.store(true);
+    }
 private:
+    void updateOctave() {
+        help.setText("Click piano to play: A W S E D F T G Y H U J | Z/X octave | C"
+                     + juce::String(keyboard.typing.octave()), juce::dontSendNotification);
+        keyboard.setLowestVisibleKey(12 * (keyboard.typing.octave() + 1));
+        if (keyboard.isShowing()) keyboard.grabKeyboardFocus();
+    }
     void timerCallback() override { repaint(); }
     void handleNoteOn(juce::MidiKeyboardState*, int, int note, float velocity) override {
-        engine.notes.push(note, velocity);
+        if (!(keyboardState.isNoteOn(1, note) && keyboardState.isNoteOn(2, note)))
+            engine.notes.push(note, velocity);
     }
     void handleNoteOff(juce::MidiKeyboardState*, int, int note, float) override {
-        engine.notes.push(note, 0);
+        if (!keyboardState.isNoteOnForChannels(3, note)) engine.notes.push(note, 0);
     }
     ToneEngine engine;
     juce::AudioDeviceManager audio;
     juce::MidiKeyboardState keyboardState;
-    juce::MidiKeyboardComponent keyboard{keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard};
+    PianoComponent keyboard{keyboardState};
+    juce::TextButton octaveDown, octaveUp;
+    juce::Label help;
     juce::ComboBox preset;
     juce::Label title;
     juce::TextButton play;
@@ -162,6 +245,10 @@ private:
             setContentOwned(new MainComponent(), true);
             centreWithSize(getWidth(), getHeight());
             setVisible(true);
+        }
+        void activeWindowStatusChanged() override {
+            if (!isActiveWindow())
+                if (auto* content = dynamic_cast<MainComponent*>(getContentComponent())) content->releaseNotes();
         }
         void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
     };
