@@ -1,4 +1,7 @@
 #include <JuceHeader.h>
+#include "SynthEngine.h"
+#include "NoteQueue.h"
+#include "StepClock.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -7,49 +10,67 @@ class ToneEngine : public juce::AudioIODeviceCallback {
 public:
     std::array<std::atomic<bool>, 16> steps{};
     std::atomic<bool> playing{false};
-    std::atomic<int> bpm{120};
-    std::atomic<int> currentStep{-1};
+    std::atomic<int> bpm{120}, currentStep{-1}, preset{0};
+    NoteQueue notes;
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
         sampleRate = device->getCurrentSampleRate();
-        phase = 0.0;
-        samplesToStep = 0.0;
-        step = 0;
+        synth.prepare(sampleRate);
+        discardPendingNotes();
+        resetTransport();
     }
-    void audioDeviceStopped() override {}
+    void audioDeviceStopped() override { synth.allSoundOff(); discardPendingNotes(); resetTransport(); }
     void audioDeviceIOCallbackWithContext(const float* const*, int,
         float* const* outputs, int channels, int samples,
         const juce::AudioIODeviceCallbackContext&) override {
-        for (int i = 0; i < samples; ++i) {
-            float value = 0.0f;
-            if (playing.load()) {
-                if (samplesToStep <= 0.0) {
-                    currentStep.store(step);
-                    envelope = steps[step].load() ? 0.28 : 0.0;
-                    step = (step + 1) % 16;
-                    samplesToStep += sampleRate * 60.0 / (juce::jmax(1, bpm.load()) * 4.0);
-                }
-                samplesToStep -= 1.0;
-                value = static_cast<float>(std::sin(phase) * envelope);
-                phase += juce::MathConstants<double>::twoPi * 220.0 / sampleRate;
-                if (phase >= juce::MathConstants<double>::twoPi) phase -= juce::MathConstants<double>::twoPi;
-                envelope *= 0.9995;
-            } else {
-                currentStep.store(-1);
+        juce::ScopedNoDenormals noDenormals;
+        const bool playNow = playing.load();
+        if (wasPlaying && !playNow) { synth.allSoundOff(); resetTransport(); }
+        wasPlaying = playNow;
+        synth.setPatch(alien::presets[static_cast<std::size_t>(juce::jlimit(0, 2, preset.load()))]);
+        NoteQueue::Event event{};
+        const bool panic = notes.panic.exchange(false);
+        // Bound work per callback even if the producer keeps publishing.
+        for (int n = 0; n < 256 && notes.pop(event); ++n) {
+            if (!panic) {
+                if (event.velocity > 0) synth.noteOn(event.note, event.velocity);
+                else synth.noteOff(event.note);
             }
+        }
+        if (panic) synth.allSoundOff();
+        for (int i = 0; i < samples; ++i) {
+            if (playNow) {
+                const auto tick = clock.next(sampleRate, bpm.load());
+                if (tick.noteOff) synth.noteOff(57, 1);
+                if (tick.step >= 0) {
+                    currentStep.store(tick.step);
+                    if (steps[static_cast<std::size_t>(tick.step)].load()) synth.noteOn(57, 0.8f, 1);
+                }
+            }
+            const float value = synth.nextSample();
             for (int c = 0; c < channels; ++c)
                 if (outputs[c] != nullptr) outputs[c][i] = value;
         }
     }
 private:
-    double sampleRate{44100.0}, phase{0.0}, samplesToStep{0.0}, envelope{0.0};
-    int step{0};
+    void discardPendingNotes() noexcept {
+        NoteQueue::Event event{};
+        for (int n = 0; n < 256 && notes.pop(event); ++n) {}
+        notes.panic.store(false);
+    }
+    void resetTransport() noexcept {
+        clock.reset(); wasPlaying = false; currentStep.store(-1);
+    }
+    alien::SynthEngine synth;
+    alien::StepClock clock;
+    double sampleRate{44100.0};
+    bool wasPlaying{};
 };
 
-class MainComponent : public juce::Component, private juce::Timer {
+class MainComponent : public juce::Component, private juce::Timer, private juce::MidiKeyboardState::Listener {
 public:
     MainComponent() {
-        setSize(960, 420);
+        setSize(960, 510);
         addAndMakeVisible(title);
         title.setText("ALIEN STUDIO  |  Step Sequencer Prototype", juce::dontSendNotification);
         title.setJustificationType(juce::Justification::centred);
@@ -69,12 +90,23 @@ public:
         engine.steps[4].store(true); pads[4]->setToggleState(true, juce::dontSendNotification);
         engine.steps[8].store(true); pads[8]->setToggleState(true, juce::dontSendNotification);
         engine.steps[12].store(true); pads[12]->setToggleState(true, juce::dontSendNotification);
+        addAndMakeVisible(preset);
+        preset.addItem("Lead (saw)", 1);
+        preset.addItem("Bass (square)", 2);
+        preset.addItem("Pluck (sine)", 3);
+        preset.setSelectedId(1);
+        preset.onChange = [this] { engine.preset.store(preset.getSelectedId() - 1); };
+        addAndMakeVisible(keyboard);
+        keyboard.setAvailableRange(48, 84);
+        keyboard.setVelocity(0.8f, true);
+        keyboardState.addListener(this);
         audio.initialiseWithDefaultDevices(0, 2);
         audio.addAudioCallback(&engine);
         startTimerHz(20);
     }
     ~MainComponent() override {
         stopTimer();
+        keyboardState.removeListener(this);
         audio.removeAudioCallback(&engine);
         audio.closeAudioDevice();
     }
@@ -82,6 +114,8 @@ public:
         title.setBounds(20, 20, getWidth() - 40, 50);
         play.setBounds(30, 95, 130, 38);
         tempo.setBounds(180, 95, 260, 38);
+        preset.setBounds(30, 325, 240, 32);
+        keyboard.setBounds(30, 375, getWidth() - 60, 100);
         const int width = (getWidth() - 60) / 8;
         for (int i = 0; i < pads.size(); ++i)
             pads[i]->setBounds(30 + (i % 8) * width, 175 + (i / 8) * 65, width - 6, 50);
@@ -94,9 +128,17 @@ public:
     }
 private:
     void timerCallback() override { repaint(); }
+    void handleNoteOn(juce::MidiKeyboardState*, int, int note, float velocity) override {
+        engine.notes.push(note, velocity);
+    }
+    void handleNoteOff(juce::MidiKeyboardState*, int, int note, float) override {
+        engine.notes.push(note, 0);
+    }
     ToneEngine engine;
     juce::AudioDeviceManager audio;
-    juce::AudioAppComponent* unused{nullptr};
+    juce::MidiKeyboardState keyboardState;
+    juce::MidiKeyboardComponent keyboard{keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard};
+    juce::ComboBox preset;
     juce::Label title;
     juce::TextButton play;
     juce::Slider tempo{juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight};

@@ -1,0 +1,140 @@
+#pragma once
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+
+namespace alien {
+enum class Waveform { sine, saw, square };
+struct Patch {
+    Waveform waveform;
+    double attack, decay, sustain, release, cutoff;
+};
+inline constexpr std::array<Patch, 3> presets{{
+    {Waveform::saw, 0.01, 0.12, 0.7, 0.18, 8000.0},
+    {Waveform::square, 0.005, 0.12, 0.6, 0.08, 900.0},
+    {Waveform::sine, 0.002, 0.18, 0.0, 0.12, 6000.0}
+}};
+
+class Envelope {
+public:
+    enum class Stage { idle, attack, decay, sustain, release };
+    void start(const Patch& p, double rate) noexcept {
+        patch = p; sampleRate = rate; level = 0; remaining = samples(patch.attack); stage = Stage::attack;
+    }
+    void stop() noexcept {
+        if (stage != Stage::idle && stage != Stage::release) {
+            stage = Stage::release;
+            remaining = samples(patch.release);
+            releaseStep = level / static_cast<double>(remaining);
+        }
+    }
+    double next() noexcept {
+        switch (stage) {
+        case Stage::attack:
+            level += 1.0 / static_cast<double>(samples(patch.attack));
+            if (--remaining == 0) { level = 1.0; remaining = samples(patch.decay); stage = Stage::decay; }
+            break;
+        case Stage::decay:
+            level -= (1.0 - patch.sustain) / static_cast<double>(samples(patch.decay));
+            if (--remaining == 0) {
+                level = patch.sustain;
+                stage = level == 0.0 ? Stage::idle : Stage::sustain;
+            }
+            break;
+        case Stage::release:
+            level -= releaseStep;
+            if (--remaining == 0) { level = 0; stage = Stage::idle; }
+            break;
+        default: break;
+        }
+        return level;
+    }
+    Stage state() const noexcept { return stage; }
+private:
+    std::uint64_t samples(double seconds) const noexcept {
+        return static_cast<std::uint64_t>(std::max(1.0, std::ceil(seconds * sampleRate)));
+    }
+    std::uint64_t remaining{};
+    Patch patch{presets[0]};
+    double sampleRate{44100}, level{}, releaseStep{};
+    Stage stage{Stage::idle};
+};
+
+// Audio-thread owned. All storage is fixed; note and render operations never allocate.
+class SynthEngine {
+public:
+    static constexpr std::size_t maxVoices = 16;
+    void prepare(double rate) noexcept {
+        sampleRate = rate > 0 && std::isfinite(rate) ? rate : 44100;
+        allSoundOff();
+    }
+    void setPatch(Patch p) noexcept {
+        auto seconds = [](double x) { return std::isfinite(x) ? std::clamp(x, 0.0, 10.0) : 0.0; };
+        p.attack = seconds(p.attack); p.decay = seconds(p.decay); p.release = seconds(p.release);
+        p.sustain = std::isfinite(p.sustain) ? std::clamp(p.sustain, 0.0, 1.0) : 0.0;
+        p.cutoff = std::isfinite(p.cutoff) ? std::clamp(p.cutoff, 20.0, sampleRate * 0.45) : 1000;
+        patch = p;
+    }
+    void noteOn(int note, float velocity, int channel = 0) noexcept {
+        if (note < 0 || note > 127 || !std::isfinite(velocity)) return;
+        if (velocity <= 0) { noteOff(note, channel); return; }
+        Voice* chosen = nullptr;
+        for (auto& v : voices) if (!v.active()) { chosen = &v; break; }
+        // Prefer the oldest released voice, then the oldest held voice.
+        if (!chosen) for (auto& v : voices)
+            if (v.envelope.state() == Envelope::Stage::release && (!chosen || v.age < chosen->age)) chosen = &v;
+        if (!chosen) for (auto& v : voices) if (!chosen || v.age < chosen->age) chosen = &v;
+        *chosen = Voice{};
+        chosen->note = note; chosen->channel = channel; chosen->age = ++age;
+        chosen->velocity = std::clamp(velocity, 0.0f, 1.0f);
+        chosen->increment = std::min(0.45, 440.0 * std::exp2((note - 69) / 12.0) / sampleRate);
+        chosen->waveform = patch.waveform;
+        chosen->filterCoefficient = 1.0 - std::exp(-6.283185307179586 * patch.cutoff / sampleRate);
+        chosen->envelope.start(patch, sampleRate);
+    }
+    void noteOff(int note, int channel = 0) noexcept {
+        for (auto& v : voices) if (v.note == note && v.channel == channel) v.envelope.stop();
+    }
+    void allSoundOff() noexcept { voices = {}; age = 0; }
+    std::size_t activeVoices() const noexcept {
+        std::size_t n = 0; for (const auto& v : voices) if (v.active()) ++n; return n;
+    }
+    bool isNoteActive(int note) const noexcept {
+        for (const auto& v : voices) if (v.active() && v.note == note) return true;
+        return false;
+    }
+    float nextSample() noexcept {
+        double sum = 0;
+        for (auto& v : voices) {
+            if (!v.active()) continue;
+            double value = std::sin(6.283185307179586 * v.phase);
+            if (v.waveform == Waveform::saw) value = 2 * v.phase - 1 - blep(v.phase, v.increment);
+            if (v.waveform == Waveform::square) {
+                value = (v.phase < 0.5 ? 1.0 : -1.0) + blep(v.phase, v.increment)
+                    - blep(std::fmod(v.phase + 0.5, 1.0), v.increment);
+            }
+            v.phase += v.increment; if (v.phase >= 1) v.phase -= 1;
+            v.filtered += v.filterCoefficient * (value - v.filtered);
+            // Avoid denormal tails without changing global floating point state.
+            if (std::abs(v.filtered) < 1e-20) v.filtered = 0;
+            sum += v.filtered * v.envelope.next() * v.velocity;
+        }
+        return static_cast<float>(sum / maxVoices);
+    }
+private:
+    static double blep(double t, double dt) noexcept {
+        if (t < dt) { t /= dt; return t + t - t * t - 1; }
+        if (t > 1 - dt) { t = (t - 1) / dt; return t * t + t + t + 1; }
+        return 0;
+    }
+    struct Voice {
+        int note{-1}, channel{}; std::uint64_t age{};
+        double phase{}, increment{}, filtered{}, filterCoefficient{};
+        float velocity{}; Waveform waveform{Waveform::sine}; Envelope envelope;
+        bool active() const noexcept { return envelope.state() != Envelope::Stage::idle; }
+    };
+    std::array<Voice, maxVoices> voices{};
+    double sampleRate{44100}; std::uint64_t age{}; Patch patch{presets[0]};
+};
+}
