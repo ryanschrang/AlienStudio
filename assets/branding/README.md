@@ -6,12 +6,8 @@ as `1000005180.ico` and renamed without changing its bytes. It contains 16, 24,
 rounded border, with the original balanced padding. Do not crop, stretch or
 replace these assets with generated art or the older cropped versions.
 
-**Draft asset gap:** the corrected PNG is visible inline in the task but its
-original downloadable file is not available in the workspace yet. The source-PNG
-validation intentionally fails until that original file is supplied and tracked.
-Do not fill this gap with an ICO extraction or an upscaled/generated PNG.
-
-`AlienStudio_Icon_Corrected.png` is the high-resolution branding source reserved
+`AlienStudio_Icon_Corrected.png` is the original 1024 x 1024 high-resolution
+branding source supplied as `1000005179.png` inside the uploaded ZIP, reserved
 for future branding/splash work. Retain the original supplied file; do not
 reconstruct or upscale it from the ICO. Issue #9 allows splash preparation: this
 asset directory is that preparation. No startup splash or delay is introduced;

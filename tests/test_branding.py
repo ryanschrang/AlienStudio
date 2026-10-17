@@ -21,6 +21,7 @@ import zlib
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
+APPROVED_PNG_SHA256 = "bbad28f27e419ea811f299293d719ecfd95afb2c0fc3458b4d5a3e914479e90f"
 APPROVED_ICO_SHA256 = "94ae61b3225fdf887128301952c1fa4ae7f6820825c711700efadf237af9102e"
 
 
@@ -177,7 +178,6 @@ class WindowsResources:
 class BrandingTests(unittest.TestCase):
     assets = None
     executable = None
-    ico_only = False
 
     def test_corrected_ico_is_approved_original(self):
         data = (self.assets / "AlienStudio_Icon_Corrected.ico").read_bytes()
@@ -186,9 +186,9 @@ class BrandingTests(unittest.TestCase):
         icon_frames(data)
 
     def test_high_resolution_png(self):
-        if self.ico_only:
-            self.skipTest("PNG NOT CHECKED: --ico-only requested for interim validation")
         data = (self.assets / "AlienStudio_Icon_Corrected.png").read_bytes()
+        self.assertEqual(hashlib.sha256(data).hexdigest(), APPROVED_PNG_SHA256,
+                         "Keep the supplied corrected PNG unchanged")
         width, height = png_dimensions(data)
         self.assertEqual(width, height, "Keep the supplied square artwork without stretching")
         self.assertGreaterEqual(width, 1024, "Keep the original high-resolution PNG")
@@ -211,7 +211,9 @@ class BrandingTests(unittest.TestCase):
                     identifiers = set()
                     for index, (entry, payload) in enumerate(expected):
                         compiled = struct.unpack_from("<BBBBHHIH", group, 6 + 14 * index)
-                        self.assertEqual(compiled[:7], entry[:7])
+                        self.assertEqual(compiled[:4], entry[:4])
+                        self.assertIn(compiled[4], (0, 1), "RC may normalize icon planes")
+                        self.assertEqual(compiled[5:7], entry[5:7])
                         self.assertNotIn(compiled[7], identifiers, "Duplicate RT_ICON identifier")
                         identifiers.add(compiled[7])
                         self.assertEqual(resources.read(3, compiled[7]), payload,
@@ -224,14 +226,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--assets", required=True, type=Path, help="Directory containing corrected PNG and ICO")
     parser.add_argument("--exe", type=Path, help="Built Windows executable (requires Windows)")
-    parser.add_argument("--ico-only", action="store_true",
-                        help="Interim validation only: explicitly skip the high-resolution PNG check")
     arguments = parser.parse_args()
     if arguments.exe is not None and sys.platform != "win32":
         parser.error("--exe uses the Windows resource loader and requires Windows")
     BrandingTests.assets = arguments.assets
     BrandingTests.executable = arguments.exe
-    BrandingTests.ico_only = arguments.ico_only
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(BrandingTests)
     return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
 
