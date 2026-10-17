@@ -144,6 +144,7 @@ public:
         g.drawText("BPM: " + juce::String(engine.bpm.load()) + "   |   Active step: " +
             juce::String(engine.currentStep.load() + 1), 470, 95, 440, 40, juce::Justification::centredLeft);
     }
+    void focusInitialControl() { play.grabKeyboardFocus(); }
     void releaseNotes() {
         typingInput.release();
         keyboardState.allNotesOff(0);
@@ -194,6 +195,7 @@ private:
             setContentOwned(new MainComponent(), true);
             centreWithSize(getWidth(), getHeight());
             setVisible(true);
+            if (auto* content = dynamic_cast<MainComponent*>(getContentComponent())) content->focusInitialControl();
         }
         void activeWindowStatusChanged() override {
             if (!isActiveWindow())

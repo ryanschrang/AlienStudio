@@ -162,7 +162,7 @@ still require the manual checks above on Windows hardware.
 PR #7 handled typing only in the piano component. Tab moved key events to other
 controls, while octave updates called `grabKeyboardFocus()` and appeared to repair
 input. The fix follows window focus with one listener and removes that focus
-side effect. Held keys are released on focus changes; keys held through a focus
+side effect. New windows start with focus on Play / Stop. Held keys are released on focus changes; keys held through a focus
 change or panic must be lifted before they can play again. There is no persistent
 keyboard enable/disable setting, and the listener is removed on destruction.
 
