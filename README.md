@@ -123,6 +123,54 @@ Physical MIDI input testing will be required when device input is implemented.
 Compilation, synthetic DSP tests, and a GUI smoke test do not verify audible
 output, hardware MIDI, or real-time performance on Windows.
 
+### Four-bar piano roll
+
+Choose the **Piano roll** tab to edit a separate four-bar synth clip. The original
+**16-step sequencer** remains available. Both share Play / Stop, tempo and preset;
+the selected tab is the active playback source. Switching tabs releases notes
+and starts the selected pattern from its beginning. The window resizes to fit
+smaller displays.
+
+- Double-click an empty grid cell to create a note. Drag its body to move it, or
+  its right edge to change its duration. Right-click or select and press Delete
+  to erase it.
+- Choose 1/16, 1/8 or 1/4 snapping. Selected-note arrow keys move time/pitch;
+  Shift+Left/Right changes duration. Page Up/Down or the wheel/scrollbar changes
+  the visible pitch range (five octaves, C2–B6).
+- Drag a velocity stem, or use the selected-note Velocity control (1–127).
+  Notes at the same start time can be selected individually in the grid before
+  changing their velocity.
+- Click the piano at the left to audition pitches. The bottom mouse piano and
+  computer keyboard still work; Tab navigation and text entry keep their keys.
+- **Load example** adds an original melody to an empty clip. **Clear** removes the
+  clip's notes. Start Play to see the playhead and hear the loop.
+
+This first version stores one clip in memory for the current session; closing
+Alien Studio discards it. Project saving, MIDI recording, multiple clips,
+arrangement playback, undo and layered drum/synth tracks remain future work.
+Same-pitch overlaps share one gate until the last overlap ends; velocity changes
+to a sounding note apply at its next trigger. Notes end at the four-bar boundary.
+Edits publish at audio-block boundaries; stop, source changes, preset changes and
+device restarts clear the scheduler's held notes. Preset/blur panic restarts a
+running clip at the beginning, matching the safe all-notes-off path.
+
+`PianoRollSequenceTests` checks fractional-tempo timing, loop boundaries, stop and
+restart, live edits, same-pitch overlap ownership, snapshot concurrency, source
+isolation and allocation avoidance. `TypingPianoFocusTests` also checks GUI note
+creation/movement/resizing/deletion, velocity, snap, audition cleanup and focus
+routing. `ToneEngineTests` renders the actual audio callback offline to verify
+sound, playhead progress, safe stop/restart, edits and source changes without
+audio hardware. Windows CI runs both Debug and Release. Linux GUI checks use a virtual
+display; native Windows hardware sound still needs the manual check below.
+
+Manual Windows test: open Piano roll, Load example, Play and change tempo. Add a
+chord; move, resize and delete notes during playback, then change velocity and
+snap. Check the loop boundary and Stop for hanging notes. Switch between tabs,
+change presets, audition piano keys, and Alt-Tab while holding typing/mouse notes.
+Return and play again. Confirm the original 16 pads and typing octave controls
+still work; verify the UI at the minimum window size and normal display scaling.
+
+
 ### Computer keyboard piano
 
 Play chromatic notes while the piano or an ordinary control has focus with
