@@ -54,27 +54,38 @@ public:
         stepHelp.setText("16 steps  |  Sixteenth notes  |  A3 synth pattern", juce::dontSendNotification);
         stepHelp.setJustificationType(juce::Justification::centred);
         sessionPanel.addAndMakeVisible(sessionTitle);
-        sessionTitle.setText("Session clips", juce::dontSendNotification);
+        sessionTitle.setText("Session scenes", juce::dontSendNotification);
         sessionTitle.setFont(juce::FontOptions(22.0f, juce::Font::bold));
         sessionTitle.setColour(juce::Label::textColourId, juce::Colour(0xff8ff0c0));
         sessionPanel.addAndMakeVisible(sessionHelp);
-        sessionHelp.setText("Click a clip to select and queue it. Use Edit selected clip to add, move, or remove its notes.",
+        sessionHelp.setText("Launch a scene to switch all four tracks together. Click a track cell to launch it; right-click to edit.",
                             juce::dontSendNotification);
         sessionHelp.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
-        for (int i = 0; i < static_cast<int>(clipButtons.size()); ++i) {
-            sessionPanel.addAndMakeVisible(clipButtons[static_cast<std::size_t>(i)]);
-            auto& button = clipButtons[static_cast<std::size_t>(i)];
-            button.setName("Launch piano roll clip " + juce::String(i + 1));
-            button.onClick = [this, i] { selectAndLaunchClip(i); };
-            button.onRightClick = [this, i] { selectClipForEditing(i); };
+        for (int scene = 0; scene < sceneCount; ++scene) {
+            sessionPanel.addAndMakeVisible(sceneButtons[static_cast<std::size_t>(scene)]);
+            auto& sceneButton = sceneButtons[static_cast<std::size_t>(scene)];
+            sceneButton.setName("Launch scene " + juce::String(scene + 1));
+            sceneButton.setButtonText("Launch scene " + juce::String(scene + 1));
+            sceneButton.onClick = [this, scene] { launchScene(scene); };
+            for (int track = 0; track < trackCount; ++track) {
+                const auto index = cellIndex(track, scene);
+                sessionPanel.addAndMakeVisible(clipButtons[index]);
+                auto& button = clipButtons[index];
+                button.setName("Launch track " + juce::String(track + 1) + " scene " + juce::String(scene + 1));
+                button.onClick = [this, track, scene] { selectAndLaunchClip(track, scene); };
+                button.onRightClick = [this, track, scene] { selectClipForEditing(track, scene); };
+            }
         }
         sessionPanel.addAndMakeVisible(stopClip);
         stopClip.setButtonText("Stop clip");
-        stopClip.setName("Stop piano roll clip at loop boundary");
+        stopClip.setName("Stop all Session tracks at loop boundary");
         stopClip.onClick = [this] {
-            clips[static_cast<std::size_t>(selectedClip)] = pianoRoll.getPattern();
-            engine.requestedPianoRollClip.store(-1);
-            engine.pianoRollLaunches.publish({});
+            saveEditedClip();
+            engine.synchronizedSceneLaunch.store(false);
+            for (int track = 0; track < trackCount; ++track) {
+                engine.requestedPianoRollClip[static_cast<std::size_t>(track)].store(-1);
+                engine.pianoRollLaunches[static_cast<std::size_t>(track)].publish({});
+            }
             updateSessionButtons();
         };
         sessionPanel.addAndMakeVisible(editSelectedClip);
@@ -82,25 +93,30 @@ public:
         editSelectedClip.setName("Edit selected piano roll clip");
         editSelectedClip.setTooltip("Open the selected Session clip in the piano roll");
         editSelectedClip.onClick = [this] {
-            tabs.setCurrentTabIndex(1);
-            pianoRoll.grabKeyboardFocus();
+            selectClipForEditing(selectedTrack, selectedScene);
         };
         pianoRoll.onChange = [this] {
-            clips[static_cast<std::size_t>(selectedClip)] = pianoRoll.getPattern();
+            clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)] = pianoRoll.getPattern();
             if (loadingClip) return;
-            engine.requestedPianoRollClip.store(selectedClip);
-            if (engine.activePianoRollClip.load() == selectedClip)
-                engine.pianoRollNotes.publish(clips[static_cast<std::size_t>(selectedClip)]);
+            engine.requestedPianoRollClip[static_cast<std::size_t>(selectedTrack)].store(selectedScene);
+            if (engine.activePianoRollClip[static_cast<std::size_t>(selectedTrack)].load() == selectedScene)
+                engine.pianoRollNotes[static_cast<std::size_t>(selectedTrack)].publish(
+                    clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)]);
             else
-                engine.pianoRollLaunches.publish(clips[static_cast<std::size_t>(selectedClip)]);
+                engine.pianoRollLaunches[static_cast<std::size_t>(selectedTrack)].publish(
+                    clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)]);
         };
         pianoRoll.onAudition = [this](int note, float velocity) {
             if (velocity > 0) keyboardState.noteOn(3, note, velocity);
             else keyboardState.noteOff(3, note, 0);
         };
-        clips[0] = pianoRoll.getPattern();
-        engine.requestedPianoRollClip.store(0);
-        engine.pianoRollLaunches.publish(clips[0]);
+        for (int scene = 0; scene < sceneCount; ++scene)
+            for (int track = 0; track < trackCount; ++track) {
+                auto& pattern = clips[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
+                if (scene == 0 && track == 0) pattern = pianoRoll.getPattern();
+            }
+        engine.requestedPianoRollClip[0].store(0);
+        engine.pianoRollLaunches[0].publish(clips[0][0]);
         updateSessionButtons();
         devicePanel.addAndMakeVisible(presetLabel);
         presetLabel.setText("Synth preset", juce::dontSendNotification);
@@ -155,11 +171,19 @@ public:
         midiInput.setBounds(150, 168, juce::jmax(300, rackWidth - 180), 32);
         sessionTitle.setBounds(24, 18, sessionPanel.getWidth() - 48, 34);
         sessionHelp.setBounds(24, 54, sessionPanel.getWidth() - 48, 28);
-        const int clipWidth = juce::jmax(120, (sessionPanel.getWidth() - 78) / 4);
-        for (int i = 0; i < static_cast<int>(clipButtons.size()); ++i)
-            clipButtons[static_cast<std::size_t>(i)].setBounds(24 + i * (clipWidth + 10), 105, clipWidth, 86);
-        editSelectedClip.setBounds(24, 212, 180, 36);
-        stopClip.setBounds(216, 212, 150, 36);
+        const int labelWidth = 118;
+        const int gridWidth = juce::jmax(280, sessionPanel.getWidth() - labelWidth - 44);
+        const int trackWidth = gridWidth / trackCount;
+        const int sceneHeight = 54;
+        const int gridTop = 118;
+        for (int scene = 0; scene < sceneCount; ++scene) {
+            sceneButtons[static_cast<std::size_t>(scene)].setBounds(24, gridTop + scene * (sceneHeight + 8), labelWidth - 8, sceneHeight);
+            for (int track = 0; track < trackCount; ++track)
+                clipButtons[cellIndex(track, scene)].setBounds(labelWidth + 24 + track * trackWidth,
+                    gridTop + scene * (sceneHeight + 8), trackWidth - 8, sceneHeight);
+        }
+        editSelectedClip.setBounds(24, gridTop + sceneCount * (sceneHeight + 8) + 12, 180, 36);
+        stopClip.setBounds(216, gridTop + sceneCount * (sceneHeight + 8) + 12, 150, 36);
         octaveDown.setBounds(20, getHeight() - 154, 100, 30);
         octaveUp.setBounds(130, getHeight() - 154, 100, 30);
         help.setBounds(245, getHeight() - 154, getWidth() - 265, 30);
@@ -205,7 +229,7 @@ private:
                 else keyboardState.noteOff(4, note, 0.0f);
             }
         }
-        pianoRoll.setPlayheadStep(engine.pianoRollPosition.load() / 1000.0);
+        pianoRoll.setPlayheadStep(engine.sessionTrackPositions[static_cast<std::size_t>(selectedTrack)].load() / 1000.0);
         updateSessionButtons();
         repaint();
     }
@@ -219,35 +243,66 @@ private:
         if (!keyboardState.isNoteOnForChannels(0x7, note)) engine.notes.push(note, 0);
     }
     void selectAndLaunchClip(int clip) {
-        loadClip(clip);
-        engine.requestedPianoRollClip.store(selectedClip);
-        engine.pianoRollLaunches.publish(clips[static_cast<std::size_t>(selectedClip)]);
+        selectAndLaunchClip(selectedTrack, clip);
+    }
+    void selectAndLaunchClip(int track, int scene) {
+        loadClip(track, scene);
+        engine.requestedPianoRollClip[static_cast<std::size_t>(selectedTrack)].store(selectedScene);
+        engine.pianoRollLaunches[static_cast<std::size_t>(selectedTrack)].publish(
+            clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)]);
         updateSessionButtons();
     }
     void selectClipForEditing(int clip) {
-        loadClip(clip);
+        selectClipForEditing(selectedTrack, clip);
+    }
+    void selectClipForEditing(int track, int scene) {
+        loadClip(track, scene);
         tabs.setCurrentTabIndex(1);
         pianoRoll.grabKeyboardFocus();
         updateSessionButtons();
     }
-    void loadClip(int clip) {
-        clips[static_cast<std::size_t>(selectedClip)] = pianoRoll.getPattern();
-        selectedClip = juce::jlimit(0, static_cast<int>(clips.size()) - 1, clip);
+    static constexpr int trackCount = 4, sceneCount = 4;
+    static constexpr std::size_t cellIndex(int track, int scene) noexcept {
+        return static_cast<std::size_t>(scene * trackCount + track);
+    }
+    void saveEditedClip() {
+        clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)] = pianoRoll.getPattern();
+    }
+    void loadClip(int track, int scene) {
+        saveEditedClip();
+        selectedTrack = juce::jlimit(0, trackCount - 1, track);
+        selectedScene = juce::jlimit(0, sceneCount - 1, scene);
         loadingClip = true;
-        pianoRoll.setPattern(clips[static_cast<std::size_t>(selectedClip)]);
+        pianoRoll.setPattern(clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)]);
         loadingClip = false;
     }
-    void updateSessionButtons() {
-        const int active = engine.activePianoRollClip.load();
-        const int requested = engine.requestedPianoRollClip.load();
-        for (int i = 0; i < static_cast<int>(clipButtons.size()); ++i) {
-            auto text = "Clip " + juce::String(i + 1);
-            if (i == active) text += "\nPlaying";
-            else if (i == requested) text += "\nQueued";
-            if (i == selectedClip) text += "  • Selected";
-            clipButtons[static_cast<std::size_t>(i)].setButtonText(text);
+    void launchScene(int scene) {
+        saveEditedClip();
+        scene = juce::jlimit(0, sceneCount - 1, scene);
+        engine.synchronizedSceneLaunch.store(true);
+        for (int track = 0; track < trackCount; ++track) {
+            const auto index = static_cast<std::size_t>(track);
+            engine.requestedPianoRollClip[index].store(scene);
+            engine.pianoRollLaunches[index].publish(clips[static_cast<std::size_t>(scene)][index]);
         }
-        stopClip.setButtonText(requested < 0 ? "Stop queued" : "Stop clip");
+        updateSessionButtons();
+    }
+    void updateSessionButtons() {
+        for (int scene = 0; scene < sceneCount; ++scene) {
+            sceneButtons[static_cast<std::size_t>(scene)].setButtonText(
+                (scene == selectedScene ? "Selected | " : "") + juce::String("Launch scene ") + juce::String(scene + 1));
+            for (int track = 0; track < trackCount; ++track) {
+                const auto index = static_cast<std::size_t>(track);
+                const int active = engine.activePianoRollClip[index].load();
+                const int requested = engine.requestedPianoRollClip[index].load();
+                auto text = "Track " + juce::String(track + 1) + "\nScene " + juce::String(scene + 1);
+                if (scene == active) text += " | Playing";
+                else if (scene == requested) text += " | Queued";
+                if (track == selectedTrack && scene == selectedScene) text += " | Edit";
+                clipButtons[cellIndex(track, scene)].setButtonText(text);
+            }
+        }
+        stopClip.setButtonText("Stop all tracks");
     }
     ToneEngine engine;
     alien::MidiInputPanel midiInput{engine.midi};
@@ -267,10 +322,11 @@ private:
     juce::TabbedComponent tabs{juce::TabbedButtonBar::TabsAtTop};
     juce::Component sessionPanel;
     juce::Label sessionTitle, sessionHelp;
-    std::array<alien::SessionClipButton, 4> clipButtons;
+    std::array<juce::TextButton, 4> sceneButtons;
+    std::array<alien::SessionClipButton, 16> clipButtons;
     juce::TextButton editSelectedClip, stopClip;
-    std::array<alien::PianoRollPattern, 4> clips{};
-    int selectedClip{};
+    std::array<std::array<alien::PianoRollPattern, trackCount>, sceneCount> clips{};
+    int selectedTrack{}, selectedScene{};
     bool loadingClip{};
     juce::Component devicePanel;
     juce::Label deviceTitle, deviceHelp, presetLabel, midiLabel;

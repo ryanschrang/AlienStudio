@@ -54,7 +54,7 @@ static void playbackStopAndRestartTests() {
     OfflineEngine offline;
     auto& engine = offline.engine;
     require(offline.render(256) == 0, "prepared engine is silent before transport or live input");
-    require(engine.pianoRollNotes.publish(heldPattern()), "publish piano-roll clip");
+    require(engine.pianoRollNotes[0].publish(heldPattern()), "publish piano-roll clip");
     engine.patternMode.store(1);
     engine.playing.store(true);
     require(offline.render(9600) > 0.001, "piano-roll callback renders audible synth samples");
@@ -81,22 +81,22 @@ static void activeEditingTests() {
     OfflineEngine offline;
     auto& engine = offline.engine;
     auto pattern = heldPattern();
-    engine.pianoRollNotes.publish(pattern);
+    engine.pianoRollNotes[0].publish(pattern);
     engine.patternMode.store(1);
     engine.playing.store(true);
     require(offline.render(2000) > 0, "held clip starts before editing");
     require(pattern.erase(pattern.notes[0].id), "delete active clip note");
-    engine.pianoRollNotes.publish(pattern);
+    engine.pianoRollNotes[0].publish(pattern);
     require(offline.settledEnergy() == 0 && engine.pianoRollPosition.load() > 2000,
         "deleting active note releases its voice while transport continues");
 
     // Added notes covering the current position start on the next callback.
     pattern.add(64, 0, 64);
     pattern.add(67, 0, 64);
-    engine.pianoRollNotes.publish(pattern);
+    engine.pianoRollNotes[0].publish(pattern);
     require(offline.render(1024) > 0, "live snapshot insertion starts current-position chord");
     pattern.clear();
-    engine.pianoRollNotes.publish(pattern);
+    engine.pianoRollNotes[0].publish(pattern);
     require(offline.settledEnergy() == 0, "clearing a playing chord releases every clip voice");
     engine.playing.store(false);
     require(offline.render(256) == 0, "stop after live edits leaves no stuck notes");
@@ -107,32 +107,55 @@ static void sessionClipLaunchTests() {
     auto& engine = offline.engine;
     engine.patternMode.store(1);
     engine.playing.store(true);
-    engine.requestedPianoRollClip.store(0);
-    require(engine.pianoRollLaunches.publish(heldPattern(60)), "queue first session clip");
-    require(offline.render(256) > 0 && engine.activePianoRollClip.load() == 0,
-            "first queued clip starts with the transport");
+    for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track) {
+        engine.requestedPianoRollClip[track].store(0);
+        const int pitch = track < 2 ? 60 : 60 + static_cast<int>(track);
+        auto firstClip = heldPattern(pitch);
+        if (track == 0) {
+            firstClip.loopSteps = 32;
+            firstClip.notes[0].lengthSteps = 32;
+        }
+        require(engine.pianoRollLaunches[track].publish(firstClip),
+                "queue first scene track clip");
+    }
+    require(offline.render(256) > 0, "first queued scene starts with the transport");
+    for (const auto& active : engine.activePianoRollClip)
+        require(active.load() == 0, "first scene starts all tracks together");
+    alien::PianoRollPattern emptyTrack;
+    emptyTrack.loopSteps = 32;
+    require(engine.pianoRollNotes[0].publish(emptyTrack), "clear one track while matching pitch plays on another");
+    require(offline.render(256) > 0.001, "editing one track preserves another track's same-pitch voice");
 
-    engine.requestedPianoRollClip.store(1);
-    require(engine.pianoRollLaunches.publish(heldPattern(67)), "queue replacement session clip");
-    offline.render(383744);
-    require(engine.activePianoRollClip.load() == 0,
-            "replacement clip waits through the active four-bar loop");
-    require(offline.render(1) > 0 && engine.activePianoRollClip.load() == 1,
-            "replacement clip activates on the exact loop boundary");
+    for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track) {
+        engine.requestedPianoRollClip[track].store(1);
+        require(engine.pianoRollLaunches[track].publish(heldPattern(67 + static_cast<int>(track))),
+                "queue replacement scene track clip");
+    }
+    engine.synchronizedSceneLaunch.store(true);
+    offline.render(191488);
+    for (const auto& active : engine.activePianoRollClip)
+        require(active.load() == 0, "scene waits for a shared boundary despite different track loop lengths");
+    require(offline.render(1) > 0, "replacement scene sounds on its boundary");
+    for (const auto& active : engine.activePianoRollClip)
+        require(active.load() == 1, "scene activates every track together at the shared boundary");
 
-    engine.requestedPianoRollClip.store(-1);
-    require(engine.pianoRollLaunches.publish({}), "queue session clip stop");
+    for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track) {
+        engine.requestedPianoRollClip[track].store(-1);
+        require(engine.pianoRollLaunches[track].publish({}), "queue session scene stop");
+    }
     offline.render(383999);
-    require(engine.activePianoRollClip.load() == 1, "quantized stop waits through the active loop");
+    for (const auto& active : engine.activePianoRollClip)
+        require(active.load() == 1, "quantized scene stop waits through the active loop");
     offline.render(1);
-    require(engine.activePianoRollClip.load() == -1 && offline.settledEnergy() == 0,
-            "quantized stop releases the clip without stale audio");
+    for (const auto& active : engine.activePianoRollClip)
+        require(active.load() == -1, "quantized scene stop clears each track");
+    require(offline.settledEnergy() == 0, "quantized scene stop releases all tracks without stale audio");
 }
 
 static void panicPresetAndSourceTests() {
     OfflineEngine offline;
     auto& engine = offline.engine;
-    engine.pianoRollNotes.publish(heldPattern());
+    engine.pianoRollNotes[0].publish(heldPattern());
     engine.patternMode.store(1);
     engine.playing.store(true);
     require(offline.render(15000) > 0 && engine.pianoRollPosition.load() >= 2499,
@@ -157,7 +180,7 @@ static void panicPresetAndSourceTests() {
     require(offline.render(256) == 0, "stopping after source switches silences both sources");
 
     alien::PianoRollPattern empty;
-    engine.pianoRollNotes.publish(empty);
+    engine.pianoRollNotes[0].publish(empty);
     engine.notes.push(80, 0.9f);
     engine.notes.panic.store(true);
     require(offline.render(512) == 0, "panic discards pending keyboard note-ons instead of starting a stuck note");
@@ -167,13 +190,13 @@ static void liveKeyboardIsolationTests() {
     OfflineEngine offline;
     auto& engine = offline.engine;
     auto pattern = heldPattern(60);
-    engine.pianoRollNotes.publish(pattern);
+    engine.pianoRollNotes[0].publish(pattern);
     engine.patternMode.store(1);
     engine.playing.store(true);
     engine.notes.push(60, 0.8f); // Same pitch as the clip, separate synth source.
     require(offline.render(2048) > 0, "clip and live keyboard render together");
     pattern.clear();
-    engine.pianoRollNotes.publish(pattern);
+    engine.pianoRollNotes[0].publish(pattern);
     require(offline.settledEnergy() > 0.001, "deleting clip note preserves same-pitch live keyboard voice");
     engine.notes.push(60, 0.0f);
     require(offline.settledEnergy() == 0, "live keyboard note-off releases surviving voice without stuck clip note");
@@ -198,7 +221,7 @@ static void processedPatternTests() {
     alien::StrumSettings strum;
     strum.delaySteps = 0.125;
     require(alien::processStrum(pattern, selection, strum).changed(), "strum chord for real callback");
-    require(engine.pianoRollNotes.publish(pattern), "publish substep strum snapshot");
+    require(engine.pianoRollNotes[0].publish(pattern), "publish substep strum snapshot");
     engine.patternMode.store(1);
     engine.playing.store(true);
     require(offline.render(3000) == 0, "substep note must not sound before its exact half-step start");
@@ -212,7 +235,7 @@ static void processedPatternTests() {
     chop.gate = 0.5;
     const auto chopped = alien::processChop(pattern, selection, chop);
     require(chopped.changed() && pattern.count == 36, "chop creates bounded fractional fragments");
-    require(engine.pianoRollNotes.publish(pattern), "publish chopped active clip");
+    require(engine.pianoRollNotes[0].publish(pattern), "publish chopped active clip");
     require(offline.render(24000) > 0.001, "rapid chopped notes render finite audio");
     alien::RandomizeSettings randomize;
     randomize.pitchSemitones = 12;
@@ -220,16 +243,16 @@ static void processedPatternTests() {
     randomize.seed = 287;
     require(alien::processRandomize(pattern, chopped.selection, randomize).changed(),
         "randomize a sounding chopped clip");
-    engine.pianoRollNotes.publish(pattern);
+    engine.pianoRollNotes[0].publish(pattern);
     offline.render(1024);
     alien::QuantizeSettings quantize;
     quantize.gridSteps = 0.5;
     quantize.swing = 0.3;
     alien::processQuantize(pattern, chopped.selection, quantize);
-    require(engine.pianoRollNotes.publish(pattern), "publish swung quantized snapshot");
+    require(engine.pianoRollNotes[0].publish(pattern), "publish swung quantized snapshot");
     offline.render(12000);
     pattern.clear();
-    engine.pianoRollNotes.publish(pattern);
+    engine.pianoRollNotes[0].publish(pattern);
     require(offline.settledEnergy() == 0, "processing then clearing must leave no held old or new pitch");
     engine.playing.store(false);
     require(offline.render(256) == 0, "transport stop after processing remains silent");
@@ -247,18 +270,18 @@ static void clipboardPlaybackTests() {
     require(clipboard.copy(pattern, selected).status == alien::ClipboardStatus::copied, "copy sounding chord");
     engine.patternMode.store(1);
     engine.playing.store(true);
-    engine.pianoRollNotes.publish(pattern);
+    engine.pianoRollNotes[0].publish(pattern);
     require(offline.render(2048) > 0, "source chord sounds before clipboard edits");
     require(clipboard.paste(pattern, 0.25).changed(), "paste overlapping chord with fresh IDs");
-    engine.pianoRollNotes.publish(pattern);
+    engine.pianoRollNotes[0].publish(pattern);
     require(offline.render(2048) > 0, "pasted overlap keeps chord sounding");
-    engine.pianoRollNotes.publish(original); // Undo Paste, keeping source notes.
+    engine.pianoRollNotes[0].publish(original); // Undo Paste, keeping source notes.
     require(offline.render(2048) > 0, "undoing pasted overlap preserves original held pitches");
     pattern = original;
     require(alien::duplicatePianoRollSelection(pattern, selected).changed(), "duplicate after original chord end");
-    engine.pianoRollNotes.publish(pattern);
+    engine.pianoRollNotes[0].publish(pattern);
     require(offline.render(48000) > 0, "duplicated chord plays across original end boundary");
-    engine.pianoRollNotes.publish(original); // Undo while only the duplicate holds.
+    engine.pianoRollNotes[0].publish(original); // Undo while only the duplicate holds.
     require(offline.settledEnergy() == 0, "undoing sounding duplicate releases all copied pitches");
     engine.playing.store(false);
     require(offline.render(512) == 0, "Stop after clipboard undo leaves no stuck notes");
@@ -308,11 +331,11 @@ static void hardwareMidiTests() {
     e.midi.push(replacement, 0x90, 67, 100); require(offline.render(512) > 0, "fresh MIDI plays after audio restart");
     e.midi.requestReset(); require(offline.settledEnergy() == 0, "manual/blur reset releases final MIDI voice");
     e.preset.store(0); e.patternMode.store(1); e.playing.store(true);
-    auto clip = heldPattern(60); e.pianoRollNotes.publish(clip); offline.render(512);
+    auto clip = heldPattern(60); e.pianoRollNotes[0].publish(clip); offline.render(512);
     e.midi.push(replacement, 0x90, 60, 100); offline.render(512);
     e.midi.push(replacement, 0x80, 60, 0);
     require(offline.settledEnergy() > 0.001, "MIDI release preserves equal-pitch piano-roll playback");
-    clip.clear(); e.pianoRollNotes.publish(clip);
+    clip.clear(); e.pianoRollNotes[0].publish(clip);
     require(offline.settledEnergy() == 0, "clearing final clip owner releases shared pitch");
     e.midi.push(replacement, 0x90, 64, 100); require(offline.render(512) > 0, "MIDI plays over an empty running clip");
     e.patternMode.store(0);

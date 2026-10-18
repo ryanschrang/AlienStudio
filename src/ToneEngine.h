@@ -12,15 +12,19 @@
 
 class ToneEngine : public juce::AudioIODeviceCallback {
 public:
+    static constexpr std::size_t sessionTracks = 4;
     std::array<std::atomic<bool>, 16> steps{};
     std::atomic<bool> playing{false};
     std::atomic<int> bpm{120}, currentStep{-1}, preset{0};
     NoteQueue notes;
     alien::MidiInputPipe midi;
-    alien::PianoRollMailbox pianoRollNotes;
-    alien::PianoRollMailbox pianoRollLaunches;
+    std::array<alien::PianoRollMailbox, sessionTracks> pianoRollNotes;
+    std::array<alien::PianoRollMailbox, sessionTracks> pianoRollLaunches;
+    std::array<std::atomic<int>, sessionTracks> sessionTrackPositions{-1000, -1000, -1000, -1000};
     std::atomic<int> patternMode{0}, pianoRollPosition{-1};
-    std::atomic<int> requestedPianoRollClip{-1}, activePianoRollClip{-1};
+    std::array<std::atomic<int>, sessionTracks> requestedPianoRollClip{-1, -1, -1, -1};
+    std::array<std::atomic<int>, sessionTracks> activePianoRollClip{-1, -1, -1, -1};
+    std::atomic<bool> synchronizedSceneLaunch{false};
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
         prepare(device->getCurrentSampleRate());
@@ -28,14 +32,16 @@ public:
     // Shared by device startup and offline callback regression tests.
     void prepare(double rate) {
         sampleRate = std::isfinite(rate) && rate > 0 ? rate : 44100.0;
-        roll.stop([this](int n, float v, bool on) { sendPattern(n, v, on); });
+        for (std::size_t track = 0; track < sessionTracks; ++track)
+            rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
         synth.prepare(sampleRate);
         midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
         discardPendingNotes();
         resetTransport();
     }
     void audioDeviceStopped() override {
-        roll.stop([this](int n, float v, bool on) { sendPattern(n, v, on); });
+        for (std::size_t track = 0; track < sessionTracks; ++track)
+            rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
         synth.allSoundOff(); discardPendingNotes(); resetTransport();
         midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
     }
@@ -45,9 +51,14 @@ public:
         juce::ScopedNoDenormals noDenormals;
         const bool playNow = playing.load();
         const int modeNow = patternMode.load();
-        auto send = [this](int n, float v, bool on) { sendPattern(n, v, on); };
+        if (synchronizedSceneLaunch.exchange(false)) {
+            synchronizedScenePending = true;
+            synchronizedSceneTracksQueued = 0;
+        }
         if ((wasPlaying && !playNow) || wasMode != modeNow) {
-            roll.stop(send); synth.allSoundOff(); resetTransport();
+            for (std::size_t track = 0; track < sessionTracks; ++track)
+                rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
+            synth.allSoundOff(); resetTransport();
             midi.requestReset();
         }
         wasPlaying = playNow; wasMode = modeNow;
@@ -61,12 +72,22 @@ public:
                 else synth.noteOff(event.note);
             }
         }
-        if (panic) { roll.stop(send); synth.allSoundOff(); midi.requestReset(); }
+        if (panic) {
+            for (std::size_t track = 0; track < sessionTracks; ++track)
+                rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
+            synth.allSoundOff(); midi.requestReset();
+        }
         midi.process([this](int n, float v, int ch) { sendMidi(n, v, ch); });
-        alien::PianoRollPattern requestedPattern;
-        if (pianoRollLaunches.consume(requestedPattern))
-            roll.queuePattern(requestedPattern, requestedPianoRollClip.load());
-        roll.beginBlock(pianoRollNotes, playNow && modeNow == 1, sampleRate, bpm.load(), send);
+        for (std::size_t track = 0; track < sessionTracks; ++track) {
+            alien::PianoRollPattern requestedPattern;
+            if (pianoRollLaunches[track].consume(requestedPattern)) {
+                rolls[track].queuePattern(requestedPattern, requestedPianoRollClip[track].load(), synchronizedScenePending);
+                if (synchronizedScenePending)
+                    synchronizedSceneTracksQueued |= (1u << track);
+            }
+            rolls[track].beginBlock(pianoRollNotes[track], playNow && modeNow == 1, sampleRate, bpm.load(),
+                [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
+        }
         for (int i = 0; i < samples; ++i) {
             if (playNow && modeNow == 0) {
                 const auto tick = clock.next(sampleRate, bpm.load());
@@ -76,23 +97,42 @@ public:
                     if (steps[static_cast<std::size_t>(tick.step)].load()) synth.noteOn(57, 0.8f, 1);
                 }
             }
-            if (playNow && modeNow == 1) roll.nextSample(send);
+            if (playNow && modeNow == 1) {
+                constexpr unsigned allSessionTracks = (1u << sessionTracks) - 1u;
+                if (synchronizedScenePending && synchronizedSceneTracksQueued == allSessionTracks
+                    && rolls[0].loopBoundaryDue()) {
+                    for (std::size_t track = 0; track < sessionTracks; ++track)
+                        rolls[track].launchPendingNow([this, track](int n, float v, bool on) {
+                            sendPattern(track, n, v, on);
+                        });
+                    synchronizedScenePending = false;
+                    synchronizedSceneTracksQueued = 0;
+                }
+                for (std::size_t track = 0; track < sessionTracks; ++track)
+                    rolls[track].nextSample([this, track](int n, float v, bool on) {
+                        sendPattern(track, n, v, on);
+                    });
+            }
             const float value = synth.nextSample();
             for (int c = 0; c < channels; ++c)
                 if (outputs[c] != nullptr) outputs[c][i] = value;
         }
-        pianoRollPosition.store(static_cast<int>(roll.positionStep() * 1000.0));
-        activePianoRollClip.store(roll.activeClipIndex());
+        pianoRollPosition.store(static_cast<int>(rolls[0].positionStep() * 1000.0));
+        for (std::size_t track = 0; track < sessionTracks; ++track) {
+            sessionTrackPositions[track].store(static_cast<int>(rolls[track].positionStep() * 1000.0));
+            activePianoRollClip[track].store(rolls[track].activeClipIndex());
+        }
     }
 private:
     void sendMidi(int note, float velocity, int channel) noexcept {
-        const int source = channel + 2; // Live GUI 0, steps 1, roll 2; MIDI 3..18.
+        const int source = channel + 8; // Reserve source channels 2..5 for four Session tracks.
         if (note < 0) synth.allSoundOff(source);
         else if (velocity > 0) synth.noteOn(note, velocity, source);
         else synth.noteOff(note, source);
     }
-    void sendPattern(int note, float velocity, bool on) noexcept {
-        if (on) synth.noteOn(note, velocity, 2); else synth.noteOff(note, 2);
+    void sendPattern(std::size_t track, int note, float velocity, bool on) noexcept {
+        const int source = static_cast<int>(track) + 2;
+        if (on) synth.noteOn(note, velocity, source); else synth.noteOff(note, source);
     }
     void discardPendingNotes() noexcept {
         NoteQueue::Event event{};
@@ -101,13 +141,18 @@ private:
     }
     void resetTransport() noexcept {
         clock.reset(); wasPlaying = false; currentStep.store(-1); pianoRollPosition.store(-1000);
-        activePianoRollClip.store(-1);
+        for (std::size_t track = 0; track < sessionTracks; ++track) {
+            activePianoRollClip[track].store(-1);
+            sessionTrackPositions[track].store(-1000);
+        }
     }
     alien::SynthEngine synth;
     alien::StepClock clock;
-    alien::PianoRollScheduler roll;
+    std::array<alien::PianoRollScheduler, sessionTracks> rolls{};
     double sampleRate{44100.0};
     bool wasPlaying{};
     int wasMode{};
+    bool synchronizedScenePending{};
+    unsigned synchronizedSceneTracksQueued{};
 };
 

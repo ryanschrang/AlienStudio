@@ -184,12 +184,20 @@ public:
             activeClip = loadedClip;
         }
     }
-    bool queuePattern(const PianoRollPattern& replacement, int clipIndex) noexcept {
+    bool queuePattern(const PianoRollPattern& replacement, int clipIndex, bool waitForSynchronizedLaunch = false) noexcept {
         if (!replacement.valid() || clipIndex < -1) return false;
         pendingPattern = replacement;
         pendingClip = clipIndex;
         pending = true;
+        synchronizedPending = waitForSynchronizedLaunch;
         return true;
+    }
+    bool loopBoundaryDue() const noexcept {
+        return running && untilStep <= 0 && nextStep == 0;
+    }
+    template<class Send>
+    void launchPendingNow(Send&& send) noexcept {
+        if (pending) activatePending(send);
     }
     template<class Send>
     int nextSample(Send&& send) noexcept {
@@ -202,7 +210,7 @@ public:
                 nextEvent = 0;
                 ++cycle;
             }
-            if (nextStep == 0 && pending) activatePending(send);
+            if (nextStep == 0 && pending && !synchronizedPending) activatePending(send);
             step = nextStep;
             nextStep = (step + 1) % pattern.loopSteps;
             tick = step;
@@ -261,10 +269,13 @@ private:
         loadedClip = pendingClip;
         activeClip = pendingClip;
         pending = false;
+        synchronizedPending = false;
         reconcile = false;
         // Rebuild from the new clip's beginning rather than seeking from the
         // previous clip's final step.
         step = -1;
+        nextStep = 0;
+        untilStep = 0;
         nextEvent = 0;
         rebuildEvents();
     }
@@ -358,6 +369,6 @@ private:
     int step{-1}, nextStep{};
     std::uint32_t cycle{};
     int loadedClip{-1}, activeClip{-1}, pendingClip{-1};
-    bool running{}, reconcile{}, pending{};
+    bool running{}, reconcile{}, pending{}, synchronizedPending{};
 };
 }
