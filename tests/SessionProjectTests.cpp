@@ -16,6 +16,10 @@ int main() {
     source.synthPreset = 2;
     source.stepPattern = {true, false, true, false, false, true, false, false,
         true, false, false, true, false, false, true, false};
+    source.stepPitches = {36, 48, 60, 72, 84, 96, 108, 120,
+        57, 59, 61, 63, 65, 67, 69, 71};
+    source.stepVelocities = {1, 8, 16, 24, 32, 40, 48, 56,
+        64, 72, 80, 88, 96, 104, 112, 127};
     auto& midi = source.clips[1][2];
     midi.pattern.loopSteps = 128;
     require(midi.pattern.add(67, 7.25, 2.5, 0.63f, 0.42f) != 0,
@@ -32,8 +36,10 @@ int main() {
     require(error.isEmpty() && restored.valid(), "loaded project passes model validation");
     require(restored.launchQuantizationSteps == 4 && restored.selectedTrack == 2
         && restored.selectedScene == 3 && restored.bpm == 137 && restored.synthPreset == 2
-        && restored.stepPattern == source.stepPattern,
-        "tempo, synth preset, sequencer steps and launch/editor settings round-trip");
+        && restored.stepPattern == source.stepPattern
+        && restored.stepPitches == source.stepPitches
+        && restored.stepVelocities == source.stepVelocities,
+        "tempo, synth preset, sequencer steps, pitch, velocity and launch/editor settings round-trip");
     const auto& restoredMidi = restored.clips[1][2].pattern;
     require(restoredMidi.loopSteps == 128 && restoredMidi.count == 1
         && restoredMidi.notes[0].pitch == 67 && restoredMidi.notes[0].startStep == 7.25
@@ -60,6 +66,21 @@ int main() {
         "malformed JSON fails without partially mutating the current project");
     require(!alien::parseSessionProject("{\"format\":\"AlienStudioSession\",\"version\":99}",
         restored, error) && error.contains("version"), "unknown project versions are rejected");
+    auto legacy = juce::JSON::parse(json);
+    auto* legacyObject = legacy.getDynamicObject();
+    legacyObject->setProperty("version", 1);
+    legacyObject->removeProperty("stepPitches");
+    legacyObject->removeProperty("stepVelocities");
+    require(alien::parseSessionProject(juce::JSON::toString(legacy), restored, error)
+        && restored.stepPitches[0] == 57 && restored.stepVelocities[0] == 102,
+        "version 1 projects load with the original pitch and velocity defaults");
+    source.stepPitches[0] = 128;
+    require(alien::serializeSessionProject(source).isEmpty(),
+        "out-of-range step pitch cannot be saved");
+    source.stepPitches[0] = 57;
+    source.stepVelocities[0] = 0;
+    require(alien::serializeSessionProject(source).isEmpty(),
+        "out-of-range step velocity cannot be saved");
     source.launchQuantizationSteps = 8;
     require(alien::serializeSessionProject(source).isEmpty(),
         "unsupported launch settings cannot be serialized");

@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <vector>
 
 static void require(bool ok, const char* message) {
     if (!ok) { std::cerr << message << '\n'; std::exit(1); }
@@ -43,6 +44,63 @@ struct OfflineEngine {
         return render(512);
     }
 };
+
+static std::vector<float> captureSamples(ToneEngine& engine, int sampleCount) {
+    std::vector<float> captured(static_cast<std::size_t>(sampleCount));
+    std::array<float, 256> left{}, right{};
+    int offset = 0;
+    while (offset < sampleCount) {
+        const int count = std::min(sampleCount - offset, static_cast<int>(left.size()));
+        float* outputs[]{left.data(), right.data()};
+        engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, count, {});
+        std::copy_n(left.begin(), count, captured.begin() + offset);
+        offset += count;
+    }
+    return captured;
+}
+
+static std::vector<float> renderSequencerNote(int pitch, int velocity, ToneEngine& engine) {
+    engine.prepare(48000);
+    for (auto& step : engine.steps) step.store(false);
+    engine.steps[0].store(true);
+    engine.stepPitches[0].store(pitch);
+    engine.stepVelocities[0].store(velocity);
+    engine.patternMode.store(0);
+    engine.playing.store(true);
+    return captureSamples(engine, 2800);
+}
+
+static void perStepPitchAndVelocityTests() {
+    ToneEngine pitchEngine;
+    const auto pitchSamples = renderSequencerNote(69, 127, pitchEngine);
+    int zeroCrossings = 0;
+    constexpr int firstSample = 800;
+    constexpr int lastSample = 2700;
+    for (int i = firstSample + 1; i < lastSample; ++i)
+        if (pitchSamples[static_cast<std::size_t>(i - 1)] <= 0.0f
+            && pitchSamples[static_cast<std::size_t>(i)] > 0.0f) ++zeroCrossings;
+    const double estimatedHz = static_cast<double>(zeroCrossings) * 48000.0
+        / static_cast<double>(lastSample - firstSample);
+    require(pitchEngine.currentStep.load() == 0 && estimatedHz > 400.0 && estimatedHz < 480.0,
+        "selected step pitch controls the rendered oscillator frequency");
+
+    ToneEngine loudEngine, quietEngine;
+    const auto loud = renderSequencerNote(69, 127, loudEngine);
+    const auto quiet = renderSequencerNote(69, 64, quietEngine);
+    double loudEnergy = 0.0, quietEnergy = 0.0;
+    for (int i = firstSample; i < lastSample; ++i) {
+        const auto index = static_cast<std::size_t>(i);
+        loudEnergy += static_cast<double>(loud[index]) * loud[index];
+        quietEnergy += static_cast<double>(quiet[index]) * quiet[index];
+    }
+    const double rmsRatio = std::sqrt(quietEnergy / loudEnergy);
+    require(rmsRatio > 0.45 && rmsRatio < 0.56,
+        "selected step velocity scales the rendered note level");
+    const auto gatedRelease = captureSamples(pitchEngine, 10000);
+    require(std::all_of(gatedRelease.end() - 512, gatedRelease.end(),
+        [](float value) { return std::abs(value) < 1.0e-10f; }),
+        "step gate releases its selected pitch without leaving a stuck voice");
+}
 
 static alien::PianoRollPattern heldPattern(int pitch = 60) {
     alien::PianoRollPattern pattern;
@@ -407,6 +465,7 @@ static void hardwareMidiTests() {
 }
 
 int main() {
+    perStepPitchAndVelocityTests();
     playbackStopAndRestartTests();
     activeEditingTests();
     sessionClipLaunchTests();

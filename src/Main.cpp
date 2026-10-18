@@ -216,12 +216,53 @@ public:
             button->setTooltip("Toggle sixteenth-note step " + juce::String(i + 1));
             button->setTitle("Step " + juce::String(i + 1));
             stepsPanel.addAndMakeVisible(button);
-            button->onClick = [this, button, i] { engine.steps[i].store(button->getToggleState()); };
+            button->onClick = [this, button, i] {
+                engine.steps[static_cast<std::size_t>(i)].store(button->getToggleState());
+                selectSequencerStep(i);
+            };
         }
         engine.steps[0].store(true); pads[0]->setToggleState(true, juce::dontSendNotification);
         engine.steps[4].store(true); pads[4]->setToggleState(true, juce::dontSendNotification);
         engine.steps[8].store(true); pads[8]->setToggleState(true, juce::dontSendNotification);
         engine.steps[12].store(true); pads[12]->setToggleState(true, juce::dontSendNotification);
+        stepsPanel.addAndMakeVisible(selectedStepLabel);
+        selectedStepLabel.setText("Edit step", juce::dontSendNotification);
+        selectedStepLabel.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::muted);
+        stepsPanel.addAndMakeVisible(stepSelector);
+        stepSelector.setName("Selected sequencer step");
+        for (int i = 0; i < 16; ++i) stepSelector.addItem("Step " + juce::String(i + 1), i + 1);
+        stepSelector.onChange = [this] { selectSequencerStep(stepSelector.getSelectedId() - 1); };
+        stepsPanel.addAndMakeVisible(stepPitchLabel);
+        stepPitchLabel.setText("Pitch", juce::dontSendNotification);
+        stepPitchLabel.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::muted);
+        stepsPanel.addAndMakeVisible(stepPitch);
+        stepPitch.setName("Selected step MIDI pitch");
+        stepPitch.setTooltip("Set the selected step pitch from MIDI note 0 to 127");
+        stepPitch.setRange(0, 127, 1);
+        stepPitch.setTextBoxStyle(juce::Slider::TextBoxRight, false, 42, 26);
+        stepPitch.onValueChange = [this] {
+            const int pitch = static_cast<int>(stepPitch.getValue());
+            engine.stepPitches[static_cast<std::size_t>(selectedStep)].store(pitch);
+            stepPitchName.setText(juce::MidiMessage::getMidiNoteName(pitch, true, true, 4),
+                juce::dontSendNotification);
+        };
+        stepsPanel.addAndMakeVisible(stepPitchName);
+        stepPitchName.setName("Selected step note name");
+        stepPitchName.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::text);
+        stepPitchName.setJustificationType(juce::Justification::centredLeft);
+        stepsPanel.addAndMakeVisible(stepVelocityLabel);
+        stepVelocityLabel.setText("Velocity", juce::dontSendNotification);
+        stepVelocityLabel.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::muted);
+        stepsPanel.addAndMakeVisible(stepVelocity);
+        stepVelocity.setName("Selected step velocity");
+        stepVelocity.setTooltip("Set the selected step velocity from 1 to 127");
+        stepVelocity.setRange(1, 127, 1);
+        stepVelocity.setTextBoxStyle(juce::Slider::TextBoxRight, false, 42, 26);
+        stepVelocity.onValueChange = [this] {
+            engine.stepVelocities[static_cast<std::size_t>(selectedStep)].store(
+                static_cast<int>(stepVelocity.getValue()));
+        };
+        selectSequencerStep(0);
         tabs.addTab("16-step sequencer", AlienStudioLookAndFeel::panel, &stepsPanel, false);
         tabs.addTab("Piano roll", AlienStudioLookAndFeel::panel, &pianoRoll, false);
         tabs.addTab("Session", AlienStudioLookAndFeel::panel, &sessionPanel, false);
@@ -475,6 +516,13 @@ public:
         stepHelp.setBounds(20, 40, getWidth() - 80, 35);
         for (int i = 0; i < pads.size(); ++i)
             pads[i]->setBounds(30 + (i % 8) * width, 110 + (i / 8) * 75, juce::jmax(1, width - 8), 60);
+        selectedStepLabel.setBounds(24, 270, 58, 30);
+        stepSelector.setBounds(84, 270, 82, 30);
+        stepPitchLabel.setBounds(180, 270, 42, 30);
+        stepPitch.setBounds(222, 270, 220, 30);
+        stepPitchName.setBounds(444, 270, 48, 30);
+        stepVelocityLabel.setBounds(510, 270, 58, 30);
+        stepVelocity.setBounds(568, 270, juce::jmax(150, getWidth() - 600), 30);
     }
     void paint(juce::Graphics& g) override {
         g.fillAll(AlienStudioLookAndFeel::background);
@@ -497,6 +545,17 @@ public:
         engine.notes.panic.store(true);
     }
 private:
+    void selectSequencerStep(int step) {
+        selectedStep = juce::jlimit(0, 15, step);
+        stepSelector.setSelectedId(selectedStep + 1, juce::dontSendNotification);
+        const auto index = static_cast<std::size_t>(selectedStep);
+        const int pitch = engine.stepPitches[index].load();
+        stepPitch.setValue(pitch, juce::dontSendNotification);
+        stepPitchName.setText(juce::MidiMessage::getMidiNoteName(pitch, true, true, 4),
+            juce::dontSendNotification);
+        stepVelocity.setValue(engine.stepVelocities[index].load(), juce::dontSendNotification);
+    }
+
     void updateOctave() {
         help.setText("Play notes (outside text fields): A W S E D F T G Y H U J | Z/X octave | C"
                      + juce::String(typingInput.typing.octave()), juce::dontSendNotification);
@@ -648,6 +707,10 @@ private:
         project.synthPreset = engine.preset.load();
         for (std::size_t i = 0; i < project.stepPattern.size(); ++i)
             project.stepPattern[i] = engine.steps[i].load();
+        for (std::size_t i = 0; i < project.stepPitches.size(); ++i) {
+            project.stepPitches[i] = engine.stepPitches[i].load();
+            project.stepVelocities[i] = engine.stepVelocities[i].load();
+        }
         for (int scene = 0; scene < sceneCount; ++scene)
             for (int track = 0; track < trackCount; ++track) {
                 const auto& source = clips[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
@@ -785,7 +848,10 @@ private:
         for (std::size_t i = 0; i < result.project.stepPattern.size(); ++i) {
             engine.steps[i].store(result.project.stepPattern[i]);
             pads[static_cast<int>(i)]->setToggleState(result.project.stepPattern[i], juce::dontSendNotification);
+            engine.stepPitches[i].store(result.project.stepPitches[i]);
+            engine.stepVelocities[i].store(result.project.stepVelocities[i]);
         }
+        selectSequencerStep(selectedStep);
         loadingClip = true;
         pianoRoll.setPattern(clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)].pattern);
         loadingClip = false;
@@ -937,6 +1003,10 @@ private:
     juce::OwnedArray<SequencerStepButton> pads;
     juce::Component stepsPanel;
     juce::Label stepHelp;
+    juce::Label selectedStepLabel, stepPitchLabel, stepPitchName, stepVelocityLabel;
+    juce::ComboBox stepSelector;
+    juce::Slider stepPitch{juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight};
+    juce::Slider stepVelocity{juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight};
     alien::PianoRollEditor pianoRoll;
     juce::TabbedComponent tabs{juce::TabbedButtonBar::TabsAtTop};
     juce::Component sessionPanel;
@@ -955,7 +1025,7 @@ private:
     std::unique_ptr<juce::FileChooser> audioFileChooser;
     std::unique_ptr<juce::FileChooser> projectFileChooser;
     juce::File currentProjectFile;
-    int selectedTrack{}, selectedScene{};
+    int selectedTrack{}, selectedScene{}, selectedStep{};
     int learningControllerAction{-1};
     bool loadingClip{};
     juce::Component devicePanel;
