@@ -312,8 +312,10 @@ focus is inside the piano roll:
 
 The **Session** tab provides four independent four-bar piano-roll clip slots.
 Clicking a clip selects it for editing and queues it for launch at the next
-four-bar boundary. **Stop clip** is quantized to the same boundary. The active
-clip keeps playing while the Session and Piano roll tabs are changed.
+four-bar boundary. **Edit selected clip** opens that slot in the piano roll;
+left-click adds notes and right-click removes them. **Stop clip** is quantized
+to the same boundary. The active clip keeps playing while the Session and
+Piano roll tabs are changed.
 
 Time controls use ticks: **240 ticks = one 1/16 note**, 120 = 1/32,
 60 = 1/64, and 30 = 1/128. At 120 BPM, 30 ticks is 15.625 ms.

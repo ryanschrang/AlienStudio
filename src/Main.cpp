@@ -57,7 +57,7 @@ public:
         sessionTitle.setFont(juce::FontOptions(22.0f, juce::Font::bold));
         sessionTitle.setColour(juce::Label::textColourId, juce::Colour(0xff8ff0c0));
         sessionPanel.addAndMakeVisible(sessionHelp);
-        sessionHelp.setText("Launch a four-bar clip. Changes take effect at the next loop boundary; select Piano roll to edit it.",
+        sessionHelp.setText("Click a clip to select and queue it. Use Edit selected clip to add, move, or remove its notes.",
                             juce::dontSendNotification);
         sessionHelp.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
         for (int i = 0; i < static_cast<int>(clipButtons.size()); ++i) {
@@ -74,6 +74,14 @@ public:
             engine.requestedPianoRollClip.store(-1);
             engine.pianoRollLaunches.publish({});
             updateSessionButtons();
+        };
+        sessionPanel.addAndMakeVisible(editSelectedClip);
+        editSelectedClip.setButtonText("Edit selected clip");
+        editSelectedClip.setName("Edit selected piano roll clip");
+        editSelectedClip.setTooltip("Open the selected Session clip in the piano roll");
+        editSelectedClip.onClick = [this] {
+            tabs.setCurrentTabIndex(1);
+            pianoRoll.grabKeyboardFocus();
         };
         pianoRoll.onChange = [this] {
             clips[static_cast<std::size_t>(selectedClip)] = pianoRoll.getPattern();
@@ -147,7 +155,8 @@ public:
         const int clipWidth = juce::jmax(120, (sessionPanel.getWidth() - 78) / 4);
         for (int i = 0; i < static_cast<int>(clipButtons.size()); ++i)
             clipButtons[static_cast<std::size_t>(i)].setBounds(24 + i * (clipWidth + 10), 105, clipWidth, 86);
-        stopClip.setBounds(24, 212, 150, 36);
+        editSelectedClip.setBounds(24, 212, 180, 36);
+        stopClip.setBounds(216, 212, 150, 36);
         octaveDown.setBounds(20, getHeight() - 154, 100, 30);
         octaveUp.setBounds(130, getHeight() - 154, 100, 30);
         help.setBounds(245, getHeight() - 154, getWidth() - 265, 30);
@@ -221,7 +230,7 @@ private:
             auto text = "Clip " + juce::String(i + 1);
             if (i == active) text += "\nPlaying";
             else if (i == requested) text += "\nQueued";
-            if (i == selectedClip) text += "  • Edit";
+            if (i == selectedClip) text += "  • Selected";
             clipButtons[static_cast<std::size_t>(i)].setButtonText(text);
         }
         stopClip.setButtonText(requested < 0 ? "Stop queued" : "Stop clip");
@@ -245,7 +254,7 @@ private:
     juce::Component sessionPanel;
     juce::Label sessionTitle, sessionHelp;
     std::array<juce::TextButton, 4> clipButtons;
-    juce::TextButton stopClip;
+    juce::TextButton editSelectedClip, stopClip;
     std::array<alien::PianoRollPattern, 4> clips{};
     int selectedClip{};
     juce::Component devicePanel;
