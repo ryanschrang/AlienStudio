@@ -46,6 +46,10 @@ static void modelTests() {
     require(pattern.resize(first, -10) && pattern.find(first)->lengthSteps == PianoRollPattern::minLength, "resize has one-tick minimum");
     require(!pattern.setVelocity(first, std::numeric_limits<float>::quiet_NaN())
         && pattern.setVelocity(first, 0) && pattern.find(first)->velocity > 0, "velocity is finite and audible");
+    require(!pattern.setProbability(first, std::numeric_limits<float>::quiet_NaN())
+        && pattern.setProbability(first, -1) && pattern.find(first)->probability == 0
+        && pattern.setProbability(first, 2) && pattern.find(first)->probability == 1,
+        "probability is finite and clamps to its MIDI-editor range");
     require(pattern.add(60, 0, 1, std::numeric_limits<float>::infinity()) == 0, "invalid velocity rejected");
     require(pattern.erase(first) && !pattern.erase(first) && pattern.find(last), "erase preserves other IDs");
     require(!pattern.move(first, 60, 0) && !pattern.resize(first, 1), "stale selection cannot edit another note");
@@ -56,6 +60,37 @@ static void modelTests() {
         require(pattern.add(static_cast<int>(i), 0, 1) != 0, "fixed note capacity");
     require(pattern.valid() && pattern.add(0, 0, 1) == 0, "capacity cannot overflow storage");
     pattern.clear(); require(pattern.valid() && pattern.count == 0, "clear valid empty pattern");
+}
+
+static void probabilityTests() {
+    PianoRollPattern pattern;
+    const auto id = pattern.add(60, 0, 1, 0.8f, 0.5f);
+    PianoRollMailbox mailbox;
+    mailbox.publish(pattern);
+    PianoRollScheduler scheduler;
+    Recorder record;
+    scheduler.beginBlock(mailbox, true, 800, 120, record); // 100 samples per step.
+    for (record.sample = 0; record.sample < 64 * 100 * 20; ++record.sample) scheduler.nextSample(record);
+    std::size_t ons = 0, offs = 0;
+    for (std::size_t i = 0; i < record.count; ++i) record.events[i].on ? ++ons : ++offs;
+    require(ons > 0 && ons < 20 && ons == offs, "probability varies deterministically by loop with balanced note-offs");
+    scheduler.stop(record);
+    PianoRollMailbox repeatedMailbox;
+    repeatedMailbox.publish(pattern);
+    PianoRollScheduler repeatedScheduler;
+    Recorder repeated;
+    repeatedScheduler.beginBlock(repeatedMailbox, true, 800, 120, repeated);
+    for (repeated.sample = 0; repeated.sample < 64 * 100 * 20; ++repeated.sample) repeatedScheduler.nextSample(repeated);
+    require(repeated.count == record.count, "transport restart repeats the same probability sequence");
+    for (std::size_t i = 0; i < repeated.count; ++i)
+        require(repeated.events[i].sample == record.events[i].sample && repeated.events[i].on == record.events[i].on,
+                "probability sequence is stable across transport restart");
+    pattern.setProbability(id, 0);
+    mailbox.publish(pattern);
+    Recorder muted;
+    scheduler.beginBlock(mailbox, true, 800, 120, muted);
+    for (muted.sample = 0; muted.sample < 64 * 100 * 3; ++muted.sample) scheduler.nextSample(muted);
+    require(muted.count == 0, "zero probability never starts or releases an unowned gate");
 }
 
 static void fractionalModelTests() {
@@ -497,7 +532,7 @@ static void editingAndAllocationTests() {
     for (int iteration = 0; iteration < 100; ++iteration) {
         pattern.clear();
         for (int n = 0; n < 16; ++n) pattern.add(n + 48, n % 4 + (n % 3) * PianoRollPattern::timeQuantum,
-                0.5 + (n % 5) * PianoRollPattern::timeQuantum);
+                0.5 + (n % 5) * PianoRollPattern::timeQuantum, .8f, n % 2 == 0 ? .5f : 1.0f);
         mailbox.publish(pattern);
         scheduler.beginBlock(mailbox, true, 48000, 137, send);
         for (int sample = 0; sample < 1000; ++sample) {
@@ -513,6 +548,7 @@ int main() {
     modelTests();
     fractionalModelTests();
     mailboxTests();
+    probabilityTests();
     timingTests();
     fractionalTimingTests();
     fractionalSnapshotTests();
