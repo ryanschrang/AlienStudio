@@ -286,8 +286,8 @@ text-field Copy/Paste, Tab navigation, typing piano, and Stop during playback.
 ### Piano-roll processing tools
 
 Select notes before processing: click a note, Ctrl+click to toggle individual
-notes, drag an empty area to select a rectangle, or Ctrl+A to select the clip.
-Ctrl+drag adds a rectangle to the selection. Dragging a selected note moves the
+notes, Shift-drag an empty area to select a rectangle, or Ctrl+A to select the clip.
+Ctrl+Shift-drag adds a rectangle to the selection. Dragging a selected note moves the
 group; Delete and the Velocity control also apply to the selection. The grid's
 snap setting controls ordinary move/resize gestures.
 
@@ -300,6 +300,7 @@ focus is inside the piano roll:
 | Alt+U | Chop | Slice duration and gate percentage. The final fragment stays within the original note; all fragments become selected. |
 | Alt+R | Randomize | Symmetric timing, velocity and semitone variation, with a repeatable seed. |
 | Alt+Q | Quantize | Grid, strength and swing. Swing delays alternate grid points; strength blends toward the nearest point on that swung grid. |
+| Alt+C | Chord stamp | Root MIDI note, chord type, inversion, length and velocity. Preview auditions the voicing before Apply adds it at the amber ruler cursor. |
 
 Time controls use ticks: **240 ticks = one 1/16 note**, 120 = 1/32,
 60 = 1/64, and 30 = 1/128. At 120 BPM, 30 ticks is 15.625 ms.
@@ -308,6 +309,13 @@ Pitch and velocity stay inside MIDI bounds. A fixed seed and the same source
 notes/settings produce the same random result; applying again processes the
 already edited notes, so Undo first when comparing settings from the same source.
 
+Chord stamp includes major, minor, diminished, augmented, suspended second,
+suspended fourth, dominant seventh, major seventh and minor seventh voicings.
+It does not require selected notes. Click the ruler to set its start, choose an
+inversion, and use Preview to audition every tone. Apply releases the preview,
+adds the complete chord, and selects its notes. Invalid pitches, loop overflow,
+or the 128-note limit reject the complete chord without partial insertion.
+
 **Apply** commits the result; **Cancel** or Escape closes settings without changing
 notes. Each Apply is one undo step, and each mouse gesture is one step. Use the
 Undo/Redo buttons, Ctrl+Z and Ctrl+Y (or Ctrl+Shift+Z). Up to 64 edits are retained
@@ -315,7 +323,7 @@ for this session. Selection is restored with each edit. A new edit discards the
 redo branch. No-op tools do not add history. Settings fields retain their normal
 text editing and Tab/Shift+Tab navigation.
 
-The clip has a 128-note limit. If Chop would exceed it, the whole operation is
+The clip has a 128-note limit. If Chop or Chord stamp would exceed it, the whole operation is
 rejected with an explanation; no notes are lost. Processing affects selected
 notes only. Edits and undo/redo publish through the same audio snapshot path as
 ordinary editing, releasing removed/moved notes during playback. Same-pitch

@@ -416,7 +416,49 @@ static void checkPianoRollProcessing() {
     shortcut(juce::KeyPress::escapeKey, {});
     require(!roll.isProcessingPanelOpen(), "Escape closes tool settings from a focused parameter");
 
+    // Chord stamping uses the same accessible panel but creates a new selected
+    // chord at the ruler cursor instead of processing an existing selection.
+    alien::PianoRollPattern empty;
+    roll.setPattern(empty);
+    roll.setInsertionStep(8);
+    std::set<int> previewHeld;
+    roll.onAudition = [&](int pitch, float velocity) {
+        if (velocity > 0) previewHeld.insert(pitch); else previewHeld.erase(pitch);
+    };
+    roll.grabKeyboardFocus();
+    shortcut('c', juce::ModifierKeys::altModifier);
+    require(roll.isProcessingPanelOpen(), "Alt-C opens chord stamp settings without selected notes");
+    auto* chordType = dynamic_cast<juce::ComboBox*>(control("Chord stamp type"));
+    auto* previewChord = dynamic_cast<juce::Button*>(control("Preview chord stamp"));
+    require(chordType != nullptr && previewChord != nullptr && previewChord->isShowing(),
+        "chord type and preview controls are accessible and visible");
+    chordType->setSelectedId(2, juce::sendNotificationSync); // Minor.
+    setValue("Chord root MIDI note", 60);
+    setValue("Chord stamp length ticks", 960);
+    setValue("Chord stamp velocity", 90);
+    setValue("Chord inversion", 1);
+    previewChord->triggerClick();
+    pump();
+    require(previewHeld == std::set<int>({63, 67, 72}), "preview auditions the selected minor first inversion");
+    previewChord->triggerClick();
+    pump();
+    require(previewHeld.empty(), "turning preview off releases every chord tone");
+    previewChord->triggerClick();
+    click("Apply piano roll processing");
+    require(previewHeld.empty() && !roll.isProcessingPanelOpen() && roll.getPattern().count == 3
+        && roll.getSelectedIds().size() == 3, "Apply releases preview and selects the complete stamped chord");
+    require(roll.getPattern().notes[0].pitch == 63 && roll.getPattern().notes[1].pitch == 67
+        && roll.getPattern().notes[2].pitch == 72 && roll.getPattern().notes[0].startStep == 8
+        && roll.getPattern().notes[0].lengthSteps == 4
+        && std::abs(roll.getPattern().notes[0].velocity - 90.0f / 127.0f) < 0.00001f,
+        "stamp preserves its root voicing, cursor position, length and velocity");
+    roll.undo();
+    require(roll.getPattern().count == 0, "one undo removes the entire stamped chord");
+    roll.redo();
+    require(roll.getPattern().count == 3, "redo restores the same stamped chord");
+
     const std::array<std::uint32_t, 1> oneNote{low};
+    roll.setPattern(source);
     roll.setSelection(oneNote);
     roll.grabKeyboardFocus();
     for (int i = 0; i < 65; ++i) roll.keyPressed(juce::KeyPress(juce::KeyPress::upKey));
@@ -555,6 +597,12 @@ static void checkPianoRollProcessing() {
     shortcut('r', juce::ModifierKeys::altModifier);
     for (const auto* name : {"Apply piano roll processing", "Cancel piano roll processing", "Randomize pitch semitones"})
         require(roll.getLocalBounds().contains(control(name)->getBounds()), "processing controls fit the minimum window size");
+    shortcut(juce::KeyPress::escapeKey, {});
+    shortcut('c', juce::ModifierKeys::altModifier);
+    for (const auto* name : {"Chord stamp type", "Chord root MIDI note", "Chord inversion", "Preview chord stamp",
+                             "Apply piano roll processing", "Cancel piano roll processing"})
+        require(control(name)->isShowing() && roll.getLocalBounds().contains(control(name)->getBounds()),
+                "chord stamp controls fit the minimum window size");
     shortcut(juce::KeyPress::escapeKey, {});
     keyboard.removeListener(&notes);
     host.removeFromDesktop();

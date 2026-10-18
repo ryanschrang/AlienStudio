@@ -4,9 +4,11 @@
 #include "PianoRollSequence.h"
 #include "PianoRollProcessing.h"
 #include "PianoRollClipboard.h"
+#include "PianoRollChordStamp.h"
 #include <cmath>
 #include <functional>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace alien {
@@ -26,7 +28,7 @@ public:
                     "Shift Left or Right changes their length. Ctrl A selects all, Ctrl Z undoes, "
                     "and Ctrl Y redoes. Ctrl C copies, Ctrl V pastes at the amber cursor, and Ctrl D duplicates. "
                     "Click the ruler or empty grid to place the paste cursor. "
-                    "Alt S, U, R, Q open processing settings. Tab moves between controls.");
+                    "Alt C opens chord stamps; Alt S, U, R, Q open processing settings. Tab moves between controls.");
         setWantsKeyboardFocus(true);
         setMouseClickGrabsKeyboardFocus(true);
 
@@ -94,6 +96,7 @@ public:
         tools.addItem("Chop", 2);
         tools.addItem("Randomize", 3);
         tools.addItem("Quantize", 4);
+        tools.addItem("Chord stamp", 5);
         tools.setSelectedId(1, juce::dontSendNotification);
         tools.setTooltip("Choose a note processing tool, then open its settings");
         tools.onChange = [this] { if (panelOpen) configureToolPanel(); };
@@ -128,11 +131,31 @@ public:
         seed.setWantsKeyboardFocus(true);
         seed.setTextBoxStyle(juce::Slider::TextBoxRight, false, 125, 25);
         seed.setRange(1, 999999999, 1);
+        seed.onValueChange = [this] { refreshChordPreview(); };
         seedLabel.setText("Random seed", juce::dontSendNotification);
         seedLabel.setJustificationType(juce::Justification::centredRight);
         addChildComponent(descending);
         descending.setButtonText("High to low");
         descending.setName("Strum from high pitch to low pitch");
+        addChildComponent(chordTypeLabel);
+        addChildComponent(chordType);
+        chordTypeLabel.setText("Chord", juce::dontSendNotification);
+        chordTypeLabel.setJustificationType(juce::Justification::centredRight);
+        chordType.setName("Chord stamp type");
+        for (const auto& item : std::initializer_list<std::pair<const char*, int>> {
+                 {"Major", 1}, {"Minor", 2}, {"Diminished", 3}, {"Augmented", 4},
+                 {"Suspended 2", 5}, {"Suspended 4", 6}, {"Dominant 7", 7},
+                 {"Major 7", 8}, {"Minor 7", 9} }) chordType.addItem(item.first, item.second);
+        chordType.setSelectedId(1, juce::dontSendNotification);
+        chordType.onChange = [this] { updateChordInversionRange(); refreshChordPreview(); };
+        addChildComponent(previewChordButton);
+        previewChordButton.setButtonText("Preview");
+        previewChordButton.setName("Preview chord stamp");
+        previewChordButton.setTooltip("Toggle to audition the chord without adding notes");
+        previewChordButton.onClick = [this] {
+            if (previewChordButton.getToggleState()) startChordPreview();
+            else releaseChordPreview(false);
+        };
         addChildComponent(applyButton);
         applyButton.setButtonText("Apply");
         applyButton.setName("Apply piano roll processing");
@@ -141,6 +164,8 @@ public:
         cancelButton.setButtonText("Cancel");
         cancelButton.setName("Cancel piano roll processing");
         cancelButton.onClick = [this] { closeToolPanel(); };
+        for (auto& parameter : parameters)
+            parameter.onValueChange = [this] { refreshChordPreview(); };
         history.reserve(historyLimit);
 
         addAndMakeVisible(pitchScroll);
@@ -221,6 +246,7 @@ public:
 
     void releaseAudition() {
         releasePreviewNote();
+        releaseChordPreview(true);
         if (drag == Drag::audition) drag = Drag::none;
     }
 
@@ -252,9 +278,17 @@ public:
             parameterLabels[i].setBounds(x, 78, 106, 26);
             parameters[i].setBounds(x + 112, 78, width - 120, 26);
         }
-        seedLabel.setBounds(16, 113, 106, 26);
-        seed.setBounds(128, 113, 190, 26);
-        descending.setBounds(336, 113, 150, 26);
+        if (tools.getSelectedId() == 5) {
+            chordTypeLabel.setBounds(16, 113, 72, 26);
+            chordType.setBounds(94, 113, 180, 26);
+            seedLabel.setBounds(282, 113, 72, 26);
+            seed.setBounds(360, 113, 110, 26);
+            previewChordButton.setBounds(480, 113, 88, 28);
+        } else {
+            seedLabel.setBounds(16, 113, 106, 26);
+            seed.setBounds(128, 113, 190, 26);
+            descending.setBounds(336, 113, 150, 26);
+        }
         applyButton.setBounds(getWidth() - 184, 113, 78, 28);
         cancelButton.setBounds(getWidth() - 98, 113, 78, 28);
         panelHelp.setBounds(20, 145, getWidth() - 40, 22);
@@ -539,7 +573,8 @@ public:
         if (panelOpen && code == juce::KeyPress::escapeKey && !textEntry) { closeToolPanel(); return true; }
         if (key.getModifiers().isAltDown() && !key.getModifiers().isCtrlDown()
             && !key.getModifiers().isCommandDown()) {
-            const auto tool = letter == 'S' ? 1 : letter == 'U' ? 2 : letter == 'R' ? 3 : letter == 'Q' ? 4 : 0;
+            const auto tool = letter == 'S' ? 1 : letter == 'U' ? 2 : letter == 'R' ? 3
+                            : letter == 'Q' ? 4 : letter == 'C' ? 5 : 0;
             if (tool != 0 && !textEntry) { openToolPanel(tool); return true; }
             return false;
         }
@@ -709,10 +744,13 @@ private:
         exampleButton.setEnabled(pattern.count == 0);
         undoButton.setEnabled(canUndo());
         redoButton.setEnabled(canRedo());
-        applyButton.setEnabled(selection.count != 0);
+        applyButton.setEnabled(tools.getSelectedId() == 5 || selection.count != 0);
         if (panelOpen)
-            panelTitle.setText(tools.getText() + " selected notes  |  "
-                               + juce::String(static_cast<int>(selection.count)) + " selected", juce::dontSendNotification);
+            panelTitle.setText(tools.getSelectedId() == 5
+                               ? "Chord stamp at step " + juce::String(insertionStep + 1.0, 3)
+                               : tools.getText() + " selected notes  |  "
+                                 + juce::String(static_cast<int>(selection.count)) + " selected",
+                               juce::dontSendNotification);
         repaint();
     }
     void changed() {
@@ -937,18 +975,28 @@ private:
         parameterLabels[index].setVisible(true);
     }
     void configureToolPanel() {
+        releaseChordPreview(true);
         for (std::size_t i = 0; i < parameters.size(); ++i) {
             parameters[i].setVisible(false);
             parameterLabels[i].setVisible(false);
         }
         const auto tool = tools.getSelectedId();
-        panelTitle.setText(tools.getText() + " selected notes  |  " + juce::String(static_cast<int>(selection.count))
-                           + " selected", juce::dontSendNotification);
-        panelHelp.setText("240 ticks = one 1/16 note. Changes apply to selected notes only.", juce::dontSendNotification);
-        seed.setVisible(tool == 1 || tool == 3);
+        panelTitle.setText(tool == 5 ? "Chord stamp at step " + juce::String(insertionStep + 1.0, 3)
+                                    : tools.getText() + " selected notes  |  " + juce::String(static_cast<int>(selection.count))
+                                      + " selected", juce::dontSendNotification);
+        panelHelp.setText(tool == 5 ? "Choose a voicing, preview it, then add the chord as one undoable edit."
+                                    : "240 ticks = one 1/16 note. Changes apply to selected notes only.",
+                          juce::dontSendNotification);
+        seed.setVisible(tool == 1 || tool == 3 || tool == 5);
         seedLabel.setVisible(seed.isVisible());
         descending.setVisible(tool == 1);
+        chordType.setVisible(tool == 5);
+        chordTypeLabel.setVisible(tool == 5);
+        previewChordButton.setVisible(tool == 5);
         if (tool == 1) {
+            seed.setName("Processing random seed");
+            seedLabel.setText("Random seed", juce::dontSendNotification);
+            seed.setRange(1, 999999999, 1);
             configureParameter(0, "Delay (ticks)", "Strum delay ticks", 0, 960, strumSettings.delaySteps * 240.0);
             configureParameter(1, "Velocity +/- %", "Strum velocity variation percent", 0, 100, strumSettings.velocityVariation * 100.0);
             seed.setValue(strumSettings.seed, juce::dontSendNotification);
@@ -957,14 +1005,27 @@ private:
             configureParameter(0, "Slice (ticks)", "Chop slice ticks", 1, 61440, chopSettings.divisionSteps * 240.0);
             configureParameter(1, "Gate (%)", "Chop gate percent", 5, 100, chopSettings.gate * 100.0);
         } else if (tool == 3) {
+            seed.setName("Processing random seed");
+            seedLabel.setText("Random seed", juce::dontSendNotification);
+            seed.setRange(1, 999999999, 1);
             configureParameter(0, "Timing +/- ticks", "Randomize timing ticks", 0, 960, randomizeSettings.timingSteps * 240.0);
             configureParameter(1, "Velocity +/- %", "Randomize velocity variation percent", 0, 100, randomizeSettings.velocityVariation * 100.0);
             configureParameter(2, "Pitch +/- st", "Randomize pitch semitones", 0, 24, randomizeSettings.pitchSemitones);
             seed.setValue(randomizeSettings.seed, juce::dontSendNotification);
-        } else {
+        } else if (tool == 4) {
             configureParameter(0, "Grid (ticks)", "Quantize grid ticks", 1, 61440, quantizeSettings.gridSteps * 240.0);
             configureParameter(1, "Strength (%)", "Quantize strength percent", 0, 100, quantizeSettings.strength * 100.0);
             configureParameter(2, "Swing (%)", "Quantize swing percent", 0, 75, quantizeSettings.swing * 100.0);
+        } else {
+            configureParameter(0, "Root (MIDI)", "Chord root MIDI note", 0, 127, chordSettings.root);
+            configureParameter(1, "Length (ticks)", "Chord stamp length ticks", 1, 61440, chordSettings.lengthSteps * 240.0);
+            configureParameter(2, "Velocity", "Chord stamp velocity", 1, 127, chordSettings.velocity * 127.0f);
+            seed.setName("Chord inversion");
+            seedLabel.setText("Inversion", juce::dontSendNotification);
+            seed.setRange(0, 3, 1);
+            seed.setValue(chordSettings.inversion, juce::dontSendNotification);
+            chordType.setSelectedId(static_cast<int>(chordSettings.type) + 1, juce::dontSendNotification);
+            updateChordInversionRange();
         }
         updateSelection();
     }
@@ -983,9 +1044,11 @@ private:
         parameters[0].grabKeyboardFocus();
     }
     void closeToolPanel() {
+        releaseChordPreview(true);
         panelOpen = false;
         for (auto* child : std::initializer_list<juce::Component*> { &panelTitle, &panelHelp, &applyButton,
-                                                                 &cancelButton, &seed, &seedLabel, &descending })
+                                                                 &cancelButton, &seed, &seedLabel, &descending,
+                                                                 &chordType, &chordTypeLabel, &previewChordButton })
             child->setVisible(false);
         for (std::size_t i = 0; i < parameters.size(); ++i) {
             parameters[i].setVisible(false);
@@ -998,6 +1061,29 @@ private:
     void applyTool() {
         endEdit();
         beginEdit();
+        if (tools.getSelectedId() == 5) {
+            releaseChordPreview(true);
+            chordSettings = currentChordSettings();
+            const auto result = stampChord(pattern, insertionStep, chordSettings);
+            if (result.changed()) {
+                selection = result.selection;
+                activeId = selection.ids[0];
+                changed();
+                endEdit();
+                closeToolPanel();
+            } else {
+                endEdit();
+                const auto message = result.status == ChordStampStatus::capacityExceeded
+                    ? "No changes: the chord would exceed the 128-note limit."
+                    : result.status == ChordStampStatus::outOfBounds
+                    ? "No changes: the chord duration extends beyond the loop."
+                    : "No changes: the root, inversion, length or velocity is invalid.";
+                panelHelp.setText(message, juce::dontSendNotification);
+                statusMessage = message;
+                updateSelection();
+            }
+            return;
+        }
         ProcessingResult result;
         const auto value = [this](std::size_t i) { return parameters[i].getValue(); };
         const auto randomSeed = static_cast<std::uint32_t>(seed.getValue());
@@ -1030,6 +1116,41 @@ private:
             updateSelection();
         }
     }
+    ChordStampSettings currentChordSettings() const {
+        return { static_cast<int>(parameters[0].getValue()),
+                 static_cast<ChordType>(juce::jlimit(1, 9, chordType.getSelectedId()) - 1),
+                 static_cast<int>(seed.getValue()), parameters[1].getValue() / 240.0,
+                 static_cast<float>(parameters[2].getValue() / 127.0) };
+    }
+    void updateChordInversionRange() {
+        ChordStampSettings settings;
+        settings.type = static_cast<ChordType>(juce::jlimit(1, 9, chordType.getSelectedId()) - 1);
+        const auto count = chordPitches(settings).count;
+        seed.setRange(0, static_cast<double>(count > 0 ? count - 1 : 0), 1);
+    }
+    void releaseChordPreview(bool clearToggle) {
+        for (std::size_t i = 0; i < previewedChordCount; ++i)
+            if (onAudition) onAudition(previewedChordPitches[i], 0.0f);
+        previewedChordCount = 0;
+        if (clearToggle) previewChordButton.setToggleState(false, juce::dontSendNotification);
+    }
+    void startChordPreview() {
+        releaseChordPreview(false);
+        const auto settings = currentChordSettings();
+        const auto pitches = chordPitches(settings);
+        if (pitches.count == 0) {
+            previewChordButton.setToggleState(false, juce::dontSendNotification);
+            return;
+        }
+        previewedChordPitches = pitches.values;
+        previewedChordCount = pitches.count;
+        for (std::size_t i = 0; i < previewedChordCount; ++i)
+            if (onAudition) onAudition(previewedChordPitches[i], settings.velocity);
+    }
+    void refreshChordPreview() {
+        if (panelOpen && tools.getSelectedId() == 5 && previewChordButton.getToggleState())
+            startChordPreview();
+    }
     void setLowestVisible(int pitch) {
         const auto next = juce::jlimit(lowestPitch, highestPitch - visiblePitches + 1, pitch);
         if (next == lowestVisiblePitch) return;
@@ -1046,15 +1167,15 @@ private:
     }
 
     PianoRollPattern pattern;
-    juce::ComboBox snap, tools;
-    juce::Label snapLabel, velocityLabel;
+    juce::ComboBox snap, tools, chordType;
+    juce::Label snapLabel, velocityLabel, chordTypeLabel;
     juce::Slider velocity;
     juce::TextButton clearButton, exampleButton, editActionsButton, toolButton, undoButton, redoButton, applyButton, cancelButton;
     juce::Label panelTitle, panelHelp, seedLabel;
     std::array<juce::Label, 3> parameterLabels;
     std::array<juce::Slider, 3> parameters;
     juce::Slider seed;
-    juce::ToggleButton descending;
+    juce::ToggleButton descending, previewChordButton;
     juce::ScrollBar pitchScroll { true };
     PianoRollSelection selection, marqueeBase;
     PianoRollClipboard clipboard;
@@ -1073,6 +1194,9 @@ private:
     ChopSettings chopSettings;
     RandomizeSettings randomizeSettings;
     QuantizeSettings quantizeSettings;
+    ChordStampSettings chordSettings;
+    std::array<int, 4> previewedChordPitches {};
+    std::size_t previewedChordCount {};
     int lowestVisiblePitch { 48 }, auditionPitch { -1 };
     double playhead { -1.0 }, insertionStep {}, rememberedLength {};
     float rememberedVelocity { 0.8f };
