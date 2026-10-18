@@ -5,10 +5,21 @@
 #include "MidiInputPanel.h"
 #include "CompactWorkspace.h"
 #include "SessionClipButton.h"
+#include "AudioClipImport.h"
+#include "AudioClipWaveform.h"
 #include <array>
 #include <atomic>
 #include <cmath>
 #include <functional>
+#include <memory>
+#include <utility>
+#include <vector>
+
+struct SessionClipContent {
+    alien::PianoRollPattern pattern;
+    const alien::SessionAudioClip* audio{};
+    juce::String audioFileName;
+};
 
 class MainComponent : public juce::Component, private juce::Timer, private juce::MidiKeyboardState::Listener, private juce::ChangeListener {
 public:
@@ -58,7 +69,7 @@ public:
         sessionTitle.setFont(juce::FontOptions(22.0f, juce::Font::bold));
         sessionTitle.setColour(juce::Label::textColourId, juce::Colour(0xff8ff0c0));
         sessionPanel.addAndMakeVisible(sessionHelp);
-        sessionHelp.setText("Launch a scene to switch all four tracks together. Click a track cell to launch it; right-click to edit.",
+        sessionHelp.setText("Launch a scene to switch all tracks together. Click a clip to launch; right-click to edit or view audio.",
                             juce::dontSendNotification);
         sessionHelp.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
         sessionPanel.addAndMakeVisible(launchTimingLabel);
@@ -137,21 +148,35 @@ public:
         stopClip.onClick = [this] { stopAllSessionTracks(); };
         sessionPanel.addAndMakeVisible(editSelectedClip);
         editSelectedClip.setButtonText("Edit selected clip");
-        editSelectedClip.setName("Edit selected piano roll clip");
-        editSelectedClip.setTooltip("Open the selected Session clip in the piano roll");
+        editSelectedClip.setName("Edit selected Session clip");
+        editSelectedClip.setTooltip("Open the selected MIDI clip in the piano roll or show its audio waveform");
         editSelectedClip.onClick = [this] {
             selectClipForEditing(selectedTrack, selectedScene);
         };
+        addAndMakeVisible(importAudio);
+        importAudio.setButtonText("Import WAV/MP3");
+        importAudio.setName("Import audio file to selected Session clip");
+        importAudio.setTooltip("Decode a WAV or MP3 off the audio thread and add it to the selected clip");
+        importAudio.onClick = [this] { chooseAudioFile(); };
+        sessionPanel.addAndMakeVisible(removeAudio);
+        removeAudio.setButtonText("Remove audio");
+        removeAudio.setName("Remove audio from selected Session clip");
+        removeAudio.onClick = [this] { removeAudioFromSelectedClip(); };
+        sessionPanel.addAndMakeVisible(audioImportStatus);
+        audioImportStatus.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
+        audioImportStatus.setJustificationType(juce::Justification::centredLeft);
+        sessionPanel.addAndMakeVisible(audioWaveform);
         pianoRoll.onChange = [this] {
-            clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)] = pianoRoll.getPattern();
+            auto& clip = clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)];
+            clip.pattern = pianoRoll.getPattern();
             if (loadingClip) return;
+            if (clip.audio != nullptr) return;
             engine.requestedPianoRollClip[static_cast<std::size_t>(selectedTrack)].store(selectedScene);
             if (engine.activePianoRollClip[static_cast<std::size_t>(selectedTrack)].load() == selectedScene)
                 engine.pianoRollNotes[static_cast<std::size_t>(selectedTrack)].publish(
-                    clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)]);
+                    clip.pattern);
             else
-                engine.pianoRollLaunches[static_cast<std::size_t>(selectedTrack)].publish(
-                    clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)]);
+                publishSessionClip(selectedTrack, selectedScene, false);
         };
         pianoRoll.onAudition = [this](int note, float velocity) {
             if (velocity > 0) keyboardState.noteOn(3, note, velocity);
@@ -159,11 +184,12 @@ public:
         };
         for (int scene = 0; scene < sceneCount; ++scene)
             for (int track = 0; track < trackCount; ++track) {
-                auto& pattern = clips[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
-                if (scene == 0 && track == 0) pattern = pianoRoll.getPattern();
+                auto& clip = clips[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
+                if (scene == 0 && track == 0) clip.pattern = pianoRoll.getPattern();
             }
         engine.requestedPianoRollClip[0].store(0);
-        engine.pianoRollLaunches[0].publish(clips[0][0]);
+        updateAudioClipEditor();
+        publishSessionClip(0, 0, false);
         updateSessionButtons();
         devicePanel.addAndMakeVisible(presetLabel);
         presetLabel.setText("Synth preset", juce::dontSendNotification);
@@ -198,6 +224,8 @@ public:
     }
     ~MainComponent() override {
         stopTimer();
+        audioFileChooser.reset();
+        audioImportPool.removeAllJobs(true, -1);
         tabs.getTabbedButtonBar().removeChangeListener(this);
         releaseNotes();
         keyboardState.removeListener(this);
@@ -221,26 +249,32 @@ public:
         const int labelWidth = 118;
         const int gridWidth = juce::jmax(280, sessionPanel.getWidth() - labelWidth - 44);
         const int trackWidth = gridWidth / trackCount;
-        const int sceneHeight = 54;
-        const int gridTop = 118;
+        const int sceneHeight = 48;
+        const int sceneGap = 6;
+        const int gridTop = 112;
         for (int scene = 0; scene < sceneCount; ++scene) {
-            sceneButtons[static_cast<std::size_t>(scene)].setBounds(24, gridTop + scene * (sceneHeight + 8), labelWidth - 8, sceneHeight);
+            sceneButtons[static_cast<std::size_t>(scene)].setBounds(24, gridTop + scene * (sceneHeight + sceneGap), labelWidth - 8, sceneHeight);
             for (int track = 0; track < trackCount; ++track)
                 clipButtons[cellIndex(track, scene)].setBounds(labelWidth + 24 + track * trackWidth,
-                    gridTop + scene * (sceneHeight + 8), trackWidth - 8, sceneHeight);
+                    gridTop + scene * (sceneHeight + sceneGap), trackWidth - 8, sceneHeight);
         }
-        editSelectedClip.setBounds(24, gridTop + sceneCount * (sceneHeight + 8) + 12, 180, 36);
-        stopClip.setBounds(216, gridTop + sceneCount * (sceneHeight + 8) + 12, 150, 36);
-        launchTimingLabel.setBounds(380, gridTop + sceneCount * (sceneHeight + 8) + 12, 78, 36);
-        launchTiming.setBounds(460, gridTop + sceneCount * (sceneHeight + 8) + 12, 100, 36);
-        const int mappingY = gridTop + sceneCount * (sceneHeight + 8) + 56;
+        const int actionY = gridTop + sceneCount * (sceneHeight + sceneGap) + 8;
+        editSelectedClip.setBounds(24, actionY, 174, 32);
+        stopClip.setBounds(206, actionY, 146, 32);
+        launchTimingLabel.setBounds(360, actionY, 76, 32);
+        launchTiming.setBounds(438, actionY, 94, 32);
+        removeAudio.setBounds(544, actionY, 104, 32);
+        audioImportStatus.setBounds(656, actionY, juce::jmax(100, sessionPanel.getWidth() - 680), 32);
+        const int mappingY = actionY + 38;
         controllerTarget.setBounds(24, mappingY, 130, 32);
         learnController.setBounds(162, mappingY, 104, 32);
         clearController.setBounds(274, mappingY, 70, 32);
         controllerMappingLabel.setBounds(352, mappingY, juce::jmax(100, sessionPanel.getWidth() - 376), 32);
+        audioWaveform.setBounds(24, mappingY + 38, sessionPanel.getWidth() - 48, 72);
         octaveDown.setBounds(20, getHeight() - 154, 100, 30);
         octaveUp.setBounds(130, getHeight() - 154, 100, 30);
-        help.setBounds(245, getHeight() - 154, getWidth() - 265, 30);
+        importAudio.setBounds(245, getHeight() - 154, 150, 30);
+        help.setBounds(410, getHeight() - 154, getWidth() - 430, 30);
         keyboard.setBounds(20, getHeight() - 110, getWidth() - 40, 90);
         const int width = (getWidth() - 100) / 8;
         stepHelp.setBounds(20, 40, getWidth() - 80, 35);
@@ -314,9 +348,7 @@ private:
     }
     void selectAndLaunchClip(int track, int scene) {
         loadClip(track, scene);
-        engine.requestedPianoRollClip[static_cast<std::size_t>(selectedTrack)].store(selectedScene);
-        engine.pianoRollLaunches[static_cast<std::size_t>(selectedTrack)].publish(
-            clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)]);
+        publishSessionClip(selectedTrack, selectedScene, false);
         updateSessionButtons();
     }
     void selectClipForEditing(int clip) {
@@ -324,24 +356,30 @@ private:
     }
     void selectClipForEditing(int track, int scene) {
         loadClip(track, scene);
-        tabs.setCurrentTabIndex(1);
-        pianoRoll.grabKeyboardFocus();
+        if (clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)].audio != nullptr)
+            tabs.setCurrentTabIndex(2);
+        else {
+            tabs.setCurrentTabIndex(1);
+            pianoRoll.grabKeyboardFocus();
+        }
         updateSessionButtons();
     }
     static constexpr int trackCount = 4, sceneCount = 4;
+    static constexpr std::size_t maxSessionAudioBytes = 512u * 1024u * 1024u;
     static constexpr std::size_t cellIndex(int track, int scene) noexcept {
         return static_cast<std::size_t>(scene * trackCount + track);
     }
     void saveEditedClip() {
-        clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)] = pianoRoll.getPattern();
+        clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)].pattern = pianoRoll.getPattern();
     }
     void loadClip(int track, int scene) {
         saveEditedClip();
         selectedTrack = juce::jlimit(0, trackCount - 1, track);
         selectedScene = juce::jlimit(0, sceneCount - 1, scene);
         loadingClip = true;
-        pianoRoll.setPattern(clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)]);
+        pianoRoll.setPattern(clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)].pattern);
         loadingClip = false;
+        updateAudioClipEditor();
     }
     void launchScene(int scene) {
         saveEditedClip();
@@ -350,7 +388,7 @@ private:
         for (int track = 0; track < trackCount; ++track) {
             const auto index = static_cast<std::size_t>(track);
             engine.requestedPianoRollClip[index].store(scene);
-            engine.pianoRollLaunches[index].publish(clips[static_cast<std::size_t>(scene)][index]);
+            publishSessionClip(track, scene, true);
         }
         updateSessionButtons();
     }
@@ -359,9 +397,96 @@ private:
         engine.synchronizedSceneLaunch.store(true);
         for (int track = 0; track < trackCount; ++track) {
             engine.requestedPianoRollClip[static_cast<std::size_t>(track)].store(-1);
-            engine.pianoRollLaunches[static_cast<std::size_t>(track)].publish({});
+            alien::SessionClipLaunch stopped;
+            stopped.pattern.clear();
+            stopped.clipIndex = -1;
+            engine.pianoRollLaunches[static_cast<std::size_t>(track)].publish(stopped);
         }
         updateSessionButtons();
+    }
+    void publishSessionClip(int track, int scene, bool) {
+        const auto& clip = clips[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
+        engine.requestedPianoRollClip[static_cast<std::size_t>(track)].store(scene);
+        alien::SessionClipLaunch launch;
+        launch.pattern = clip.audio == nullptr ? clip.pattern : alien::PianoRollPattern{};
+        launch.audio = clip.audio;
+        launch.clipIndex = scene;
+        engine.pianoRollLaunches[static_cast<std::size_t>(track)].publish(launch);
+    }
+    void chooseAudioFile() {
+        audioFileChooser = std::make_unique<juce::FileChooser>("Import audio clip",
+            juce::File{}, "*.wav;*.mp3");
+        juce::Component::SafePointer<MainComponent> safe(this);
+        audioFileChooser->launchAsync(juce::FileBrowserComponent::openMode
+            | juce::FileBrowserComponent::canSelectFiles,
+            [safe](const juce::FileChooser& chooser) {
+                if (safe && chooser.getResult().existsAsFile())
+                    safe->startAudioImport(chooser.getResult(), safe->selectedTrack, safe->selectedScene);
+            });
+    }
+    void startAudioImport(const juce::File& file, int track, int scene) {
+        audioImportStatus.setText("Loading audio…", juce::dontSendNotification);
+        audioImportStatus.setTooltip(file.getFullPathName());
+        juce::Component::SafePointer<MainComponent> safe(this);
+        std::function<juce::ThreadPoolJob::JobStatus()> importJob = [safe, file, track, scene] {
+            auto result = std::make_shared<alien::AudioClipImportResult>(alien::decodeSessionAudioClip(file));
+            juce::MessageManager::callAsync([safe, file, track, scene, result] {
+                if (safe != nullptr) safe->finishAudioImport(file, track, scene, *result);
+            });
+            return juce::ThreadPoolJob::jobHasFinished;
+        };
+        audioImportPool.addJob(std::move(importJob));
+    }
+    void finishAudioImport(const juce::File& file, int track, int scene,
+                           const alien::AudioClipImportResult& result) {
+        if (!result.clip) {
+            audioImportStatus.setText(result.error, juce::dontSendNotification);
+            audioImportStatus.setTooltip(result.error);
+            return;
+        }
+        const auto* data = result.clip.get();
+        const auto bytes = data->frames * static_cast<std::size_t>(data->channels) * sizeof(float);
+        if (bytes > maxSessionAudioBytes - retainedAudioBytes) {
+            audioImportStatus.setText("Session audio storage is full (512 MiB limit)", juce::dontSendNotification);
+            audioImportStatus.setTooltip(audioImportStatus.getText());
+            return;
+        }
+        retainedAudioBytes += bytes;
+        retainedAudioAssets.push_back(result.clip);
+        auto& clip = clips[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
+        clip.audio = data;
+        clip.audioFileName = file.getFileName();
+        if (track == selectedTrack && scene == selectedScene) {
+            updateAudioClipEditor();
+            tabs.setCurrentTabIndex(2);
+        }
+        if (engine.activePianoRollClip[static_cast<std::size_t>(track)].load() == scene
+            || engine.requestedPianoRollClip[static_cast<std::size_t>(track)].load() == scene)
+            publishSessionClip(track, scene, false);
+        audioImportStatus.setText("Imported " + file.getFileName(), juce::dontSendNotification);
+        audioImportStatus.setTooltip(file.getFullPathName());
+        updateSessionButtons();
+    }
+    void removeAudioFromSelectedClip() {
+        auto& clip = clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)];
+        if (clip.audio == nullptr) return;
+        clip.audio = nullptr;
+        clip.audioFileName.clear();
+        updateAudioClipEditor();
+        const int active = engine.activePianoRollClip[static_cast<std::size_t>(selectedTrack)].load();
+        const int requested = engine.requestedPianoRollClip[static_cast<std::size_t>(selectedTrack)].load();
+        if (active == selectedScene || requested == selectedScene)
+            publishSessionClip(selectedTrack, selectedScene, false);
+        audioImportStatus.setText("Audio removed from selected clip", juce::dontSendNotification);
+        updateSessionButtons();
+    }
+    void updateAudioClipEditor() {
+        const auto& clip = clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)];
+        audioWaveform.setClip(clip.audio, clip.audioFileName);
+        removeAudio.setEnabled(clip.audio != nullptr);
+        if (clip.audio == nullptr && audioImportStatus.getText().isEmpty())
+            audioImportStatus.setText("Selected clip: Track " + juce::String(selectedTrack + 1)
+                + ", Scene " + juce::String(selectedScene + 1), juce::dontSendNotification);
     }
     void updateControllerMappingLabel() {
         if (learningControllerAction == controllerTarget.getSelectedId() - 1) {
@@ -381,7 +506,10 @@ private:
                 const auto index = static_cast<std::size_t>(track);
                 const int active = engine.activePianoRollClip[index].load();
                 const int requested = engine.requestedPianoRollClip[index].load();
-                auto text = "Track " + juce::String(track + 1) + "\nScene " + juce::String(scene + 1);
+                const auto& clip = clips[static_cast<std::size_t>(scene)][index];
+                auto text = clip.audio != nullptr
+                    ? "Track " + juce::String(track + 1) + " | AUDIO\n" + clip.audioFileName.substring(0, 20)
+                    : "Track " + juce::String(track + 1) + "\nScene " + juce::String(scene + 1);
                 if (scene == active) text += " | Playing";
                 else if (scene == requested) text += " | Queued";
                 if (track == selectedTrack && scene == selectedScene) text += " | Edit";
@@ -408,12 +536,18 @@ private:
     juce::TabbedComponent tabs{juce::TabbedButtonBar::TabsAtTop};
     juce::Component sessionPanel;
     juce::Label sessionTitle, sessionHelp, launchTimingLabel, controllerMappingLabel;
+    juce::Label audioImportStatus;
     juce::ComboBox launchTiming, controllerTarget;
     juce::TextButton learnController, clearController;
     std::array<juce::TextButton, 4> sceneButtons;
     std::array<alien::SessionClipButton, 16> clipButtons;
-    juce::TextButton editSelectedClip, stopClip;
-    std::array<std::array<alien::PianoRollPattern, trackCount>, sceneCount> clips{};
+    juce::TextButton editSelectedClip, stopClip, importAudio, removeAudio;
+    alien::AudioClipWaveform audioWaveform;
+    std::array<std::array<SessionClipContent, trackCount>, sceneCount> clips{};
+    std::vector<std::shared_ptr<alien::SessionAudioClip>> retainedAudioAssets;
+    std::size_t retainedAudioBytes{};
+    juce::ThreadPool audioImportPool{1};
+    std::unique_ptr<juce::FileChooser> audioFileChooser;
     int selectedTrack{}, selectedScene{};
     int learningControllerAction{-1};
     bool loadingClip{};

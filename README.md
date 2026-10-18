@@ -41,6 +41,7 @@ The long-term differentiator is **one shared project and audio engine** across a
 - [ ] Session-style clip and scene launching with synchronized playback.
 - [ ] Record clip-launch performances into arrangement.
 - [ ] Audio time-stretching/warping and loop synchronization.
+- [x] WAV/MP3 Session clips with waveform preview and quantized playback.
 - [x] MIDI CC learn mappings for Session scene launch and stop actions.
 - [ ] Broader MIDI controller mapping and performance controls.
 
@@ -221,10 +222,10 @@ smaller displays.
 - **Load example** adds an original melody to an empty clip. **Clear** removes the
   clip's notes. Start Play to see the playhead and hear the loop.
 
-Session clips are MIDI patterns held in memory for the current session; closing
-Alien Studio discards them. Project saving, MIDI recording, arrangement
-playback, audio-file clips, and separate synth/device assignments per track
-remain future work.
+Session MIDI patterns and imported audio are held in memory for the current
+session; closing Alien Studio discards them. Project saving, MIDI recording,
+arrangement playback, and separate synth/device assignments per track remain
+future work.
 Same-pitch overlaps share one gate until the last overlap ends; velocity changes
 to a sounding note apply at its next trigger. Notes end at the four-bar boundary.
 Edits publish at audio-block boundaries; stop, source changes, preset changes and
@@ -312,8 +313,8 @@ focus is inside the piano roll:
 | Alt+A | Arpeggiate | Sequences each selected simultaneous chord by pitch with rate, gate and direction controls. |
 | Shift+Tab | Editor / devices | Switches the central workspace between the pattern editor and compact Synth & MIDI device rack. |
 
-The **Session** tab provides a four-track by four-scene grid of independent
-four-bar MIDI clips. Use **Launch at** to choose the next beat or bar boundary
+The **Session** tab provides a four-track by four-scene grid of independent MIDI
+or audio clips. Use **Launch at** to choose the next beat or bar boundary
 (bar is the default). Left-clicking a track cell queues that clip for the
 selected boundary; right-clicking opens it in the piano roll without changing
 playback. **Edit selected clip** provides the same editing path for keyboard
@@ -332,6 +333,16 @@ release it before pressing again. **Clear** removes the selected mapping, and
 learning an already mapped CC moves it to the newly selected action. Mappings
 last for the current app session. MIDI note input, sustain and note-off handling
 continue to work independently.
+
+To add a file to a Session clip, select the clip, choose **Import WAV/MP3**, and
+pick a mono or stereo file. Alien Studio decodes it on a background worker,
+shows a waveform, and starts the one-shot clip at the selected beat/bar boundary.
+MP3 decoding uses the Windows media decoder on Windows; builds without an MP3
+decoder report an import error. Decoded audio is limited to 128 MiB per clip
+and 512 MiB retained per session, and is not saved with projects yet. **Remove
+audio** switches that clip back to its MIDI pattern. Right-clicking an audio
+clip opens its waveform view; right-clicking a MIDI clip opens the piano roll.
+File access and decoding stay off the audio callback.
 
 Time controls use ticks: **240 ticks = one 1/16 note**, 120 = 1/32,
 60 = 1/64, and 30 = 1/128. At 120 BPM, 30 ticks is 15.625 ms.
