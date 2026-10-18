@@ -25,6 +25,7 @@ public:
     std::array<std::atomic<int>, sessionTracks> requestedPianoRollClip{-1, -1, -1, -1};
     std::array<std::atomic<int>, sessionTracks> activePianoRollClip{-1, -1, -1, -1};
     std::atomic<bool> synchronizedSceneLaunch{false};
+    std::atomic<int> launchQuantizationSteps{16}; // One bar by default (16 sixteenth-note steps).
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
         prepare(device->getCurrentSampleRate());
@@ -54,6 +55,7 @@ public:
         if (synchronizedSceneLaunch.exchange(false)) {
             synchronizedScenePending = true;
             synchronizedSceneTracksQueued = 0;
+            synchronizedSceneQuantizationSteps = launchQuantizationSteps.load();
         }
         if ((wasPlaying && !playNow) || wasMode != modeNow) {
             for (std::size_t track = 0; track < sessionTracks; ++track)
@@ -81,7 +83,10 @@ public:
         for (std::size_t track = 0; track < sessionTracks; ++track) {
             alien::PianoRollPattern requestedPattern;
             if (pianoRollLaunches[track].consume(requestedPattern)) {
-                rolls[track].queuePattern(requestedPattern, requestedPianoRollClip[track].load(), synchronizedScenePending);
+                const int quantization = synchronizedScenePending
+                    ? synchronizedSceneQuantizationSteps : launchQuantizationSteps.load();
+                rolls[track].queuePattern(requestedPattern, requestedPianoRollClip[track].load(),
+                    synchronizedScenePending, quantization);
                 if (synchronizedScenePending)
                     synchronizedSceneTracksQueued |= (1u << track);
             }
@@ -100,7 +105,7 @@ public:
             if (playNow && modeNow == 1) {
                 constexpr unsigned allSessionTracks = (1u << sessionTracks) - 1u;
                 if (synchronizedScenePending && synchronizedSceneTracksQueued == allSessionTracks
-                    && rolls[0].loopBoundaryDue()) {
+                    && rolls[0].launchBoundaryDue(synchronizedSceneQuantizationSteps)) {
                     for (std::size_t track = 0; track < sessionTracks; ++track)
                         rolls[track].launchPendingNow([this, track](int n, float v, bool on) {
                             sendPattern(track, n, v, on);
@@ -154,5 +159,6 @@ private:
     int wasMode{};
     bool synchronizedScenePending{};
     unsigned synchronizedSceneTracksQueued{};
+    int synchronizedSceneQuantizationSteps{16};
 };
 

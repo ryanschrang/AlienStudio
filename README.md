@@ -312,15 +312,16 @@ focus is inside the piano roll:
 | Shift+Tab | Editor / devices | Switches the central workspace between the pattern editor and compact Synth & MIDI device rack. |
 
 The **Session** tab provides a four-track by four-scene grid of independent
-four-bar MIDI clips. Left-clicking a track cell queues that clip for launch at
-the next four-bar boundary; right-clicking opens it in the piano roll without
-changing playback. **Edit selected clip** provides the same editing path for
-keyboard and touch users. Launching a scene queues the clips in that row across
-all tracks for the same boundary. The grid shows each track's selected, queued,
-and playing clip. **Stop all tracks** is quantized to the same boundary. Inside
-the piano roll, left-click adds notes and right-click removes them. Active clips
-keep playing while the Session and Piano roll tabs are changed. Separate clip
-states are held for this session only; project save/load is still planned.
+four-bar MIDI clips. Use **Launch at** to choose the next beat or bar boundary
+(bar is the default). Left-clicking a track cell queues that clip for the
+selected boundary; right-clicking opens it in the piano roll without changing
+playback. **Edit selected clip** provides the same editing path for keyboard
+and touch users. Launching a scene queues that row across all tracks for the
+same beat or bar. The grid shows each track's selected, queued, and playing
+clip. **Stop all tracks** follows the selected launch timing. Inside the piano
+roll, left-click adds notes and right-click removes them. Active clips keep
+playing while the Session and Piano roll tabs are changed. Separate clip states
+are held for this session only; project save/load is still planned.
 
 Time controls use ticks: **240 ticks = one 1/16 note**, 120 = 1/32,
 60 = 1/64, and 30 = 1/128. At 120 BPM, 30 ticks is 15.625 ms.
