@@ -23,6 +23,16 @@ struct SessionProjectData {
     int bpm{120};
     int synthPreset{};
     std::array<bool, 16> stepPattern{};
+    std::array<int, 16> stepPitches = [] {
+        std::array<int, 16> values{};
+        values.fill(57);
+        return values;
+    }();
+    std::array<int, 16> stepVelocities = [] {
+        std::array<int, 16> values{};
+        values.fill(102);
+        return values;
+    }();
 
     bool valid() const noexcept {
         if ((launchQuantizationSteps != 4 && launchQuantizationSteps != 16)
@@ -33,6 +43,9 @@ struct SessionProjectData {
         for (const auto& scene : clips)
             for (const auto& clip : scene)
                 if (!clip.pattern.valid()) return false;
+        for (std::size_t i = 0; i < stepPitches.size(); ++i)
+            if (stepPitches[i] < 0 || stepPitches[i] > 127
+                || stepVelocities[i] < 1 || stepVelocities[i] > 127) return false;
         return true;
     }
 };
@@ -43,7 +56,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     auto root = juce::var(new juce::DynamicObject());
     auto* rootObject = root.getDynamicObject();
     rootObject->setProperty("format", "AlienStudioSession");
-    rootObject->setProperty("version", 1);
+    rootObject->setProperty("version", 2);
     rootObject->setProperty("launchQuantizationSteps", project.launchQuantizationSteps);
     rootObject->setProperty("selectedTrack", project.selectedTrack);
     rootObject->setProperty("selectedScene", project.selectedScene);
@@ -52,6 +65,14 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     juce::Array<juce::var> steps;
     for (const auto enabled : project.stepPattern) steps.add(enabled);
     rootObject->setProperty("stepPattern", juce::var(steps));
+    juce::Array<juce::var> pitches;
+    juce::Array<juce::var> velocities;
+    for (std::size_t i = 0; i < project.stepPitches.size(); ++i) {
+        pitches.add(project.stepPitches[i]);
+        velocities.add(project.stepVelocities[i]);
+    }
+    rootObject->setProperty("stepPitches", juce::var(pitches));
+    rootObject->setProperty("stepVelocities", juce::var(velocities));
 
     juce::Array<juce::var> scenes;
     for (const auto& scene : project.clips) {
@@ -92,9 +113,10 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         error = "This file is not an Alien Studio session project."; return false;
     }
     const auto version = rootObject->getProperty("version");
-    if (!version.isInt() || static_cast<int>(version) != 1) {
+    if (!version.isInt() || (static_cast<int>(version) != 1 && static_cast<int>(version) != 2)) {
         error = "This Alien Studio project version is not supported."; return false;
     }
+    const int formatVersion = static_cast<int>(version);
 
     SessionProjectData parsed;
     const auto quantization = rootObject->getProperty("launchQuantizationSteps");
@@ -116,6 +138,24 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
     for (int i = 0; i < 16; ++i) {
         if (!(*steps)[i].isBool()) { error = "Project step pattern is invalid."; return false; }
         parsed.stepPattern[static_cast<std::size_t>(i)] = static_cast<bool>((*steps)[i]);
+    }
+    if (formatVersion >= 2) {
+        const auto pitchesValue = rootObject->getProperty("stepPitches");
+        const auto velocitiesValue = rootObject->getProperty("stepVelocities");
+        const auto* pitches = pitchesValue.getArray();
+        const auto* velocities = velocitiesValue.getArray();
+        if (pitches == nullptr || velocities == nullptr
+            || pitches->size() != parsed.stepPitches.size()
+            || velocities->size() != parsed.stepVelocities.size()) {
+            error = "Project step note data is missing or invalid."; return false;
+        }
+        for (int i = 0; i < 16; ++i) {
+            if (!(*pitches)[i].isInt() || !(*velocities)[i].isInt()) {
+                error = "Project step note data is invalid."; return false;
+            }
+            parsed.stepPitches[static_cast<std::size_t>(i)] = static_cast<int>((*pitches)[i]);
+            parsed.stepVelocities[static_cast<std::size_t>(i)] = static_cast<int>((*velocities)[i]);
+        }
     }
 
     const auto scenesValue = rootObject->getProperty("scenes");

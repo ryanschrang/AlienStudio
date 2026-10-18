@@ -16,6 +16,8 @@ class ToneEngine : public juce::AudioIODeviceCallback {
 public:
     static constexpr std::size_t sessionTracks = 4;
     std::array<std::atomic<bool>, 16> steps{};
+    std::array<std::atomic<int>, 16> stepPitches{};
+    std::array<std::atomic<int>, 16> stepVelocities{};
     std::atomic<bool> playing{false};
     std::atomic<int> bpm{120}, currentStep{-1}, preset{0};
     NoteQueue notes;
@@ -30,6 +32,11 @@ public:
     std::array<std::atomic<int>, sessionTracks> activePianoRollClip{-1, -1, -1, -1};
     std::atomic<bool> synchronizedSceneLaunch{false};
     std::atomic<int> launchQuantizationSteps{16}; // One bar by default (16 sixteenth-note steps).
+
+    ToneEngine() noexcept {
+        for (auto& pitch : stepPitches) pitch.store(57, std::memory_order_relaxed);
+        for (auto& velocity : stepVelocities) velocity.store(102, std::memory_order_relaxed);
+    }
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
         prepare(device->getCurrentSampleRate());
@@ -92,6 +99,7 @@ public:
             synchronizedScenePending = false;
             synchronizedSceneTracksQueued = 0;
             synchronizedSceneLaunch.store(false);
+            activeStepPitch = -1;
             synth.allSoundOff(); midi.requestReset();
         }
         midi.process([this](int n, float v, int ch) { sendMidi(n, v, ch); },
@@ -119,10 +127,18 @@ public:
         for (int i = 0; i < samples; ++i) {
             if (playNow && modeNow == 0) {
                 const auto tick = clock.next(sampleRate, bpm.load());
-                if (tick.noteOff) synth.noteOff(57, 1);
+                if (tick.noteOff && activeStepPitch >= 0) {
+                    synth.noteOff(activeStepPitch, 1);
+                    activeStepPitch = -1;
+                }
                 if (tick.step >= 0) {
                     currentStep.store(tick.step);
-                    if (steps[static_cast<std::size_t>(tick.step)].load()) synth.noteOn(57, 0.8f, 1);
+                    const auto step = static_cast<std::size_t>(tick.step);
+                    if (steps[step].load()) {
+                        activeStepPitch = juce::jlimit(0, 127, stepPitches[step].load());
+                        const int velocity = juce::jlimit(1, 127, stepVelocities[step].load());
+                        synth.noteOn(activeStepPitch, static_cast<float>(velocity) / 127.0f, 1);
+                    }
                 }
             }
             if (playNow && modeNow == 1) {
@@ -193,6 +209,7 @@ private:
     }
     void resetTransport() noexcept {
         clock.reset(); wasPlaying = false; currentStep.store(-1); pianoRollPosition.store(-1000);
+        activeStepPitch = -1;
         synchronizedScenePending = false;
         synchronizedSceneTracksQueued = 0;
         for (std::size_t track = 0; track < sessionTracks; ++track) {
@@ -211,5 +228,6 @@ private:
     bool synchronizedScenePending{};
     unsigned synchronizedSceneTracksQueued{};
     int synchronizedSceneQuantizationSteps{16};
+    int activeStepPitch{-1};
 };
 
