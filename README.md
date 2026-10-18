@@ -220,9 +220,10 @@ smaller displays.
 - **Load example** adds an original melody to an empty clip. **Clear** removes the
   clip's notes. Start Play to see the playhead and hear the loop.
 
-This first version stores one clip in memory for the current session; closing
-Alien Studio discards it. Project saving, MIDI recording, multiple clips,
-arrangement playback and layered drum/synth tracks remain future work.
+Session clips are MIDI patterns held in memory for the current session; closing
+Alien Studio discards them. Project saving, MIDI recording, arrangement
+playback, audio-file clips, and separate synth/device assignments per track
+remain future work.
 Same-pitch overlaps share one gate until the last overlap ends; velocity changes
 to a sounding note apply at its next trigger. Notes end at the four-bar boundary.
 Edits publish at audio-block boundaries; stop, source changes, preset changes and
@@ -310,13 +311,16 @@ focus is inside the piano roll:
 | Alt+A | Arpeggiate | Sequences each selected simultaneous chord by pitch with rate, gate and direction controls. |
 | Shift+Tab | Editor / devices | Switches the central workspace between the pattern editor and compact Synth & MIDI device rack. |
 
-The **Session** tab provides four independent four-bar piano-roll clip slots.
-Left-clicking a clip selects it and queues it for launch at the next four-bar
-boundary. Right-clicking selects it without changing the launch queue and opens
-it in the piano roll. **Edit selected clip** provides the same editing path for
-keyboard and touch users; inside the piano roll, left-click adds notes and
-right-click removes them. **Stop clip** is quantized to the same boundary. The
-active clip keeps playing while the Session and Piano roll tabs are changed.
+The **Session** tab provides a four-track by four-scene grid of independent
+four-bar MIDI clips. Left-clicking a track cell queues that clip for launch at
+the next four-bar boundary; right-clicking opens it in the piano roll without
+changing playback. **Edit selected clip** provides the same editing path for
+keyboard and touch users. Launching a scene queues the clips in that row across
+all tracks for the same boundary. The grid shows each track's selected, queued,
+and playing clip. **Stop all tracks** is quantized to the same boundary. Inside
+the piano roll, left-click adds notes and right-click removes them. Active clips
+keep playing while the Session and Piano roll tabs are changed. Separate clip
+states are held for this session only; project save/load is still planned.
 
 Time controls use ticks: **240 ticks = one 1/16 note**, 120 = 1/32,
 60 = 1/64, and 30 = 1/128. At 120 BPM, 30 ticks is 15.625 ms.
