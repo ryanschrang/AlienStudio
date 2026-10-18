@@ -301,6 +301,7 @@ focus is inside the piano roll:
 | Alt+R | Randomize | Symmetric timing, velocity and semitone variation, with a repeatable seed. |
 | Alt+Q | Quantize | Grid, strength and swing. Swing delays alternate grid points; strength blends toward the nearest point on that swung grid. |
 | Alt+C | Chord stamp | Root MIDI note, chord type, inversion, length and velocity. Preview auditions the voicing before Apply adds it at the amber ruler cursor. |
+| Alt+L | Scale guides | Root and scale choices plus independent background highlighting and pitch snapping. Changes apply immediately. |
 
 Time controls use ticks: **240 ticks = one 1/16 note**, 120 = 1/32,
 60 = 1/64, and 30 = 1/128. At 120 BPM, 30 ticks is 15.625 ms.
@@ -315,6 +316,15 @@ It does not require selected notes. Click the ruler to set its start, choose an
 inversion, and use Preview to audition every tone. Apply releases the preview,
 adds the complete chord, and selects its notes. Invalid pitches, loop overflow,
 or the 128-note limit reject the complete chord without partial insertion.
+
+Scale guides include major, natural/harmonic/melodic minor, Dorian,
+Mixolydian, major/minor pentatonic, blues and chromatic scales in every root.
+Highlighting colours scale rows and emphasizes the tonic without changing any
+notes. Optional pitch snapping affects newly drawn notes and deliberate vertical
+mouse or arrow-key moves. Directional moves advance to the next scale tone;
+clicked pitches choose the nearest tone with a stable lower tie. Existing notes,
+clipboard phrases, chord stamps, external MIDI and typing-piano input remain
+unchanged. Alt+L reopens the current session settings.
 
 **Apply** commits the result; **Cancel** or Escape closes settings without changing
 notes. Each Apply is one undo step, and each mouse gesture is one step. Use the
@@ -345,9 +355,12 @@ listening remains a manual check:
 4. Apply, undo, delete and clear while playing; Stop/restart and switch tabs or
    presets. Confirm no hanging notes. Test typing piano and octave controls after
    Tab, after closing tool settings, and after Alt-Tab.
+5. Open Scale with Alt+L, choose D natural minor, and toggle Highlight. Enable
+   Snap, draw on C#, then move the note upward and downward. Confirm pitches land
+   on scale tones; disable Snap and confirm chromatic drawing returns.
 
-Ghost channels, multiple instruments, per-note slides/expression, chord/scale
-helpers and riff generation are separate future additions. These processing
+Ghost channels, multiple instruments, per-note slides/expression and riff
+generation are separate future additions. These processing
 tools operate on the existing synth clip and do not add plugin hosting.
 
 

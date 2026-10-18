@@ -457,6 +457,56 @@ static void checkPianoRollProcessing() {
     roll.redo();
     require(roll.getPattern().count == 3, "redo restores the same stamped chord");
 
+    // Scale guides change the background immediately and snap only new pitch
+    // entry or deliberate pitch moves while the option is enabled.
+    roll.setPattern(empty);
+    roll.grabKeyboardFocus();
+    shortcut('l', juce::ModifierKeys::altModifier);
+    auto* scaleRoot = dynamic_cast<juce::ComboBox*>(control("Scale root note"));
+    auto* scaleType = dynamic_cast<juce::ComboBox*>(control("Scale type"));
+    auto* scaleHighlight = dynamic_cast<juce::Button*>(control("Highlight selected scale"));
+    auto* scaleSnap = dynamic_cast<juce::Button*>(control("Snap piano roll notes to scale"));
+    require(scaleRoot != nullptr && scaleType != nullptr && scaleHighlight != nullptr && scaleSnap != nullptr,
+            "scale root, type, highlight and snap controls are accessible");
+    scaleRoot->setSelectedId(3, juce::sendNotificationSync); // D.
+    scaleType->setSelectedId(2, juce::sendNotificationSync); // Natural minor.
+    if (scaleHighlight->getToggleState()) scaleHighlight->triggerClick();
+    if (!scaleSnap->getToggleState()) scaleSnap->triggerClick();
+    click("Apply piano roll processing"); // Done.
+    const auto plainScaleImage = roll.createComponentSnapshot(roll.getLocalBounds());
+    roll.grabKeyboardFocus();
+    shortcut('l', juce::ModifierKeys::altModifier);
+    scaleHighlight = dynamic_cast<juce::Button*>(control("Highlight selected scale"));
+    scaleHighlight->triggerClick();
+    click("Apply piano roll processing");
+    const auto scaleImage = roll.createComponentSnapshot(roll.getLocalBounds());
+    const auto tonicPixel = (point(62, 20) + juce::Point<float>(5, 0)).roundToInt();
+    require(scaleImage.getPixelAt(tonicPixel.x, tonicPixel.y)
+            != plainScaleImage.getPixelAt(tonicPixel.x, tonicPixel.y),
+            "enabling scale highlighting visibly changes the tonic row background");
+    roll.mouseDown(event(point(61, 20.5f)));
+    roll.mouseUp(event(point(61, 20.5f)));
+    require(roll.getPattern().count == 1 && roll.getPattern().notes[0].pitch == 60,
+            "drawing with scale snap chooses the nearest D-natural-minor pitch with a stable lower tie");
+    roll.mouseDown(event(point(60, 20.5f)));
+    roll.mouseDrag(event(point(61, 20.5f), true));
+    roll.mouseUp(event(point(61, 20.5f)));
+    require(roll.getPattern().notes[0].pitch == 62, "vertical mouse movement advances to the next scale tone");
+    roll.undo();
+    require(roll.getPattern().notes[0].pitch == 60, "one undo restores a scale-snapped mouse move");
+    require(roll.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) && roll.getPattern().notes[0].pitch == 62,
+            "upward pitch movement advances to the next scale tone");
+    roll.grabKeyboardFocus();
+    shortcut('l', juce::ModifierKeys::altModifier);
+    scaleSnap = dynamic_cast<juce::Button*>(control("Snap piano roll notes to scale"));
+    require(scaleSnap->getToggleState(), "scale snap setting remains active when reopening its panel");
+    scaleSnap->triggerClick();
+    click("Apply piano roll processing");
+    roll.mouseDown(event(point(61, 24.5f)));
+    roll.mouseUp(event(point(61, 24.5f)));
+    require(roll.getPattern().count == 2 && roll.getPattern().notes[1].pitch == 61,
+            "disabling scale snap restores chromatic note entry without changing existing notes");
+
     const std::array<std::uint32_t, 1> oneNote{low};
     roll.setPattern(source);
     roll.setSelection(oneNote);
@@ -603,6 +653,12 @@ static void checkPianoRollProcessing() {
                              "Apply piano roll processing", "Cancel piano roll processing"})
         require(control(name)->isShowing() && roll.getLocalBounds().contains(control(name)->getBounds()),
                 "chord stamp controls fit the minimum window size");
+    shortcut(juce::KeyPress::escapeKey, {});
+    shortcut('l', juce::ModifierKeys::altModifier);
+    for (const auto* name : {"Scale root note", "Scale type", "Highlight selected scale",
+                             "Snap piano roll notes to scale", "Apply piano roll processing"})
+        require(control(name)->isShowing() && roll.getLocalBounds().contains(control(name)->getBounds()),
+                "scale guide controls fit the minimum window size");
     shortcut(juce::KeyPress::escapeKey, {});
     keyboard.removeListener(&notes);
     host.removeFromDesktop();
