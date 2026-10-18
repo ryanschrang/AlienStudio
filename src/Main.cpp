@@ -4,6 +4,7 @@
 #include "PianoRollEditor.h"
 #include "MidiInputPanel.h"
 #include "CompactWorkspace.h"
+#include "SessionClipButton.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -65,6 +66,7 @@ public:
             auto& button = clipButtons[static_cast<std::size_t>(i)];
             button.setName("Launch piano roll clip " + juce::String(i + 1));
             button.onClick = [this, i] { selectAndLaunchClip(i); };
+            button.onRightClick = [this, i] { selectClipForEditing(i); };
         }
         sessionPanel.addAndMakeVisible(stopClip);
         stopClip.setButtonText("Stop clip");
@@ -85,6 +87,7 @@ public:
         };
         pianoRoll.onChange = [this] {
             clips[static_cast<std::size_t>(selectedClip)] = pianoRoll.getPattern();
+            if (loadingClip) return;
             engine.requestedPianoRollClip.store(selectedClip);
             if (engine.activePianoRollClip.load() == selectedClip)
                 engine.pianoRollNotes.publish(clips[static_cast<std::size_t>(selectedClip)]);
@@ -216,12 +219,23 @@ private:
         if (!keyboardState.isNoteOnForChannels(0x7, note)) engine.notes.push(note, 0);
     }
     void selectAndLaunchClip(int clip) {
-        clips[static_cast<std::size_t>(selectedClip)] = pianoRoll.getPattern();
-        selectedClip = juce::jlimit(0, static_cast<int>(clips.size()) - 1, clip);
-        pianoRoll.setPattern(clips[static_cast<std::size_t>(selectedClip)]);
+        loadClip(clip);
         engine.requestedPianoRollClip.store(selectedClip);
         engine.pianoRollLaunches.publish(clips[static_cast<std::size_t>(selectedClip)]);
         updateSessionButtons();
+    }
+    void selectClipForEditing(int clip) {
+        loadClip(clip);
+        tabs.setCurrentTabIndex(1);
+        pianoRoll.grabKeyboardFocus();
+        updateSessionButtons();
+    }
+    void loadClip(int clip) {
+        clips[static_cast<std::size_t>(selectedClip)] = pianoRoll.getPattern();
+        selectedClip = juce::jlimit(0, static_cast<int>(clips.size()) - 1, clip);
+        loadingClip = true;
+        pianoRoll.setPattern(clips[static_cast<std::size_t>(selectedClip)]);
+        loadingClip = false;
     }
     void updateSessionButtons() {
         const int active = engine.activePianoRollClip.load();
@@ -253,10 +267,11 @@ private:
     juce::TabbedComponent tabs{juce::TabbedButtonBar::TabsAtTop};
     juce::Component sessionPanel;
     juce::Label sessionTitle, sessionHelp;
-    std::array<juce::TextButton, 4> clipButtons;
+    std::array<alien::SessionClipButton, 4> clipButtons;
     juce::TextButton editSelectedClip, stopClip;
     std::array<alien::PianoRollPattern, 4> clips{};
     int selectedClip{};
+    bool loadingClip{};
     juce::Component devicePanel;
     juce::Label deviceTitle, deviceHelp, presetLabel, midiLabel;
     alien::CompactWorkspace workspace{tabs, devicePanel};

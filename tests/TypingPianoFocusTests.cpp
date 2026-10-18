@@ -1,6 +1,7 @@
 #include "TypingPianoRouter.h"
 #include "PianoRollEditor.h"
 #include "CompactWorkspace.h"
+#include "SessionClipButton.h"
 #include <cstdlib>
 #include <iostream>
 #include <set>
@@ -750,6 +751,23 @@ static void checkCompactWorkspace() {
     std::cout << "PASS: compact editor/device workspace shortcut, focus and accessible switch\n";
 }
 
+static void checkSessionClipButton() {
+    alien::SessionClipButton button;
+    int launches = 0, edits = 0;
+    button.onClick = [&] { ++launches; };
+    button.onRightClick = [&] { ++edits; };
+    const auto now = juce::Time::getCurrentTime();
+    auto event = [&](juce::ModifierKeys modifiers) {
+        return juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(), {10.0f, 10.0f}, modifiers,
+                                1.0f, 0.0f, 0.0f, 0.0f, 0.0f, &button, &button,
+                                now, {10.0f, 10.0f}, now, 1, false);
+    };
+    button.triggerClick();
+    require(launches == 1 && edits == 0, "left-click launches a Session clip");
+    button.mouseUp(event(juce::ModifierKeys::rightButtonModifier));
+    require(launches == 1 && edits == 1, "right-click edits without launching a Session clip");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     juce::Component shell, root, piano, outside;
@@ -845,6 +863,7 @@ int main() {
     checkPianoRollEditor();
     checkPianoRollProcessing();
     checkCompactWorkspace();
+    checkSessionClipButton();
     checkMidiInputPanel();
     std::cout << "PASS: Tab routing, editor exclusion, octave recovery, release and listener lifecycle\n";
 }
