@@ -73,6 +73,49 @@ public:
         launchTiming.onChange = [this] {
             engine.launchQuantizationSteps.store(launchTiming.getSelectedId() == 1 ? 4 : 16);
         };
+        sessionPanel.addAndMakeVisible(controllerTarget);
+        controllerTarget.setName("MIDI controller mapping action");
+        controllerTarget.setTooltip("Choose a Session action to assign to a MIDI CC");
+        controllerTarget.addItem("Scene 1", 1);
+        controllerTarget.addItem("Scene 2", 2);
+        controllerTarget.addItem("Scene 3", 3);
+        controllerTarget.addItem("Scene 4", 4);
+        controllerTarget.addItem("Stop all", 5);
+        controllerTarget.setSelectedId(1, juce::dontSendNotification);
+        controllerTarget.onChange = [this] { updateControllerMappingLabel(); };
+        sessionPanel.addAndMakeVisible(learnController);
+        learnController.setButtonText("Learn CC");
+        learnController.setName("Learn MIDI controller");
+        learnController.setTooltip("Listen for the next incoming MIDI CC and assign it to the selected Session action");
+        learnController.onClick = [this] {
+            const int action = controllerTarget.getSelectedId() - 1;
+            if (learningControllerAction == action) {
+                engine.controllerMappings.cancelLearn();
+                learningControllerAction = -1;
+                learnController.setButtonText("Learn CC");
+                updateControllerMappingLabel();
+            } else {
+                learningControllerAction = action;
+                engine.controllerMappings.beginLearn(action);
+                learnController.setButtonText("Cancel learn");
+                controllerMappingLabel.setText("Move a MIDI CC control…", juce::dontSendNotification);
+            }
+        };
+        sessionPanel.addAndMakeVisible(clearController);
+        clearController.setButtonText("Clear");
+        clearController.setName("Clear MIDI controller mapping");
+        clearController.onClick = [this] {
+            engine.controllerMappings.cancelLearn();
+            learningControllerAction = -1;
+            engine.controllerMappings.clearMapping(controllerTarget.getSelectedId() - 1);
+            learnController.setButtonText("Learn CC");
+            updateControllerMappingLabel();
+        };
+        sessionPanel.addAndMakeVisible(controllerMappingLabel);
+        controllerMappingLabel.setName("MIDI controller assignment");
+        controllerMappingLabel.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
+        controllerMappingLabel.setJustificationType(juce::Justification::centredLeft);
+        controllerMappingLabel.setText("Unmapped", juce::dontSendNotification);
         for (int scene = 0; scene < sceneCount; ++scene) {
             sessionPanel.addAndMakeVisible(sceneButtons[static_cast<std::size_t>(scene)]);
             auto& sceneButton = sceneButtons[static_cast<std::size_t>(scene)];
@@ -91,15 +134,7 @@ public:
         sessionPanel.addAndMakeVisible(stopClip);
         stopClip.setButtonText("Stop all tracks");
         stopClip.setName("Stop all Session tracks at selected launch boundary");
-        stopClip.onClick = [this] {
-            saveEditedClip();
-            engine.synchronizedSceneLaunch.store(true);
-            for (int track = 0; track < trackCount; ++track) {
-                engine.requestedPianoRollClip[static_cast<std::size_t>(track)].store(-1);
-                engine.pianoRollLaunches[static_cast<std::size_t>(track)].publish({});
-            }
-            updateSessionButtons();
-        };
+        stopClip.onClick = [this] { stopAllSessionTracks(); };
         sessionPanel.addAndMakeVisible(editSelectedClip);
         editSelectedClip.setButtonText("Edit selected clip");
         editSelectedClip.setName("Edit selected piano roll clip");
@@ -198,6 +233,11 @@ public:
         stopClip.setBounds(216, gridTop + sceneCount * (sceneHeight + 8) + 12, 150, 36);
         launchTimingLabel.setBounds(380, gridTop + sceneCount * (sceneHeight + 8) + 12, 78, 36);
         launchTiming.setBounds(460, gridTop + sceneCount * (sceneHeight + 8) + 12, 100, 36);
+        const int mappingY = gridTop + sceneCount * (sceneHeight + 8) + 56;
+        controllerTarget.setBounds(24, mappingY, 130, 32);
+        learnController.setBounds(162, mappingY, 104, 32);
+        clearController.setBounds(274, mappingY, 70, 32);
+        controllerMappingLabel.setBounds(352, mappingY, juce::jmax(100, sessionPanel.getWidth() - 376), 32);
         octaveDown.setBounds(20, getHeight() - 154, 100, 30);
         octaveUp.setBounds(130, getHeight() - 154, 100, 30);
         help.setBounds(245, getHeight() - 154, getWidth() - 265, 30);
@@ -236,6 +276,19 @@ private:
     }
     void timerCallback() override {
         midiInput.tick();
+        int controllerAction = -1;
+        while (engine.controllerActions.pop(controllerAction)) {
+            if (controllerAction < sceneCount) launchScene(controllerAction);
+            else if (controllerAction == alien::MidiControllerMappings::stopAllAction) stopAllSessionTracks();
+        }
+        const int learnedAction = engine.controllerMappings.takeLearnedAction();
+        if (learnedAction >= 0) {
+            if (learningControllerAction == learnedAction) {
+                learningControllerAction = -1;
+                learnController.setButtonText("Learn CC");
+            }
+            updateControllerMappingLabel();
+        }
         for (int note = 0; note < 128; ++note) {
             const bool on = engine.midi.isNoteOn(note);
             if (on != keyboardState.isNoteOn(4, note)) {
@@ -301,6 +354,25 @@ private:
         }
         updateSessionButtons();
     }
+    void stopAllSessionTracks() {
+        saveEditedClip();
+        engine.synchronizedSceneLaunch.store(true);
+        for (int track = 0; track < trackCount; ++track) {
+            engine.requestedPianoRollClip[static_cast<std::size_t>(track)].store(-1);
+            engine.pianoRollLaunches[static_cast<std::size_t>(track)].publish({});
+        }
+        updateSessionButtons();
+    }
+    void updateControllerMappingLabel() {
+        if (learningControllerAction == controllerTarget.getSelectedId() - 1) {
+            controllerMappingLabel.setText("Move a MIDI CC control…", juce::dontSendNotification);
+            return;
+        }
+        const int code = engine.controllerMappings.mappingFor(controllerTarget.getSelectedId() - 1);
+        if (code < 0) controllerMappingLabel.setText("Unmapped", juce::dontSendNotification);
+        else controllerMappingLabel.setText("CC " + juce::String(code % 128) + "  |  Ch "
+            + juce::String(code / 128 + 1), juce::dontSendNotification);
+    }
     void updateSessionButtons() {
         for (int scene = 0; scene < sceneCount; ++scene) {
             sceneButtons[static_cast<std::size_t>(scene)].setButtonText(
@@ -335,13 +407,15 @@ private:
     alien::PianoRollEditor pianoRoll;
     juce::TabbedComponent tabs{juce::TabbedButtonBar::TabsAtTop};
     juce::Component sessionPanel;
-    juce::Label sessionTitle, sessionHelp, launchTimingLabel;
-    juce::ComboBox launchTiming;
+    juce::Label sessionTitle, sessionHelp, launchTimingLabel, controllerMappingLabel;
+    juce::ComboBox launchTiming, controllerTarget;
+    juce::TextButton learnController, clearController;
     std::array<juce::TextButton, 4> sceneButtons;
     std::array<alien::SessionClipButton, 16> clipButtons;
     juce::TextButton editSelectedClip, stopClip;
     std::array<std::array<alien::PianoRollPattern, trackCount>, sceneCount> clips{};
     int selectedTrack{}, selectedScene{};
+    int learningControllerAction{-1};
     bool loadingClip{};
     juce::Component devicePanel;
     juce::Label deviceTitle, deviceHelp, presetLabel, midiLabel;
