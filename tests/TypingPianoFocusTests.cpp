@@ -1,5 +1,6 @@
 #include "TypingPianoRouter.h"
 #include "PianoRollEditor.h"
+#include "CompactWorkspace.h"
 #include <cstdlib>
 #include <iostream>
 #include <set>
@@ -702,6 +703,53 @@ static void checkPianoRollProcessing() {
     std::cout << "PASS: selection, batch edits, gesture undo, processing settings and shortcut focus\n";
 }
 
+static void checkCompactWorkspace() {
+    juce::Component host, editor, devices;
+    juce::TextButton editorControl{"Editor control"}, deviceControl{"Device control"};
+    editor.addAndMakeVisible(editorControl);
+    devices.addAndMakeVisible(deviceControl);
+    editorControl.setBounds(10, 10, 140, 30);
+    deviceControl.setBounds(10, 10, 140, 30);
+    alien::CompactWorkspace workspace(editor, devices);
+    host.setBounds(0, 0, 700, 420);
+    host.setFocusContainerType(juce::Component::FocusContainerType::keyboardFocusContainer);
+    host.addAndMakeVisible(workspace);
+    workspace.setBounds(host.getLocalBounds());
+    host.addToDesktop(0);
+    host.setVisible(true);
+    host.getPeer()->handleFocusGain();
+    int changes = 0;
+    bool latestDeviceView = false;
+    workspace.onViewChanged = [&](bool deviceView) { ++changes; latestDeviceView = deviceView; };
+
+    editorControl.grabKeyboardFocus();
+    pump();
+    require(editor.isShowing() && !devices.isVisible(), "compact workspace starts in editor view");
+    host.getPeer()->handleKeyPress(juce::KeyPress(juce::KeyPress::tabKey));
+    pump();
+    require(editor.isShowing() && !devices.isVisible(), "ordinary Tab does not change workspace view");
+    host.getPeer()->handleKeyPress(juce::KeyPress(juce::KeyPress::tabKey,
+                                                 juce::ModifierKeys::shiftModifier, 0));
+    pump();
+    require(!editor.isVisible() && devices.isShowing() && workspace.isDeviceView()
+            && changes == 1 && latestDeviceView,
+            "Shift-Tab switches to devices and publishes one release callback");
+
+    juce::Button* toggle = nullptr;
+    for (auto* child : workspace.getChildren())
+        if (child->getName() == "Workspace view switch") toggle = dynamic_cast<juce::Button*>(child);
+    require(toggle != nullptr && toggle->isShowing() && toggle->getButtonText() == "Show editor",
+            "workspace switch is visible, named and describes its next action");
+    toggle->triggerClick();
+    pump();
+    require(editor.isShowing() && !devices.isVisible() && !workspace.isDeviceView()
+            && changes == 2 && !latestDeviceView,
+            "on-screen switch returns to the editor and publishes the view change");
+
+    host.removeFromDesktop();
+    std::cout << "PASS: compact editor/device workspace shortcut, focus and accessible switch\n";
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     juce::Component shell, root, piano, outside;
@@ -796,6 +844,7 @@ int main() {
     outside.removeFromDesktop();
     checkPianoRollEditor();
     checkPianoRollProcessing();
+    checkCompactWorkspace();
     checkMidiInputPanel();
     std::cout << "PASS: Tab routing, editor exclusion, octave recovery, release and listener lifecycle\n";
 }
