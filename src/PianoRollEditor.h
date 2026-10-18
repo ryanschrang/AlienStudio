@@ -19,8 +19,9 @@ public:
         setName("Piano roll note editor");
         setTitle("Piano roll");
         setDescription("Four bar MIDI note grid with a piano keyboard and velocity lane");
-        setHelpText("Double-click to draw a note. Drag to move; drag its right edge to resize. "
-                    "Ctrl-click toggles note selection; drag empty space to select a group. "
+        setHelpText("Left-click empty space to draw a note; right-click a note to erase it. "
+                    "New notes reuse the last edited note length and velocity. Drag to move; drag its right edge to resize. "
+                    "Ctrl-click toggles note selection; Shift-drag empty space to select a group. "
                     "Delete erases selected notes. Arrow keys move selected notes; "
                     "Shift Left or Right changes their length. Ctrl A selects all, Ctrl Z undoes, "
                     "and Ctrl Y redoes. Ctrl C copies, Ctrl V pastes at the amber cursor, and Ctrl D duplicates. "
@@ -388,7 +389,7 @@ public:
                    juce::Justification::centredLeft);
         g.setColour(juce::Colour(0xff91abb8));
         if (!compactPanel())
-            g.drawText("Ctrl-click / empty drag: select  |  Ctrl C / V / D: copy / paste / duplicate  |  Ruler: paste cursor  |  Ctrl Z / Y: undo / redo  |  Alt S / U / R / Q: tools",
+            g.drawText("Click empty grid: add  |  Right-click: erase  |  Shift-drag: select  |  Ctrl C / V / D: copy / paste / duplicate  |  Ctrl Z / Y: undo / redo  |  Alt S / U / R / Q: tools",
                        12, a.velocity.getBottom() + 21, getWidth() - 24, 17, juce::Justification::centredLeft);
     }
 
@@ -430,13 +431,29 @@ public:
             return;
         }
         dragOrigin = e.position;
-        if (hit == 0) {
+        if (hit == 0 && e.mods.isShiftDown()) {
             setInsertionStep(snapStep(e.position.x, a));
             marqueeBase = e.mods.isCtrlDown() || e.mods.isCommandDown() ? selection : PianoRollSelection {};
             selection = marqueeBase;
             activeId = selection.count != 0 ? selection.ids[0] : 0;
             marquee = {};
             drag = Drag::marquee;
+        } else if (hit == 0) {
+            beginEdit();
+            setInsertionStep(snapStep(e.position.x, a));
+            const auto created = pattern.add(pitchAt(e.position.y, a), insertionStep,
+                                             rememberedLength > 0.0 ? rememberedLength : snapSteps(),
+                                             rememberedVelocity);
+            selectOnly(created);
+            if (created != 0) {
+                dragPattern = pattern;
+                dragOriginal = *pattern.find(created);
+                drag = Drag::move;
+                changed();
+            } else {
+                endEdit();
+                updateSelection();
+            }
         } else if (e.mods.isCtrlDown() || e.mods.isCommandDown()) {
             selection.toggle(hit);
             activeId = selection.contains(hit) ? hit : selection.count != 0 ? selection.ids[0] : 0;
@@ -456,19 +473,7 @@ public:
         updateSelection();
     }
 
-    void mouseDoubleClick(const juce::MouseEvent& e) override {
-        const auto a = areas();
-        if (e.mods.isPopupMenu() || !a.grid.contains(e.getPosition()) || hitNote(e.position, a) != 0) return;
-        endEdit();
-        beginEdit();
-        const auto start = snapStep(e.position.x, a);
-        const auto created = pattern.add(pitchAt(e.position.y, a), start, snapSteps(), 0.8f);
-        selectOnly(created);
-        drag = Drag::none;
-        if (created != 0) changed();
-        else updateSelection();
-        endEdit();
-    }
+    void mouseDoubleClick(const juce::MouseEvent&) override {}
 
     void mouseDrag(const juce::MouseEvent& e) override {
         const auto a = areas();
@@ -711,6 +716,10 @@ private:
         repaint();
     }
     void changed() {
+        if (const auto* note = pattern.find(activeId)) {
+            rememberedLength = note->lengthSteps;
+            rememberedVelocity = note->velocity;
+        }
         updateSelection();
         if (onChange) onChange();
     }
@@ -904,7 +913,7 @@ private:
         else if (status == ClipboardStatus::emptyClipboard)
             statusMessage = "Copy selected notes with Ctrl+C before pasting. This piano roll uses its own note clipboard.";
         else if (status == ClipboardStatus::emptySelection)
-            statusMessage = "Select notes with Ctrl-click, drag empty grid space, or use Ctrl+A before copying or duplicating.";
+            statusMessage = "Select notes with Ctrl-click, Shift-drag empty grid space, or use Ctrl+A before copying or duplicating.";
         else
             statusMessage = "No changes: the note selection or paste position is invalid.";
     }
@@ -1065,7 +1074,8 @@ private:
     RandomizeSettings randomizeSettings;
     QuantizeSettings quantizeSettings;
     int lowestVisiblePitch { 48 }, auditionPitch { -1 };
-    double playhead { -1.0 }, insertionStep {};
+    double playhead { -1.0 }, insertionStep {}, rememberedLength {};
+    float rememberedVelocity { 0.8f };
 };
 
 } // namespace alien

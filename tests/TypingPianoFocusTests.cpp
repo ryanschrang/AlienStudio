@@ -53,12 +53,13 @@ static void checkPianoRollEditor() {
     int publications = 0;
     roll.onChange = [&] { ++publications; };
     roll.onAudition = [&](int pitch, float velocity) { audition.emplace_back(pitch, velocity); };
-    roll.mouseDoubleClick(event(point(60, 8.5f)));
-    require(roll.getPattern().count == 1, "double-click must create a piano roll note");
+    roll.mouseDown(event(point(60, 8.5f)));
+    roll.mouseUp(event(point(60, 8.5f)));
+    require(roll.getPattern().count == 1, "one left-click must create a piano roll note");
     const auto firstId = roll.getPattern().notes[0].id;
     auto first = [&]() -> const alien::PianoRollNote& { return *roll.getPattern().find(firstId); };
     require(first().pitch == 60 && first().startStep == 8 && first().lengthSteps == 1,
-            "double-click must use the clicked pitch and sixteenth grid");
+            "one left-click must use the clicked pitch and sixteenth grid");
     require(roll.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && first().startStep == 9,
             "focused piano roll arrow must move the selected note in time");
     require(roll.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) && first().pitch == 61,
@@ -95,7 +96,8 @@ static void checkPianoRollEditor() {
             "Delete must erase only the selected piano roll note");
 
     snap->setSelectedId(2, juce::sendNotificationSync);
-    roll.mouseDoubleClick(event(point(60, 9.5f)));
+    roll.mouseDown(event(point(60, 9.5f)));
+    roll.mouseUp(event(point(60, 9.5f)));
     require(roll.getPattern().count == 1 && roll.getPattern().notes[0].startStep == 8
             && roll.getPattern().notes[0].lengthSteps == 2,
             "eighth-note snap must quantize both note start and initial length");
@@ -124,6 +126,19 @@ static void checkPianoRollEditor() {
     require(roll.getPattern().find(dragId)->velocity == 1.0f, "velocity lane drag must clamp at full velocity");
     roll.mouseDown(event(point(61, 10.5f), false, juce::ModifierKeys::rightButtonModifier));
     require(roll.getPattern().count == 0, "right-click must erase the clicked note");
+    roll.mouseDown(event(point(65, 20.5f)));
+    roll.mouseUp(event(point(65, 20.5f)));
+    require(roll.getPattern().count == 1 && roll.getPattern().notes[0].pitch == 65
+            && roll.getPattern().notes[0].lengthSteps == 6 && roll.getPattern().notes[0].velocity == 1.0f,
+            "new notes must inherit the last edited note length and velocity");
+    roll.undo();
+    require(roll.getPattern().count == 0, "one undo must remove one click-created note");
+    roll.redo();
+    require(roll.getPattern().count == 1, "redo must restore the click-created note and its inherited properties");
+    roll.mouseDoubleClick(event(point(65, 20.5f)));
+    require(roll.getPattern().count == 1, "double-click callback must not add a duplicate note");
+    roll.mouseDown(event(point(65, 20.5f), false, juce::ModifierKeys::rightButtonModifier));
+    require(roll.getPattern().count == 0, "inherited note remains immediately erasable");
     snap->setSelectedId(4, juce::sendNotificationSync);
     alien::PianoRollPattern boundaryPattern;
     const auto boundaryId = boundaryPattern.add(60, 8, 3, 0.8f);
@@ -177,7 +192,8 @@ static void checkPianoRollEditor() {
     juce::MouseWheelDetails wheel;
     wheel.deltaY = 1.0f;
     roll.mouseWheelMove(event(point(60, 0)), wheel);
-    roll.mouseDoubleClick(event({ gridX + 0.5f * stepWidth, gridY + 0.5f * rowHeight }));
+    roll.mouseDown(event({ gridX + 0.5f * stepWidth, gridY + 0.5f * rowHeight }));
+    roll.mouseUp(event({ gridX + 0.5f * stepWidth, gridY + 0.5f * rowHeight }));
     require(roll.getPattern().count == 1 && roll.getPattern().notes[0].pitch == 74,
             "mouse wheel must scroll the editable pitch range");
     host.removeFromDesktop();
@@ -261,9 +277,10 @@ static void checkPianoRollProcessing() {
     require(roll.getPattern().find(low)->startStep == 6, "Ctrl-Y redoes group drag");
     roll.undo();
 
-    roll.mouseDown(event(point(69, 3)));
-    roll.mouseDrag(event(point(59, 9), true));
-    roll.mouseUp(event(point(59, 9)));
+    const auto shiftDrag = juce::ModifierKeys::leftButtonModifier | juce::ModifierKeys::shiftModifier;
+    roll.mouseDown(event(point(69, 3), false, shiftDrag));
+    roll.mouseDrag(event(point(59, 9), true, shiftDrag));
+    roll.mouseUp(event(point(59, 9), false, shiftDrag));
     require(roll.getSelectedIds().size() == 2 && !roll.canUndo(),
         "empty-grid marquee selects its enclosed chord without editing notes");
     setValue("Selected note velocity", 32);

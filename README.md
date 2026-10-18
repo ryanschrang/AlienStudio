@@ -201,7 +201,9 @@ the selected tab is the active playback source. Switching tabs releases notes
 and starts the selected pattern from its beginning. The window resizes to fit
 smaller displays.
 
-- Double-click an empty grid cell to create a note. Drag its body to move it, or
+- Left-click an empty grid cell to create a note. New notes reuse the duration
+  and velocity of the last edited note; before the first edit, duration follows
+  the selected snap and velocity starts at 102. Drag a note body to move it, or
   its right edge to change its duration. Right-click or select and press Delete
   to erase it.
 - Choose 1/16, 1/8 or 1/4 snapping. Selected-note arrow keys move time/pitch;
@@ -242,16 +244,16 @@ still work; verify the UI at the minimum window size and normal display scaling.
 
 ### Highlight, copy, paste and duplicate notes
 
-Drag a rectangle from empty grid space to highlight notes. Ctrl+click toggles
-individual notes; Ctrl+drag adds to the highlighted group. **Ctrl+A** selects
-everything. Selected notes and their velocity stems use a brighter highlight.
+Shift-drag a rectangle from empty grid space to highlight notes. Ctrl+click
+toggles individual notes; Ctrl+Shift-drag adds to the highlighted group.
+**Ctrl+A** selects everything. Selected notes and their velocity stems use a brighter highlight.
 The piano roll's **Edit** menu also offers Select all, Copy, Paste and Duplicate.
 
 - **Ctrl+C — Copy:** remembers selected notes, including their pitches, lengths,
   relative timing and velocities. Copy leaves the clip and undo history alone.
 - **Ctrl+V — Paste:** inserts the copied phrase at the amber insertion marker.
-  Click the time ruler to position it without changing the selection, or click
-  empty grid space. Placement follows the current snap setting. The earliest
+  Click the time ruler to position it without changing the selection. Creating
+  a note on empty grid space also moves the marker. Placement follows the current snap setting. The earliest
   copied note starts at the marker; relative offsets stay intact.
 - **Ctrl+D — Duplicate:** copies the highlighted phrase after its latest note
   ends, aligned to the next grid boundary. The new notes become selected so
