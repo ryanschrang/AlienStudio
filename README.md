@@ -4,7 +4,7 @@
 
 Alien Studio is an **independent, original application**, not affiliated with or endorsed by any of those products. We aim to learn from broadly useful workflows without copying proprietary code, artwork, branding, or protected assets.
 
-> **Project status:** Early prototype. The current code implements a 16-step synthesizer sequencer with play/stop and tempo controls, a 16-voice synth, an on-screen keyboard, and lead/bass/pluck presets. Professional DAW features below are **planned**, not yet implemented. Windows CI compilation is being validated; a successful build and runtime behavior have not yet been confirmed.
+> **Project status:** Early prototype with a 16-step synthesizer sequencer, a four-bar piano roll, note-processing tools, a 16-voice synth, mouse/computer-keyboard input and lead/bass/pluck presets. Windows Debug/Release builds and automated tests run in GitHub Actions. The broader professional DAW features below are **planned**; native audio-device behavior still requires hands-on testing.
 
 ## Product vision: three connected workspaces
 
@@ -122,6 +122,154 @@ audio device, and confirm silence without stuck notes or objectionable artifacts
 Physical MIDI input testing will be required when device input is implemented.
 Compilation, synthetic DSP tests, and a GUI smoke test do not verify audible
 output, hardware MIDI, or real-time performance on Windows.
+
+### Four-bar piano roll
+
+Choose the **Piano roll** tab to edit a separate four-bar synth clip. The original
+**16-step sequencer** remains available. Both share Play / Stop, tempo and preset;
+the selected tab is the active playback source. Switching tabs releases notes
+and starts the selected pattern from its beginning. The window resizes to fit
+smaller displays.
+
+- Double-click an empty grid cell to create a note. Drag its body to move it, or
+  its right edge to change its duration. Right-click or select and press Delete
+  to erase it.
+- Choose 1/16, 1/8 or 1/4 snapping. Selected-note arrow keys move time/pitch;
+  Shift+Left/Right changes duration. Page Up/Down or the wheel/scrollbar changes
+  the visible pitch range (all 128 MIDI pitches, C−1–G9).
+- Drag a velocity stem, or use the selected-note Velocity control (1–127).
+  Notes at the same start time can be selected individually in the grid before
+  changing their velocity.
+- Click the piano at the left to audition pitches. The bottom mouse piano and
+  computer keyboard still work; Tab navigation and text entry keep their keys.
+- **Load example** adds an original melody to an empty clip. **Clear** removes the
+  clip's notes. Start Play to see the playhead and hear the loop.
+
+This first version stores one clip in memory for the current session; closing
+Alien Studio discards it. Project saving, MIDI recording, multiple clips,
+arrangement playback and layered drum/synth tracks remain future work.
+Same-pitch overlaps share one gate until the last overlap ends; velocity changes
+to a sounding note apply at its next trigger. Notes end at the four-bar boundary.
+Edits publish at audio-block boundaries; stop, source changes, preset changes and
+device restarts clear the scheduler's held notes. Preset/blur panic restarts a
+running clip at the beginning, matching the safe all-notes-off path.
+
+`PianoRollSequenceTests` checks fractional-tempo timing, loop boundaries, stop and
+restart, live edits, same-pitch overlap ownership, snapshot concurrency, source
+isolation and allocation avoidance. `TypingPianoFocusTests` also checks GUI note
+creation/movement/resizing/deletion, velocity, snap, audition cleanup and focus
+routing. `ToneEngineTests` renders the actual audio callback offline to verify
+sound, playhead progress, safe stop/restart, edits and source changes without
+audio hardware. Windows CI runs both Debug and Release. Linux GUI checks use a virtual
+display; native Windows hardware sound still needs the manual check below.
+
+Manual Windows test: open Piano roll, Load example, Play and change tempo. Add a
+chord; move, resize and delete notes during playback, then change velocity and
+snap. Check the loop boundary and Stop for hanging notes. Switch between tabs,
+change presets, audition piano keys, and Alt-Tab while holding typing/mouse notes.
+Return and play again. Confirm the original 16 pads and typing octave controls
+still work; verify the UI at the minimum window size and normal display scaling.
+
+### Highlight, copy, paste and duplicate notes
+
+Drag a rectangle from empty grid space to highlight notes. Ctrl+click toggles
+individual notes; Ctrl+drag adds to the highlighted group. **Ctrl+A** selects
+everything. Selected notes and their velocity stems use a brighter highlight.
+The piano roll's **Edit** menu also offers Select all, Copy, Paste and Duplicate.
+
+- **Ctrl+C — Copy:** remembers selected notes, including their pitches, lengths,
+  relative timing and velocities. Copy leaves the clip and undo history alone.
+- **Ctrl+V — Paste:** inserts the copied phrase at the amber insertion marker.
+  Click the time ruler to position it without changing the selection, or click
+  empty grid space. Placement follows the current snap setting. The earliest
+  copied note starts at the marker; relative offsets stay intact.
+- **Ctrl+D — Duplicate:** copies the highlighted phrase after its latest note
+  ends, aligned to the next grid boundary. The new notes become selected so
+  repeated duplication extends the phrase. Duplicate keeps the copied clipboard
+  phrase available for later Paste.
+
+Paste selects the new notes and advances the marker to the next grid boundary
+after the pasted phrase, ready for another Paste. Each Paste or Duplicate is one
+undo step. Ctrl+Z / Ctrl+Y restore the notes, selection and insertion marker.
+Copy remains available after deleting the original notes or clearing the clip.
+
+This is an internal note clipboard for the current editor session; it does not
+overwrite the Windows text clipboard or exchange MIDI with other applications.
+Text fields keep their normal Copy/Paste shortcuts. If the whole phrase will not
+fit inside the four-bar loop or the 128-note capacity, nothing is pasted and the
+editor explains why. Move the marker earlier, select fewer notes, or free space.
+
+Clipboard regression tests check relative timing, velocities, unique IDs,
+repeated operations, capacity/loop-edge rejection and failed-operation atomicity.
+GUI tests cover highlights, cursor placement, shortcuts, undo/redo, retained
+clipboard data and text-field isolation; offline callback tests cover adding and
+undoing copied notes during playback without hanging notes.
+
+Manual Windows check: highlight a chord or melody, Copy, click a later ruler
+position and Paste. Check note positions/velocities, repeat Paste and Duplicate,
+then undo/redo once per operation. Copy, delete the originals and Paste again.
+Try pasting at the loop end and into a full clip. Check the Edit menu, numeric
+text-field Copy/Paste, Tab navigation, typing piano, and Stop during playback.
+
+### Piano-roll processing tools
+
+Select notes before processing: click a note, Ctrl+click to toggle individual
+notes, drag an empty area to select a rectangle, or Ctrl+A to select the clip.
+Ctrl+drag adds a rectangle to the selection. Dragging a selected note moves the
+group; Delete and the Velocity control also apply to the selection. The grid's
+snap setting controls ordinary move/resize gestures.
+
+Choose a tool in the toolbar and open its settings, or use these shortcuts while
+focus is inside the piano roll:
+
+| Shortcut | Tool | Controls |
+| --- | --- | --- |
+| Alt+S | Strum | Delay between chord pitches, up/down direction, velocity variation and seed. Each chord is grouped by its original start time. |
+| Alt+U | Chop | Slice duration and gate percentage. The final fragment stays within the original note; all fragments become selected. |
+| Alt+R | Randomize | Symmetric timing, velocity and semitone variation, with a repeatable seed. |
+| Alt+Q | Quantize | Grid, strength and swing. Swing delays alternate grid points; strength blends toward the nearest point on that swung grid. |
+
+Time controls use ticks: **240 ticks = one 1/16 note**, 120 = 1/32,
+60 = 1/64, and 30 = 1/128. At 120 BPM, 30 ticks is 15.625 ms.
+Strum and Randomize preserve note lengths while keeping them inside the loop.
+Pitch and velocity stay inside MIDI bounds. A fixed seed and the same source
+notes/settings produce the same random result; applying again processes the
+already edited notes, so Undo first when comparing settings from the same source.
+
+**Apply** commits the result; **Cancel** or Escape closes settings without changing
+notes. Each Apply is one undo step, and each mouse gesture is one step. Use the
+Undo/Redo buttons, Ctrl+Z and Ctrl+Y (or Ctrl+Shift+Z). Up to 64 edits are retained
+for this session. Selection is restored with each edit. A new edit discards the
+redo branch. No-op tools do not add history. Settings fields retain their normal
+text editing and Tab/Shift+Tab navigation.
+
+The clip has a 128-note limit. If Chop would exceed it, the whole operation is
+rejected with an explanation; no notes are lost. Processing affects selected
+notes only. Edits and undo/redo publish through the same audio snapshot path as
+ordinary editing, releasing removed/moved notes during playback. Same-pitch
+overlaps retain the shared-gate behavior described above.
+
+Regression coverage includes deterministic selected-note transforms, chopped
+fragment IDs/capacity handling, swing/strength, sub-sixteenth sample timing,
+loop-edge releases, processing during offline callback playback, selection,
+gesture undo/redo, Cancel, and shortcut/text-field/Tab routing. Native Windows
+listening remains a manual check:
+
+1. Create a chord and a separate unselected melody. Strum the chord in both
+   directions, vary velocity, then undo/redo. Confirm the melody is unchanged.
+2. Chop a long note at 60 ticks with a 50% gate. Listen to individual attacks;
+   undo once to restore the full note. Try a full clip and confirm the capacity
+   message leaves all notes intact.
+3. Randomize timing/velocity/pitch, undo, and reapply with the same seed. Compare
+   results. Quantize partially, then fully, with swing; check loop-edge notes.
+4. Apply, undo, delete and clear while playing; Stop/restart and switch tabs or
+   presets. Confirm no hanging notes. Test typing piano and octave controls after
+   Tab, after closing tool settings, and after Alt-Tab.
+
+Ghost channels, multiple instruments, per-note slides/expression, chord/scale
+helpers and riff generation are separate future additions. These processing
+tools operate on the existing synth clip and do not add plugin hosting.
+
 
 ### Computer keyboard piano
 

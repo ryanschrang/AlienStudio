@@ -1,80 +1,18 @@
 #include <JuceHeader.h>
-#include "SynthEngine.h"
-#include "NoteQueue.h"
-#include "StepClock.h"
+#include "ToneEngine.h"
 #include "TypingPianoRouter.h"
+#include "PianoRollEditor.h"
 #include <array>
 #include <atomic>
 #include <cmath>
 #include <functional>
 
-class ToneEngine : public juce::AudioIODeviceCallback {
-public:
-    std::array<std::atomic<bool>, 16> steps{};
-    std::atomic<bool> playing{false};
-    std::atomic<int> bpm{120}, currentStep{-1}, preset{0};
-    NoteQueue notes;
-
-    void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
-        sampleRate = device->getCurrentSampleRate();
-        synth.prepare(sampleRate);
-        discardPendingNotes();
-        resetTransport();
-    }
-    void audioDeviceStopped() override { synth.allSoundOff(); discardPendingNotes(); resetTransport(); }
-    void audioDeviceIOCallbackWithContext(const float* const*, int,
-        float* const* outputs, int channels, int samples,
-        const juce::AudioIODeviceCallbackContext&) override {
-        juce::ScopedNoDenormals noDenormals;
-        const bool playNow = playing.load();
-        if (wasPlaying && !playNow) { synth.allSoundOff(); resetTransport(); }
-        wasPlaying = playNow;
-        synth.setPatch(alien::presets[static_cast<std::size_t>(juce::jlimit(0, 2, preset.load()))]);
-        NoteQueue::Event event{};
-        const bool panic = notes.panic.exchange(false);
-        // Bound work per callback even if the producer keeps publishing.
-        for (int n = 0; n < 256 && notes.pop(event); ++n) {
-            if (!panic) {
-                if (event.velocity > 0) synth.noteOn(event.note, event.velocity);
-                else synth.noteOff(event.note);
-            }
-        }
-        if (panic) synth.allSoundOff();
-        for (int i = 0; i < samples; ++i) {
-            if (playNow) {
-                const auto tick = clock.next(sampleRate, bpm.load());
-                if (tick.noteOff) synth.noteOff(57, 1);
-                if (tick.step >= 0) {
-                    currentStep.store(tick.step);
-                    if (steps[static_cast<std::size_t>(tick.step)].load()) synth.noteOn(57, 0.8f, 1);
-                }
-            }
-            const float value = synth.nextSample();
-            for (int c = 0; c < channels; ++c)
-                if (outputs[c] != nullptr) outputs[c][i] = value;
-        }
-    }
-private:
-    void discardPendingNotes() noexcept {
-        NoteQueue::Event event{};
-        for (int n = 0; n < 256 && notes.pop(event); ++n) {}
-        notes.panic.store(false);
-    }
-    void resetTransport() noexcept {
-        clock.reset(); wasPlaying = false; currentStep.store(-1);
-    }
-    alien::SynthEngine synth;
-    alien::StepClock clock;
-    double sampleRate{44100.0};
-    bool wasPlaying{};
-};
-
-class MainComponent : public juce::Component, private juce::Timer, private juce::MidiKeyboardState::Listener {
+class MainComponent : public juce::Component, private juce::Timer, private juce::MidiKeyboardState::Listener, private juce::ChangeListener {
 public:
     MainComponent() {
-        setSize(960, 550);
+        setSize(1120, 720);
         addAndMakeVisible(title);
-        title.setText("ALIEN STUDIO  |  Step Sequencer Prototype", juce::dontSendNotification);
+        title.setText("ALIEN STUDIO  |  Pattern Studio", juce::dontSendNotification);
         title.setJustificationType(juce::Justification::centred);
         addAndMakeVisible(play);
         play.setButtonText("Play / Stop");
@@ -85,13 +23,26 @@ public:
         tempo.onValueChange = [this] { engine.bpm.store(static_cast<int>(tempo.getValue())); };
         for (int i = 0; i < 16; ++i) {
             auto* button = pads.add(new juce::ToggleButton(juce::String(i + 1)));
-            addAndMakeVisible(button);
+            stepsPanel.addAndMakeVisible(button);
             button->onClick = [this, button, i] { engine.steps[i].store(button->getToggleState()); };
         }
         engine.steps[0].store(true); pads[0]->setToggleState(true, juce::dontSendNotification);
         engine.steps[4].store(true); pads[4]->setToggleState(true, juce::dontSendNotification);
         engine.steps[8].store(true); pads[8]->setToggleState(true, juce::dontSendNotification);
         engine.steps[12].store(true); pads[12]->setToggleState(true, juce::dontSendNotification);
+        addAndMakeVisible(tabs);
+        tabs.addTab("16-step sequencer", juce::Colour(0xff202736), &stepsPanel, false);
+        tabs.addTab("Piano roll", juce::Colour(0xff202736), &pianoRoll, false);
+        tabs.getTabbedButtonBar().addChangeListener(this);
+        stepsPanel.addAndMakeVisible(stepHelp);
+        stepHelp.setText("16 steps  |  Sixteenth notes  |  A3 synth pattern", juce::dontSendNotification);
+        stepHelp.setJustificationType(juce::Justification::centred);
+        pianoRoll.onChange = [this] { engine.pianoRollNotes.publish(pianoRoll.getPattern()); };
+        pianoRoll.onAudition = [this](int note, float velocity) {
+            if (velocity > 0) keyboardState.noteOn(3, note, velocity);
+            else keyboardState.noteOff(3, note, 0);
+        };
+        engine.pianoRollNotes.publish(pianoRoll.getPattern());
         addAndMakeVisible(preset);
         preset.addItem("Lead (saw)", 1);
         preset.addItem("Bass (square)", 2);
@@ -117,34 +68,41 @@ public:
         audio.initialiseWithDefaultDevices(0, 2);
         audio.addAudioCallback(&engine);
         startTimerHz(20);
+        resized();
     }
     ~MainComponent() override {
         stopTimer();
+        tabs.getTabbedButtonBar().removeChangeListener(this);
         releaseNotes();
         keyboardState.removeListener(this);
         audio.removeAudioCallback(&engine);
         audio.closeAudioDevice();
     }
     void resized() override {
-        title.setBounds(20, 20, getWidth() - 40, 50);
-        play.setBounds(30, 95, 130, 38);
-        tempo.setBounds(180, 95, 260, 38);
-        preset.setBounds(30, 325, 240, 32);
-        octaveDown.setBounds(290, 325, 100, 32);
-        octaveUp.setBounds(400, 325, 100, 32);
-        help.setBounds(30, 363, getWidth() - 60, 40);
-        keyboard.setBounds(30, 410, getWidth() - 60, 100);
-        const int width = (getWidth() - 60) / 8;
+        title.setBounds(20, 10, getWidth() - 40, 30);
+        play.setBounds(20, 52, 130, 34);
+        tempo.setBounds(165, 52, 255, 34);
+        preset.setBounds(440, 52, 190, 34);
+        tabs.setBounds(20, 106, getWidth() - 40, getHeight() - 280);
+        octaveDown.setBounds(20, getHeight() - 154, 100, 30);
+        octaveUp.setBounds(130, getHeight() - 154, 100, 30);
+        help.setBounds(245, getHeight() - 154, getWidth() - 265, 30);
+        keyboard.setBounds(20, getHeight() - 110, getWidth() - 40, 90);
+        const int width = (getWidth() - 100) / 8;
+        stepHelp.setBounds(20, 40, getWidth() - 80, 35);
         for (int i = 0; i < pads.size(); ++i)
-            pads[i]->setBounds(30 + (i % 8) * width, 175 + (i / 8) * 65, width - 6, 50);
+            pads[i]->setBounds(30 + (i % 8) * width, 110 + (i / 8) * 75, width - 8, 60);
     }
     void paint(juce::Graphics& g) override {
         g.fillAll(juce::Colour(0xff151722));
         g.setColour(juce::Colours::lightgreen);
-        g.drawText("BPM: " + juce::String(engine.bpm.load()) + "   |   Active step: " +
-            juce::String(engine.currentStep.load() + 1), 470, 95, 440, 40, juce::Justification::centredLeft);
+        const auto status = engine.patternMode.load() == 1 ? juce::String("Piano roll | 4 bars")
+            : "Step " + juce::String(engine.currentStep.load() + 1) + " / 16";
+        g.drawText("BPM: " + juce::String(engine.bpm.load()) + "   |   " + status,
+            650, 52, getWidth() - 670, 34, juce::Justification::centredLeft);
     }
     void releaseNotes() {
+        pianoRoll.releaseAudition();
         typingInput.release();
         keyboardState.allNotesOff(0);
         engine.notes.panic.store(true);
@@ -155,13 +113,20 @@ private:
                      + juce::String(typingInput.typing.octave()), juce::dontSendNotification);
         keyboard.setLowestVisibleKey(12 * (typingInput.typing.octave() + 1));
     }
-    void timerCallback() override { repaint(); }
-    void handleNoteOn(juce::MidiKeyboardState*, int, int note, float velocity) override {
-        if (!(keyboardState.isNoteOn(1, note) && keyboardState.isNoteOn(2, note)))
+    void changeListenerCallback(juce::ChangeBroadcaster*) override {
+        engine.patternMode.store(tabs.getCurrentTabIndex() == 1 ? 1 : 0);
+        releaseNotes();
+    }
+    void timerCallback() override {
+        pianoRoll.setPlayheadStep(engine.pianoRollPosition.load() / 1000.0);
+        repaint();
+    }
+    void handleNoteOn(juce::MidiKeyboardState*, int channel, int note, float velocity) override {
+        if (!keyboardState.isNoteOnForChannels(0xffff & ~(1 << (channel - 1)), note))
             engine.notes.push(note, velocity);
     }
     void handleNoteOff(juce::MidiKeyboardState*, int, int note, float) override {
-        if (!keyboardState.isNoteOnForChannels(3, note)) engine.notes.push(note, 0);
+        if (!keyboardState.isNoteOnForChannels(0xffff, note)) engine.notes.push(note, 0);
     }
     ToneEngine engine;
     juce::AudioDeviceManager audio;
@@ -174,6 +139,10 @@ private:
     juce::TextButton play;
     juce::Slider tempo{juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight};
     juce::OwnedArray<juce::ToggleButton> pads;
+    juce::Component stepsPanel;
+    juce::Label stepHelp;
+    alien::PianoRollEditor pianoRoll;
+    juce::TabbedComponent tabs{juce::TabbedButtonBar::TabsAtTop};
     TypingPianoRouter typingInput{*this, keyboardState};
 };
 
@@ -192,7 +161,12 @@ private:
             juce::DocumentWindow::allButtons) {
             setUsingNativeTitleBar(true);
             setContentOwned(new MainComponent(), true);
-            centreWithSize(getWidth(), getHeight());
+            setResizable(true, true);
+            setResizeLimits(960, 650, 1920, 1440);
+            if (const auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+                centreWithSize(juce::jmin(getWidth(), display->userArea.getWidth() - 40),
+                               juce::jmin(getHeight(), display->userArea.getHeight() - 40));
+            else centreWithSize(getWidth(), getHeight());
             setVisible(true);
         }
         void activeWindowStatusChanged() override {
