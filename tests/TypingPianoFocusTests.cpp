@@ -763,8 +763,10 @@ static void checkSessionClipButton() {
                                 now, {10.0f, 10.0f}, now, 1, false);
     };
     button.triggerClick();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(150);
     require(launches == 1 && edits == 0, "left-click launches a Session clip");
     button.mouseUp(event(juce::ModifierKeys::rightButtonModifier));
+    pump();
     require(launches == 1 && edits == 1, "right-click edits without launching a Session clip");
 }
 
