@@ -30,20 +30,139 @@ struct SessionProjectLoadResult {
     juce::String error;
 };
 
+class AlienStudioLookAndFeel final : public juce::LookAndFeel_V4 {
+public:
+    static const juce::Colour background;
+    static const juce::Colour panel;
+    static const juce::Colour control;
+    static const juce::Colour text;
+    static const juce::Colour muted;
+    static const juce::Colour accent;
+
+    AlienStudioLookAndFeel() {
+        setColour(juce::ResizableWindow::backgroundColourId, background);
+        setColour(juce::Label::textColourId, text);
+        setColour(juce::TextButton::buttonColourId, control);
+        setColour(juce::TextButton::buttonOnColourId, accent);
+        setColour(juce::TextButton::textColourOffId, text);
+        setColour(juce::TextButton::textColourOnId, background);
+        setColour(juce::ComboBox::backgroundColourId, control);
+        setColour(juce::ComboBox::outlineColourId, juce::Colour(0xff344253));
+        setColour(juce::ComboBox::textColourId, text);
+        setColour(juce::ComboBox::arrowColourId, accent);
+        setColour(juce::Slider::trackColourId, accent);
+        setColour(juce::Slider::backgroundColourId, juce::Colour(0xff303b4b));
+        setColour(juce::Slider::thumbColourId, juce::Colour(0xffe5f4f2));
+        setColour(juce::Slider::textBoxTextColourId, text);
+        setColour(juce::Slider::textBoxBackgroundColourId, control);
+        setColour(juce::Slider::textBoxOutlineColourId, juce::Colour(0xff344253));
+        setColour(juce::TabbedComponent::backgroundColourId, panel);
+        setColour(juce::TabbedComponent::outlineColourId, juce::Colour(0xff283342));
+        setColour(juce::TabbedButtonBar::tabOutlineColourId, juce::Colour(0xff283342));
+        setColour(juce::TabbedButtonBar::frontOutlineColourId, accent);
+        setColour(juce::TabbedButtonBar::tabTextColourId, muted);
+        setColour(juce::TabbedButtonBar::frontTextColourId, text);
+        setColour(juce::PopupMenu::backgroundColourId, panel);
+        setColour(juce::PopupMenu::textColourId, text);
+        setColour(juce::PopupMenu::highlightedBackgroundColourId, accent.withAlpha(0.22f));
+        setColour(juce::PopupMenu::highlightedTextColourId, text);
+    }
+
+    void drawButtonBackground(juce::Graphics& g, juce::Button& button,
+        const juce::Colour& backgroundColour, bool isMouseOverButton, bool isButtonDown) override {
+        auto colour = button.findColour(button.getToggleState()
+            ? juce::TextButton::buttonOnColourId : juce::TextButton::buttonColourId);
+        if (!colour.isOpaque()) colour = backgroundColour;
+        if (isButtonDown) colour = colour.brighter(0.12f);
+        else if (isMouseOverButton) colour = colour.brighter(0.07f);
+        const auto bounds = button.getLocalBounds().toFloat().reduced(0.5f);
+        g.setColour(colour);
+        g.fillRoundedRectangle(bounds, 7.0f);
+        if (button.hasKeyboardFocus(true)) {
+            g.setColour(accent.withAlpha(0.9f));
+            g.drawRoundedRectangle(bounds.reduced(1.0f), 6.0f, 1.3f);
+        }
+    }
+
+    void drawComboBox(juce::Graphics& g, int width, int height, bool isButtonDown,
+        int buttonX, int buttonY, int buttonW, int buttonH, juce::ComboBox& box) override {
+        const auto bounds = juce::Rectangle<float>(0.5f, 0.5f,
+            static_cast<float>(width) - 1.0f, static_cast<float>(height) - 1.0f);
+        g.setColour(box.findColour(juce::ComboBox::backgroundColourId)
+            .brighter(isButtonDown ? 0.08f : 0.0f));
+        g.fillRoundedRectangle(bounds, 6.0f);
+        g.setColour(box.findColour(juce::ComboBox::outlineColourId));
+        g.drawRoundedRectangle(bounds, 6.0f, 1.0f);
+        juce::Path arrow;
+        const auto centreX = static_cast<float>(buttonX) + static_cast<float>(buttonW) * 0.5f;
+        const auto centreY = static_cast<float>(buttonY) + static_cast<float>(buttonH) * 0.5f;
+        arrow.addTriangle(centreX - 4.0f, centreY - 2.0f, centreX + 4.0f, centreY - 2.0f,
+            centreX, centreY + 3.0f);
+        g.setColour(box.findColour(juce::ComboBox::arrowColourId));
+        g.fillPath(arrow);
+    }
+
+    void drawLinearSlider(juce::Graphics& g, int x, int y, int width, int height,
+        float sliderPos, float minSliderPos, float maxSliderPos, juce::Slider::SliderStyle style,
+        juce::Slider& slider) override {
+        juce::ignoreUnused(minSliderPos, maxSliderPos);
+        if (style != juce::Slider::LinearHorizontal && style != juce::Slider::LinearBar)
+            return juce::LookAndFeel_V4::drawLinearSlider(g, x, y, width, height, sliderPos,
+                minSliderPos, maxSliderPos, style, slider);
+        auto track = juce::Rectangle<float>(static_cast<float>(x) + 2.0f,
+            static_cast<float>(y) + static_cast<float>(height) * 0.5f - 2.0f,
+            static_cast<float>(width) - 4.0f, 4.0f);
+        g.setColour(slider.findColour(juce::Slider::backgroundColourId));
+        g.fillRoundedRectangle(track, 2.0f);
+        const auto filledWidth = juce::jlimit(0.0f, track.getWidth(), sliderPos - track.getX());
+        g.setColour(slider.findColour(juce::Slider::trackColourId));
+        g.fillRoundedRectangle(track.withWidth(filledWidth), 2.0f);
+        if (style == juce::Slider::LinearHorizontal) {
+            g.setColour(slider.findColour(juce::Slider::thumbColourId));
+            g.fillEllipse(sliderPos - 6.0f, track.getCentreY() - 6.0f, 12.0f, 12.0f);
+        }
+    }
+};
+
+const juce::Colour AlienStudioLookAndFeel::background{0xff10151e};
+const juce::Colour AlienStudioLookAndFeel::panel{0xff171f2b};
+const juce::Colour AlienStudioLookAndFeel::control{0xff242e3d};
+const juce::Colour AlienStudioLookAndFeel::text{0xffe7f0f2};
+const juce::Colour AlienStudioLookAndFeel::muted{0xff95a8b5};
+const juce::Colour AlienStudioLookAndFeel::accent{0xff63dfc2};
+
 class MainComponent : public juce::Component, private juce::Timer, private juce::MidiKeyboardState::Listener, private juce::ChangeListener {
 public:
     MainComponent() {
+        setLookAndFeel(&studioLookAndFeel);
         setSize(1120, 720);
         addAndMakeVisible(title);
-        title.setText("ALIEN STUDIO  |  Pattern Studio", juce::dontSendNotification);
-        title.setJustificationType(juce::Justification::centred);
+        title.setText("ALIEN STUDIO", juce::dontSendNotification);
+        title.setFont(juce::FontOptions(16.0f, juce::Font::bold));
+        title.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::text);
+        title.setJustificationType(juce::Justification::centredLeft);
+        addAndMakeVisible(brandSubtitle);
+        brandSubtitle.setText("PATTERN STUDIO", juce::dontSendNotification);
+        brandSubtitle.setFont(juce::FontOptions(9.5f, juce::Font::bold));
+        brandSubtitle.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::accent);
+        brandSubtitle.setJustificationType(juce::Justification::centredLeft);
         addAndMakeVisible(play);
-        play.setButtonText("Play / Stop");
+        play.setButtonText("Play");
+        play.setName("Start or stop playback");
+        play.setTooltip("Start or stop the current pattern");
+        play.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff245a55));
+        play.setColour(juce::TextButton::buttonOnColourId, AlienStudioLookAndFeel::accent);
         play.onClick = [this] { releaseNotes(); engine.playing.store(!engine.playing.load()); };
         addAndMakeVisible(tempo);
         tempo.setRange(60, 200, 1);
         tempo.setValue(120);
+        tempo.setTooltip("Playback tempo in beats per minute");
         tempo.onValueChange = [this] { engine.bpm.store(static_cast<int>(tempo.getValue())); };
+        addAndMakeVisible(tempoLabel);
+        tempoLabel.setText("BPM", juce::dontSendNotification);
+        tempoLabel.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+        tempoLabel.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::muted);
+        tempoLabel.setJustificationType(juce::Justification::centred);
         addAndMakeVisible(saveProjectButton);
         saveProjectButton.setButtonText("Save");
         saveProjectButton.setName("Save Alien Studio session project");
@@ -53,7 +172,7 @@ public:
         openProjectButton.setName("Open Alien Studio session project");
         openProjectButton.onClick = [this] { chooseProjectToOpen(); };
         addAndMakeVisible(projectStatus);
-        projectStatus.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
+        projectStatus.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::muted);
         projectStatus.setJustificationType(juce::Justification::centredLeft);
         projectStatus.setText("Unsaved session", juce::dontSendNotification);
         for (int i = 0; i < 16; ++i) {
@@ -65,19 +184,19 @@ public:
         engine.steps[4].store(true); pads[4]->setToggleState(true, juce::dontSendNotification);
         engine.steps[8].store(true); pads[8]->setToggleState(true, juce::dontSendNotification);
         engine.steps[12].store(true); pads[12]->setToggleState(true, juce::dontSendNotification);
-        tabs.addTab("16-step sequencer", juce::Colour(0xff202736), &stepsPanel, false);
-        tabs.addTab("Piano roll", juce::Colour(0xff202736), &pianoRoll, false);
-        tabs.addTab("Session", juce::Colour(0xff202736), &sessionPanel, false);
+        tabs.addTab("16-step sequencer", AlienStudioLookAndFeel::panel, &stepsPanel, false);
+        tabs.addTab("Piano roll", AlienStudioLookAndFeel::panel, &pianoRoll, false);
+        tabs.addTab("Session", AlienStudioLookAndFeel::panel, &sessionPanel, false);
         tabs.getTabbedButtonBar().addChangeListener(this);
         addAndMakeVisible(workspace);
         devicePanel.addAndMakeVisible(deviceTitle);
         deviceTitle.setText("Device rack", juce::dontSendNotification);
-        deviceTitle.setFont(juce::FontOptions(24.0f, juce::Font::bold));
-        deviceTitle.setColour(juce::Label::textColourId, juce::Colour(0xff8ff0c0));
+        deviceTitle.setFont(juce::FontOptions(22.0f, juce::Font::bold));
+        deviceTitle.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::text);
         devicePanel.addAndMakeVisible(deviceHelp);
         deviceHelp.setText("Choose the synth voice and MIDI input used by the current pattern. Shift+Tab returns to the editor.",
                            juce::dontSendNotification);
-        deviceHelp.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
+        deviceHelp.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::muted);
         devicePanel.addAndMakeVisible(midiLabel);
         midiLabel.setText("MIDI input", juce::dontSendNotification);
         midiLabel.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
@@ -88,11 +207,11 @@ public:
         sessionPanel.addAndMakeVisible(sessionTitle);
         sessionTitle.setText("Session scenes", juce::dontSendNotification);
         sessionTitle.setFont(juce::FontOptions(22.0f, juce::Font::bold));
-        sessionTitle.setColour(juce::Label::textColourId, juce::Colour(0xff8ff0c0));
+        sessionTitle.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::text);
         sessionPanel.addAndMakeVisible(sessionHelp);
         sessionHelp.setText("Launch a scene to switch all tracks together. Click a clip to launch; right-click to edit or view audio.",
                             juce::dontSendNotification);
-        sessionHelp.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
+        sessionHelp.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::muted);
         sessionPanel.addAndMakeVisible(launchTimingLabel);
         launchTimingLabel.setText("Launch at", juce::dontSendNotification);
         launchTimingLabel.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
@@ -227,6 +346,13 @@ public:
         keyboard.setAvailableRange(0, 127);
         keyboard.setOctaveForMiddleC(4);
         keyboard.setLowestVisibleKey(48);
+        keyboard.setColour(juce::MidiKeyboardComponent::whiteNoteColourId, juce::Colour(0xffdce7e8));
+        keyboard.setColour(juce::MidiKeyboardComponent::blackNoteColourId, juce::Colour(0xff202a38));
+        keyboard.setColour(juce::MidiKeyboardComponent::keySeparatorLineColourId, juce::Colour(0xff536274));
+        keyboard.setColour(juce::MidiKeyboardComponent::mouseOverKeyOverlayColourId, AlienStudioLookAndFeel::accent.withAlpha(0.28f));
+        keyboard.setColour(juce::MidiKeyboardComponent::keyDownOverlayColourId, AlienStudioLookAndFeel::accent.withAlpha(0.60f));
+        keyboard.setColour(juce::MidiKeyboardComponent::textLabelColourId, juce::Colour(0xff18222e));
+        keyboard.setColour(juce::MidiKeyboardComponent::shadowColourId, juce::Colour(0x55000000));
         typingInput.octaveChanged = [this] { updateOctave(); };
         for (auto* b : {&octaveDown, &octaveUp}) {
             addAndMakeVisible(b);
@@ -253,15 +379,19 @@ public:
         keyboardState.removeListener(this);
         audio.removeAudioCallback(&engine);
         audio.closeAudioDevice();
+        setLookAndFeel(nullptr);
     }
     void resized() override {
-        title.setBounds(20, 10, 250, 30);
-        play.setBounds(290, 8, 130, 34);
-        tempo.setBounds(435, 8, 245, 34);
-        saveProjectButton.setBounds(690, 8, 72, 34);
-        openProjectButton.setBounds(770, 8, 72, 34);
-        projectStatus.setBounds(852, 8, getWidth() - 872, 34);
-        workspace.setBounds(20, 52, getWidth() - 40, getHeight() - 226);
+        const int right = getWidth() - 20;
+        title.setBounds(20, 4, 166, 24);
+        brandSubtitle.setBounds(21, 27, 160, 15);
+        play.setBounds(194, 8, 82, 34);
+        tempoLabel.setBounds(286, 8, 42, 34);
+        tempo.setBounds(330, 8, 150, 34);
+        saveProjectButton.setBounds(494, 8, 66, 34);
+        openProjectButton.setBounds(568, 8, 66, 34);
+        projectStatus.setBounds(648, 8, juce::jmax(100, right - 648), 34);
+        workspace.setBounds(16, 54, getWidth() - 32, getHeight() - 228);
         const auto rackWidth = devicePanel.getWidth();
         deviceTitle.setBounds(24, 18, rackWidth - 48, 34);
         deviceHelp.setBounds(24, 54, rackWidth - 48, 28);
@@ -307,12 +437,16 @@ public:
             pads[i]->setBounds(30 + (i % 8) * width, 110 + (i / 8) * 75, width - 8, 60);
     }
     void paint(juce::Graphics& g) override {
-        g.fillAll(juce::Colour(0xff151722));
-        g.setColour(juce::Colours::lightgreen);
-        const auto status = engine.patternMode.load() == 1 ? juce::String("Piano roll | 4 bars")
-            : "Step " + juce::String(engine.currentStep.load() + 1) + " / 16";
-        g.drawText("BPM: " + juce::String(engine.bpm.load()) + "   |   " + status,
-            700, 8, getWidth() - 720, 34, juce::Justification::centredLeft);
+        g.fillAll(AlienStudioLookAndFeel::background);
+        auto header = juce::Rectangle<float>(12.0f, 5.0f, static_cast<float>(getWidth() - 24), 42.0f);
+        g.setColour(AlienStudioLookAndFeel::panel);
+        g.fillRoundedRectangle(header, 10.0f);
+        g.setColour(juce::Colour(0xff273342));
+        g.drawRoundedRectangle(header, 10.0f, 1.0f);
+        auto footer = juce::Rectangle<float>(12.0f, static_cast<float>(getHeight() - 174),
+            static_cast<float>(getWidth() - 24), 158.0f);
+        g.setColour(AlienStudioLookAndFeel::panel);
+        g.fillRoundedRectangle(footer, 10.0f);
     }
     void releaseNotes() {
         pianoRoll.releaseAudition();
@@ -334,6 +468,11 @@ private:
         else pianoRoll.releaseAudition();
     }
     void timerCallback() override {
+        const bool isPlaying = engine.playing.load();
+        if (play.getToggleState() != isPlaying)
+            play.setToggleState(isPlaying, juce::dontSendNotification);
+        const juce::String transportText = isPlaying ? "Stop" : "Play";
+        if (play.getButtonText() != transportText) play.setButtonText(transportText);
         midiInput.tick();
         int controllerAction = -1;
         while (engine.controllerActions.pop(controllerAction)) {
@@ -702,8 +841,17 @@ private:
             + juce::String(code / 128 + 1), juce::dontSendNotification);
     }
     void updateSessionButtons() {
+        std::array<bool, sceneCount> scenePlaying{};
+        for (int track = 0; track < trackCount; ++track) {
+            const int active = engine.activePianoRollClip[static_cast<std::size_t>(track)].load();
+            if (active >= 0 && active < sceneCount) scenePlaying[static_cast<std::size_t>(active)] = true;
+        }
         for (int scene = 0; scene < sceneCount; ++scene) {
-            sceneButtons[static_cast<std::size_t>(scene)].setButtonText(
+            auto& sceneButton = sceneButtons[static_cast<std::size_t>(scene)];
+            sceneButton.setColour(juce::TextButton::buttonColourId,
+                scenePlaying[static_cast<std::size_t>(scene)] ? juce::Colour(0xff245a55)
+                : scene == selectedScene ? juce::Colour(0xff303b4b) : AlienStudioLookAndFeel::control);
+            sceneButton.setButtonText(
                 (scene == selectedScene ? "Selected | " : "") + juce::String("Launch scene ") + juce::String(scene + 1));
             for (int track = 0; track < trackCount; ++track) {
                 const auto index = static_cast<std::size_t>(track);
@@ -716,11 +864,18 @@ private:
                 if (scene == active) text += " | Playing";
                 else if (scene == requested) text += " | Queued";
                 if (track == selectedTrack && scene == selectedScene) text += " | Edit";
-                clipButtons[cellIndex(track, scene)].setButtonText(text);
+                auto& button = clipButtons[cellIndex(track, scene)];
+                button.setButtonText(text);
+                button.setColour(juce::TextButton::buttonColourId,
+                    scene == active ? juce::Colour(0xff245a55)
+                    : scene == requested ? juce::Colour(0xff67522e)
+                    : track == selectedTrack && scene == selectedScene ? juce::Colour(0xff303b4b)
+                    : AlienStudioLookAndFeel::control);
             }
         }
         stopClip.setButtonText("Stop all tracks");
     }
+    AlienStudioLookAndFeel studioLookAndFeel;
     ToneEngine engine;
     alien::MidiInputPanel midiInput{engine.midi};
     juce::AudioDeviceManager audio;
@@ -730,6 +885,7 @@ private:
     juce::Label help;
     juce::ComboBox preset;
     juce::Label title;
+    juce::Label brandSubtitle, tempoLabel;
     juce::TextButton play;
     juce::TextButton saveProjectButton, openProjectButton;
     juce::Label projectStatus;
