@@ -3,6 +3,7 @@
 #include "TypingPianoRouter.h"
 #include "PianoRollEditor.h"
 #include "MidiInputPanel.h"
+#include "CompactWorkspace.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -15,7 +16,6 @@ public:
         addAndMakeVisible(title);
         title.setText("ALIEN STUDIO  |  Pattern Studio", juce::dontSendNotification);
         title.setJustificationType(juce::Justification::centred);
-        addAndMakeVisible(midiInput);
         addAndMakeVisible(play);
         play.setButtonText("Play / Stop");
         play.onClick = [this] { releaseNotes(); engine.playing.store(!engine.playing.load()); };
@@ -32,10 +32,22 @@ public:
         engine.steps[4].store(true); pads[4]->setToggleState(true, juce::dontSendNotification);
         engine.steps[8].store(true); pads[8]->setToggleState(true, juce::dontSendNotification);
         engine.steps[12].store(true); pads[12]->setToggleState(true, juce::dontSendNotification);
-        addAndMakeVisible(tabs);
         tabs.addTab("16-step sequencer", juce::Colour(0xff202736), &stepsPanel, false);
         tabs.addTab("Piano roll", juce::Colour(0xff202736), &pianoRoll, false);
         tabs.getTabbedButtonBar().addChangeListener(this);
+        addAndMakeVisible(workspace);
+        devicePanel.addAndMakeVisible(deviceTitle);
+        deviceTitle.setText("Device rack", juce::dontSendNotification);
+        deviceTitle.setFont(juce::FontOptions(24.0f, juce::Font::bold));
+        deviceTitle.setColour(juce::Label::textColourId, juce::Colour(0xff8ff0c0));
+        devicePanel.addAndMakeVisible(deviceHelp);
+        deviceHelp.setText("Choose the synth voice and MIDI input used by the current pattern. Shift+Tab returns to the editor.",
+                           juce::dontSendNotification);
+        deviceHelp.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
+        devicePanel.addAndMakeVisible(midiLabel);
+        midiLabel.setText("MIDI input", juce::dontSendNotification);
+        midiLabel.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
+        devicePanel.addAndMakeVisible(midiInput);
         stepsPanel.addAndMakeVisible(stepHelp);
         stepHelp.setText("16 steps  |  Sixteenth notes  |  A3 synth pattern", juce::dontSendNotification);
         stepHelp.setJustificationType(juce::Justification::centred);
@@ -45,12 +57,16 @@ public:
             else keyboardState.noteOff(3, note, 0);
         };
         engine.pianoRollNotes.publish(pianoRoll.getPattern());
-        addAndMakeVisible(preset);
+        devicePanel.addAndMakeVisible(presetLabel);
+        presetLabel.setText("Synth preset", juce::dontSendNotification);
+        presetLabel.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
+        devicePanel.addAndMakeVisible(preset);
         preset.addItem("Lead (saw)", 1);
         preset.addItem("Bass (square)", 2);
         preset.addItem("Pluck (sine)", 3);
         preset.setSelectedId(1);
         preset.onChange = [this] { releaseNotes(); engine.preset.store(preset.getSelectedId() - 1); };
+        workspace.onViewChanged = [this](bool) { releaseNotes(); };
         addAndMakeVisible(keyboard);
         keyboard.clearKeyMappings();
         keyboard.setAvailableRange(0, 127);
@@ -82,11 +98,16 @@ public:
     }
     void resized() override {
         title.setBounds(20, 10, 250, 30);
-        midiInput.setBounds(280, 10, getWidth() - 300, 32);
-        play.setBounds(20, 52, 130, 34);
-        tempo.setBounds(165, 52, 255, 34);
-        preset.setBounds(440, 52, 190, 34);
-        tabs.setBounds(20, 106, getWidth() - 40, getHeight() - 280);
+        play.setBounds(290, 8, 130, 34);
+        tempo.setBounds(435, 8, 245, 34);
+        workspace.setBounds(20, 52, getWidth() - 40, getHeight() - 226);
+        const auto rackWidth = devicePanel.getWidth();
+        deviceTitle.setBounds(24, 18, rackWidth - 48, 34);
+        deviceHelp.setBounds(24, 54, rackWidth - 48, 28);
+        presetLabel.setBounds(30, 108, 120, 30);
+        preset.setBounds(150, 108, juce::jmin(260, rackWidth - 180), 32);
+        midiLabel.setBounds(30, 168, 120, 30);
+        midiInput.setBounds(150, 168, juce::jmax(300, rackWidth - 180), 32);
         octaveDown.setBounds(20, getHeight() - 154, 100, 30);
         octaveUp.setBounds(130, getHeight() - 154, 100, 30);
         help.setBounds(245, getHeight() - 154, getWidth() - 265, 30);
@@ -102,7 +123,7 @@ public:
         const auto status = engine.patternMode.load() == 1 ? juce::String("Piano roll | 4 bars")
             : "Step " + juce::String(engine.currentStep.load() + 1) + " / 16";
         g.drawText("BPM: " + juce::String(engine.bpm.load()) + "   |   " + status,
-            650, 52, getWidth() - 670, 34, juce::Justification::centredLeft);
+            700, 8, getWidth() - 720, 34, juce::Justification::centredLeft);
     }
     void releaseNotes() {
         pianoRoll.releaseAudition();
@@ -159,6 +180,9 @@ private:
     juce::Label stepHelp;
     alien::PianoRollEditor pianoRoll;
     juce::TabbedComponent tabs{juce::TabbedButtonBar::TabsAtTop};
+    juce::Component devicePanel;
+    juce::Label deviceTitle, deviceHelp, presetLabel, midiLabel;
+    alien::CompactWorkspace workspace{tabs, devicePanel};
     TypingPianoRouter typingInput{*this, keyboardState};
 };
 
