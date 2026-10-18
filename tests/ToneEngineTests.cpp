@@ -132,24 +132,54 @@ static void sessionClipLaunchTests() {
                 "queue replacement scene track clip");
     }
     engine.synchronizedSceneLaunch.store(true);
-    offline.render(191488);
+    offline.render(95488);
     for (const auto& active : engine.activePianoRollClip)
-        require(active.load() == 0, "scene waits for a shared boundary despite different track loop lengths");
-    require(offline.render(1) > 0, "replacement scene sounds on its boundary");
+        require(active.load() == 0, "scene waits for the next bar despite different track loop lengths");
+    require(offline.render(1) > 0, "replacement scene sounds on the bar boundary");
     for (const auto& active : engine.activePianoRollClip)
-        require(active.load() == 1, "scene activates every track together at the shared boundary");
+        require(active.load() == 1, "scene activates every track together on the bar boundary");
 
+    engine.synchronizedSceneLaunch.store(true);
     for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track) {
         engine.requestedPianoRollClip[track].store(-1);
         require(engine.pianoRollLaunches[track].publish({}), "queue session scene stop");
     }
-    offline.render(383999);
+    offline.render(95999);
     for (const auto& active : engine.activePianoRollClip)
         require(active.load() == 1, "quantized scene stop waits through the active loop");
     offline.render(1);
     for (const auto& active : engine.activePianoRollClip)
         require(active.load() == -1, "quantized scene stop clears each track");
     require(offline.settledEnergy() == 0, "quantized scene stop releases all tracks without stale audio");
+}
+
+static void launchQuantizationTests() {
+    OfflineEngine offline;
+    auto& engine = offline.engine;
+    engine.patternMode.store(1);
+    engine.playing.store(true);
+    engine.requestedPianoRollClip[0].store(0);
+    require(engine.pianoRollLaunches[0].publish(heldPattern(60)), "queue initial quantization-test clip");
+    require(offline.render(256) > 0 && engine.activePianoRollClip[0].load() == 0,
+        "initial clip starts at transport start");
+
+    engine.launchQuantizationSteps.store(4);
+    engine.requestedPianoRollClip[0].store(1);
+    require(engine.pianoRollLaunches[0].publish(heldPattern(64)), "queue beat-quantized clip");
+    offline.render(23744);
+    require(engine.activePianoRollClip[0].load() == 0, "beat-quantized launch waits until the next beat");
+    offline.render(1);
+    require(engine.activePianoRollClip[0].load() == 1, "beat-quantized launch switches at the beat boundary");
+
+    engine.launchQuantizationSteps.store(16);
+    engine.requestedPianoRollClip[0].store(2);
+    require(engine.pianoRollLaunches[0].publish(heldPattern(67)), "queue bar-quantized clip");
+    offline.render(71999);
+    require(engine.activePianoRollClip[0].load() == 1, "bar-quantized launch waits for the next bar");
+    offline.render(1);
+    require(engine.activePianoRollClip[0].load() == 2, "bar-quantized launch switches at the bar boundary");
+    engine.playing.store(false);
+    require(offline.render(256) == 0, "quantized clip changes still stop without held notes");
 }
 
 static void panicPresetAndSourceTests() {
@@ -346,6 +376,7 @@ int main() {
     playbackStopAndRestartTests();
     activeEditingTests();
     sessionClipLaunchTests();
+    launchQuantizationTests();
     panicPresetAndSourceTests();
     liveKeyboardIsolationTests();
     processedPatternTests();

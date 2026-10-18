@@ -184,16 +184,19 @@ public:
             activeClip = loadedClip;
         }
     }
-    bool queuePattern(const PianoRollPattern& replacement, int clipIndex, bool waitForSynchronizedLaunch = false) noexcept {
+    bool queuePattern(const PianoRollPattern& replacement, int clipIndex, bool waitForSynchronizedLaunch = false,
+                      int launchQuantizationSteps = 64) noexcept {
         if (!replacement.valid() || clipIndex < -1) return false;
         pendingPattern = replacement;
         pendingClip = clipIndex;
+        pendingQuantizationSteps = launchQuantizationSteps > 0 ? launchQuantizationSteps : 64;
         pending = true;
         synchronizedPending = waitForSynchronizedLaunch;
         return true;
     }
-    bool loopBoundaryDue() const noexcept {
-        return running && untilStep <= 0 && nextStep == 0;
+    bool launchBoundaryDue(int quantizationSteps) const noexcept {
+        return running && untilStep <= 0 && quantizationSteps > 0
+            && (quantizationSteps >= 64 ? nextStep == 0 : quantizationPhase % quantizationSteps == 0);
     }
     template<class Send>
     void launchPendingNow(Send&& send) noexcept {
@@ -210,7 +213,8 @@ public:
                 nextEvent = 0;
                 ++cycle;
             }
-            if (nextStep == 0 && pending && !synchronizedPending) activatePending(send);
+            if (pending && !synchronizedPending && launchBoundaryDue(pendingQuantizationSteps))
+                activatePending(send);
             step = nextStep;
             nextStep = (step + 1) % pattern.loopSteps;
             tick = step;
@@ -218,6 +222,7 @@ public:
             // effect in the next interval, matching the existing step clock.
             intervalSamples = sampleRate * 60.0 / (bpm * 4.0);
             untilStep += intervalSamples;
+            quantizationPhase = (quantizationPhase + 1) % 16;
         }
         const double position = samplePosition();
         dispatch(position, send);
@@ -235,6 +240,7 @@ public:
     void stop(Send&& send) noexcept {
         for (std::size_t i = 0; i < pattern.count; ++i) if (active[i]) release(i, send);
         running = false; reconcile = false; step = -1; nextStep = 0; nextEvent = 0; untilStep = 0;
+        quantizationPhase = 0;
         activeClip = -1;
     }
     int currentStep() const noexcept { return step; }
@@ -368,7 +374,7 @@ private:
     double sampleRate{44100.0}, bpm{120.0}, untilStep{}, intervalSamples{1.0};
     int step{-1}, nextStep{};
     std::uint32_t cycle{};
-    int loadedClip{-1}, activeClip{-1}, pendingClip{-1};
+    int loadedClip{-1}, activeClip{-1}, pendingClip{-1}, pendingQuantizationSteps{64}, quantizationPhase{};
     bool running{}, reconcile{}, pending{}, synchronizedPending{};
 };
 }

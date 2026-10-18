@@ -61,6 +61,18 @@ public:
         sessionHelp.setText("Launch a scene to switch all four tracks together. Click a track cell to launch it; right-click to edit.",
                             juce::dontSendNotification);
         sessionHelp.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
+        sessionPanel.addAndMakeVisible(launchTimingLabel);
+        launchTimingLabel.setText("Launch at", juce::dontSendNotification);
+        launchTimingLabel.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
+        sessionPanel.addAndMakeVisible(launchTiming);
+        launchTiming.setName("Session launch quantization");
+        launchTiming.setTooltip("Choose whether queued clips and scenes launch on the next beat or bar");
+        launchTiming.addItem("Beat", 1);
+        launchTiming.addItem("Bar", 2);
+        launchTiming.setSelectedId(2, juce::dontSendNotification);
+        launchTiming.onChange = [this] {
+            engine.launchQuantizationSteps.store(launchTiming.getSelectedId() == 1 ? 4 : 16);
+        };
         for (int scene = 0; scene < sceneCount; ++scene) {
             sessionPanel.addAndMakeVisible(sceneButtons[static_cast<std::size_t>(scene)]);
             auto& sceneButton = sceneButtons[static_cast<std::size_t>(scene)];
@@ -77,11 +89,11 @@ public:
             }
         }
         sessionPanel.addAndMakeVisible(stopClip);
-        stopClip.setButtonText("Stop clip");
-        stopClip.setName("Stop all Session tracks at loop boundary");
+        stopClip.setButtonText("Stop all tracks");
+        stopClip.setName("Stop all Session tracks at selected launch boundary");
         stopClip.onClick = [this] {
             saveEditedClip();
-            engine.synchronizedSceneLaunch.store(false);
+            engine.synchronizedSceneLaunch.store(true);
             for (int track = 0; track < trackCount; ++track) {
                 engine.requestedPianoRollClip[static_cast<std::size_t>(track)].store(-1);
                 engine.pianoRollLaunches[static_cast<std::size_t>(track)].publish({});
@@ -184,6 +196,8 @@ public:
         }
         editSelectedClip.setBounds(24, gridTop + sceneCount * (sceneHeight + 8) + 12, 180, 36);
         stopClip.setBounds(216, gridTop + sceneCount * (sceneHeight + 8) + 12, 150, 36);
+        launchTimingLabel.setBounds(380, gridTop + sceneCount * (sceneHeight + 8) + 12, 78, 36);
+        launchTiming.setBounds(460, gridTop + sceneCount * (sceneHeight + 8) + 12, 100, 36);
         octaveDown.setBounds(20, getHeight() - 154, 100, 30);
         octaveUp.setBounds(130, getHeight() - 154, 100, 30);
         help.setBounds(245, getHeight() - 154, getWidth() - 265, 30);
@@ -321,7 +335,8 @@ private:
     alien::PianoRollEditor pianoRoll;
     juce::TabbedComponent tabs{juce::TabbedButtonBar::TabsAtTop};
     juce::Component sessionPanel;
-    juce::Label sessionTitle, sessionHelp;
+    juce::Label sessionTitle, sessionHelp, launchTimingLabel;
+    juce::ComboBox launchTiming;
     std::array<juce::TextButton, 4> sceneButtons;
     std::array<alien::SessionClipButton, 16> clipButtons;
     juce::TextButton editSelectedClip, stopClip;
