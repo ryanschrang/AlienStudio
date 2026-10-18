@@ -5,6 +5,7 @@
 #include "PianoRollProcessing.h"
 #include "PianoRollClipboard.h"
 #include "PianoRollChordStamp.h"
+#include "PianoRollScale.h"
 #include <cmath>
 #include <functional>
 #include <span>
@@ -28,7 +29,7 @@ public:
                     "Shift Left or Right changes their length. Ctrl A selects all, Ctrl Z undoes, "
                     "and Ctrl Y redoes. Ctrl C copies, Ctrl V pastes at the amber cursor, and Ctrl D duplicates. "
                     "Click the ruler or empty grid to place the paste cursor. "
-                    "Alt C opens chord stamps; Alt S, U, R, Q open processing settings. Tab moves between controls.");
+                    "Alt C opens chord stamps; Alt L opens scale guides; Alt S, U, R, Q open processing settings. Tab moves between controls.");
         setWantsKeyboardFocus(true);
         setMouseClickGrabsKeyboardFocus(true);
 
@@ -97,6 +98,7 @@ public:
         tools.addItem("Randomize", 3);
         tools.addItem("Quantize", 4);
         tools.addItem("Chord stamp", 5);
+        tools.addItem("Scale", 6);
         tools.setSelectedId(1, juce::dontSendNotification);
         tools.setTooltip("Choose a note processing tool, then open its settings");
         tools.onChange = [this] { if (panelOpen) configureToolPanel(); };
@@ -156,6 +158,38 @@ public:
             if (previewChordButton.getToggleState()) startChordPreview();
             else releaseChordPreview(false);
         };
+        addChildComponent(scaleRootLabel);
+        addChildComponent(scaleRoot);
+        scaleRootLabel.setText("Root", juce::dontSendNotification);
+        scaleRootLabel.setJustificationType(juce::Justification::centredRight);
+        scaleRoot.setName("Scale root note");
+        for (int pitchClass = 0; pitchClass < 12; ++pitchClass)
+            scaleRoot.addItem(juce::String(scalePitchClassName(pitchClass)), pitchClass + 1);
+        scaleRoot.setSelectedId(1, juce::dontSendNotification);
+        addChildComponent(scaleTypeLabel);
+        addChildComponent(scaleType);
+        scaleTypeLabel.setText("Scale", juce::dontSendNotification);
+        scaleTypeLabel.setJustificationType(juce::Justification::centredRight);
+        scaleType.setName("Scale type");
+        for (const auto& item : std::initializer_list<std::pair<const char*, int>> {
+                 {"Major", 1}, {"Natural minor", 2}, {"Harmonic minor", 3}, {"Melodic minor", 4},
+                 {"Dorian", 5}, {"Mixolydian", 6}, {"Major pentatonic", 7},
+                 {"Minor pentatonic", 8}, {"Blues", 9}, {"Chromatic", 10} })
+            scaleType.addItem(item.first, item.second);
+        scaleType.setSelectedId(1, juce::dontSendNotification);
+        addChildComponent(scaleHighlight);
+        scaleHighlight.setButtonText("Highlight scale");
+        scaleHighlight.setName("Highlight selected scale");
+        scaleHighlight.setToggleState(false, juce::dontSendNotification);
+        addChildComponent(scaleSnap);
+        scaleSnap.setButtonText("Snap note pitches");
+        scaleSnap.setName("Snap piano roll notes to scale");
+        for (auto* control : std::initializer_list<juce::Component*> { &scaleRoot, &scaleType, &scaleHighlight, &scaleSnap })
+            control->setWantsKeyboardFocus(true);
+        scaleRoot.onChange = [this] { updateScaleSettings(); };
+        scaleType.onChange = [this] { updateScaleSettings(); };
+        scaleHighlight.onClick = [this] { updateScaleSettings(); };
+        scaleSnap.onClick = [this] { updateScaleSettings(); };
         addChildComponent(applyButton);
         applyButton.setButtonText("Apply");
         applyButton.setName("Apply piano roll processing");
@@ -284,6 +318,13 @@ public:
             seedLabel.setBounds(282, 113, 72, 26);
             seed.setBounds(360, 113, 110, 26);
             previewChordButton.setBounds(480, 113, 88, 28);
+        } else if (tools.getSelectedId() == 6) {
+            scaleRootLabel.setBounds(16, 78, 54, 26);
+            scaleRoot.setBounds(76, 78, 92, 26);
+            scaleTypeLabel.setBounds(178, 78, 54, 26);
+            scaleType.setBounds(238, 78, 170, 26);
+            scaleHighlight.setBounds(424, 78, 140, 26);
+            scaleSnap.setBounds(572, 78, 160, 26);
         } else {
             seedLabel.setBounds(16, 113, 106, 26);
             seed.setBounds(128, 113, 190, 26);
@@ -319,7 +360,11 @@ public:
             const auto y = a.grid.getY() + row * rowHeight;
             const juce::Rectangle<float> rowBounds(static_cast<float>(a.grid.getX()), y,
                                                   static_cast<float>(a.grid.getWidth()), rowHeight);
-            g.setColour(isBlack(pitch) ? juce::Colour(0xff152331) : juce::Colour(0xff1b2c39));
+            const bool scaleTone = scaleSettings.highlight && isPitchInScale(pitch, scaleSettings);
+            const bool tonic = scaleTone && pitch % 12 == scaleSettings.rootPitchClass;
+            g.setColour(tonic ? juce::Colour(0xff254653)
+                              : scaleTone ? juce::Colour(0xff203844)
+                              : isBlack(pitch) ? juce::Colour(0xff152331) : juce::Colour(0xff1b2c39));
             g.fillRect(rowBounds);
             g.setColour(pitch % 12 == 0 ? juce::Colour(0xff43666e) : juce::Colour(0xff293c49));
             g.drawHorizontalLine(juce::roundToInt(y + rowHeight),
@@ -475,7 +520,9 @@ public:
         } else if (hit == 0) {
             beginEdit();
             setInsertionStep(snapStep(e.position.x, a));
-            const auto created = pattern.add(pitchAt(e.position.y, a), insertionStep,
+            const auto clickedPitch = pitchAt(e.position.y, a);
+            const auto createdPitch = scaleSettings.snap ? snapPitchToScale(clickedPitch, scaleSettings) : clickedPitch;
+            const auto created = pattern.add(createdPitch, insertionStep,
                                              rememberedLength > 0.0 ? rememberedLength : snapSteps(),
                                              rememberedVelocity);
             selectOnly(created);
@@ -574,7 +621,7 @@ public:
         if (key.getModifiers().isAltDown() && !key.getModifiers().isCtrlDown()
             && !key.getModifiers().isCommandDown()) {
             const auto tool = letter == 'S' ? 1 : letter == 'U' ? 2 : letter == 'R' ? 3
-                            : letter == 'Q' ? 4 : letter == 'C' ? 5 : 0;
+                            : letter == 'Q' ? 4 : letter == 'C' ? 5 : letter == 'L' ? 6 : 0;
             if (tool != 0 && !textEntry) { openToolPanel(tool); return true; }
             return false;
         }
@@ -657,6 +704,10 @@ private:
     static juce::String noteName(int pitch) {
         static const char* names[] { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
         return juce::String(names[pitch % 12]) + juce::String(pitch / 12 - 1);
+    }
+    static const char* scalePitchClassName(int pitchClass) {
+        static const char* names[] { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+        return names[juce::jlimit(0, 11, pitchClass)];
     }
     juce::Rectangle<float> noteBounds(const PianoRollNote& note, const Areas& a) const {
         return { stepX(note.startStep, a) + 1.0f,
@@ -744,10 +795,11 @@ private:
         exampleButton.setEnabled(pattern.count == 0);
         undoButton.setEnabled(canUndo());
         redoButton.setEnabled(canRedo());
-        applyButton.setEnabled(tools.getSelectedId() == 5 || selection.count != 0);
+        applyButton.setEnabled(tools.getSelectedId() >= 5 || selection.count != 0);
         if (panelOpen)
             panelTitle.setText(tools.getSelectedId() == 5
                                ? "Chord stamp at step " + juce::String(insertionStep + 1.0, 3)
+                               : tools.getSelectedId() == 6 ? "Scale highlighting and snapping"
                                : tools.getText() + " selected notes  |  "
                                  + juce::String(static_cast<int>(selection.count)) + " selected",
                                juce::dontSendNotification);
@@ -804,6 +856,12 @@ private:
                 deltaTime = juce::jlimit(firstGrid, lastGrid, anchor->startStep + deltaTime) - anchor->startStep;
         }
         deltaPitch = juce::jlimit(minimumPitch, maximumPitch, deltaPitch);
+        if (scaleSettings.snap && deltaPitch != 0)
+            if (const auto* anchor = original.find(activeId)) {
+                const auto target = juce::jlimit(lowestPitch, highestPitch, anchor->pitch + deltaPitch);
+                const auto snappedDelta = snapPitchToScale(target, scaleSettings, deltaPitch > 0 ? 1 : -1) - anchor->pitch;
+                deltaPitch = snappedDelta >= minimumPitch && snappedDelta <= maximumPitch ? snappedDelta : 0;
+            }
         bool edited = false;
         for (std::size_t i = 0; i < selection.count; ++i) {
             const auto* note = original.find(selection.ids[i]);
@@ -982,17 +1040,23 @@ private:
         }
         const auto tool = tools.getSelectedId();
         panelTitle.setText(tool == 5 ? "Chord stamp at step " + juce::String(insertionStep + 1.0, 3)
+                                    : tool == 6 ? "Scale highlighting and snapping"
                                     : tools.getText() + " selected notes  |  " + juce::String(static_cast<int>(selection.count))
                                       + " selected", juce::dontSendNotification);
         panelHelp.setText(tool == 5 ? "Choose a voicing, preview it, then add the chord as one undoable edit."
+                                    : tool == 6 ? "Changes apply immediately. Snap affects newly drawn notes and pitch moves; existing notes stay unchanged."
                                     : "240 ticks = one 1/16 note. Changes apply to selected notes only.",
                           juce::dontSendNotification);
+        applyButton.setButtonText(tool == 6 ? "Done" : "Apply");
         seed.setVisible(tool == 1 || tool == 3 || tool == 5);
         seedLabel.setVisible(seed.isVisible());
         descending.setVisible(tool == 1);
         chordType.setVisible(tool == 5);
         chordTypeLabel.setVisible(tool == 5);
         previewChordButton.setVisible(tool == 5);
+        for (auto* control : std::initializer_list<juce::Component*> {
+                 &scaleRoot, &scaleRootLabel, &scaleType, &scaleTypeLabel, &scaleHighlight, &scaleSnap })
+            control->setVisible(tool == 6);
         if (tool == 1) {
             seed.setName("Processing random seed");
             seedLabel.setText("Random seed", juce::dontSendNotification);
@@ -1016,7 +1080,7 @@ private:
             configureParameter(0, "Grid (ticks)", "Quantize grid ticks", 1, 61440, quantizeSettings.gridSteps * 240.0);
             configureParameter(1, "Strength (%)", "Quantize strength percent", 0, 100, quantizeSettings.strength * 100.0);
             configureParameter(2, "Swing (%)", "Quantize swing percent", 0, 75, quantizeSettings.swing * 100.0);
-        } else {
+        } else if (tool == 5) {
             configureParameter(0, "Root (MIDI)", "Chord root MIDI note", 0, 127, chordSettings.root);
             configureParameter(1, "Length (ticks)", "Chord stamp length ticks", 1, 61440, chordSettings.lengthSteps * 240.0);
             configureParameter(2, "Velocity", "Chord stamp velocity", 1, 127, chordSettings.velocity * 127.0f);
@@ -1026,6 +1090,11 @@ private:
             seed.setValue(chordSettings.inversion, juce::dontSendNotification);
             chordType.setSelectedId(static_cast<int>(chordSettings.type) + 1, juce::dontSendNotification);
             updateChordInversionRange();
+        } else {
+            scaleRoot.setSelectedId(scaleSettings.rootPitchClass + 1, juce::dontSendNotification);
+            scaleType.setSelectedId(static_cast<int>(scaleSettings.type) + 1, juce::dontSendNotification);
+            scaleHighlight.setToggleState(scaleSettings.highlight, juce::dontSendNotification);
+            scaleSnap.setToggleState(scaleSettings.snap, juce::dontSendNotification);
         }
         updateSelection();
     }
@@ -1041,14 +1110,16 @@ private:
         configureToolPanel();
         resized();
         repaint();
-        parameters[0].grabKeyboardFocus();
+        if (tool == 6) scaleRoot.grabKeyboardFocus(); else parameters[0].grabKeyboardFocus();
     }
     void closeToolPanel() {
         releaseChordPreview(true);
         panelOpen = false;
         for (auto* child : std::initializer_list<juce::Component*> { &panelTitle, &panelHelp, &applyButton,
                                                                  &cancelButton, &seed, &seedLabel, &descending,
-                                                                 &chordType, &chordTypeLabel, &previewChordButton })
+                                                                 &chordType, &chordTypeLabel, &previewChordButton,
+                                                                 &scaleRoot, &scaleRootLabel, &scaleType, &scaleTypeLabel,
+                                                                 &scaleHighlight, &scaleSnap })
             child->setVisible(false);
         for (std::size_t i = 0; i < parameters.size(); ++i) {
             parameters[i].setVisible(false);
@@ -1060,6 +1131,10 @@ private:
     }
     void applyTool() {
         endEdit();
+        if (tools.getSelectedId() == 6) {
+            closeToolPanel();
+            return;
+        }
         beginEdit();
         if (tools.getSelectedId() == 5) {
             releaseChordPreview(true);
@@ -1151,6 +1226,15 @@ private:
         if (panelOpen && tools.getSelectedId() == 5 && previewChordButton.getToggleState())
             startChordPreview();
     }
+    void updateScaleSettings() {
+        scaleSettings.rootPitchClass = juce::jlimit(1, 12, scaleRoot.getSelectedId()) - 1;
+        scaleSettings.type = static_cast<ScaleType>(juce::jlimit(1, 10, scaleType.getSelectedId()) - 1);
+        scaleSettings.highlight = scaleHighlight.getToggleState();
+        scaleSettings.snap = scaleSnap.getToggleState();
+        statusMessage = juce::String(scalePitchClassName(scaleSettings.rootPitchClass)) + " "
+            + scaleType.getText() + (scaleSettings.snap ? " scale snap on" : " scale highlight");
+        repaint();
+    }
     void setLowestVisible(int pitch) {
         const auto next = juce::jlimit(lowestPitch, highestPitch - visiblePitches + 1, pitch);
         if (next == lowestVisiblePitch) return;
@@ -1167,15 +1251,15 @@ private:
     }
 
     PianoRollPattern pattern;
-    juce::ComboBox snap, tools, chordType;
-    juce::Label snapLabel, velocityLabel, chordTypeLabel;
+    juce::ComboBox snap, tools, chordType, scaleRoot, scaleType;
+    juce::Label snapLabel, velocityLabel, chordTypeLabel, scaleRootLabel, scaleTypeLabel;
     juce::Slider velocity;
     juce::TextButton clearButton, exampleButton, editActionsButton, toolButton, undoButton, redoButton, applyButton, cancelButton;
     juce::Label panelTitle, panelHelp, seedLabel;
     std::array<juce::Label, 3> parameterLabels;
     std::array<juce::Slider, 3> parameters;
     juce::Slider seed;
-    juce::ToggleButton descending, previewChordButton;
+    juce::ToggleButton descending, previewChordButton, scaleHighlight, scaleSnap;
     juce::ScrollBar pitchScroll { true };
     PianoRollSelection selection, marqueeBase;
     PianoRollClipboard clipboard;
@@ -1195,6 +1279,7 @@ private:
     RandomizeSettings randomizeSettings;
     QuantizeSettings quantizeSettings;
     ChordStampSettings chordSettings;
+    ScaleSettings scaleSettings;
     std::array<int, 4> previewedChordPitches {};
     std::size_t previewedChordCount {};
     int lowestVisiblePitch { 48 }, auditionPitch { -1 };
