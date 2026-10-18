@@ -9,6 +9,7 @@ static void require(bool ok, const char* message) {
     if (!ok) { std::cerr << message << '\n'; std::exit(1); }
 }
 static void pump() { juce::MessageManager::getInstance()->runDispatchLoopUntil(20); }
+#include "MidiInputPanelTests.h"
 struct Counter : juce::MidiKeyboardState::Listener {
     int ons{}, offs{};
     void handleNoteOn(juce::MidiKeyboardState*, int, int, float) override { ++ons; }
@@ -637,5 +638,6 @@ int main() {
     outside.removeFromDesktop();
     checkPianoRollEditor();
     checkPianoRollProcessing();
+    checkMidiInputPanel();
     std::cout << "PASS: Tab routing, editor exclusion, octave recovery, release and listener lifecycle\n";
 }

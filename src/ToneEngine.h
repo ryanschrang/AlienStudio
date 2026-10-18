@@ -5,6 +5,7 @@
 #include "NoteQueue.h"
 #include "StepClock.h"
 #include "PianoRollSequence.h"
+#include "MidiInputEngine.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -15,6 +16,7 @@ public:
     std::atomic<bool> playing{false};
     std::atomic<int> bpm{120}, currentStep{-1}, preset{0};
     NoteQueue notes;
+    alien::MidiInputPipe midi;
     alien::PianoRollMailbox pianoRollNotes;
     std::atomic<int> patternMode{0}, pianoRollPosition{-1};
 
@@ -26,12 +28,14 @@ public:
         sampleRate = std::isfinite(rate) && rate > 0 ? rate : 44100.0;
         roll.stop([this](int n, float v, bool on) { sendPattern(n, v, on); });
         synth.prepare(sampleRate);
+        midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
         discardPendingNotes();
         resetTransport();
     }
     void audioDeviceStopped() override {
         roll.stop([this](int n, float v, bool on) { sendPattern(n, v, on); });
         synth.allSoundOff(); discardPendingNotes(); resetTransport();
+        midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
     }
     void audioDeviceIOCallbackWithContext(const float* const*, int,
         float* const* outputs, int channels, int samples,
@@ -42,6 +46,7 @@ public:
         auto send = [this](int n, float v, bool on) { sendPattern(n, v, on); };
         if ((wasPlaying && !playNow) || wasMode != modeNow) {
             roll.stop(send); synth.allSoundOff(); resetTransport();
+            midi.requestReset();
         }
         wasPlaying = playNow; wasMode = modeNow;
         synth.setPatch(alien::presets[static_cast<std::size_t>(juce::jlimit(0, 2, preset.load()))]);
@@ -54,7 +59,8 @@ public:
                 else synth.noteOff(event.note);
             }
         }
-        if (panic) { roll.stop(send); synth.allSoundOff(); }
+        if (panic) { roll.stop(send); synth.allSoundOff(); midi.requestReset(); }
+        midi.process([this](int n, float v, int ch) { sendMidi(n, v, ch); });
         roll.beginBlock(pianoRollNotes, playNow && modeNow == 1, sampleRate, bpm.load(), send);
         for (int i = 0; i < samples; ++i) {
             if (playNow && modeNow == 0) {
@@ -73,6 +79,12 @@ public:
         pianoRollPosition.store(static_cast<int>(roll.positionStep() * 1000.0));
     }
 private:
+    void sendMidi(int note, float velocity, int channel) noexcept {
+        const int source = channel + 2; // Live GUI 0, steps 1, roll 2; MIDI 3..18.
+        if (note < 0) synth.allSoundOff(source);
+        else if (velocity > 0) synth.noteOn(note, velocity, source);
+        else synth.noteOff(note, source);
+    }
     void sendPattern(int note, float velocity, bool on) noexcept {
         if (on) synth.noteOn(note, velocity, 2); else synth.noteOff(note, 2);
     }

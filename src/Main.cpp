@@ -2,6 +2,7 @@
 #include "ToneEngine.h"
 #include "TypingPianoRouter.h"
 #include "PianoRollEditor.h"
+#include "MidiInputPanel.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -14,6 +15,7 @@ public:
         addAndMakeVisible(title);
         title.setText("ALIEN STUDIO  |  Pattern Studio", juce::dontSendNotification);
         title.setJustificationType(juce::Justification::centred);
+        addAndMakeVisible(midiInput);
         addAndMakeVisible(play);
         play.setButtonText("Play / Stop");
         play.onClick = [this] { releaseNotes(); engine.playing.store(!engine.playing.load()); };
@@ -51,7 +53,7 @@ public:
         preset.onChange = [this] { releaseNotes(); engine.preset.store(preset.getSelectedId() - 1); };
         addAndMakeVisible(keyboard);
         keyboard.clearKeyMappings();
-        keyboard.setAvailableRange(12, 119);
+        keyboard.setAvailableRange(0, 127);
         keyboard.setOctaveForMiddleC(4);
         keyboard.setLowestVisibleKey(48);
         typingInput.octaveChanged = [this] { updateOctave(); };
@@ -79,7 +81,8 @@ public:
         audio.closeAudioDevice();
     }
     void resized() override {
-        title.setBounds(20, 10, getWidth() - 40, 30);
+        title.setBounds(20, 10, 250, 30);
+        midiInput.setBounds(280, 10, getWidth() - 300, 32);
         play.setBounds(20, 52, 130, 34);
         tempo.setBounds(165, 52, 255, 34);
         preset.setBounds(440, 52, 190, 34);
@@ -105,6 +108,8 @@ public:
         pianoRoll.releaseAudition();
         typingInput.release();
         keyboardState.allNotesOff(0);
+        midiInput.resetTestButtons();
+        engine.midi.requestReset();
         engine.notes.panic.store(true);
     }
 private:
@@ -118,17 +123,28 @@ private:
         releaseNotes();
     }
     void timerCallback() override {
+        midiInput.tick();
+        for (int note = 0; note < 128; ++note) {
+            const bool on = engine.midi.isNoteOn(note);
+            if (on != keyboardState.isNoteOn(4, note)) {
+                if (on) keyboardState.noteOn(4, note, 0.8f);
+                else keyboardState.noteOff(4, note, 0.0f);
+            }
+        }
         pianoRoll.setPlayheadStep(engine.pianoRollPosition.load() / 1000.0);
         repaint();
     }
     void handleNoteOn(juce::MidiKeyboardState*, int channel, int note, float velocity) override {
-        if (!keyboardState.isNoteOnForChannels(0xffff & ~(1 << (channel - 1)), note))
+        if (channel == 4) return; // MIDI highlight only; sound uses its own audio pipe.
+        if (!keyboardState.isNoteOnForChannels(0x7 & ~(1 << (channel - 1)), note))
             engine.notes.push(note, velocity);
     }
-    void handleNoteOff(juce::MidiKeyboardState*, int, int note, float) override {
-        if (!keyboardState.isNoteOnForChannels(0xffff, note)) engine.notes.push(note, 0);
+    void handleNoteOff(juce::MidiKeyboardState*, int channel, int note, float) override {
+        if (channel == 4) return;
+        if (!keyboardState.isNoteOnForChannels(0x7, note)) engine.notes.push(note, 0);
     }
     ToneEngine engine;
+    alien::MidiInputPanel midiInput{engine.midi};
     juce::AudioDeviceManager audio;
     juce::MidiKeyboardState keyboardState;
     juce::MidiKeyboardComponent keyboard{keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard};
