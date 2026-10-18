@@ -44,7 +44,7 @@ public:
             const auto& note = pattern.notes[i];
             const int offset = pattern.toTicks(note.startStep) - first;
             const int length = pattern.toTicks(note.lengthSteps);
-            replacement.notes[replacement.count++] = {note.pitch, offset, length, note.velocity};
+            replacement.notes[replacement.count++] = {note.pitch, offset, length, note.velocity, note.probability};
             replacement.extentTicks = std::max(replacement.extentTicks, offset + length);
         }
         *this = replacement;
@@ -71,7 +71,7 @@ public:
         for (std::size_t i = 0; i < count; ++i) {
             const auto& note = notes[i];
             const auto id = edited.add(note.pitch, pattern.fromTicks(insertion + note.offsetTicks),
-                                       pattern.fromTicks(note.lengthTicks), note.velocity);
+                                       pattern.fromTicks(note.lengthTicks), note.velocity, note.probability);
             if (id == 0 || !pasted.add(id)) return {ClipboardStatus::invalidInput};
             // The model accepts every positive finite velocity. add() applies
             // the editor's usual minimum; a clipboard preserves the source
@@ -85,7 +85,7 @@ public:
     }
 
 private:
-    struct Note { int pitch{}, offsetTicks{}, lengthTicks{}; float velocity{}; };
+    struct Note { int pitch{}, offsetTicks{}, lengthTicks{}; float velocity{}, probability{1.0f}; };
     std::array<Note, PianoRollPattern::maxNotes> notes{};
     std::size_t count{};
     int extentTicks{};

@@ -13,6 +13,7 @@ struct PianoRollNote {
     int pitch{60};
     double startStep{}, lengthSteps{1.0};
     float velocity{0.8f};
+    float probability{1.0f};
 };
 
 // Message-thread model. One time unit is a sixteenth note, divided into 240
@@ -39,7 +40,8 @@ struct PianoRollPattern {
             if (n.id == 0 || n.pitch < 0 || n.pitch > 127 || !std::isfinite(n.startStep)
                 || !std::isfinite(n.lengthSteps) || n.startStep < 0 || n.startStep >= loopSteps
                 || n.lengthSteps < minLength || n.lengthSteps > loopSteps
-                || !std::isfinite(n.velocity) || n.velocity <= 0 || n.velocity > 1) return false;
+                || !std::isfinite(n.velocity) || n.velocity <= 0 || n.velocity > 1
+                || !std::isfinite(n.probability) || n.probability < 0 || n.probability > 1) return false;
             const int start = toTicks(n.startStep), length = toTicks(n.lengthSteps);
             if (std::abs(n.startStep * ticksPerStep - start) > 1e-7
                 || std::abs(n.lengthSteps * ticksPerStep - length) > 1e-7
@@ -56,8 +58,9 @@ struct PianoRollPattern {
     PianoRollNote* find(std::uint32_t id) noexcept {
         return const_cast<PianoRollNote*>(static_cast<const PianoRollPattern&>(*this).find(id));
     }
-    std::uint32_t add(int pitch, double start, double length, float velocity = 0.8f) noexcept {
-        if (count == maxNotes || !valid() || !std::isfinite(velocity)
+    std::uint32_t add(int pitch, double start, double length, float velocity = 0.8f,
+                      float probability = 1.0f) noexcept {
+        if (count == maxNotes || !valid() || !std::isfinite(velocity) || !std::isfinite(probability)
             || !std::isfinite(start) || !std::isfinite(length)) return 0;
         // The bounded search also handles ID wrap without reusing a live ID.
         for (std::size_t tries = 0; tries <= maxNotes; ++tries) {
@@ -67,7 +70,7 @@ struct PianoRollPattern {
         const int startTicks = std::clamp(toTicks(start), 0, loopSteps * ticksPerStep - 1);
         const int lengthTicks = std::clamp(toTicks(length), 1, loopSteps * ticksPerStep - startTicks);
         notes[count++] = {nextId, std::clamp(pitch, 0, 127), fromTicks(startTicks),
-                         fromTicks(lengthTicks), boundedVelocity(velocity)};
+                         fromTicks(lengthTicks), boundedVelocity(velocity), boundedProbability(probability)};
         return nextId;
     }
     bool move(std::uint32_t id, int pitch, double start) noexcept {
@@ -95,6 +98,11 @@ struct PianoRollPattern {
         if (auto* note = find(id)) { note->velocity = boundedVelocity(velocity); return true; }
         return false;
     }
+    bool setProbability(std::uint32_t id, float probability) noexcept {
+        if (!std::isfinite(probability)) return false;
+        if (auto* note = find(id)) { note->probability = boundedProbability(probability); return true; }
+        return false;
+    }
     bool erase(std::uint32_t id) noexcept {
         for (std::size_t i = 0; i < count; ++i) if (notes[i].id == id) {
             for (std::size_t j = i + 1; j < count; ++j) notes[j - 1] = notes[j];
@@ -115,6 +123,7 @@ struct PianoRollPattern {
     }
 private:
     static float boundedVelocity(float value) noexcept { return std::clamp(value, 1.0f / 127.0f, 1.0f); }
+    static float boundedProbability(float value) noexcept { return std::clamp(value, 0.0f, 1.0f); }
     std::uint32_t nextId{};
 };
 static_assert(std::is_trivially_copyable_v<PianoRollPattern>);
@@ -161,7 +170,7 @@ public:
         PianoRollPattern updated;
         if (mailbox.consume(updated)) replace(updated, send);
         if (play && !running) {
-            running = true; untilStep = 0; step = -1; nextStep = 0; nextEvent = 0;
+            running = true; untilStep = 0; step = -1; nextStep = 0; nextEvent = 0; cycle = 0;
         }
     }
     template<class Send>
@@ -173,6 +182,7 @@ public:
                 // End the previous cycle before dispatching any new-cycle starts.
                 dispatch(PianoRollPattern::fromTicks(pattern.loopSteps * PianoRollPattern::ticksPerStep), send);
                 nextEvent = 0;
+                ++cycle;
             }
             step = nextStep;
             nextStep = (step + 1) % pattern.loopSteps;
@@ -188,7 +198,7 @@ public:
             // Snapshot replacement seeks events at the actual fractional
             // playhead. Only notes covering this sample start immediately.
             for (std::size_t i = 0; i < pattern.count; ++i)
-                if (!active[i] && covers(pattern.notes[i], position)) press(i, send);
+                if (!active[i] && covers(pattern.notes[i], position) && shouldPlay(pattern.notes[i])) press(i, send);
             reconcile = false;
         }
         untilStep -= 1.0;
@@ -209,6 +219,14 @@ private:
         const int start = PianoRollPattern::toTicks(n.startStep);
         const int end = start + PianoRollPattern::toTicks(n.lengthSteps);
         return start <= ticks + tickTolerance && ticks < end - tickTolerance;
+    }
+    bool shouldPlay(const PianoRollNote& note) const noexcept {
+        if (note.probability >= 1.0f) return true;
+        if (note.probability <= 0.0f) return false;
+        std::uint32_t value = note.id ^ (cycle * 0x9e3779b9u + 0x85ebca6bu);
+        value ^= value >> 16; value *= 0x7feb352du;
+        value ^= value >> 15; value *= 0x846ca68bu; value ^= value >> 16;
+        return static_cast<double>(value) / 4294967296.0 < note.probability;
     }
     double samplePosition() const noexcept {
         return static_cast<double>(step) + std::clamp(1.0 - untilStep / intervalSamples, 0.0, 1.0);
@@ -235,7 +253,8 @@ private:
         for (std::size_t i = nextEvent; i < end; ++i)
             if (!events[i].on && active[events[i].note]) release(events[i].note, send);
         for (std::size_t i = nextEvent; i < end; ++i)
-            if (events[i].on && !active[events[i].note] && covers(pattern.notes[events[i].note], position))
+            if (events[i].on && !active[events[i].note] && covers(pattern.notes[events[i].note], position)
+                && shouldPlay(pattern.notes[events[i].note]))
                 press(events[i].note, send);
         nextEvent = end;
     }
@@ -299,6 +318,7 @@ private:
     std::size_t eventCount{}, nextEvent{};
     double sampleRate{44100.0}, bpm{120.0}, untilStep{}, intervalSamples{1.0};
     int step{-1}, nextStep{};
+    std::uint32_t cycle{};
     bool running{}, reconcile{};
 };
 }

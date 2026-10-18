@@ -10,12 +10,12 @@ static void require(bool ok, const char* message) {
 }
 static bool sameNote(const PianoRollNote& a, const PianoRollNote& b) {
     return a.id == b.id && a.pitch == b.pitch && a.startStep == b.startStep
-        && a.lengthSteps == b.lengthSteps && a.velocity == b.velocity;
+        && a.lengthSteps == b.lengthSteps && a.velocity == b.velocity && a.probability == b.probability;
 }
 
 static void copyPasteTests() {
     PianoRollPattern source;
-    const auto first = source.add(60, 4.125, 2.25, .6f);
+    const auto first = source.add(60, 4.125, 2.25, .6f, .35f);
     const auto middle = source.add(67, 4.125, 1, .8f);
     const auto late = source.add(64, 7.5, .25, .3f);
     const auto other = source.add(42, 0, 4, .7f);

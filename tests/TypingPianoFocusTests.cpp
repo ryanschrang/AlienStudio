@@ -290,6 +290,37 @@ static void checkPianoRollProcessing() {
         "velocity slider affects only selected notes");
     roll.undo();
     require(alien::samePianoRollPattern(roll.getPattern(), source), "undo restores batch velocities");
+    setValue("Selected note probability", 35);
+    require(std::abs(roll.getPattern().find(low)->probability - .35f) < .00001f
+        && roll.getPattern().find(high)->probability == roll.getPattern().find(low)->probability
+        && roll.getPattern().find(untouched)->probability == 1.0f,
+        "probability slider affects only selected notes");
+    roll.undo();
+    require(alien::samePianoRollPattern(roll.getPattern(), source), "probability change is one undoable edit");
+
+    shortcut('i', juce::ModifierKeys::altModifier);
+    require(roll.getPattern().find(low)->pitch == 72 && roll.getPattern().find(high)->pitch == 64,
+        "Alt-I inverts the selected chord upward");
+    roll.undo();
+    shortcut('i', juce::ModifierKeys::altModifier | juce::ModifierKeys::shiftModifier);
+    require(roll.getPattern().find(high)->pitch == 52 && roll.getPattern().find(low)->pitch == 60,
+        "Alt-Shift-I inverts the selected chord downward");
+    roll.undo();
+    shortcut('a', juce::ModifierKeys::ctrlModifier);
+    shortcut('v', juce::ModifierKeys::altModifier);
+    require(roll.getPattern().find(untouched)->startStep == 4 && roll.getPattern().find(low)->startStep == 12,
+        "Alt-V reverses selected note extents in time");
+    roll.undo();
+    const std::array<std::uint32_t, 2> chordOnly{low, high};
+    roll.setSelection(chordOnly);
+    shortcut('a', juce::ModifierKeys::altModifier);
+    setValue("Arpeggiate rate ticks", 120);
+    setValue("Arpeggiate gate percent", 50);
+    click("Apply piano roll processing");
+    require(roll.getPattern().find(low)->startStep == 4 && roll.getPattern().find(high)->startStep == 4.5
+        && roll.getPattern().find(low)->lengthSteps == .25,
+        "Alt-A arpeggiates a selected chord with rate and gate controls");
+    roll.undo();
 
     // Open from a toolbar descendant, not just from the grid itself.
     control("Selected note velocity")->grabKeyboardFocus();
@@ -642,11 +673,17 @@ static void checkPianoRollProcessing() {
     pump();
     roll.onChange = {};
     roll.setSize(914, 334); // Piano-roll content inside the smallest app window.
-    for (const auto* name : {"Undo piano roll edit", "Redo piano roll edit", "Open piano roll processing settings", "Piano roll edit actions"})
+    for (const auto* name : {"Undo piano roll edit", "Redo piano roll edit", "Open piano roll processing settings",
+                             "Piano roll edit actions", "Selected note velocity", "Selected note probability"})
         require(roll.getLocalBounds().contains(control(name)->getBounds()), "toolbar actions fit the minimum window width");
     shortcut('r', juce::ModifierKeys::altModifier);
     for (const auto* name : {"Apply piano roll processing", "Cancel piano roll processing", "Randomize pitch semitones"})
         require(roll.getLocalBounds().contains(control(name)->getBounds()), "processing controls fit the minimum window size");
+    shortcut(juce::KeyPress::escapeKey, {});
+    shortcut('a', juce::ModifierKeys::altModifier);
+    for (const auto* name : {"Arpeggiate rate ticks", "Arpeggiate gate percent", "Apply piano roll processing"})
+        require(control(name)->isShowing() && roll.getLocalBounds().contains(control(name)->getBounds()),
+                "arpeggiate controls fit the minimum window size");
     shortcut(juce::KeyPress::escapeKey, {});
     shortcut('c', juce::ModifierKeys::altModifier);
     for (const auto* name : {"Chord stamp type", "Chord root MIDI note", "Chord inversion", "Preview chord stamp",

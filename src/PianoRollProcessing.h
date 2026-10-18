@@ -69,7 +69,8 @@ inline bool samePianoRollPattern(const PianoRollPattern& a, const PianoRollPatte
         const auto& x = a.notes[i];
         const auto& y = b.notes[i];
         if (x.id != y.id || x.pitch != y.pitch || x.startStep != y.startStep
-            || x.lengthSteps != y.lengthSteps || x.velocity != y.velocity) return false;
+            || x.lengthSteps != y.lengthSteps || x.velocity != y.velocity
+            || x.probability != y.probability) return false;
     }
     return true;
 }
@@ -103,6 +104,11 @@ struct QuantizeSettings {
     double gridSteps{1.0};               // 1/240..256
     double strength{1.0};                // 0..1; zero leaves timing unchanged
     double swing{};                     // 0..0.75, delays odd grid points
+};
+struct ArpeggiateSettings {
+    double rateSteps{1.0};
+    double gate{0.8};
+    bool descending{};
 };
 
 namespace piano_roll_processing_detail {
@@ -222,7 +228,7 @@ inline ProcessingResult processChop(PianoRollPattern& pattern, const PianoRollSe
                 edited.find(original.id)->lengthSteps = pattern.fromTicks(gated);
             } else {
                 const auto id = edited.add(original.pitch, pattern.fromTicks(onset + offset),
-                                           pattern.fromTicks(gated), original.velocity);
+                                           pattern.fromTicks(gated), original.velocity, original.probability);
                 if (id == 0 || !selected.add(id))
                     return result(ProcessingStatus::capacityExceeded, pattern, selection);
             }
@@ -284,6 +290,91 @@ inline ProcessingResult processQuantize(PianoRollPattern& pattern, const PianoRo
         }
         const int blended = onset + static_cast<int>(std::lround((closest - onset) * settings.strength));
         setStart(edited.notes[i], blended, edited);
+    }
+    return commit(pattern, edited, selection);
+}
+
+inline ProcessingResult processInvertChord(PianoRollPattern& pattern, const PianoRollSelection& selection,
+                                           bool downward) noexcept {
+    using namespace piano_roll_processing_detail;
+    if (!validInputs(pattern, selection)) return result(ProcessingStatus::invalidInput, pattern, selection);
+    auto edited = pattern;
+    std::array<int, PianoRollPattern::maxNotes> onsets{};
+    std::size_t onsetCount = 0;
+    for (std::size_t i = 0; i < pattern.count; ++i) if (selection.contains(pattern.notes[i].id)) {
+        const int onset = pattern.toTicks(pattern.notes[i].startStep);
+        if (std::find(onsets.begin(), onsets.begin() + static_cast<std::ptrdiff_t>(onsetCount), onset)
+            == onsets.begin() + static_cast<std::ptrdiff_t>(onsetCount)) onsets[onsetCount++] = onset;
+    }
+    for (std::size_t onsetIndex = 0; onsetIndex < onsetCount; ++onsetIndex) {
+        std::size_t chosen = pattern.maxNotes, members = 0;
+        for (std::size_t i = 0; i < pattern.count; ++i)
+            if (selection.contains(pattern.notes[i].id)
+                && pattern.toTicks(pattern.notes[i].startStep) == onsets[onsetIndex]) {
+                ++members;
+                if (chosen == pattern.maxNotes || (downward ? pattern.notes[i].pitch > pattern.notes[chosen].pitch
+                                                             : pattern.notes[i].pitch < pattern.notes[chosen].pitch))
+                    chosen = i;
+            }
+        if (members < 2) continue;
+        const int pitch = pattern.notes[chosen].pitch + (downward ? -12 : 12);
+        if (pitch >= 0 && pitch <= 127) edited.notes[chosen].pitch = pitch;
+    }
+    return commit(pattern, edited, selection);
+}
+
+inline ProcessingResult processReverse(PianoRollPattern& pattern, const PianoRollSelection& selection) noexcept {
+    using namespace piano_roll_processing_detail;
+    if (!validInputs(pattern, selection)) return result(ProcessingStatus::invalidInput, pattern, selection);
+    int first = pattern.loopSteps * pattern.ticksPerStep, last = 0;
+    for (std::size_t i = 0; i < pattern.count; ++i) if (selection.contains(pattern.notes[i].id)) {
+        const auto& note = pattern.notes[i];
+        const int start = pattern.toTicks(note.startStep);
+        first = std::min(first, start);
+        last = std::max(last, start + pattern.toTicks(note.lengthSteps));
+    }
+    auto edited = pattern;
+    for (std::size_t i = 0; i < pattern.count; ++i) if (selection.contains(pattern.notes[i].id)) {
+        const auto& note = pattern.notes[i];
+        const int reversed = first + last - pattern.toTicks(note.startStep) - pattern.toTicks(note.lengthSteps);
+        setStart(edited.notes[i], reversed, edited);
+    }
+    return commit(pattern, edited, selection);
+}
+
+inline ProcessingResult processArpeggiate(PianoRollPattern& pattern, const PianoRollSelection& selection,
+                                          const ArpeggiateSettings& settings = {}) noexcept {
+    using namespace piano_roll_processing_detail;
+    if (!validInputs(pattern, selection) || !within(settings.rateSteps, pattern.timeQuantum, 16)
+        || !within(settings.gate, 0.05, 1)) return result(ProcessingStatus::invalidInput, pattern, selection);
+    auto edited = pattern;
+    std::array<std::size_t, PianoRollPattern::maxNotes> indices{};
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < pattern.count; ++i)
+        if (selection.contains(pattern.notes[i].id)) indices[count++] = i;
+    std::sort(indices.begin(), indices.begin() + static_cast<std::ptrdiff_t>(count),
+        [&](std::size_t a, std::size_t b) {
+            const auto& x = pattern.notes[a]; const auto& y = pattern.notes[b];
+            if (x.startStep != y.startStep) return x.startStep < y.startStep;
+            if (x.pitch != y.pitch) return settings.descending ? x.pitch > y.pitch : x.pitch < y.pitch;
+            return x.id < y.id;
+        });
+    const int rate = pattern.toTicks(settings.rateSteps);
+    const int length = std::max(1, static_cast<int>(std::lround(rate * settings.gate)));
+    for (std::size_t first = 0; first < count;) {
+        const int groupStart = pattern.toTicks(pattern.notes[indices[first]].startStep);
+        std::size_t end = first + 1;
+        while (end < count && pattern.toTicks(pattern.notes[indices[end]].startStep) == groupStart) ++end;
+        if (end - first >= 2) for (std::size_t item = first; item < end; ++item) {
+            const auto index = indices[item];
+            const int target = std::min(groupStart + static_cast<int>(item - first) * rate,
+                                        pattern.loopSteps * pattern.ticksPerStep - 1);
+            auto& note = edited.notes[index];
+            note.lengthSteps = pattern.fromTicks(std::min(length,
+                pattern.loopSteps * pattern.ticksPerStep - target));
+            setStart(note, target, edited);
+        }
+        first = end;
     }
     return commit(pattern, edited, selection);
 }

@@ -29,7 +29,7 @@ public:
                     "Shift Left or Right changes their length. Ctrl A selects all, Ctrl Z undoes, "
                     "and Ctrl Y redoes. Ctrl C copies, Ctrl V pastes at the amber cursor, and Ctrl D duplicates. "
                     "Click the ruler or empty grid to place the paste cursor. "
-                    "Alt C opens chord stamps; Alt L opens scale guides; Alt S, U, R, Q open processing settings. Tab moves between controls.");
+                    "Alt C opens chord stamps; Alt L opens scale guides; Alt I inverts, Alt V reverses, and Alt A arpeggiates. Tab moves between controls.");
         setWantsKeyboardFocus(true);
         setMouseClickGrabsKeyboardFocus(true);
 
@@ -66,6 +66,27 @@ public:
         velocity.onDragStart = [this] { beginEdit(); };
         velocity.onDragEnd = [this] { endEdit(); };
 
+        addAndMakeVisible(probabilityLabel);
+        probabilityLabel.setText("Chance", juce::dontSendNotification);
+        probabilityLabel.attachToComponent(&probability, true);
+        addAndMakeVisible(probability);
+        probability.setName("Selected note probability");
+        probability.setTooltip("Set the playback probability of every selected note, from 0 to 100 percent");
+        probability.setSliderStyle(juce::Slider::LinearHorizontal);
+        probability.setWantsKeyboardFocus(true);
+        probability.setTextBoxStyle(juce::Slider::TextBoxRight, false, 38, 24);
+        probability.setRange(0, 100, 1);
+        probability.setValue(100, juce::dontSendNotification);
+        probability.setEnabled(false);
+        probability.onValueChange = [this] {
+            const bool singleEdit = !editOpen;
+            if (singleEdit) beginEdit();
+            setSelectedProbability(static_cast<float>(probability.getValue() / 100.0));
+            if (singleEdit) endEdit();
+        };
+        probability.onDragStart = [this] { beginEdit(); };
+        probability.onDragEnd = [this] { endEdit(); };
+
         addAndMakeVisible(clearButton);
         clearButton.setButtonText("Clear");
         clearButton.setName("Clear piano roll notes");
@@ -99,11 +120,23 @@ public:
         tools.addItem("Quantize", 4);
         tools.addItem("Chord stamp", 5);
         tools.addItem("Scale", 6);
+        tools.addItem("Invert up", 7);
+        tools.addItem("Invert down", 8);
+        tools.addItem("Reverse", 9);
+        tools.addItem("Arpeggiate", 10);
         tools.setSelectedId(1, juce::dontSendNotification);
         tools.setTooltip("Choose a note processing tool, then open its settings");
-        tools.onChange = [this] { if (panelOpen) configureToolPanel(); };
+        tools.onChange = [this] {
+            if (!panelOpen) return;
+            const auto tool = tools.getSelectedId();
+            if (tool >= 7 && tool <= 9) { closeToolPanel(); runImmediateTool(tool); }
+            else configureToolPanel();
+        };
         configureButton(toolButton, "Edit...", "Open piano roll processing settings");
-        toolButton.onClick = [this] { openToolPanel(tools.getSelectedId()); };
+        toolButton.onClick = [this] {
+            const auto tool = tools.getSelectedId();
+            if (tool >= 7 && tool <= 9) runImmediateTool(tool); else openToolPanel(tool);
+        };
         configureButton(undoButton, "Undo", "Undo piano roll edit");
         undoButton.setTooltip("Undo the last piano roll edit (Ctrl Z)");
         undoButton.onClick = [this] { undo(); };
@@ -210,7 +243,7 @@ public:
         pitchScroll.addListener(this);
         updatePitchScroll();
 
-        for (auto* label : { &snapLabel, &velocityLabel })
+        for (auto* label : { &snapLabel, &velocityLabel, &probabilityLabel })
             label->setColour(juce::Label::textColourId, juce::Colour(0xffc5d6df));
         velocity.setColour(juce::Slider::thumbColourId, juce::Colour(0xff7ee8a2));
         velocity.setColour(juce::Slider::trackColourId, juce::Colour(0xff3bc8c8));
@@ -288,15 +321,19 @@ public:
         snap.setBounds(184, 8, 76, 28);
         snapLabel.setBounds(146, 8, 34, 28);
         editActionsButton.setBounds(104, 8, 40, 28);
-        velocity.setBounds(332, 8, 155, 28);
-        velocityLabel.setBounds(272, 8, 56, 28);
-        clearButton.setBounds(503, 8, 70, 28);
-        exampleButton.setBounds(583, 8, 112, 28);
-        tools.setBounds(705, 8, 90, 28);
-        toolButton.setBounds(803, 8, 47, 28);
-        undoButton.setBounds(858, 8, 45, 28);
-        redoButton.setBounds(908, 8, 45, 28);
+        velocity.setBounds(312, 8, 78, 28);
+        velocityLabel.setBounds(264, 8, 44, 28);
+        probability.setBounds(440, 8, 96, 28);
+        probabilityLabel.setBounds(394, 8, 42, 28);
+        clearButton.setBounds(540, 8, 52, 28);
+        exampleButton.setBounds(596, 8, 88, 28);
+        tools.setBounds(688, 8, 90, 28);
+        toolButton.setBounds(782, 8, 47, 28);
+        undoButton.setBounds(833, 8, 43, 28);
+        redoButton.setBounds(880, 8, 43, 28);
         if (getWidth() < 980) {
+            snapLabel.setBounds(140, 8, 28, 28);
+            snap.setBounds(172, 8, 44, 28);
             int right = getWidth() - 8;
             redoButton.setBounds(right - 43, 8, 43, 28); right -= 50;
             undoButton.setBounds(right - 43, 8, 43, 28); right -= 50;
@@ -304,6 +341,10 @@ public:
             tools.setBounds(right - 90, 8, 90, 28); right -= 98;
             exampleButton.setBounds(right - 93, 8, 93, 28); right -= 101;
             clearButton.setBounds(right - 52, 8, 52, 28);
+            probability.setBounds(clearButton.getX() - 84, 8, 80, 28);
+            probabilityLabel.setBounds(probability.getX() - 44, 8, 40, 28);
+            velocity.setBounds(probabilityLabel.getX() - 104, 8, 100, 28);
+            velocityLabel.setBounds(velocity.getX() - 48, 8, 44, 28);
         }
         panelTitle.setBounds(20, 48, getWidth() - 40, 24);
         for (std::size_t i = 0; i < parameters.size(); ++i) {
@@ -462,13 +503,14 @@ public:
         if (const auto* note = pattern.find(activeId))
             status += "  |  " + noteName(note->pitch) + ": step " + juce::String(note->startStep + 1, 3)
                    + ", length " + juce::String(note->lengthSteps, 3) + ", velocity "
-                   + juce::String(juce::roundToInt(note->velocity * 127.0f));
+                   + juce::String(juce::roundToInt(note->velocity * 127.0f)) + ", chance "
+                   + juce::String(juce::roundToInt(note->probability * 100.0f)) + "%";
         if (statusMessage.isNotEmpty()) status = statusMessage;
         g.drawText(status, 12, a.velocity.getBottom() + 4, getWidth() - 24, 17,
                    juce::Justification::centredLeft);
         g.setColour(juce::Colour(0xff91abb8));
         if (!compactPanel())
-            g.drawText("Click empty grid: add  |  Right-click: erase  |  Shift-drag: select  |  Ctrl C / V / D: copy / paste / duplicate  |  Ctrl Z / Y: undo / redo  |  Alt S / U / R / Q: tools",
+            g.drawText("Click: add  |  Right-click: erase  |  Shift-drag: select  |  Ctrl C / V / D: clipboard  |  Alt S/U/R/Q/C/L/I/V/A: tools",
                        12, a.velocity.getBottom() + 21, getWidth() - 24, 17, juce::Justification::centredLeft);
     }
 
@@ -524,7 +566,7 @@ public:
             const auto createdPitch = scaleSettings.snap ? snapPitchToScale(clickedPitch, scaleSettings) : clickedPitch;
             const auto created = pattern.add(createdPitch, insertionStep,
                                              rememberedLength > 0.0 ? rememberedLength : snapSteps(),
-                                             rememberedVelocity);
+                                             rememberedVelocity, rememberedProbability);
             selectOnly(created);
             if (created != 0) {
                 dragPattern = pattern;
@@ -621,8 +663,13 @@ public:
         if (key.getModifiers().isAltDown() && !key.getModifiers().isCtrlDown()
             && !key.getModifiers().isCommandDown()) {
             const auto tool = letter == 'S' ? 1 : letter == 'U' ? 2 : letter == 'R' ? 3
-                            : letter == 'Q' ? 4 : letter == 'C' ? 5 : letter == 'L' ? 6 : 0;
-            if (tool != 0 && !textEntry) { openToolPanel(tool); return true; }
+                            : letter == 'Q' ? 4 : letter == 'C' ? 5 : letter == 'L' ? 6
+                            : letter == 'I' ? (key.getModifiers().isShiftDown() ? 8 : 7)
+                            : letter == 'V' ? 9 : letter == 'A' ? 10 : 0;
+            if (tool != 0 && !textEntry) {
+                if (tool >= 7 && tool <= 9) runImmediateTool(tool); else openToolPanel(tool);
+                return true;
+            }
             return false;
         }
         if ((key.getModifiers().isCtrlDown() || key.getModifiers().isCommandDown())
@@ -741,7 +788,8 @@ private:
     void paintNote(juce::Graphics& g, const PianoRollNote& note, const Areas& a, bool isSelected) const {
         if (note.pitch < lowestVisiblePitch || note.pitch > topPitch()) return;
         const auto bounds = noteBounds(note, a);
-        g.setColour(isSelected ? juce::Colour(0xff71ead8) : juce::Colour(0xff8bdc98));
+        const auto opacity = 0.25f + 0.75f * note.probability;
+        g.setColour((isSelected ? juce::Colour(0xff71ead8) : juce::Colour(0xff8bdc98)).withMultipliedAlpha(opacity));
         g.fillRoundedRectangle(bounds, 2.0f);
         g.setColour(isSelected ? juce::Colour(0xffe0fff7) : juce::Colour(0xffb4edbc));
         g.drawRoundedRectangle(bounds.reduced(0.5f), 1.5f, 1.0f);
@@ -770,6 +818,13 @@ private:
                 if (note->velocity != value) edited = pattern.setVelocity(note->id, value) || edited;
         if (edited) changed();
     }
+    void setSelectedProbability(float value) {
+        bool edited = false;
+        for (std::size_t i = 0; i < selection.count; ++i)
+            if (const auto* note = pattern.find(selection.ids[i]))
+                if (note->probability != value) edited = pattern.setProbability(note->id, value) || edited;
+        if (edited) changed();
+    }
     void eraseSelected() {
         if (selection.count == 0) return;
         beginEdit();
@@ -791,11 +846,13 @@ private:
         const auto* note = pattern.find(activeId);
         velocity.setEnabled(note != nullptr);
         if (note != nullptr) velocity.setValue(juce::roundToInt(note->velocity * 127.0f), juce::dontSendNotification);
+        probability.setEnabled(note != nullptr);
+        if (note != nullptr) probability.setValue(juce::roundToInt(note->probability * 100.0f), juce::dontSendNotification);
         clearButton.setEnabled(pattern.count != 0);
         exampleButton.setEnabled(pattern.count == 0);
         undoButton.setEnabled(canUndo());
         redoButton.setEnabled(canRedo());
-        applyButton.setEnabled(tools.getSelectedId() >= 5 || selection.count != 0);
+        applyButton.setEnabled(tools.getSelectedId() == 5 || tools.getSelectedId() == 6 || selection.count != 0);
         if (panelOpen)
             panelTitle.setText(tools.getSelectedId() == 5
                                ? "Chord stamp at step " + juce::String(insertionStep + 1.0, 3)
@@ -809,6 +866,7 @@ private:
         if (const auto* note = pattern.find(activeId)) {
             rememberedLength = note->lengthSteps;
             rememberedVelocity = note->velocity;
+            rememberedProbability = note->probability;
         }
         updateSelection();
         if (onChange) onChange();
@@ -1041,16 +1099,18 @@ private:
         const auto tool = tools.getSelectedId();
         panelTitle.setText(tool == 5 ? "Chord stamp at step " + juce::String(insertionStep + 1.0, 3)
                                     : tool == 6 ? "Scale highlighting and snapping"
+                                    : tool == 10 ? "Arpeggiate selected chords"
                                     : tools.getText() + " selected notes  |  " + juce::String(static_cast<int>(selection.count))
                                       + " selected", juce::dontSendNotification);
         panelHelp.setText(tool == 5 ? "Choose a voicing, preview it, then add the chord as one undoable edit."
                                     : tool == 6 ? "Changes apply immediately. Snap affects newly drawn notes and pitch moves; existing notes stay unchanged."
+                                    : tool == 10 ? "Sequence notes sharing a start time. Rate and gate use the 240-tick sixteenth grid."
                                     : "240 ticks = one 1/16 note. Changes apply to selected notes only.",
                           juce::dontSendNotification);
         applyButton.setButtonText(tool == 6 ? "Done" : "Apply");
         seed.setVisible(tool == 1 || tool == 3 || tool == 5);
         seedLabel.setVisible(seed.isVisible());
-        descending.setVisible(tool == 1);
+        descending.setVisible(tool == 1 || tool == 10);
         chordType.setVisible(tool == 5);
         chordTypeLabel.setVisible(tool == 5);
         previewChordButton.setVisible(tool == 5);
@@ -1058,6 +1118,8 @@ private:
                  &scaleRoot, &scaleRootLabel, &scaleType, &scaleTypeLabel, &scaleHighlight, &scaleSnap })
             control->setVisible(tool == 6);
         if (tool == 1) {
+            descending.setButtonText("High to low");
+            descending.setName("Strum from high pitch to low pitch");
             seed.setName("Processing random seed");
             seedLabel.setText("Random seed", juce::dontSendNotification);
             seed.setRange(1, 999999999, 1);
@@ -1090,11 +1152,17 @@ private:
             seed.setValue(chordSettings.inversion, juce::dontSendNotification);
             chordType.setSelectedId(static_cast<int>(chordSettings.type) + 1, juce::dontSendNotification);
             updateChordInversionRange();
-        } else {
+        } else if (tool == 6) {
             scaleRoot.setSelectedId(scaleSettings.rootPitchClass + 1, juce::dontSendNotification);
             scaleType.setSelectedId(static_cast<int>(scaleSettings.type) + 1, juce::dontSendNotification);
             scaleHighlight.setToggleState(scaleSettings.highlight, juce::dontSendNotification);
             scaleSnap.setToggleState(scaleSettings.snap, juce::dontSendNotification);
+        } else if (tool == 10) {
+            configureParameter(0, "Rate (ticks)", "Arpeggiate rate ticks", 1, 3840, arpeggiateSettings.rateSteps * 240.0);
+            configureParameter(1, "Gate (%)", "Arpeggiate gate percent", 5, 100, arpeggiateSettings.gate * 100.0);
+            descending.setButtonText("High to low");
+            descending.setName("Arpeggiate from high pitch to low pitch");
+            descending.setToggleState(arpeggiateSettings.descending, juce::dontSendNotification);
         }
         updateSelection();
     }
@@ -1171,9 +1239,12 @@ private:
         } else if (tools.getSelectedId() == 3) {
             randomizeSettings = { value(0) / 240.0, static_cast<float>(value(1) / 100.0), static_cast<int>(value(2)), randomSeed };
             result = processRandomize(pattern, selection, randomizeSettings);
-        } else {
+        } else if (tools.getSelectedId() == 4) {
             quantizeSettings = { value(0) / 240.0, value(1) / 100.0, value(2) / 100.0 };
             result = processQuantize(pattern, selection, quantizeSettings);
+        } else {
+            arpeggiateSettings = { value(0) / 240.0, value(1) / 100.0, descending.getToggleState() };
+            result = processArpeggiate(pattern, selection, arpeggiateSettings);
         }
         selection = result.selection;
         if (result.changed()) {
@@ -1190,6 +1261,28 @@ private:
             statusMessage = message;
             updateSelection();
         }
+    }
+    void runImmediateTool(int tool) {
+        endEdit();
+        releaseAudition();
+        drag = Drag::none;
+        tools.setSelectedId(tool, juce::dontSendNotification);
+        beginEdit();
+        ProcessingResult result;
+        if (tool == 7) result = processInvertChord(pattern, selection, false);
+        else if (tool == 8) result = processInvertChord(pattern, selection, true);
+        else result = processReverse(pattern, selection);
+        selection = result.selection;
+        if (result.changed()) {
+            changed();
+            endEdit();
+        } else {
+            endEdit();
+            statusMessage = selection.count == 0 ? "Select notes before using " + tools.getItemText(tool - 1)
+                                                  : "No changes: the selected notes cannot be transformed further.";
+            updateSelection();
+        }
+        grabKeyboardFocus();
     }
     ChordStampSettings currentChordSettings() const {
         return { static_cast<int>(parameters[0].getValue()),
@@ -1252,8 +1345,8 @@ private:
 
     PianoRollPattern pattern;
     juce::ComboBox snap, tools, chordType, scaleRoot, scaleType;
-    juce::Label snapLabel, velocityLabel, chordTypeLabel, scaleRootLabel, scaleTypeLabel;
-    juce::Slider velocity;
+    juce::Label snapLabel, velocityLabel, probabilityLabel, chordTypeLabel, scaleRootLabel, scaleTypeLabel;
+    juce::Slider velocity, probability;
     juce::TextButton clearButton, exampleButton, editActionsButton, toolButton, undoButton, redoButton, applyButton, cancelButton;
     juce::Label panelTitle, panelHelp, seedLabel;
     std::array<juce::Label, 3> parameterLabels;
@@ -1278,6 +1371,7 @@ private:
     ChopSettings chopSettings;
     RandomizeSettings randomizeSettings;
     QuantizeSettings quantizeSettings;
+    ArpeggiateSettings arpeggiateSettings;
     ChordStampSettings chordSettings;
     ScaleSettings scaleSettings;
     std::array<int, 4> previewedChordPitches {};
@@ -1285,6 +1379,7 @@ private:
     int lowestVisiblePitch { 48 }, auditionPitch { -1 };
     double playhead { -1.0 }, insertionStep {}, rememberedLength {};
     float rememberedVelocity { 0.8f };
+    float rememberedProbability { 1.0f };
 };
 
 } // namespace alien

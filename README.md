@@ -212,6 +212,9 @@ smaller displays.
 - Drag a velocity stem, or use the selected-note Velocity control (1–127).
   Notes at the same start time can be selected individually in the grid before
   changing their velocity.
+- Use the selected-note **Chance** control (0–100%) for repeatable per-loop note
+  probability. Lower-probability notes draw more faintly; skipped notes never
+  acquire a playback gate or emit an unmatched note-off.
 - Click the piano at the left to audition pitches. The bottom mouse piano and
   computer keyboard still work; Tab navigation and text entry keep their keys.
 - **Load example** adds an original melody to an empty clip. **Clear** removes the
@@ -302,6 +305,9 @@ focus is inside the piano roll:
 | Alt+Q | Quantize | Grid, strength and swing. Swing delays alternate grid points; strength blends toward the nearest point on that swung grid. |
 | Alt+C | Chord stamp | Root MIDI note, chord type, inversion, length and velocity. Preview auditions the voicing before Apply adds it at the amber ruler cursor. |
 | Alt+L | Scale guides | Root and scale choices plus independent background highlighting and pitch snapping. Changes apply immediately. |
+| Alt+I / Alt+Shift+I | Invert up/down | Raises the lowest or lowers the highest tone of each selected simultaneous chord by one octave. |
+| Alt+V | Reverse | Mirrors selected note extents in time while preserving pitch, length, velocity and probability. |
+| Alt+A | Arpeggiate | Sequences each selected simultaneous chord by pitch with rate, gate and direction controls. |
 
 Time controls use ticks: **240 ticks = one 1/16 note**, 120 = 1/32,
 60 = 1/64, and 30 = 1/128. At 120 BPM, 30 ticks is 15.625 ms.
@@ -325,6 +331,12 @@ mouse or arrow-key moves. Directional moves advance to the next scale tone;
 clicked pitches choose the nearest tone with a stable lower tie. Existing notes,
 clipboard phrases, chord stamps, external MIDI and typing-piano input remain
 unchanged. Alt+L reopens the current session settings.
+
+Probability decisions are deterministic for each note and loop pass, restart
+from the same sequence when transport restarts, and run in the fixed-size audio
+scheduler without allocation or locks. Copy, paste, duplicate, chop, inversion,
+reverse and arpeggiation preserve probability. Inversion, reverse and each
+Arpeggiate Apply are single undo steps.
 
 **Apply** commits the result; **Cancel** or Escape closes settings without changing
 notes. Each Apply is one undo step, and each mouse gesture is one step. Use the

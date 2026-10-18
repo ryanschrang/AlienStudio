@@ -12,7 +12,7 @@ static void require(bool ok, const char* message) {
 static bool near(double a, double b) { return std::abs(a - b) < 1.0e-8; }
 static bool sameNote(const PianoRollNote& a, const PianoRollNote& b) {
     return a.id == b.id && a.pitch == b.pitch && a.startStep == b.startStep
-        && a.lengthSteps == b.lengthSteps && a.velocity == b.velocity;
+        && a.lengthSteps == b.lengthSteps && a.velocity == b.velocity && a.probability == b.probability;
 }
 
 static void selectionTests() {
@@ -258,7 +258,36 @@ static void invalidAndEmptyTests() {
             "malformed patterns are rejected without reading past storage");
 }
 
+static void performanceTransformTests() {
+    PianoRollPattern chord;
+    const auto c = chord.add(60, 4, 4, .8f, .5f);
+    const auto e = chord.add(64, 4, 4, .7f, .6f);
+    const auto g = chord.add(67, 4, 4, .6f, .7f);
+    const auto later = chord.add(72, 12, 2, .5f, .8f);
+    PianoRollSelection selected; selected.add(c); selected.add(e); selected.add(g);
+    require(processInvertChord(chord, selected, false).changed() && chord.find(c)->pitch == 72
+        && chord.find(e)->pitch == 64 && chord.find(g)->pitch == 67,
+        "invert up raises only the lowest selected chord tone");
+    require(processInvertChord(chord, selected, true).changed() && chord.find(c)->pitch == 60,
+        "invert down lowers only the highest selected chord tone");
+    selected.add(later);
+    require(processReverse(chord, selected).changed() && chord.find(later)->startStep == 4
+        && chord.find(c)->startStep == 10 && chord.find(c)->probability == .5f,
+        "reverse mirrors selected note extents while preserving probability and IDs");
+    chord = {}; selected.clear();
+    const auto low = chord.add(60, 4, 4, .8f, .4f);
+    const auto mid = chord.add(64, 4, 4, .7f, .5f);
+    const auto high = chord.add(67, 4, 4, .6f, .6f);
+    selected.add(low); selected.add(mid); selected.add(high);
+    ArpeggiateSettings arp; arp.rateSteps = .5; arp.gate = .5;
+    require(processArpeggiate(chord, selected, arp).changed()
+        && chord.find(low)->startStep == 4 && chord.find(mid)->startStep == 4.5
+        && chord.find(high)->startStep == 5 && chord.find(low)->lengthSteps == .25
+        && chord.find(mid)->probability == .5f, "arpeggiate sequences pitch order and preserves note expression");
+}
+
 int main() {
-    selectionTests(); strumTests(); chopTests(); randomizeTests(); quantizeTests(); invalidAndEmptyTests();
+    selectionTests(); strumTests(); chopTests(); randomizeTests(); quantizeTests();
+    performanceTransformTests(); invalidAndEmptyTests();
     std::cout << "Piano-roll selected-note processing tests passed\n";
 }
