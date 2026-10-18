@@ -89,6 +89,9 @@ public:
                 rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
             for (auto& player : audioPlayers) player.stop();
             audioClipMode.fill(false);
+            synchronizedScenePending = false;
+            synchronizedSceneTracksQueued = 0;
+            synchronizedSceneLaunch.store(false);
             synth.allSoundOff(); midi.requestReset();
         }
         midi.process([this](int n, float v, int ch) { sendMidi(n, v, ch); },
@@ -190,6 +193,8 @@ private:
     }
     void resetTransport() noexcept {
         clock.reset(); wasPlaying = false; currentStep.store(-1); pianoRollPosition.store(-1000);
+        synchronizedScenePending = false;
+        synchronizedSceneTracksQueued = 0;
         for (std::size_t track = 0; track < sessionTracks; ++track) {
             activePianoRollClip[track].store(-1);
             sessionTrackPositions[track].store(-1000);

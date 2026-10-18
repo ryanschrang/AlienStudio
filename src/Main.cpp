@@ -7,6 +7,7 @@
 #include "SessionClipButton.h"
 #include "AudioClipImport.h"
 #include "AudioClipWaveform.h"
+#include "SessionProject.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -19,6 +20,14 @@ struct SessionClipContent {
     alien::PianoRollPattern pattern;
     const alien::SessionAudioClip* audio{};
     juce::String audioFileName;
+    juce::String audioFilePath;
+};
+
+struct SessionProjectLoadResult {
+    alien::SessionProjectData project;
+    std::array<std::shared_ptr<alien::SessionAudioClip>, 16> audioAssets{};
+    std::size_t decodedBytes{};
+    juce::String error;
 };
 
 class MainComponent : public juce::Component, private juce::Timer, private juce::MidiKeyboardState::Listener, private juce::ChangeListener {
@@ -35,6 +44,18 @@ public:
         tempo.setRange(60, 200, 1);
         tempo.setValue(120);
         tempo.onValueChange = [this] { engine.bpm.store(static_cast<int>(tempo.getValue())); };
+        addAndMakeVisible(saveProjectButton);
+        saveProjectButton.setButtonText("Save");
+        saveProjectButton.setName("Save Alien Studio session project");
+        saveProjectButton.onClick = [this] { saveProject(); };
+        addAndMakeVisible(openProjectButton);
+        openProjectButton.setButtonText("Open");
+        openProjectButton.setName("Open Alien Studio session project");
+        openProjectButton.onClick = [this] { chooseProjectToOpen(); };
+        addAndMakeVisible(projectStatus);
+        projectStatus.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
+        projectStatus.setJustificationType(juce::Justification::centredLeft);
+        projectStatus.setText("Unsaved session", juce::dontSendNotification);
         for (int i = 0; i < 16; ++i) {
             auto* button = pads.add(new juce::ToggleButton(juce::String(i + 1)));
             stepsPanel.addAndMakeVisible(button);
@@ -225,6 +246,7 @@ public:
     ~MainComponent() override {
         stopTimer();
         audioFileChooser.reset();
+        projectFileChooser.reset();
         audioImportPool.removeAllJobs(true, -1);
         tabs.getTabbedButtonBar().removeChangeListener(this);
         releaseNotes();
@@ -236,6 +258,9 @@ public:
         title.setBounds(20, 10, 250, 30);
         play.setBounds(290, 8, 130, 34);
         tempo.setBounds(435, 8, 245, 34);
+        saveProjectButton.setBounds(690, 8, 72, 34);
+        openProjectButton.setBounds(770, 8, 72, 34);
+        projectStatus.setBounds(852, 8, getWidth() - 872, 34);
         workspace.setBounds(20, 52, getWidth() - 40, getHeight() - 226);
         const auto rackWidth = devicePanel.getWidth();
         deviceTitle.setBounds(24, 18, rackWidth - 48, 34);
@@ -413,6 +438,182 @@ private:
         launch.clipIndex = scene;
         engine.pianoRollLaunches[static_cast<std::size_t>(track)].publish(launch);
     }
+    void saveProject() {
+        if (currentProjectFile.existsAsFile()) writeProject(currentProjectFile);
+        else chooseProjectSavePath();
+    }
+    void chooseProjectSavePath() {
+        projectFileChooser = std::make_unique<juce::FileChooser>("Save Alien Studio session",
+            currentProjectFile.getParentDirectory().exists()
+                ? currentProjectFile : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+                    .getChildFile("AlienStudioSession.alienstudio"), "*.alienstudio");
+        juce::Component::SafePointer<MainComponent> safe(this);
+        projectFileChooser->launchAsync(juce::FileBrowserComponent::saveMode
+            | juce::FileBrowserComponent::canSelectFiles,
+            [safe](const juce::FileChooser& chooser) {
+                if (safe != nullptr && chooser.getResult() != juce::File{})
+                    safe->writeProject(chooser.getResult());
+            });
+    }
+    void writeProject(juce::File file) {
+        saveEditedClip();
+        alien::SessionProjectData project;
+        project.launchQuantizationSteps = engine.launchQuantizationSteps.load();
+        project.selectedTrack = selectedTrack;
+        project.selectedScene = selectedScene;
+        project.bpm = engine.bpm.load();
+        project.synthPreset = engine.preset.load();
+        for (std::size_t i = 0; i < project.stepPattern.size(); ++i)
+            project.stepPattern[i] = engine.steps[i].load();
+        for (int scene = 0; scene < sceneCount; ++scene)
+            for (int track = 0; track < trackCount; ++track) {
+                const auto& source = clips[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
+                auto& destination = project.clips[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
+                destination.pattern = source.pattern;
+                destination.audioFilePath = source.audioFilePath;
+            }
+        const auto json = alien::serializeSessionProject(project);
+        if (json.isEmpty()) {
+            projectStatus.setText("Could not save: session data is invalid", juce::dontSendNotification);
+            return;
+        }
+        const auto target = file.hasFileExtension("alienstudio") ? file : file.withFileExtension("alienstudio");
+        projectStatus.setText("Saving project…", juce::dontSendNotification);
+        juce::Component::SafePointer<MainComponent> safe(this);
+        std::function<juce::ThreadPoolJob::JobStatus()> saveJob = [safe, target, json] {
+            const bool success = target.replaceWithText(json);
+            juce::MessageManager::callAsync([safe, target, success] {
+                if (safe != nullptr) safe->finishProjectSave(target, success);
+            });
+            return juce::ThreadPoolJob::jobHasFinished;
+        };
+        audioImportPool.addJob(std::move(saveJob));
+    }
+    void finishProjectSave(const juce::File& file, bool success) {
+        if (success) {
+            currentProjectFile = file;
+            projectStatus.setText("Saved " + file.getFileName(), juce::dontSendNotification);
+            projectStatus.setTooltip(file.getFullPathName());
+        } else {
+            projectStatus.setText("Could not write project file", juce::dontSendNotification);
+        }
+    }
+    void chooseProjectToOpen() {
+        projectFileChooser = std::make_unique<juce::FileChooser>("Open Alien Studio session",
+            currentProjectFile.getParentDirectory().exists() ? currentProjectFile : juce::File{},
+            "*.alienstudio");
+        juce::Component::SafePointer<MainComponent> safe(this);
+        projectFileChooser->launchAsync(juce::FileBrowserComponent::openMode
+            | juce::FileBrowserComponent::canSelectFiles,
+            [safe](const juce::FileChooser& chooser) {
+                if (safe != nullptr && chooser.getResult().existsAsFile())
+                    safe->startProjectLoad(chooser.getResult());
+            });
+    }
+    void startProjectLoad(const juce::File& file) {
+        projectStatus.setText("Opening project…", juce::dontSendNotification);
+        juce::Component::SafePointer<MainComponent> safe(this);
+        std::function<juce::ThreadPoolJob::JobStatus()> loadJob = [safe, file] {
+            auto result = std::make_shared<SessionProjectLoadResult>();
+            if (file.getSize() <= 0 || file.getSize() > 4 * 1024 * 1024) {
+                result->error = "Project file is empty or exceeds the 4 MiB limit.";
+            } else {
+                const auto json = file.loadFileAsString();
+                if (!alien::parseSessionProject(json, result->project, result->error)) {
+                    // Keep the parser's specific validation error.
+                } else {
+                    for (int scene = 0; scene < sceneCount && result->error.isEmpty(); ++scene)
+                        for (int track = 0; track < trackCount && result->error.isEmpty(); ++track) {
+                            const auto& clip = result->project.clips[static_cast<std::size_t>(scene)]
+                                [static_cast<std::size_t>(track)];
+                            if (clip.audioFilePath.isEmpty()) continue;
+                            const juce::File audioFile(clip.audioFilePath);
+                            const auto decoded = alien::decodeSessionAudioClip(audioFile);
+                            if (!decoded.clip) {
+                                result->error = "Track " + juce::String(track + 1) + ", Scene "
+                                    + juce::String(scene + 1) + ": " + decoded.error;
+                                break;
+                            }
+                            const auto bytes = decoded.clip->frames * static_cast<std::size_t>(decoded.clip->channels)
+                                * sizeof(float);
+                            if (bytes > maxSessionAudioBytes - result->decodedBytes) {
+                                result->error = "Project audio exceeds the 512 MiB session limit.";
+                                break;
+                            }
+                            result->decodedBytes += bytes;
+                            result->audioAssets[cellIndex(track, scene)] = decoded.clip;
+                        }
+                }
+            }
+            juce::MessageManager::callAsync([safe, file, result] {
+                if (safe != nullptr) safe->finishProjectLoad(file, *result);
+            });
+            return juce::ThreadPoolJob::jobHasFinished;
+        };
+        audioImportPool.addJob(std::move(loadJob));
+    }
+    void finishProjectLoad(const juce::File& file, const SessionProjectLoadResult& result) {
+        if (result.error.isNotEmpty()) {
+            projectStatus.setText("Open failed: " + result.error, juce::dontSendNotification);
+            projectStatus.setTooltip(result.error);
+            return;
+        }
+        if (result.decodedBytes > maxSessionAudioBytes - retainedAudioBytes) {
+            projectStatus.setText("Open failed: retained audio memory limit reached", juce::dontSendNotification);
+            projectStatus.setTooltip("Close and restart Alien Studio to release audio from older sessions.");
+            return;
+        }
+
+        saveEditedClip();
+        engine.playing.store(false);
+        engine.synchronizedSceneLaunch.store(false);
+        releaseNotes();
+        for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track) {
+            engine.requestedPianoRollClip[track].store(-1);
+            alien::SessionClipLaunch stopped;
+            stopped.pattern.clear();
+            stopped.clipIndex = -1;
+            engine.pianoRollLaunches[track].publish(stopped);
+        }
+        for (int scene = 0; scene < sceneCount; ++scene)
+            for (int track = 0; track < trackCount; ++track) {
+                const auto index = cellIndex(track, scene);
+                const auto& source = result.project.clips[static_cast<std::size_t>(scene)]
+                    [static_cast<std::size_t>(track)];
+                auto& destination = clips[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
+                destination.pattern = source.pattern;
+                destination.audioFilePath = source.audioFilePath;
+                const auto& asset = result.audioAssets[index];
+                destination.audio = asset.get();
+                destination.audioFileName = source.audioFilePath.isNotEmpty()
+                    ? juce::File(source.audioFilePath).getFileName() : juce::String{};
+                if (asset != nullptr) retainedAudioAssets.push_back(asset);
+            }
+        retainedAudioBytes += result.decodedBytes;
+        selectedTrack = result.project.selectedTrack;
+        selectedScene = result.project.selectedScene;
+        launchTiming.setSelectedId(result.project.launchQuantizationSteps == 4 ? 1 : 2,
+            juce::dontSendNotification);
+        engine.launchQuantizationSteps.store(result.project.launchQuantizationSteps);
+        tempo.setValue(result.project.bpm, juce::dontSendNotification);
+        engine.bpm.store(result.project.bpm);
+        preset.setSelectedId(result.project.synthPreset + 1, juce::dontSendNotification);
+        engine.preset.store(result.project.synthPreset);
+        for (std::size_t i = 0; i < result.project.stepPattern.size(); ++i) {
+            engine.steps[i].store(result.project.stepPattern[i]);
+            pads[static_cast<int>(i)]->setToggleState(result.project.stepPattern[i], juce::dontSendNotification);
+        }
+        loadingClip = true;
+        pianoRoll.setPattern(clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)].pattern);
+        loadingClip = false;
+        currentProjectFile = file;
+        updateAudioClipEditor();
+        updateSessionButtons();
+        tabs.setCurrentTabIndex(clips[static_cast<std::size_t>(selectedScene)]
+            [static_cast<std::size_t>(selectedTrack)].audio != nullptr ? 2 : 1);
+        projectStatus.setText("Opened " + file.getFileName(), juce::dontSendNotification);
+        projectStatus.setTooltip(file.getFullPathName());
+    }
     void chooseAudioFile() {
         audioFileChooser = std::make_unique<juce::FileChooser>("Import audio clip",
             juce::File{}, "*.wav;*.mp3");
@@ -456,6 +657,7 @@ private:
         auto& clip = clips[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
         clip.audio = data;
         clip.audioFileName = file.getFileName();
+        clip.audioFilePath = file.getFullPathName();
         if (track == selectedTrack && scene == selectedScene) {
             updateAudioClipEditor();
             tabs.setCurrentTabIndex(2);
@@ -472,6 +674,7 @@ private:
         if (clip.audio == nullptr) return;
         clip.audio = nullptr;
         clip.audioFileName.clear();
+        clip.audioFilePath.clear();
         updateAudioClipEditor();
         const int active = engine.activePianoRollClip[static_cast<std::size_t>(selectedTrack)].load();
         const int requested = engine.requestedPianoRollClip[static_cast<std::size_t>(selectedTrack)].load();
@@ -528,6 +731,8 @@ private:
     juce::ComboBox preset;
     juce::Label title;
     juce::TextButton play;
+    juce::TextButton saveProjectButton, openProjectButton;
+    juce::Label projectStatus;
     juce::Slider tempo{juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight};
     juce::OwnedArray<juce::ToggleButton> pads;
     juce::Component stepsPanel;
@@ -548,6 +753,8 @@ private:
     std::size_t retainedAudioBytes{};
     juce::ThreadPool audioImportPool{1};
     std::unique_ptr<juce::FileChooser> audioFileChooser;
+    std::unique_ptr<juce::FileChooser> projectFileChooser;
+    juce::File currentProjectFile;
     int selectedTrack{}, selectedScene{};
     int learningControllerAction{-1};
     bool loadingClip{};
