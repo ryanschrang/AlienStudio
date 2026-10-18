@@ -34,6 +34,7 @@ public:
         engine.steps[12].store(true); pads[12]->setToggleState(true, juce::dontSendNotification);
         tabs.addTab("16-step sequencer", juce::Colour(0xff202736), &stepsPanel, false);
         tabs.addTab("Piano roll", juce::Colour(0xff202736), &pianoRoll, false);
+        tabs.addTab("Session", juce::Colour(0xff202736), &sessionPanel, false);
         tabs.getTabbedButtonBar().addChangeListener(this);
         addAndMakeVisible(workspace);
         devicePanel.addAndMakeVisible(deviceTitle);
@@ -51,12 +52,45 @@ public:
         stepsPanel.addAndMakeVisible(stepHelp);
         stepHelp.setText("16 steps  |  Sixteenth notes  |  A3 synth pattern", juce::dontSendNotification);
         stepHelp.setJustificationType(juce::Justification::centred);
-        pianoRoll.onChange = [this] { engine.pianoRollNotes.publish(pianoRoll.getPattern()); };
+        sessionPanel.addAndMakeVisible(sessionTitle);
+        sessionTitle.setText("Session clips", juce::dontSendNotification);
+        sessionTitle.setFont(juce::FontOptions(22.0f, juce::Font::bold));
+        sessionTitle.setColour(juce::Label::textColourId, juce::Colour(0xff8ff0c0));
+        sessionPanel.addAndMakeVisible(sessionHelp);
+        sessionHelp.setText("Launch a four-bar clip. Changes take effect at the next loop boundary; select Piano roll to edit it.",
+                            juce::dontSendNotification);
+        sessionHelp.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
+        for (int i = 0; i < static_cast<int>(clipButtons.size()); ++i) {
+            sessionPanel.addAndMakeVisible(clipButtons[static_cast<std::size_t>(i)]);
+            auto& button = clipButtons[static_cast<std::size_t>(i)];
+            button.setName("Launch piano roll clip " + juce::String(i + 1));
+            button.onClick = [this, i] { selectAndLaunchClip(i); };
+        }
+        sessionPanel.addAndMakeVisible(stopClip);
+        stopClip.setButtonText("Stop clip");
+        stopClip.setName("Stop piano roll clip at loop boundary");
+        stopClip.onClick = [this] {
+            clips[static_cast<std::size_t>(selectedClip)] = pianoRoll.getPattern();
+            engine.requestedPianoRollClip.store(-1);
+            engine.pianoRollLaunches.publish({});
+            updateSessionButtons();
+        };
+        pianoRoll.onChange = [this] {
+            clips[static_cast<std::size_t>(selectedClip)] = pianoRoll.getPattern();
+            engine.requestedPianoRollClip.store(selectedClip);
+            if (engine.activePianoRollClip.load() == selectedClip)
+                engine.pianoRollNotes.publish(clips[static_cast<std::size_t>(selectedClip)]);
+            else
+                engine.pianoRollLaunches.publish(clips[static_cast<std::size_t>(selectedClip)]);
+        };
         pianoRoll.onAudition = [this](int note, float velocity) {
             if (velocity > 0) keyboardState.noteOn(3, note, velocity);
             else keyboardState.noteOff(3, note, 0);
         };
-        engine.pianoRollNotes.publish(pianoRoll.getPattern());
+        clips[0] = pianoRoll.getPattern();
+        engine.requestedPianoRollClip.store(0);
+        engine.pianoRollLaunches.publish(clips[0]);
+        updateSessionButtons();
         devicePanel.addAndMakeVisible(presetLabel);
         presetLabel.setText("Synth preset", juce::dontSendNotification);
         presetLabel.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
@@ -108,6 +142,12 @@ public:
         preset.setBounds(150, 108, juce::jmin(260, rackWidth - 180), 32);
         midiLabel.setBounds(30, 168, 120, 30);
         midiInput.setBounds(150, 168, juce::jmax(300, rackWidth - 180), 32);
+        sessionTitle.setBounds(24, 18, sessionPanel.getWidth() - 48, 34);
+        sessionHelp.setBounds(24, 54, sessionPanel.getWidth() - 48, 28);
+        const int clipWidth = juce::jmax(120, (sessionPanel.getWidth() - 78) / 4);
+        for (int i = 0; i < static_cast<int>(clipButtons.size()); ++i)
+            clipButtons[static_cast<std::size_t>(i)].setBounds(24 + i * (clipWidth + 10), 105, clipWidth, 86);
+        stopClip.setBounds(24, 212, 150, 36);
         octaveDown.setBounds(20, getHeight() - 154, 100, 30);
         octaveUp.setBounds(130, getHeight() - 154, 100, 30);
         help.setBounds(245, getHeight() - 154, getWidth() - 265, 30);
@@ -140,8 +180,9 @@ private:
         keyboard.setLowestVisibleKey(12 * (typingInput.typing.octave() + 1));
     }
     void changeListenerCallback(juce::ChangeBroadcaster*) override {
-        engine.patternMode.store(tabs.getCurrentTabIndex() == 1 ? 1 : 0);
-        releaseNotes();
+        const int newMode = tabs.getCurrentTabIndex() == 0 ? 0 : 1;
+        if (engine.patternMode.exchange(newMode) != newMode) releaseNotes();
+        else pianoRoll.releaseAudition();
     }
     void timerCallback() override {
         midiInput.tick();
@@ -153,6 +194,7 @@ private:
             }
         }
         pianoRoll.setPlayheadStep(engine.pianoRollPosition.load() / 1000.0);
+        updateSessionButtons();
         repaint();
     }
     void handleNoteOn(juce::MidiKeyboardState*, int channel, int note, float velocity) override {
@@ -163,6 +205,26 @@ private:
     void handleNoteOff(juce::MidiKeyboardState*, int channel, int note, float) override {
         if (channel == 4) return;
         if (!keyboardState.isNoteOnForChannels(0x7, note)) engine.notes.push(note, 0);
+    }
+    void selectAndLaunchClip(int clip) {
+        clips[static_cast<std::size_t>(selectedClip)] = pianoRoll.getPattern();
+        selectedClip = juce::jlimit(0, static_cast<int>(clips.size()) - 1, clip);
+        pianoRoll.setPattern(clips[static_cast<std::size_t>(selectedClip)]);
+        engine.requestedPianoRollClip.store(selectedClip);
+        engine.pianoRollLaunches.publish(clips[static_cast<std::size_t>(selectedClip)]);
+        updateSessionButtons();
+    }
+    void updateSessionButtons() {
+        const int active = engine.activePianoRollClip.load();
+        const int requested = engine.requestedPianoRollClip.load();
+        for (int i = 0; i < static_cast<int>(clipButtons.size()); ++i) {
+            auto text = "Clip " + juce::String(i + 1);
+            if (i == active) text += "\nPlaying";
+            else if (i == requested) text += "\nQueued";
+            if (i == selectedClip) text += "  • Edit";
+            clipButtons[static_cast<std::size_t>(i)].setButtonText(text);
+        }
+        stopClip.setButtonText(requested < 0 ? "Stop queued" : "Stop clip");
     }
     ToneEngine engine;
     alien::MidiInputPanel midiInput{engine.midi};
@@ -180,6 +242,12 @@ private:
     juce::Label stepHelp;
     alien::PianoRollEditor pianoRoll;
     juce::TabbedComponent tabs{juce::TabbedButtonBar::TabsAtTop};
+    juce::Component sessionPanel;
+    juce::Label sessionTitle, sessionHelp;
+    std::array<juce::TextButton, 4> clipButtons;
+    juce::TextButton stopClip;
+    std::array<alien::PianoRollPattern, 4> clips{};
+    int selectedClip{};
     juce::Component devicePanel;
     juce::Label deviceTitle, deviceHelp, presetLabel, midiLabel;
     alien::CompactWorkspace workspace{tabs, devicePanel};

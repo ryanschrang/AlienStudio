@@ -171,7 +171,25 @@ public:
         if (mailbox.consume(updated)) replace(updated, send);
         if (play && !running) {
             running = true; untilStep = 0; step = -1; nextStep = 0; nextEvent = 0; cycle = 0;
+            activeClip = loadedClip;
         }
+    }
+    template<class Send>
+    void beginBlock(bool play, double rate, double tempo, Send&& send) noexcept {
+        sampleRate = std::isfinite(rate) && rate > 0 ? rate : 44100.0;
+        bpm = std::isfinite(tempo) && tempo > 0 ? std::clamp(tempo, 1.0, 1000.0) : 120.0;
+        if (!play) stop(send);
+        if (play && !running) {
+            running = true; untilStep = 0; step = -1; nextStep = 0; nextEvent = 0; cycle = 0;
+            activeClip = loadedClip;
+        }
+    }
+    bool queuePattern(const PianoRollPattern& replacement, int clipIndex) noexcept {
+        if (!replacement.valid() || clipIndex < -1) return false;
+        pendingPattern = replacement;
+        pendingClip = clipIndex;
+        pending = true;
+        return true;
     }
     template<class Send>
     int nextSample(Send&& send) noexcept {
@@ -184,6 +202,7 @@ public:
                 nextEvent = 0;
                 ++cycle;
             }
+            if (nextStep == 0 && pending) activatePending(send);
             step = nextStep;
             nextStep = (step + 1) % pattern.loopSteps;
             tick = step;
@@ -208,8 +227,10 @@ public:
     void stop(Send&& send) noexcept {
         for (std::size_t i = 0; i < pattern.count; ++i) if (active[i]) release(i, send);
         running = false; reconcile = false; step = -1; nextStep = 0; nextEvent = 0; untilStep = 0;
+        activeClip = -1;
     }
     int currentStep() const noexcept { return step; }
+    int activeClipIndex() const noexcept { return activeClip; }
     double positionStep() const noexcept { return step < 0 ? -1.0 : samplePosition(); }
 private:
     struct Event { int ticks{}; std::size_t note{}; bool on{}; };
@@ -230,6 +251,22 @@ private:
     }
     double samplePosition() const noexcept {
         return static_cast<double>(step) + std::clamp(1.0 - untilStep / intervalSamples, 0.0, 1.0);
+    }
+    template<class Send>
+    void activatePending(Send&& send) noexcept {
+        for (std::size_t i = 0; i < pattern.count; ++i) if (active[i]) release(i, send);
+        pattern = pendingPattern;
+        active.fill(false);
+        held.fill(0);
+        loadedClip = pendingClip;
+        activeClip = pendingClip;
+        pending = false;
+        reconcile = false;
+        // Rebuild from the new clip's beginning rather than seeking from the
+        // previous clip's final step.
+        step = -1;
+        nextEvent = 0;
+        rebuildEvents();
     }
     template<class Send>
     void press(std::size_t index, Send&& send) noexcept {
@@ -312,6 +349,7 @@ private:
         rebuildEvents();
     }
     PianoRollPattern pattern;
+    PianoRollPattern pendingPattern;
     std::array<bool, PianoRollPattern::maxNotes> active{};
     std::array<unsigned, 128> held{};
     std::array<Event, PianoRollPattern::maxNotes * 2> events{};
@@ -319,6 +357,7 @@ private:
     double sampleRate{44100.0}, bpm{120.0}, untilStep{}, intervalSamples{1.0};
     int step{-1}, nextStep{};
     std::uint32_t cycle{};
-    bool running{}, reconcile{};
+    int loadedClip{-1}, activeClip{-1}, pendingClip{-1};
+    bool running{}, reconcile{}, pending{};
 };
 }
