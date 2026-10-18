@@ -41,7 +41,8 @@ The long-term differentiator is **one shared project and audio engine** across a
 - [ ] Session-style clip and scene launching with synchronized playback.
 - [ ] Record clip-launch performances into arrangement.
 - [ ] Audio time-stretching/warping and loop synchronization.
-- [ ] MIDI controller mapping and performance controls.
+- [x] MIDI CC learn mappings for Session scene launch and stop actions.
+- [ ] Broader MIDI controller mapping and performance controls.
 
 ### Phase 4 — Professional ecosystem
 - [ ] VST3 hosting subject to SDK licensing and compatibility review.
@@ -322,6 +323,15 @@ clip. **Stop all tracks** follows the selected launch timing. Inside the piano
 roll, left-click adds notes and right-click removes them. Active clips keep
 playing while the Session and Piano roll tabs are changed. Separate clip states
 are held for this session only; project save/load is still planned.
+
+To map a hardware MIDI CC to a Session action, select **Scene 1–4** or
+**Stop all**, click **Learn CC**, then move the desired controller. The learned
+channel and CC number appear beside the controls. Pressing the controller
+launches the scene or queues Stop all using the current beat/bar launch timing;
+release it before pressing again. **Clear** removes the selected mapping, and
+learning an already mapped CC moves it to the newly selected action. Mappings
+last for the current app session. MIDI note input, sustain and note-off handling
+continue to work independently.
 
 Time controls use ticks: **240 ticks = one 1/16 note**, 120 = 1/32,
 60 = 1/64, and 30 = 1/128. At 120 BPM, 30 ticks is 15.625 ms.

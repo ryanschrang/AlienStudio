@@ -67,6 +67,14 @@ static void queueTests() {
     const auto token = pipe.beginSession();
     require(pipe.push(token, 0x90, 60, 127), "active MIDI session accepts events");
     pipe.process(r); require(pipe.isNoteOn(60), "audio publishes MIDI highlights");
+    int mappedChannel = -1, mappedCC = -1, mappedValue = -1;
+    pipe.push(token, 0xb2, 20, 96);
+    pipe.process(r, [&](int channel, int cc, int value) {
+        mappedChannel = channel; mappedCC = cc; mappedValue = value;
+    });
+    require(mappedChannel == 2 && mappedCC == 20 && mappedValue == 96,
+        "general MIDI CCs pass through the bounded audio-thread control callback");
+    require(pipe.isNoteOn(60), "unmapped MIDI CC does not alter active note gates");
     pipe.push(token, 0xb0, 64, 127); pipe.push(token, 0x80, 60, 0); pipe.process(r);
     require(pipe.isNoteOn(60), "highlight remains during sustain");
     pipe.requestReset(); pipe.process(r);

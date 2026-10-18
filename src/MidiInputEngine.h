@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 
 namespace alien {
 // Audio-thread-owned MIDI gates. Repeated note-ons retrigger; one note-off
@@ -11,8 +12,7 @@ class MidiNoteState {
 public:
     static bool supported(int status, int a, int b) noexcept {
         if (status < 0x80 || status > 0xef || a < 0 || a > 127 || b < 0 || b > 127) return false;
-        return (status & 0xf0) == 0x80 || (status & 0xf0) == 0x90
-            || ((status & 0xf0) == 0xb0 && (a == 64 || a == 120 || a == 121 || a == 123));
+        return (status & 0xf0) == 0x80 || (status & 0xf0) == 0x90 || (status & 0xf0) == 0xb0;
     }
     template<class Send> void handle(int status, int a, int b, Send&& send) noexcept {
         if (!supported(status, a, b)) return;
@@ -26,14 +26,14 @@ public:
             } else if (a == 121) {
                 c.sustain = false;
                 for (int n = 0; n < 128; ++n) if (!c.down[static_cast<std::size_t>(n)]) release(channel, n, send);
-            } else {
+            } else if (a == 120 || a == 123) {
                 for (int n = 0; n < 128; ++n) {
                     c.down[static_cast<std::size_t>(n)] = false;
                     if (a == 120 || !c.sustain) release(channel, n, send);
                 }
                 // Negative pitch is a source-local hard silence, used by CC120.
                 if (a == 120) { c.sustain = false; send(-1, 0.0f, static_cast<int>(channel) + 1); }
-            }
+            } else return;
             return;
         }
         const auto note = static_cast<std::size_t>(a);
@@ -98,7 +98,10 @@ public:
         return true;
     }
     template<class Send> void process(Send&& send) noexcept {
-        synchronize(send);
+        process(std::forward<Send>(send), [](int, int, int) noexcept {});
+    }
+    template<class Send, class Control> void process(Send&& send, Control&& control) noexcept {
+        if (synchronize(send)) control(-1, -1, -1); // Device reset, panic or queue overflow.
         // Bound consumption even while producers continue to send.
         for (std::size_t i = 0; i < events.size(); ++i) {
             const auto r = read.load(std::memory_order_relaxed);
@@ -106,10 +109,13 @@ public:
             const auto e = events[r];
             read.store((r + 1) % events.size(), std::memory_order_release);
             if (e.token == session.load(std::memory_order_acquire) && e.revision == appliedRevision
-                && e.revision == revision.load(std::memory_order_acquire))
+                && e.revision == revision.load(std::memory_order_acquire)) {
+                if ((e.status & 0xf0) == 0xb0)
+                    control(e.status & 15, e.a, e.b);
                 state.handle(e.status, e.a, e.b, send);
+            }
         }
-        synchronize(send);
+        if (synchronize(send)) control(-1, -1, -1);
         publish();
     }
     template<class Send> void resetAudio(Send&& send) noexcept {
@@ -122,9 +128,10 @@ public:
     std::uint64_t overflowCount() const noexcept { return overflows.load(std::memory_order_relaxed); }
 private:
     void overflow() noexcept { overflows.fetch_add(1, std::memory_order_relaxed); requestReset(); }
-    template<class Send> void synchronize(Send&& send) noexcept {
+    template<class Send> bool synchronize(Send&& send) noexcept {
         const auto latest = revision.load(std::memory_order_acquire);
-        if (latest != appliedRevision) { state.reset(send); appliedRevision = latest; }
+        if (latest != appliedRevision) { state.reset(send); appliedRevision = latest; return true; }
+        return false;
     }
     void publish() noexcept {
         for (std::size_t n = 0; n < published.size(); ++n) published[n].store(state.pitchMask(n), std::memory_order_relaxed);

@@ -6,6 +6,7 @@
 #include "StepClock.h"
 #include "PianoRollSequence.h"
 #include "MidiInputEngine.h"
+#include "MidiControllerMappings.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -18,6 +19,8 @@ public:
     std::atomic<int> bpm{120}, currentStep{-1}, preset{0};
     NoteQueue notes;
     alien::MidiInputPipe midi;
+    alien::MidiControllerMappings controllerMappings;
+    alien::MidiControllerActionQueue controllerActions;
     std::array<alien::PianoRollMailbox, sessionTracks> pianoRollNotes;
     std::array<alien::PianoRollMailbox, sessionTracks> pianoRollLaunches;
     std::array<std::atomic<int>, sessionTracks> sessionTrackPositions{-1000, -1000, -1000, -1000};
@@ -79,7 +82,12 @@ public:
                 rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
             synth.allSoundOff(); midi.requestReset();
         }
-        midi.process([this](int n, float v, int ch) { sendMidi(n, v, ch); });
+        midi.process([this](int n, float v, int ch) { sendMidi(n, v, ch); },
+            [this](int channel, int controller, int value) {
+                if (channel < 0) { controllerMappings.resetEdges(); return; }
+                const int action = controllerMappings.processCC(channel, controller, value);
+                if (action >= 0) controllerActions.push(action);
+            });
         for (std::size_t track = 0; track < sessionTracks; ++track) {
             alien::PianoRollPattern requestedPattern;
             if (pianoRollLaunches[track].consume(requestedPattern)) {
