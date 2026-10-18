@@ -1,5 +1,6 @@
 #include "ToneEngine.h"
 #include "PianoRollProcessing.h"
+#include "PianoRollClipboard.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -207,11 +208,41 @@ static void processedPatternTests() {
     require(offline.render(256) == 0, "transport stop after processing remains silent");
 }
 
+static void clipboardPlaybackTests() {
+    OfflineEngine offline;
+    auto& engine = offline.engine;
+    alien::PianoRollPattern pattern;
+    alien::PianoRollSelection selected;
+    selected.add(pattern.add(60, 0, 8));
+    selected.add(pattern.add(64, 0, 8));
+    const auto original = pattern;
+    alien::PianoRollClipboard clipboard;
+    require(clipboard.copy(pattern, selected).status == alien::ClipboardStatus::copied, "copy sounding chord");
+    engine.patternMode.store(1);
+    engine.playing.store(true);
+    engine.pianoRollNotes.publish(pattern);
+    require(offline.render(2048) > 0, "source chord sounds before clipboard edits");
+    require(clipboard.paste(pattern, 0.25).changed(), "paste overlapping chord with fresh IDs");
+    engine.pianoRollNotes.publish(pattern);
+    require(offline.render(2048) > 0, "pasted overlap keeps chord sounding");
+    engine.pianoRollNotes.publish(original); // Undo Paste, keeping source notes.
+    require(offline.render(2048) > 0, "undoing pasted overlap preserves original held pitches");
+    pattern = original;
+    require(alien::duplicatePianoRollSelection(pattern, selected).changed(), "duplicate after original chord end");
+    engine.pianoRollNotes.publish(pattern);
+    require(offline.render(48000) > 0, "duplicated chord plays across original end boundary");
+    engine.pianoRollNotes.publish(original); // Undo while only the duplicate holds.
+    require(offline.settledEnergy() == 0, "undoing sounding duplicate releases all copied pitches");
+    engine.playing.store(false);
+    require(offline.render(512) == 0, "Stop after clipboard undo leaves no stuck notes");
+}
+
 int main() {
     playbackStopAndRestartTests();
     activeEditingTests();
     panicPresetAndSourceTests();
     liveKeyboardIsolationTests();
     processedPatternTests();
+    clipboardPlaybackTests();
     std::cout << "Offline audio callback playback, edits, panic, transport, source switching and keyboard isolation passed\n";
 }

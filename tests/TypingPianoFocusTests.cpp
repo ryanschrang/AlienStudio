@@ -409,8 +409,130 @@ static void checkPianoRollProcessing() {
     roll.keyPressed(juce::KeyPress(juce::KeyPress::rightKey));
     require(!roll.canRedo(), "new editing discards the redo branch");
 
+    // Note clipboard shortcuts are dispatched through the native peer, like
+    // the processing shortcuts above, including focus in toolbar descendants.
+    alien::PianoRollPattern phrase;
+    const auto phraseLow = phrase.add(60, 4.125, 1.5, 0.4f);
+    const auto phraseHigh = phrase.add(64, 6.625, 2.25, 0.8f);
+    const auto other = phrase.add(67, 16, 4, 0.6f);
+    roll.setPattern(phrase);
+    auto* pitchRange = dynamic_cast<juce::ScrollBar*>(control("Piano roll pitch range"));
+    require(pitchRange != nullptr, "pitch range control is available");
+    pitchRange->setCurrentRange(56, 24, juce::sendNotificationSync); // Restore C3-B4 after history pitch tests.
+    roll.grabKeyboardFocus();
+    const auto sample = point(60, 4.5f).roundToInt();
+    const auto plain = roll.createComponentSnapshot(roll.getLocalBounds()).getPixelAt(sample.x, sample.y);
+    roll.mouseDown(event(point(60, 4.5f)));
+    roll.mouseUp(event(point(60, 4.5f)));
+    roll.mouseDown(event(point(64, 7.0f), false,
+        juce::ModifierKeys::leftButtonModifier | juce::ModifierKeys::ctrlModifier));
+    roll.mouseUp(event(point(64, 7.0f)));
+    require(roll.getSelectedIds().size() == 2 && !roll.canUndo(), "highlighting notes does not edit the clip");
+    const auto highlighted = roll.createComponentSnapshot(roll.getLocalBounds()).getPixelAt(sample.x, sample.y);
+    require(plain != highlighted, "selected notes must visibly highlight in the grid");
+    int clipboardPublications = 0;
+    roll.onChange = [&] { ++clipboardPublications; };
+    control("Selected note velocity")->grabKeyboardFocus();
+    shortcut('c', juce::ModifierKeys::ctrlModifier);
+    require(clipboardPublications == 0 && !roll.canUndo()
+        && alien::samePianoRollPattern(roll.getPattern(), phrase), "Copy changes neither notes, history nor audio snapshot");
+    // The ruler positions Paste without discarding highlighted source notes.
+    roll.mouseDown(event({gridX + 12.3f * stepWidth, 54}));
+    roll.mouseUp(event({gridX + 12.3f * stepWidth, 54}));
+    require(roll.getInsertionStep() == 12 && roll.getSelectedIds().size() == 2,
+        "ruler click snaps the insertion cursor without changing selection");
+    shortcut('v', juce::ModifierKeys::ctrlModifier);
+    require(roll.getPattern().count == 5 && roll.getSelectedIds().size() == 2
+        && clipboardPublications == 1 && roll.getInsertionStep() == 17, "Paste selects new notes and advances to the next phrase boundary");
+    const auto pastedLow = roll.getSelectedIds()[0], pastedHigh = roll.getSelectedIds()[1];
+    require(pastedLow != phraseLow && pastedHigh != phraseHigh
+        && roll.getPattern().find(pastedLow)->startStep == 12
+        && roll.getPattern().find(pastedHigh)->startStep == 14.5
+        && roll.getPattern().find(pastedLow)->lengthSteps == 1.5
+        && roll.getPattern().find(pastedHigh)->velocity == 0.8f
+        && roll.getPattern().find(other)->startStep == 16, "Paste preserves exact timing, duration, velocity and unselected notes with new IDs");
+    const auto pastedPattern = roll.getPattern();
+    shortcut('z', juce::ModifierKeys::ctrlModifier);
+    require(alien::samePianoRollPattern(roll.getPattern(), phrase) && !roll.canUndo()
+        && roll.getInsertionStep() == 12 && roll.getSelectedIds().size() == 2, "one undo restores pre-paste notes, selection and cursor");
+    shortcut('y', juce::ModifierKeys::ctrlModifier);
+    require(alien::samePianoRollPattern(roll.getPattern(), pastedPattern)
+        && roll.getInsertionStep() == 17, "redo restores the same pasted IDs and cursor");
+    shortcut('v', juce::ModifierKeys::ctrlModifier);
+    require(roll.getPattern().count == 7 && roll.getPattern().find(roll.getSelectedIds()[0])->startStep == 17
+        && roll.getInsertionStep() == 22, "repeated Paste advances and creates another distinct phrase");
+    shortcut('z', juce::ModifierKeys::ctrlModifier);
+    shortcut('d', juce::ModifierKeys::ctrlModifier);
+    require(roll.getPattern().count == 7 && roll.getPattern().find(roll.getSelectedIds()[0])->startStep == 17
+        && roll.getPattern().find(roll.getSelectedIds()[1])->startStep == 19.5,
+        "Duplicate starts after the selected phrase and preserves internal spacing");
+    shortcut('z', juce::ModifierKeys::ctrlModifier);
+    require(alien::samePianoRollPattern(roll.getPattern(), pastedPattern), "Duplicate is one undo step");
+
+    const std::array<std::uint32_t, 1> otherOnly{other};
+    roll.setSelection(otherOnly);
+    shortcut('d', juce::ModifierKeys::ctrlModifier);
+    require(roll.getPattern().count == 6 && roll.getPattern().find(roll.getSelectedIds()[0])->startStep == 20,
+        "Duplicate uses the current selection rather than copied material");
+    shortcut('v', juce::ModifierKeys::ctrlModifier);
+    require(roll.getPattern().count == 8 && roll.getSelectedIds().size() == 2
+        && roll.getPattern().find(roll.getSelectedIds()[0])->pitch == 60
+        && roll.getPattern().find(roll.getSelectedIds()[0])->startStep == 24,
+        "Duplicate leaves the previous Copy available for Paste");
+
+    shortcut('a', juce::ModifierKeys::ctrlModifier);
+    shortcut(juce::KeyPress::deleteKey, {});
+    shortcut('c', juce::ModifierKeys::ctrlModifier); // Empty copy retains the last phrase.
+    roll.setInsertionStep(0);
+    shortcut('v', juce::ModifierKeys::ctrlModifier);
+    require(roll.getPattern().count == 2 && roll.getPattern().find(roll.getSelectedIds()[0])->startStep == 0
+        && roll.getPattern().find(roll.getSelectedIds()[1])->startStep == 2.5,
+        "copied notes survive deleting originals and an empty-selection Copy");
+
+    // Text editing must use the OS text clipboard, independent of note Copy.
+    shortcut('r', juce::ModifierKeys::altModifier);
+    textBox->showEditor();
+    pump();
+    text = textBox->getCurrentTextEditor();
+    require(text != nullptr, "numeric field opens for clipboard focus test");
+    const auto previousTextClipboard = juce::SystemClipboard::getTextFromClipboard();
+    text->setText("12345");
+    text->grabKeyboardFocus();
+    const auto beforeTextClipboard = roll.getPattern();
+    require(!roll.keyPressed(juce::KeyPress('c', juce::ModifierKeys::ctrlModifier, 'c'))
+        && !roll.keyPressed(juce::KeyPress('v', juce::ModifierKeys::ctrlModifier, 'v'))
+        && !roll.keyPressed(juce::KeyPress('d', juce::ModifierKeys::ctrlModifier, 'd')),
+        "note actions must leave text-field Copy, Paste and Duplicate shortcuts unhandled");
+    shortcut('a', juce::ModifierKeys::ctrlModifier);
+    shortcut('c', juce::ModifierKeys::ctrlModifier);
+    require(juce::SystemClipboard::getTextFromClipboard() == "12345", "numeric text Copy retains normal OS clipboard behavior");
+    text->setText("0");
+    text->grabKeyboardFocus();
+    shortcut('a', juce::ModifierKeys::ctrlModifier);
+    shortcut('v', juce::ModifierKeys::ctrlModifier);
+    require(text->getText() == "12345" && alien::samePianoRollPattern(beforeTextClipboard, roll.getPattern()),
+        "numeric text Paste must not insert piano-roll notes");
+    textBox->hideEditor(true);
+    click("Cancel piano roll processing");
+    juce::SystemClipboard::copyTextToClipboard(previousTextClipboard);
+    roll.setPattern(full);
+    shortcut('v', juce::ModifierKeys::ctrlModifier);
+    require(!roll.canUndo() && alien::samePianoRollPattern(roll.getPattern(), full), "capacity failure leaves all notes and history untouched");
+    roll.setPattern(phrase);
+    roll.setInsertionStep(63);
+    shortcut('v', juce::ModifierKeys::ctrlModifier);
+    require(!roll.canUndo() && roll.getInsertionStep() == 63
+        && alien::samePianoRollPattern(roll.getPattern(), phrase), "loop-edge failure does not truncate notes or move the cursor");
+    auto* editMenu = dynamic_cast<juce::Button*>(control("Piano roll edit actions"));
+    require(editMenu != nullptr && editMenu->getWantsKeyboardFocus(), "Edit menu is accessible by keyboard");
+    editMenu->triggerClick();
+    pump();
+    require(juce::Component::getNumCurrentlyModalComponents() > 0, "Edit button opens an actual actions popup");
+    juce::PopupMenu::dismissAllActiveMenus();
+    pump();
+    roll.onChange = {};
     roll.setSize(914, 334); // Piano-roll content inside the smallest app window.
-    for (const auto* name : {"Undo piano roll edit", "Redo piano roll edit", "Open piano roll processing settings"})
+    for (const auto* name : {"Undo piano roll edit", "Redo piano roll edit", "Open piano roll processing settings", "Piano roll edit actions"})
         require(roll.getLocalBounds().contains(control(name)->getBounds()), "toolbar actions fit the minimum window width");
     shortcut('r', juce::ModifierKeys::altModifier);
     for (const auto* name : {"Apply piano roll processing", "Cancel piano roll processing", "Randomize pitch semitones"})

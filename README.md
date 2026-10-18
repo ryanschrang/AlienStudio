@@ -170,6 +170,47 @@ change presets, audition piano keys, and Alt-Tab while holding typing/mouse note
 Return and play again. Confirm the original 16 pads and typing octave controls
 still work; verify the UI at the minimum window size and normal display scaling.
 
+### Highlight, copy, paste and duplicate notes
+
+Drag a rectangle from empty grid space to highlight notes. Ctrl+click toggles
+individual notes; Ctrl+drag adds to the highlighted group. **Ctrl+A** selects
+everything. Selected notes and their velocity stems use a brighter highlight.
+The piano roll's **Edit** menu also offers Select all, Copy, Paste and Duplicate.
+
+- **Ctrl+C — Copy:** remembers selected notes, including their pitches, lengths,
+  relative timing and velocities. Copy leaves the clip and undo history alone.
+- **Ctrl+V — Paste:** inserts the copied phrase at the amber insertion marker.
+  Click the time ruler to position it without changing the selection, or click
+  empty grid space. Placement follows the current snap setting. The earliest
+  copied note starts at the marker; relative offsets stay intact.
+- **Ctrl+D — Duplicate:** copies the highlighted phrase after its latest note
+  ends, aligned to the next grid boundary. The new notes become selected so
+  repeated duplication extends the phrase. Duplicate keeps the copied clipboard
+  phrase available for later Paste.
+
+Paste selects the new notes and advances the marker to the next grid boundary
+after the pasted phrase, ready for another Paste. Each Paste or Duplicate is one
+undo step. Ctrl+Z / Ctrl+Y restore the notes, selection and insertion marker.
+Copy remains available after deleting the original notes or clearing the clip.
+
+This is an internal note clipboard for the current editor session; it does not
+overwrite the Windows text clipboard or exchange MIDI with other applications.
+Text fields keep their normal Copy/Paste shortcuts. If the whole phrase will not
+fit inside the four-bar loop or the 128-note capacity, nothing is pasted and the
+editor explains why. Move the marker earlier, select fewer notes, or free space.
+
+Clipboard regression tests check relative timing, velocities, unique IDs,
+repeated operations, capacity/loop-edge rejection and failed-operation atomicity.
+GUI tests cover highlights, cursor placement, shortcuts, undo/redo, retained
+clipboard data and text-field isolation; offline callback tests cover adding and
+undoing copied notes during playback without hanging notes.
+
+Manual Windows check: highlight a chord or melody, Copy, click a later ruler
+position and Paste. Check note positions/velocities, repeat Paste and Duplicate,
+then undo/redo once per operation. Copy, delete the originals and Paste again.
+Try pasting at the loop end and into a full clip. Check the Edit menu, numeric
+text-field Copy/Paste, Tab navigation, typing piano, and Stop during playback.
+
 ### Piano-roll processing tools
 
 Select notes before processing: click a note, Ctrl+click to toggle individual

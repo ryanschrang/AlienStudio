@@ -3,6 +3,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "PianoRollSequence.h"
 #include "PianoRollProcessing.h"
+#include "PianoRollClipboard.h"
 #include <cmath>
 #include <functional>
 #include <span>
@@ -22,7 +23,9 @@ public:
                     "Ctrl-click toggles note selection; drag empty space to select a group. "
                     "Delete erases selected notes. Arrow keys move selected notes; "
                     "Shift Left or Right changes their length. Ctrl A selects all, Ctrl Z undoes, "
-                    "and Ctrl Y redoes. Alt S, U, R, Q open processing settings. Tab moves between controls.");
+                    "and Ctrl Y redoes. Ctrl C copies, Ctrl V pastes at the amber cursor, and Ctrl D duplicates. "
+                    "Click the ruler or empty grid to place the paste cursor. "
+                    "Alt S, U, R, Q open processing settings. Tab moves between controls.");
         setWantsKeyboardFocus(true);
         setMouseClickGrabsKeyboardFocus(true);
 
@@ -70,6 +73,7 @@ public:
             pattern.clear();
             selection.clear();
             activeId = 0;
+            insertionStep = 0.0;
             drag = Drag::none;
             changed();
             endEdit();
@@ -79,6 +83,9 @@ public:
         exampleButton.setName("Load example piano roll melody");
         exampleButton.setTooltip("Add an original example to an empty loop; clear existing notes first");
         exampleButton.onClick = [this] { loadExample(); };
+        configureButton(editActionsButton, "Edit", "Piano roll edit actions");
+        editActionsButton.setTooltip("Select all (Ctrl A), Copy (Ctrl C), Paste (Ctrl V), Duplicate (Ctrl D)");
+        editActionsButton.onClick = [this] { showEditMenu(); };
 
         addAndMakeVisible(tools);
         tools.setName("Piano roll processing tool");
@@ -172,6 +179,14 @@ public:
     bool canUndo() const noexcept { return historyPosition != 0; }
     bool canRedo() const noexcept { return historyPosition < history.size(); }
     bool isProcessingPanelOpen() const noexcept { return panelOpen; }
+    double getInsertionStep() const noexcept { return insertionStep; }
+    void setInsertionStep(double step) {
+        if (!std::isfinite(step)) return;
+        insertionStep = PianoRollPattern::fromTicks(PianoRollPattern::toTicks(
+            juce::jlimit(0.0, static_cast<double>(pattern.loopSteps), step)));
+        statusMessage.clear();
+        repaint();
+    }
     void undo() {
         endEdit();
         if (!canUndo()) return;
@@ -189,6 +204,7 @@ public:
         pattern = replacement;
         selection.clear();
         activeId = 0;
+        insertionStep = 0.0;
         drag = Drag::none;
         editOpen = false;
         history.clear();
@@ -209,7 +225,8 @@ public:
 
     void resized() override {
         snap.setBounds(184, 8, 76, 28);
-        snapLabel.setBounds(145, 8, 35, 28);
+        snapLabel.setBounds(146, 8, 34, 28);
+        editActionsButton.setBounds(104, 8, 40, 28);
         velocity.setBounds(332, 8, 155, 28);
         velocityLabel.setBounds(272, 8, 56, 28);
         clearButton.setBounds(503, 8, 70, 28);
@@ -248,8 +265,8 @@ public:
         const auto a = areas();
         g.fillAll(juce::Colour(0xff111b28));
         g.setColour(juce::Colour(0xff8ff2b2));
-        g.setFont(juce::FontOptions(16.0f, juce::Font::bold));
-        g.drawText("PIANO ROLL", 12, 7, 132, 29, juce::Justification::centredLeft);
+        g.setFont(juce::FontOptions(15.0f, juce::Font::bold));
+        g.drawText("PIANO ROLL", 12, 7, 88, 29, juce::Justification::centredLeft);
 
         if (panelOpen) {
             g.setColour(juce::Colour(0xff203342));
@@ -335,6 +352,18 @@ public:
         for (std::size_t i = 0; i < pattern.count; ++i)
             if (selection.contains(pattern.notes[i].id)) paintVelocity(g, pattern.notes[i], a, true);
 
+        const auto cursorX = juce::jlimit(static_cast<float>(a.grid.getX()) + 1.0f,
+                                        static_cast<float>(a.grid.getRight()) - 1.0f, stepX(insertionStep, a));
+        g.setColour(juce::Colour(0x75ffcc74));
+        g.drawLine(cursorX, static_cast<float>(a.ruler.getBottom()), cursorX,
+                   static_cast<float>(a.grid.getBottom()), 1.0f);
+        juce::Path cursorMarker;
+        cursorMarker.addTriangle(cursorX - 4.0f, static_cast<float>(a.ruler.getY()) + 2.0f,
+                                 cursorX + 4.0f, static_cast<float>(a.ruler.getY()) + 2.0f,
+                                 cursorX, static_cast<float>(a.ruler.getY()) + 9.0f);
+        g.setColour(juce::Colour(0xffffcc74));
+        g.fillPath(cursorMarker);
+
         if (std::isfinite(playhead) && playhead >= 0 && playhead < pattern.loopSteps) {
             const auto x = stepX(playhead, a);
             g.setColour(juce::Colour(0xff60ebdf));
@@ -349,6 +378,7 @@ public:
             + noteName(lowestVisiblePitch) + " - " + noteName(topPitch()) + "  |  "
             + juce::String(static_cast<int>(pattern.count)) + "/128 notes";
         status += "  |  " + juce::String(static_cast<int>(selection.count)) + " selected";
+        status += "  |  Paste at step " + juce::String(insertionStep + 1.0, 3);
         if (const auto* note = pattern.find(activeId))
             status += "  |  " + noteName(note->pitch) + ": step " + juce::String(note->startStep + 1, 3)
                    + ", length " + juce::String(note->lengthSteps, 3) + ", velocity "
@@ -358,7 +388,7 @@ public:
                    juce::Justification::centredLeft);
         g.setColour(juce::Colour(0xff91abb8));
         if (!compactPanel())
-            g.drawText("Double-click: draw  |  Ctrl-click / empty drag: select  |  Drag / edge: move / resize  |  Del: erase  |  Ctrl Z / Y: undo / redo  |  Alt S / U / R / Q: tools",
+            g.drawText("Ctrl-click / empty drag: select  |  Ctrl C / V / D: copy / paste / duplicate  |  Ruler: paste cursor  |  Ctrl Z / Y: undo / redo  |  Alt S / U / R / Q: tools",
                        12, a.velocity.getBottom() + 21, getWidth() - 24, 17, juce::Justification::centredLeft);
     }
 
@@ -368,6 +398,10 @@ public:
         const auto a = areas();
         drag = Drag::none;
         statusMessage.clear();
+        if (a.ruler.contains(e.getPosition()) && !e.mods.isPopupMenu()) {
+            setInsertionStep(snapStep(e.position.x, a));
+            return;
+        }
         if (a.piano.contains(e.getPosition())) {
             if (!e.mods.isPopupMenu()) {
                 drag = Drag::audition;
@@ -397,6 +431,7 @@ public:
         }
         dragOrigin = e.position;
         if (hit == 0) {
+            setInsertionStep(snapStep(e.position.x, a));
             marqueeBase = e.mods.isCtrlDown() || e.mods.isCommandDown() ? selection : PianoRollSelection {};
             selection = marqueeBase;
             activeId = selection.count != 0 ? selection.ids[0] : 0;
@@ -508,6 +543,9 @@ public:
             if (letter == 'Z') { if (key.getModifiers().isShiftDown()) redo(); else undo(); return true; }
             if (letter == 'Y') { redo(); return true; }
             if (letter == 'A') { selection.selectAll(pattern); activeId = selection.count ? selection.ids[0] : 0; updateSelection(); return true; }
+            if (letter == 'C') { copyNotes(); return true; }
+            if (letter == 'V') { pasteNotes(); return true; }
+            if (letter == 'D') { duplicateNotes(); return true; }
             return false;
         }
         if (!hasKeyboardFocus(false)
@@ -753,10 +791,11 @@ private:
         PianoRollPattern pattern;
         PianoRollSelection selection;
         std::uint32_t active {};
+        double insertion {};
     };
     struct HistoryEntry { Snapshot before, after; };
     static constexpr std::size_t historyLimit = 64;
-    Snapshot snapshot() const { return { pattern, selection, activeId }; }
+    Snapshot snapshot() const { return { pattern, selection, activeId, insertionStep }; }
     void beginEdit() {
         if (editOpen) return;
         editBefore = snapshot();
@@ -779,8 +818,95 @@ private:
         pattern = state.pattern;
         selection = state.selection;
         activeId = state.active;
+        insertionStep = state.insertion;
         statusMessage.clear();
         changed();
+    }
+
+    void showEditMenu() {
+        endEdit();
+        releaseAudition();
+        drag = Drag::none;
+        // A real focus transition also releases held computer-piano keys before
+        // a popup can receive their key-up events outside the editor hierarchy.
+        editActionsButton.grabKeyboardFocus();
+        grabKeyboardFocus();
+        juce::PopupMenu menu;
+        const auto add = [&menu](int id, const char* label, const char* shortcut, bool enabled) {
+            juce::PopupMenu::Item item(label);
+            item.itemID = id;
+            item.shortcutKeyDescription = shortcut;
+            item.isEnabled = enabled;
+            menu.addItem(std::move(item));
+        };
+        add(1, "Select all", "Ctrl+A", pattern.count != 0);
+        menu.addSeparator();
+        add(2, "Copy", "Ctrl+C", selection.count != 0);
+        add(3, "Paste", "Ctrl+V", !clipboard.empty());
+        add(4, "Duplicate", "Ctrl+D", selection.count != 0);
+        juce::Component::SafePointer<PianoRollEditor> safe(this);
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(editActionsButton).withMinimumWidth(200),
+            [safe](int action) {
+                if (safe == nullptr) return;
+                if (action == 1) {
+                    safe->selection.selectAll(safe->pattern);
+                    safe->activeId = safe->selection.count != 0 ? safe->selection.ids[0] : 0;
+                    safe->updateSelection();
+                } else if (action == 2) safe->copyNotes();
+                else if (action == 3) safe->pasteNotes();
+                else if (action == 4) safe->duplicateNotes();
+                if (action != 0) safe->grabKeyboardFocus();
+            });
+    }
+    void prepareClipboardAction() {
+        endEdit();
+        releaseAudition();
+        drag = Drag::none;
+    }
+    void copyNotes() {
+        prepareClipboardAction();
+        const auto result = clipboard.copy(pattern, selection);
+        if (result.status == ClipboardStatus::copied)
+            statusMessage = "Copied " + juce::String(static_cast<int>(clipboard.size()))
+                + " selected notes. Click the ruler or empty grid to choose where Ctrl+V pastes.";
+        else reportClipboardFailure(result.status);
+        repaint();
+    }
+    void pasteNotes() {
+        prepareClipboardAction();
+        beginEdit();
+        finishClipboardEdit(clipboard.paste(pattern, insertionStep));
+    }
+    void duplicateNotes() {
+        prepareClipboardAction();
+        beginEdit();
+        finishClipboardEdit(duplicatePianoRollSelection(pattern, selection, snapSteps()));
+    }
+    void finishClipboardEdit(const ClipboardResult& result) {
+        if (result.changed()) {
+            selection = result.selection;
+            activeId = selection.count != 0 ? selection.ids[0] : 0;
+            insertionStep = juce::jlimit(0.0, static_cast<double>(pattern.loopSteps),
+                std::ceil(result.endStep / snapSteps()) * snapSteps());
+            changed();
+            endEdit();
+        } else {
+            endEdit();
+            reportClipboardFailure(result.status);
+            repaint();
+        }
+    }
+    void reportClipboardFailure(ClipboardStatus status) {
+        if (status == ClipboardStatus::capacityExceeded)
+            statusMessage = "No changes: copying these notes would exceed the 128-note limit. Delete notes or copy a smaller selection.";
+        else if (status == ClipboardStatus::outOfBounds)
+            statusMessage = "No changes: the copied block would extend beyond the loop. Choose an earlier paste position.";
+        else if (status == ClipboardStatus::emptyClipboard)
+            statusMessage = "Copy selected notes with Ctrl+C before pasting. This piano roll uses its own note clipboard.";
+        else if (status == ClipboardStatus::emptySelection)
+            statusMessage = "Select notes with Ctrl-click, drag empty grid space, or use Ctrl+A before copying or duplicating.";
+        else
+            statusMessage = "No changes: the note selection or paste position is invalid.";
     }
 
     void configureButton(juce::TextButton& button, const char* text, const char* name) {
@@ -914,7 +1040,7 @@ private:
     juce::ComboBox snap, tools;
     juce::Label snapLabel, velocityLabel;
     juce::Slider velocity;
-    juce::TextButton clearButton, exampleButton, toolButton, undoButton, redoButton, applyButton, cancelButton;
+    juce::TextButton clearButton, exampleButton, editActionsButton, toolButton, undoButton, redoButton, applyButton, cancelButton;
     juce::Label panelTitle, panelHelp, seedLabel;
     std::array<juce::Label, 3> parameterLabels;
     std::array<juce::Slider, 3> parameters;
@@ -922,6 +1048,7 @@ private:
     juce::ToggleButton descending;
     juce::ScrollBar pitchScroll { true };
     PianoRollSelection selection, marqueeBase;
+    PianoRollClipboard clipboard;
     std::uint32_t activeId {};
     PianoRollPattern dragPattern;
     PianoRollNote dragOriginal {};
@@ -938,7 +1065,7 @@ private:
     RandomizeSettings randomizeSettings;
     QuantizeSettings quantizeSettings;
     int lowestVisiblePitch { 48 }, auditionPitch { -1 };
-    double playhead { -1.0 };
+    double playhead { -1.0 }, insertionStep {};
 };
 
 } // namespace alien
