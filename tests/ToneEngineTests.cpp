@@ -153,6 +153,40 @@ static void sessionClipLaunchTests() {
     require(offline.settledEnergy() == 0, "quantized scene stop releases all tracks without stale audio");
 }
 
+static void sessionAudioClipTests() {
+    OfflineEngine offline;
+    auto& engine = offline.engine;
+    alien::SessionAudioClip audio;
+    audio.sampleRate = 48000;
+    audio.channels = 1;
+    audio.frames = 1024;
+    audio.left.assign(audio.frames, 0.5f);
+    audio.buildWaveform();
+    require(audio.valid(), "decoded audio asset satisfies the playback contract");
+
+    engine.patternMode.store(1);
+    engine.playing.store(true);
+    engine.launchQuantizationSteps.store(4);
+    engine.requestedPianoRollClip[0].store(2);
+    alien::SessionClipLaunch launch;
+    launch.audio = &audio;
+    launch.clipIndex = 2;
+    require(engine.pianoRollLaunches[0].publish(launch), "queue a beat-quantized Session audio clip");
+    require(offline.render(256) > 0.1 && engine.activePianoRollClip[0].load() == 2,
+        "Session audio clip starts at the running transport boundary and mixes into the output");
+    require(offline.render(768) > 0.1 && engine.activePianoRollClip[0].load() == -1,
+        "one-shot audio naturally ends and clears the active clip status");
+
+    // Selecting a MIDI clip on the same track switches audio off at its
+    // quantized boundary while the synthesizer continues to render notes.
+    engine.launchQuantizationSteps.store(1);
+    engine.requestedPianoRollClip[0].store(3);
+    require(engine.pianoRollLaunches[0].publish(heldPattern(60)), "queue MIDI over the ended audio clip");
+    require(offline.render(12000) > 0.01, "switching clip type preserves synth playback");
+    engine.playing.store(false);
+    require(offline.render(512) == 0, "transport stop clears audio and MIDI clip output");
+}
+
 static void launchQuantizationTests() {
     OfflineEngine offline;
     auto& engine = offline.engine;
@@ -376,6 +410,7 @@ int main() {
     playbackStopAndRestartTests();
     activeEditingTests();
     sessionClipLaunchTests();
+    sessionAudioClipTests();
     launchQuantizationTests();
     panicPresetAndSourceTests();
     liveKeyboardIsolationTests();

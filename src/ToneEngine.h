@@ -7,6 +7,7 @@
 #include "PianoRollSequence.h"
 #include "MidiInputEngine.h"
 #include "MidiControllerMappings.h"
+#include "SessionAudioClip.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -22,7 +23,7 @@ public:
     alien::MidiControllerMappings controllerMappings;
     alien::MidiControllerActionQueue controllerActions;
     std::array<alien::PianoRollMailbox, sessionTracks> pianoRollNotes;
-    std::array<alien::PianoRollMailbox, sessionTracks> pianoRollLaunches;
+    std::array<alien::SessionClipMailbox, sessionTracks> pianoRollLaunches;
     std::array<std::atomic<int>, sessionTracks> sessionTrackPositions{-1000, -1000, -1000, -1000};
     std::atomic<int> patternMode{0}, pianoRollPosition{-1};
     std::array<std::atomic<int>, sessionTracks> requestedPianoRollClip{-1, -1, -1, -1};
@@ -38,6 +39,8 @@ public:
         sampleRate = std::isfinite(rate) && rate > 0 ? rate : 44100.0;
         for (std::size_t track = 0; track < sessionTracks; ++track)
             rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
+        for (auto& player : audioPlayers) player.stop();
+        audioClipMode.fill(false);
         synth.prepare(sampleRate);
         midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
         discardPendingNotes();
@@ -46,6 +49,8 @@ public:
     void audioDeviceStopped() override {
         for (std::size_t track = 0; track < sessionTracks; ++track)
             rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
+        for (auto& player : audioPlayers) player.stop();
+        audioClipMode.fill(false);
         synth.allSoundOff(); discardPendingNotes(); resetTransport();
         midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
     }
@@ -63,6 +68,8 @@ public:
         if ((wasPlaying && !playNow) || wasMode != modeNow) {
             for (std::size_t track = 0; track < sessionTracks; ++track)
                 rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
+            for (auto& player : audioPlayers) player.stop();
+            audioClipMode.fill(false);
             synth.allSoundOff(); resetTransport();
             midi.requestReset();
         }
@@ -80,6 +87,8 @@ public:
         if (panic) {
             for (std::size_t track = 0; track < sessionTracks; ++track)
                 rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
+            for (auto& player : audioPlayers) player.stop();
+            audioClipMode.fill(false);
             synth.allSoundOff(); midi.requestReset();
         }
         midi.process([this](int n, float v, int ch) { sendMidi(n, v, ch); },
@@ -89,12 +98,15 @@ public:
                 if (action >= 0) controllerActions.push(action);
             });
         for (std::size_t track = 0; track < sessionTracks; ++track) {
-            alien::PianoRollPattern requestedPattern;
-            if (pianoRollLaunches[track].consume(requestedPattern)) {
+            alien::SessionClipLaunch requestedClip;
+            if (pianoRollLaunches[track].consume(requestedClip)) {
                 const int quantization = synchronizedScenePending
                     ? synchronizedSceneQuantizationSteps : launchQuantizationSteps.load();
-                rolls[track].queuePattern(requestedPattern, requestedPianoRollClip[track].load(),
+                const int clipIndex = requestedClip.clipIndex == -2
+                    ? requestedPianoRollClip[track].load() : requestedClip.clipIndex;
+                rolls[track].queuePattern(requestedClip.pattern, clipIndex,
                     synchronizedScenePending, quantization);
+                audioPlayers[track].queue(requestedClip.audio, quantization);
                 if (synchronizedScenePending)
                     synchronizedSceneTracksQueued |= (1u << track);
             }
@@ -118,22 +130,46 @@ public:
                         rolls[track].launchPendingNow([this, track](int n, float v, bool on) {
                             sendPattern(track, n, v, on);
                         });
+                    for (std::size_t track = 0; track < sessionTracks; ++track) {
+                        const bool isAudioClip = audioPlayers[track].pendingIsAudio();
+                        if (audioPlayers[track].launchPendingNow(sampleRate))
+                            audioClipMode[track] = isAudioClip;
+                    }
                     synchronizedScenePending = false;
                     synchronizedSceneTracksQueued = 0;
                 }
-                for (std::size_t track = 0; track < sessionTracks; ++track)
+                for (std::size_t track = 0; track < sessionTracks; ++track) {
+                    if (!synchronizedScenePending && audioPlayers[track].hasPending()
+                        && rolls[track].launchBoundaryDue(audioPlayers[track].pendingQuantizationSteps())) {
+                        const bool isAudioClip = audioPlayers[track].pendingIsAudio();
+                        if (audioPlayers[track].launchPendingNow(sampleRate)) audioClipMode[track] = isAudioClip;
+                    }
                     rolls[track].nextSample([this, track](int n, float v, bool on) {
                         sendPattern(track, n, v, on);
                     });
+                }
             }
             const float value = synth.nextSample();
+            float left = value, right = value;
+            bool mixingAudio = false;
+            if (playNow && modeNow == 1) {
+                for (std::size_t track = 0; track < sessionTracks; ++track) {
+                    const bool wasPlaying = audioPlayers[track].isPlaying();
+                    const auto sample = audioPlayers[track].nextSample();
+                    mixingAudio = mixingAudio || wasPlaying;
+                    left += sample[0] * 0.25f;
+                    right += sample[1] * 0.25f;
+                }
+            }
+            if (mixingAudio) { left = std::clamp(left, -1.0f, 1.0f); right = std::clamp(right, -1.0f, 1.0f); }
             for (int c = 0; c < channels; ++c)
-                if (outputs[c] != nullptr) outputs[c][i] = value;
+                if (outputs[c] != nullptr) outputs[c][i] = c == 0 ? left : (c == 1 ? right : (left + right) * 0.5f);
         }
         pianoRollPosition.store(static_cast<int>(rolls[0].positionStep() * 1000.0));
         for (std::size_t track = 0; track < sessionTracks; ++track) {
             sessionTrackPositions[track].store(static_cast<int>(rolls[track].positionStep() * 1000.0));
-            activePianoRollClip[track].store(rolls[track].activeClipIndex());
+            activePianoRollClip[track].store(audioClipMode[track] && !audioPlayers[track].isPlaying()
+                ? -1 : rolls[track].activeClipIndex());
         }
     }
 private:
@@ -162,6 +198,8 @@ private:
     alien::SynthEngine synth;
     alien::StepClock clock;
     std::array<alien::PianoRollScheduler, sessionTracks> rolls{};
+    std::array<alien::SessionAudioPlayer, sessionTracks> audioPlayers{};
+    std::array<bool, sessionTracks> audioClipMode{};
     double sampleRate{44100.0};
     bool wasPlaying{};
     int wasMode{};
