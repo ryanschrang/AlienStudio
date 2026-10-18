@@ -131,6 +131,41 @@ const juce::Colour AlienStudioLookAndFeel::text{0xffe7f0f2};
 const juce::Colour AlienStudioLookAndFeel::muted{0xff95a8b5};
 const juce::Colour AlienStudioLookAndFeel::accent{0xff63dfc2};
 
+class SequencerStepButton final : public juce::ToggleButton {
+public:
+    explicit SequencerStepButton(const juce::String& label) : juce::ToggleButton(label) {}
+
+    void setPlaybackPosition(bool isCurrent) {
+        if (playbackPosition == isCurrent) return;
+        playbackPosition = isCurrent;
+        repaint();
+    }
+
+    void paintButton(juce::Graphics& g, bool isMouseOver, bool isButtonDown) override {
+        const auto bounds = getLocalBounds().toFloat().reduced(1.0f);
+        auto fill = getToggleState() ? AlienStudioLookAndFeel::accent
+                                     : juce::Colour(0xff263241);
+        if (isMouseOver) fill = fill.brighter(0.08f);
+        if (isButtonDown) fill = fill.brighter(0.12f);
+        g.setColour(fill);
+        g.fillRoundedRectangle(bounds, 6.0f);
+        g.setColour(playbackPosition ? juce::Colour(0xffffcf70)
+                                     : juce::Colour(0xff3b4a5c));
+        g.drawRoundedRectangle(bounds, 6.0f, playbackPosition ? 2.0f : 1.0f);
+        g.setColour(getToggleState() ? juce::Colour(0xff10201f)
+                                     : AlienStudioLookAndFeel::text);
+        g.setFont(juce::FontOptions(14.0f, juce::Font::bold));
+        g.drawText(getButtonText(), getLocalBounds(), juce::Justification::centred);
+        if (hasKeyboardFocus(true)) {
+            g.setColour(AlienStudioLookAndFeel::accent);
+            g.drawRoundedRectangle(bounds.reduced(2.0f), 4.0f, 1.0f);
+        }
+    }
+
+private:
+    bool playbackPosition{};
+};
+
 class MainComponent : public juce::Component, private juce::Timer, private juce::MidiKeyboardState::Listener, private juce::ChangeListener {
 public:
     MainComponent() {
@@ -176,7 +211,10 @@ public:
         projectStatus.setJustificationType(juce::Justification::centredLeft);
         projectStatus.setText("Unsaved session", juce::dontSendNotification);
         for (int i = 0; i < 16; ++i) {
-            auto* button = pads.add(new juce::ToggleButton(juce::String(i + 1)));
+            auto* button = pads.add(new SequencerStepButton(juce::String(i + 1)));
+            button->setName("Sequencer step " + juce::String(i + 1));
+            button->setTooltip("Toggle sixteenth-note step " + juce::String(i + 1));
+            button->setTitle("Step " + juce::String(i + 1));
             stepsPanel.addAndMakeVisible(button);
             button->onClick = [this, button, i] { engine.steps[i].store(button->getToggleState()); };
         }
@@ -399,42 +437,44 @@ public:
         preset.setBounds(150, 108, juce::jmin(260, rackWidth - 180), 32);
         midiLabel.setBounds(30, 168, 120, 30);
         midiInput.setBounds(150, 168, juce::jmax(300, rackWidth - 180), 32);
-        sessionTitle.setBounds(24, 18, sessionPanel.getWidth() - 48, 34);
-        sessionHelp.setBounds(24, 54, sessionPanel.getWidth() - 48, 28);
+        sessionTitle.setBounds(24, 12, sessionPanel.getWidth() - 48, 28);
+        sessionHelp.setBounds(24, 40, sessionPanel.getWidth() - 48, 22);
         const int labelWidth = 118;
         const int gridWidth = juce::jmax(280, sessionPanel.getWidth() - labelWidth - 44);
         const int trackWidth = gridWidth / trackCount;
-        const int sceneHeight = 48;
-        const int sceneGap = 6;
-        const int gridTop = 112;
+        const int sceneHeight = 36;
+        const int sceneGap = 3;
+        const int gridTop = 68;
         for (int scene = 0; scene < sceneCount; ++scene) {
             sceneButtons[static_cast<std::size_t>(scene)].setBounds(24, gridTop + scene * (sceneHeight + sceneGap), labelWidth - 8, sceneHeight);
             for (int track = 0; track < trackCount; ++track)
                 clipButtons[cellIndex(track, scene)].setBounds(labelWidth + 24 + track * trackWidth,
                     gridTop + scene * (sceneHeight + sceneGap), trackWidth - 8, sceneHeight);
         }
-        const int actionY = gridTop + sceneCount * (sceneHeight + sceneGap) + 8;
-        editSelectedClip.setBounds(24, actionY, 174, 32);
-        stopClip.setBounds(206, actionY, 146, 32);
-        launchTimingLabel.setBounds(360, actionY, 76, 32);
-        launchTiming.setBounds(438, actionY, 94, 32);
-        removeAudio.setBounds(544, actionY, 104, 32);
-        audioImportStatus.setBounds(656, actionY, juce::jmax(100, sessionPanel.getWidth() - 680), 32);
-        const int mappingY = actionY + 38;
-        controllerTarget.setBounds(24, mappingY, 130, 32);
-        learnController.setBounds(162, mappingY, 104, 32);
-        clearController.setBounds(274, mappingY, 70, 32);
-        controllerMappingLabel.setBounds(352, mappingY, juce::jmax(100, sessionPanel.getWidth() - 376), 32);
-        audioWaveform.setBounds(24, mappingY + 38, sessionPanel.getWidth() - 48, 72);
+        const int actionY = gridTop + sceneCount * (sceneHeight + sceneGap) + 4;
+        editSelectedClip.setBounds(24, actionY, 174, 30);
+        stopClip.setBounds(206, actionY, 146, 30);
+        launchTimingLabel.setBounds(360, actionY, 76, 30);
+        launchTiming.setBounds(438, actionY, 94, 30);
+        removeAudio.setBounds(544, actionY, 104, 30);
+        audioImportStatus.setBounds(656, actionY, juce::jmax(100, sessionPanel.getWidth() - 680), 30);
+        const int mappingY = actionY + 32;
+        controllerTarget.setBounds(24, mappingY, 130, 30);
+        learnController.setBounds(162, mappingY, 104, 30);
+        clearController.setBounds(274, mappingY, 70, 30);
+        controllerMappingLabel.setBounds(352, mappingY, juce::jmax(100, sessionPanel.getWidth() - 376), 30);
+        const int waveformY = mappingY + 34;
+        const int waveformHeight = juce::jlimit(36, 68, sessionPanel.getHeight() - waveformY - 10);
+        audioWaveform.setBounds(24, waveformY, sessionPanel.getWidth() - 48, waveformHeight);
         octaveDown.setBounds(20, getHeight() - 154, 100, 30);
         octaveUp.setBounds(130, getHeight() - 154, 100, 30);
         importAudio.setBounds(245, getHeight() - 154, 150, 30);
         help.setBounds(410, getHeight() - 154, getWidth() - 430, 30);
         keyboard.setBounds(20, getHeight() - 110, getWidth() - 40, 90);
-        const int width = (getWidth() - 100) / 8;
+        const int width = juce::jmax(1, (getWidth() - 60) / 8);
         stepHelp.setBounds(20, 40, getWidth() - 80, 35);
         for (int i = 0; i < pads.size(); ++i)
-            pads[i]->setBounds(30 + (i % 8) * width, 110 + (i / 8) * 75, width - 8, 60);
+            pads[i]->setBounds(30 + (i % 8) * width, 110 + (i / 8) * 75, juce::jmax(1, width - 8), 60);
     }
     void paint(juce::Graphics& g) override {
         g.fillAll(AlienStudioLookAndFeel::background);
@@ -473,6 +513,10 @@ private:
             play.setToggleState(isPlaying, juce::dontSendNotification);
         const juce::String transportText = isPlaying ? "Stop" : "Play";
         if (play.getButtonText() != transportText) play.setButtonText(transportText);
+        const int currentStep = engine.patternMode.load() == 0 && isPlaying
+            ? engine.currentStep.load() : -1;
+        for (int i = 0; i < pads.size(); ++i)
+            pads[i]->setPlaybackPosition(i == currentStep);
         midiInput.tick();
         int controllerAction = -1;
         while (engine.controllerActions.pop(controllerAction)) {
@@ -890,7 +934,7 @@ private:
     juce::TextButton saveProjectButton, openProjectButton;
     juce::Label projectStatus;
     juce::Slider tempo{juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight};
-    juce::OwnedArray<juce::ToggleButton> pads;
+    juce::OwnedArray<SequencerStepButton> pads;
     juce::Component stepsPanel;
     juce::Label stepHelp;
     alien::PianoRollEditor pianoRoll;
