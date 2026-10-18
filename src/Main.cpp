@@ -83,10 +83,22 @@ public:
         updateOctave();
         keyboard.setVelocity(0.8f, true);
         keyboardState.addListener(this);
-        audio.initialiseWithDefaultDevices(0, 2);
+        const auto audioError = audio.initialiseWithDefaultDevices(0, 2);
         audio.addAudioCallback(&engine);
         startTimerHz(20);
         resized();
+        if (audioError.isNotEmpty()) {
+            // Wait until the window has finished constructing before showing the alert.
+            juce::MessageManager::callAsync(
+                [safeThis = juce::Component::SafePointer<MainComponent>(this), audioError] {
+                    if (safeThis == nullptr) return;
+                    juce::AlertWindow::showMessageBoxAsync(
+                        juce::MessageBoxIconType::WarningIcon,
+                        "Audio initialization failed",
+                        "Alien Studio could not open the default audio output device.\n\n" + audioError,
+                        "OK", safeThis.getComponent());
+                });
+        }
     }
     ~MainComponent() override {
         stopTimer();
