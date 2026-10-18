@@ -323,7 +323,16 @@ same beat or bar. The grid shows each track's selected, queued, and playing
 clip. **Stop all tracks** follows the selected launch timing. Inside the piano
 roll, left-click adds notes and right-click removes them. Active clips keep
 playing while the Session and Piano roll tabs are changed. Separate clip states
-are held for this session only; project save/load is still planned.
+are held for this session until saved to a project file.
+
+Use **Save** and **Open** in the top bar to store and restore a project. Project
+files preserve the 16-step sequence, tempo, synth preset, all four-by-four MIDI
+clip patterns, the selected clip, and beat/bar launch timing. MIDI notes retain
+their pitch, timing, velocity and probability. Audio clips retain their source
+file paths and are decoded again on open; the audio files themselves are not
+copied into the project, so keep them at their original paths. If a referenced
+file cannot be found or decoded, opening fails without replacing the current
+session. Project reads, writes and audio decoding run off the audio callback.
 
 To map a hardware MIDI CC to a Session action, select **Scene 1–4** or
 **Stop all**, click **Learn CC**, then move the desired controller. The learned
@@ -339,8 +348,8 @@ pick a mono or stereo file. Alien Studio decodes it on a background worker,
 shows a waveform, and starts the one-shot clip at the selected beat/bar boundary.
 MP3 decoding uses the Windows media decoder on Windows; builds without an MP3
 decoder report an import error. Decoded audio is limited to 128 MiB per clip
-and 512 MiB retained per session, and is not saved with projects yet. **Remove
-audio** switches that clip back to its MIDI pattern. Right-clicking an audio
+and 512 MiB retained per application session. **Remove audio** switches that
+clip back to its MIDI pattern. Right-clicking an audio
 clip opens its waveform view; right-clicking a MIDI clip opens the piano roll.
 File access and decoding stay off the audio callback.
 
