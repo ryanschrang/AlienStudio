@@ -237,6 +237,61 @@ static void clipboardPlaybackTests() {
     require(offline.render(512) == 0, "Stop after clipboard undo leaves no stuck notes");
 }
 
+static void hardwareMidiTests() {
+    OfflineEngine offline;
+    auto& e = offline.engine;
+    const auto device = e.midi.beginSession();
+    e.midi.push(device, 0x90, 60, 127);
+    require(offline.render(2048) > 0 && e.midi.isNoteOn(60), "external MIDI plays with stopped transport");
+    e.midi.push(device, 0xb0, 64, 127); e.midi.push(device, 0x90, 60, 0);
+    require(offline.settledEnergy() > 0.001, "MIDI CC64 holds a velocity-zero release");
+    e.midi.push(device, 0xb0, 64, 0);
+    require(offline.settledEnergy() == 0 && !e.midi.isNoteOn(60), "pedal-up clears MIDI sound and highlight");
+    e.midi.push(device, 0x90, 60, 20); const auto soft = offline.render(2048);
+    e.midi.push(device, 0x80, 60, 0); offline.settledEnergy();
+    e.midi.push(device, 0x90, 60, 120); const auto loud = offline.render(2048);
+    require(loud > soft * 10, "hardware velocity changes actual rendered synth energy");
+
+    // Three owners hold the same pitch: live typing and two MIDI channels.
+    e.notes.push(60, 0.8f); e.midi.push(device, 0x91, 60, 100); offline.render(256);
+    e.midi.push(device, 0xb0, 120, 0);
+    require(offline.settledEnergy() > 0.001 && e.midi.isNoteOn(60), "MIDI CC120 does not silence other channels or typing piano");
+    e.midi.push(device, 0x81, 60, 0);
+    require(offline.settledEnergy() > 0.001 && !e.midi.isNoteOn(60), "MIDI note-off preserves same-pitch typing voice");
+    e.notes.push(60, 0);
+    require(offline.settledEnergy() == 0, "final typing release leaves no copied MIDI voice");
+
+    e.notes.push(72, 0.8f); e.midi.push(device, 0x90, 60, 100); offline.render(256);
+    for (int n = 0; n < 1200; ++n) e.midi.push(device, 0x90, n % 128, 100);
+    require(offline.settledEnergy() > 0.001 && !e.midi.isNoteOn(60), "MIDI overflow resets MIDI while preserving live GUI input");
+    e.notes.push(72, 0); require(offline.settledEnergy() == 0, "overflow recovery leaves no stuck MIDI notes");
+    e.midi.push(device, 0x90, 60, 100); offline.render(512);
+    e.midi.beginSession(); // Device change/disconnect.
+    require(offline.settledEnergy() == 0 && !e.midi.isNoteOn(60), "device session change releases MIDI voices");
+    require(!e.midi.push(device, 0x90, 60, 127), "late old-device notes cannot restart sound");
+    const auto replacement = e.midi.beginSession();
+    e.midi.push(replacement, 0x90, 60, 100); require(offline.render(512) > 0, "new device works without app restart");
+    e.preset.store(2); e.notes.panic.store(true);
+    require(offline.render(512) == 0 && !e.midi.isNoteOn(60), "preset panic clears MIDI gates and pedal state");
+    e.midi.push(replacement, 0x90, 67, 100); require(offline.render(512) > 0, "MIDI remains enabled after preset panic");
+    e.audioDeviceStopped();
+    require(offline.render(512) == 0 && !e.midi.isNoteOn(67), "audio-device stop clears MIDI voices and highlights");
+    e.midi.push(replacement, 0x90, 67, 100); e.prepare(48000);
+    require(offline.render(512) == 0, "audio restart discards pre-reset queued note-ons");
+    e.midi.push(replacement, 0x90, 67, 100); require(offline.render(512) > 0, "fresh MIDI plays after audio restart");
+    e.midi.requestReset(); require(offline.settledEnergy() == 0, "manual/blur reset releases final MIDI voice");
+    e.preset.store(0); e.patternMode.store(1); e.playing.store(true);
+    auto clip = heldPattern(60); e.pianoRollNotes.publish(clip); offline.render(512);
+    e.midi.push(replacement, 0x90, 60, 100); offline.render(512);
+    e.midi.push(replacement, 0x80, 60, 0);
+    require(offline.settledEnergy() > 0.001, "MIDI release preserves equal-pitch piano-roll playback");
+    clip.clear(); e.pianoRollNotes.publish(clip);
+    require(offline.settledEnergy() == 0, "clearing final clip owner releases shared pitch");
+    e.midi.push(replacement, 0x90, 64, 100); require(offline.render(512) > 0, "MIDI plays over an empty running clip");
+    e.patternMode.store(0);
+    require(offline.render(512) == 0 && !e.midi.isNoteOn(64), "source switch clears MIDI state coherently");
+}
+
 int main() {
     playbackStopAndRestartTests();
     activeEditingTests();
@@ -244,5 +299,6 @@ int main() {
     liveKeyboardIsolationTests();
     processedPatternTests();
     clipboardPlaybackTests();
+    hardwareMidiTests();
     std::cout << "Offline audio callback playback, edits, panic, transport, source switching and keyboard isolation passed\n";
 }

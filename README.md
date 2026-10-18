@@ -4,7 +4,7 @@
 
 Alien Studio is an **independent, original application**, not affiliated with or endorsed by any of those products. We aim to learn from broadly useful workflows without copying proprietary code, artwork, branding, or protected assets.
 
-> **Project status:** Early prototype with a 16-step synthesizer sequencer, a four-bar piano roll, note-processing tools, a 16-voice synth, mouse/computer-keyboard input and lead/bass/pluck presets. Windows Debug/Release builds and automated tests run in GitHub Actions. The broader professional DAW features below are **planned**; native audio-device behavior still requires hands-on testing.
+> **Project status:** Early prototype with a 16-step synthesizer sequencer, a four-bar piano roll, note-processing tools, a 16-voice synth, USB MIDI and mouse/computer-keyboard input, and lead/bass/pluck presets. Windows Debug/Release builds and automated tests run in GitHub Actions. The broader professional DAW features below are **planned**; native audio-device behavior still requires hands-on testing.
 
 ## Product vision: three connected workspaces
 
@@ -87,7 +87,7 @@ notes also work outside text fields and preset selectors. Multiple held keys sou
 The original 16 pads still sequence A3 at sixteenth-note intervals, with half-step
 note gates. Stop silences voices and resets the sequence to step 1. The keyboard
 can be played while the transport is stopped. Device restarts clear synth voices.
-External MIDI device selection/input is a separate roadmap task.
+External MIDI input is available from the MIDI selector described below.
 
 The audio-thread-owned DSP has 16 fixed voices, linear ADSR envelopes, velocity
 gain, PolyBLEP saw/square oscillators, sine oscillators, and a one-pole low-pass
@@ -119,9 +119,79 @@ Hands-on testing still required on Windows 11: listen to all three presets,
 play chords beyond 16 notes, test short/long key presses and rapid retriggers,
 change presets during held notes, stop/restart transport, change/restart the
 audio device, and confirm silence without stuck notes or objectionable artifacts.
-Physical MIDI input testing will be required when device input is implemented.
+Physical MIDI input still requires the controller checks below.
 Compilation, synthetic DSP tests, and a GUI smoke test do not verify audible
 output, hardware MIDI, or real-time performance on Windows.
+
+### USB MIDI keyboard input (Issue #8)
+
+Connect a Windows-recognized USB MIDI keyboard/controller and choose its friendly
+name from the **MIDI** selector in the top row. Ports with identical names have
+separate port labels; selection follows their identifiers, not list positions.
+The default is **None (off)**. All 16 MIDI channels play the current synth preset,
+with velocity 1–127, note-on/off (including note-on velocity zero), and per-channel
+CC64 sustain (values 64–127 on, 0–63 off). Repeated note-ons retrigger the current
+pitch on that channel; a single note-off releases it, subject to sustain.
+
+MIDI, typing/mouse piano, the step sequencer and piano roll have independent note
+ownership. Releasing a MIDI note does not stop an equal-pitch typing/clip note.
+The synth still shares its existing 16 voices across all sources; overload steals
+voices as before. MIDI highlights appear on the bottom keyboard, including notes
+held by sustain. **MIDI activity** flashes when supported messages arrive; it
+does not by itself verify an audible audio-device output.
+
+Inputs are rescanned about once per second. Disconnecting releases the selected
+device's notes/pedal and keeps its name marked **disconnected**. Reconnecting the
+same identifier resumes automatically. If Windows assigns a different port ID,
+select the new entry. **Refresh** rescans and reopens the selected port, releasing
+its held notes; use it after an open failure or a driver that keeps a stale port
+listed. Close other applications using an exclusive MIDI driver and retry if the
+status says **Open failed**. Selecting None stops input. Device choice is currently
+session-only and is not saved across launches.
+
+Preset/source/transport changes, window deactivation, audio-device restarts and
+app shutdown clear MIDI gates and sustain along with the existing panic path.
+Play fresh notes after a reset; notes already held are not reconstructed.
+CC120 silences only its MIDI channel, CC123 releases its keys while honoring
+sustain, and CC121 releases sustain while preserving keys still down. MIDI clock,
+program changes, pitch bend/aftertouch, recording and MIDI output are outside this
+input feature; incoming notes play on the next audio callback without grid snap.
+
+MIDI callbacks write validated three-byte events to fixed storage. They never
+touch GUI components or the GUI note queue. The audio consumer never allocates,
+waits on producer synchronization, opens devices or logs. Contention/queue
+overflow requests a MIDI-only reset and discards older events, protecting dropped
+note-offs without silencing other live sources. Device session tokens reject
+late callbacks after switching/disconnect; reset revisions reject pre-panic data.
+
+Without a controller, select **Test input (no controller)**. Enable **Sustain**,
+press/release **Test C4**, confirm activity/highlight and sustained sound, then
+disable Sustain to release it. Test C4 sends note 60 at velocity 100 through the
+same input pipe/state/synth path as hardware. None, preset changes and Stop clear
+the test. This verifies application routing, not Windows USB driver behavior.
+
+Manual Windows hardware plan:
+
+1. Select a controller; play individual notes, chords, repeated notes and soft/
+   hard velocities on each preset, with transport stopped and during playback.
+2. Hold sustain, release keys, then release the pedal. Test multiple MIDI channels
+   on the same pitch; release one while typing or mouse piano holds that pitch.
+3. Hold notes/pedal and disconnect, select another port, choose None, Refresh,
+   change preset, Stop, Alt-Tab, restart audio or close the app. Check silence and
+   cleared highlights. Reconnect and play fresh notes without restarting the app.
+4. Reorder devices and test identical port names; force an exclusive-driver open
+   failure if available, close the other app and Refresh. Check the status.
+5. Verify the original 16 pads, piano-roll editing/tools/clipboard, typing piano,
+   Z/X octave changes, text entry and Tab navigation. Check minimum window size.
+
+`MidiInputTests` uses fake devices and concurrent producers to test translation,
+sustain, velocity-zero releases, retriggers, device changes, stale callbacks,
+reconnect/errors/retry, overflow, source-local reset and allocation avoidance.
+GUI tests cover selection, test sustain/activity, device lifecycle/status and
+accessible layout with a fake backend. Offline actual audio callback tests verify
+velocity response, sustain, same-pitch source/channel isolation, disconnect,
+panic/preset/device reset and silence after release. CI needs no MIDI hardware;
+physical controller/driver and audible Windows output remain manual checks.
 
 ### Four-bar piano roll
 

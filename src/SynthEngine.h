@@ -97,6 +97,9 @@ public:
         for (auto& v : voices) if (v.note == note && v.channel == channel) v.envelope.stop();
     }
     void allSoundOff() noexcept { voices = {}; age = 0; }
+    void allSoundOff(int channel) noexcept {
+        for (auto& v : voices) if (v.channel == channel) v = {};
+    }
     std::size_t activeVoices() const noexcept {
         std::size_t n = 0; for (const auto& v : voices) if (v.active()) ++n; return n;
     }
