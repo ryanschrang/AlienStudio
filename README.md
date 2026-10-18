@@ -310,6 +310,14 @@ focus is inside the piano roll:
 | Alt+A | Arpeggiate | Sequences each selected simultaneous chord by pitch with rate, gate and direction controls. |
 | Shift+Tab | Editor / devices | Switches the central workspace between the pattern editor and compact Synth & MIDI device rack. |
 
+The **Session** tab provides four independent four-bar piano-roll clip slots.
+Left-clicking a clip selects it and queues it for launch at the next four-bar
+boundary. Right-clicking selects it without changing the launch queue and opens
+it in the piano roll. **Edit selected clip** provides the same editing path for
+keyboard and touch users; inside the piano roll, left-click adds notes and
+right-click removes them. **Stop clip** is quantized to the same boundary. The
+active clip keeps playing while the Session and Piano roll tabs are changed.
+
 Time controls use ticks: **240 ticks = one 1/16 note**, 120 = 1/32,
 60 = 1/64, and 30 = 1/128. At 120 BPM, 30 ticks is 15.625 ms.
 Strum and Randomize preserve note lengths while keeping them inside the loop.

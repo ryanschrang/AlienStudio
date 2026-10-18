@@ -93,6 +93,43 @@ static void probabilityTests() {
     require(muted.count == 0, "zero probability never starts or releases an unowned gate");
 }
 
+static void quantizedClipLaunchTests() {
+    PianoRollPattern first, second, stopped;
+    first.add(60, 0, 1);
+    second.add(67, 0, 1);
+    PianoRollScheduler scheduler;
+    Recorder record;
+    require(scheduler.queuePattern(first, 0), "first session clip accepts a launch request");
+    scheduler.beginBlock(true, 800, 120, record);
+    scheduler.nextSample(record);
+    require(scheduler.activeClipIndex() == 0 && record.count == 1
+            && record.events[0].on && record.events[0].pitch == 60,
+            "initial session clip starts at transport step zero");
+
+    require(scheduler.queuePattern(second, 1), "second session clip accepts a launch request");
+    for (record.sample = 1; record.sample < 6400; ++record.sample) scheduler.nextSample(record);
+    bool earlySecond = false;
+    for (std::size_t i = 0; i < record.count; ++i)
+        earlySecond = earlySecond || (record.events[i].on && record.events[i].pitch == 67);
+    require(!earlySecond && scheduler.activeClipIndex() == 0,
+            "queued clip does not interrupt the active four-bar loop");
+    record.sample = 6400;
+    scheduler.nextSample(record);
+    require(scheduler.activeClipIndex() == 1 && record.events[record.count - 1].on
+            && record.events[record.count - 1].pitch == 67,
+            "queued clip launches exactly at the next loop boundary");
+
+    require(scheduler.queuePattern(stopped, -1), "quantized clip stop accepts an empty pattern");
+    for (record.sample = 6401; record.sample <= 12800; ++record.sample) scheduler.nextSample(record);
+    require(scheduler.activeClipIndex() == -1,
+            "queued clip stop becomes active at the following loop boundary");
+    const auto countAfterStop = record.count;
+    for (int i = 0; i < 200; ++i) scheduler.nextSample(record);
+    require(record.count == countAfterStop, "stopped session clip produces no stale note events");
+    scheduler.stop(record);
+    require(scheduler.activeClipIndex() == -1, "transport stop clears the playing clip indicator");
+}
+
 static void fractionalModelTests() {
     PianoRollPattern pattern;
     const auto id = pattern.add(60, 0.503, 0.127);
@@ -549,6 +586,7 @@ int main() {
     fractionalModelTests();
     mailboxTests();
     probabilityTests();
+    quantizedClipLaunchTests();
     timingTests();
     fractionalTimingTests();
     fractionalSnapshotTests();

@@ -102,6 +102,33 @@ static void activeEditingTests() {
     require(offline.render(256) == 0, "stop after live edits leaves no stuck notes");
 }
 
+static void sessionClipLaunchTests() {
+    OfflineEngine offline;
+    auto& engine = offline.engine;
+    engine.patternMode.store(1);
+    engine.playing.store(true);
+    engine.requestedPianoRollClip.store(0);
+    require(engine.pianoRollLaunches.publish(heldPattern(60)), "queue first session clip");
+    require(offline.render(256) > 0 && engine.activePianoRollClip.load() == 0,
+            "first queued clip starts with the transport");
+
+    engine.requestedPianoRollClip.store(1);
+    require(engine.pianoRollLaunches.publish(heldPattern(67)), "queue replacement session clip");
+    offline.render(383744);
+    require(engine.activePianoRollClip.load() == 0,
+            "replacement clip waits through the active four-bar loop");
+    require(offline.render(1) > 0 && engine.activePianoRollClip.load() == 1,
+            "replacement clip activates on the exact loop boundary");
+
+    engine.requestedPianoRollClip.store(-1);
+    require(engine.pianoRollLaunches.publish({}), "queue session clip stop");
+    offline.render(383999);
+    require(engine.activePianoRollClip.load() == 1, "quantized stop waits through the active loop");
+    offline.render(1);
+    require(engine.activePianoRollClip.load() == -1 && offline.settledEnergy() == 0,
+            "quantized stop releases the clip without stale audio");
+}
+
 static void panicPresetAndSourceTests() {
     OfflineEngine offline;
     auto& engine = offline.engine;
@@ -295,6 +322,7 @@ static void hardwareMidiTests() {
 int main() {
     playbackStopAndRestartTests();
     activeEditingTests();
+    sessionClipLaunchTests();
     panicPresetAndSourceTests();
     liveKeyboardIsolationTests();
     processedPatternTests();

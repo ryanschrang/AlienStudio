@@ -18,7 +18,9 @@ public:
     NoteQueue notes;
     alien::MidiInputPipe midi;
     alien::PianoRollMailbox pianoRollNotes;
+    alien::PianoRollMailbox pianoRollLaunches;
     std::atomic<int> patternMode{0}, pianoRollPosition{-1};
+    std::atomic<int> requestedPianoRollClip{-1}, activePianoRollClip{-1};
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
         prepare(device->getCurrentSampleRate());
@@ -61,6 +63,9 @@ public:
         }
         if (panic) { roll.stop(send); synth.allSoundOff(); midi.requestReset(); }
         midi.process([this](int n, float v, int ch) { sendMidi(n, v, ch); });
+        alien::PianoRollPattern requestedPattern;
+        if (pianoRollLaunches.consume(requestedPattern))
+            roll.queuePattern(requestedPattern, requestedPianoRollClip.load());
         roll.beginBlock(pianoRollNotes, playNow && modeNow == 1, sampleRate, bpm.load(), send);
         for (int i = 0; i < samples; ++i) {
             if (playNow && modeNow == 0) {
@@ -77,6 +82,7 @@ public:
                 if (outputs[c] != nullptr) outputs[c][i] = value;
         }
         pianoRollPosition.store(static_cast<int>(roll.positionStep() * 1000.0));
+        activePianoRollClip.store(roll.activeClipIndex());
     }
 private:
     void sendMidi(int note, float velocity, int channel) noexcept {
@@ -95,6 +101,7 @@ private:
     }
     void resetTransport() noexcept {
         clock.reset(); wasPlaying = false; currentStep.store(-1); pianoRollPosition.store(-1000);
+        activePianoRollClip.store(-1);
     }
     alien::SynthEngine synth;
     alien::StepClock clock;
