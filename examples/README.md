@@ -43,9 +43,11 @@ fixture must not be described as a passing multitrack recording test.
 ## Long playback extension (expected to remain blocked on baseline)
 
 Generate long sources with:
-`python tools/generate_reference_audio.py --output <NEW_FOLDER> --seconds 3600`
+`python tools/generate_reference_audio.py --output <NEW_FOLDER> --seconds 3600 --sample-rate 48000`
 
-The generator uses bounded blocks and refuses to replace files. Do not import
+The generator uses bounded blocks and refuses to replace files. At 48 kHz,
+one hour of mono audio exceeds the decoded clip budget; the small committed
+references remain four seconds at 8 kHz. Do not import
 generated hours expecting baseline support: 128 MiB decoded-clip and 512 MiB
 retained-session limits still apply. Use these sources when STREAM-02/03 land,
 then test several tracks, duplicate-source launches, failures and memory use.
