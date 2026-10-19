@@ -97,6 +97,7 @@ private:
         slider.setRange(min,max,1); slider.setSliderStyle(juce::Slider::IncDecButtons);
         slider.setTextBoxStyle(juce::Slider::TextBoxLeft,false,110,28); slider.setValue(value);
         slider.textFromValueFunction=[prefix](double v) { return prefix+juce::String(static_cast<int>(v)); };
+        slider.updateText();
         slider.valueFromTextFunction=[](const juce::String& s) { return static_cast<double>(s.retainCharacters("0123456789").getIntValue()); };
     }
     ArrangementRegion controls() const { return {track.getSelectedId()-1,scene.getSelectedId()-1,static_cast<int>(start.getValue())-1,static_cast<int>(length.getValue())}; }

@@ -324,6 +324,10 @@ private:
                                          + d.scenes[static_cast<std::size_t>(d.selectedScene)].name); break;
         case 2: workspace.setEditorTitle("Session", sessionView.subtitle()); break;
         case 3: workspace.setEditorTitle("Mixer", juce::String(d.trackCount()) + " channels"); break;
+        case 4: workspace.setEditorTitle("Drum Sampler", "Eight sample pads per track"); break;
+        case 5: workspace.setEditorTitle("Arrangement", "Session clips on a shared timeline"); break;
+        case 6: workspace.setEditorTitle("Audio Lab", "Record a take or render a tempo match"); break;
+        case 7: workspace.setEditorTitle("Plugin Rack", "VST3 instruments and ordered track / master FX"); break;
         default: break;
         }
     }
@@ -608,6 +612,7 @@ private:
     }
     void refreshExtraViews() {
         const auto& d = controller.document();
+        audioTools.setDestination(d.selectedTrack, d.selectedScene);
         juce::StringArray names, scenes;
         std::array<std::array<juce::String, alien::drumPadCount>, alien::maxSessionTracks> paths{};
         for (int t = 0; t < d.trackCount(); ++t) { names.add(d.tracks[t].name); paths[t] = d.tracks[t].drumPaths; }

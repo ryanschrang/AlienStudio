@@ -11,6 +11,7 @@ public:
         for (auto* c:std::array<juce::Component*,12>{&target,&available,&slot,&scan,&addInstrument,&addEffect,&open,&bypass,&up,&down,&remove,&status}) addAndMakeVisible(c);
         scan.setButtonText("Scan VST3..."); addInstrument.setButtonText("Use instrument"); addEffect.setButtonText("Add FX");
         open.setButtonText("Open editor"); bypass.setButtonText("Bypass / enable"); up.setButtonText("Move FX up"); down.setButtonText("Move FX down"); remove.setButtonText("Remove");
+        available.setTextWhenNothingSelected("Scan a VST3 bundle to choose an instrument or FX");
         target.setName("Plugin destination track or master"); available.setName("Scanned VST3 plugins"); slot.setName("Instrument or FX slot");
         target.onChange=[this]{if(onTarget)onTarget(target.getSelectedId()-1);};
         scan.onClick=[this]{if(onScan)onScan();};

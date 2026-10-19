@@ -127,7 +127,9 @@ private:
         state.stateBase64=bytes.toBase64Encoding();
     }
     void audioProcessorParameterChanged(juce::AudioProcessor*,int,float) override { changed.store(true); }
-    void audioProcessorChanged(juce::AudioProcessor*,const juce::AudioProcessorListener::ChangeDetails&) override { changed.store(true); }
+    void audioProcessorChanged(juce::AudioProcessor*,const juce::AudioProcessorListener::ChangeDetails& details) override {
+        if (details.parameterInfoChanged || details.programChanged || details.nonParameterStateChanged) changed.store(true);
+    }
     PluginRuntime& runtime;
     std::vector<std::pair<juce::AudioProcessor*,std::unique_ptr<EditorWindow>>> editors;
 };
