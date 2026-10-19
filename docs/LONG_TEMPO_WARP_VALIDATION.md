@@ -1,0 +1,9 @@
+# Long tempo warping
+
+Audio lab can choose a WAV/MP3 source directly, including a recording too large to load into Session. The offline WSOLA renderer reads a bounded source search region and overlap-adds one output grain at a time, writing 24-bit PCM through the existing RIFF/RF64 recording writer. Mono/stereo, 8–192 kHz, and 0.5–2x duration ratios remain supported. Positions and counters use 64-bit values; render storage depends on sample rate/channels, not duration (under 320 KiB for algorithm sample buffers at 192 kHz stereo, excluding decoder/writer internals).
+
+The original input is preserved. Existing destinations are rejected, including collisions at final publication. Cancellation discards unpublished output. Read/write/flush failures retain a partial WAV and journal for Recover takes. Recovery yields a prefix, not a completed tempo render. Session auto-loading remains limited to 128 MiB per decoded clip and 512 MiB per project; larger results are saved with an explicit disk-only message.
+
+LongTempoWarpTests compares streamed output against the original whole-clip algorithm at 0.5, 0.8, 1, 1.5 and 2 ratios, checking every sample and antiphase stereo alignment. It also checks a real 125-second input/output WAV, a 36-million-frame virtual input beyond the Session clip budget using bounded read blocks, a virtual five-billion-frame input cancelled after four grains, destination protection, cancellation cleanup and injected read/write failures. LongRecordingTests covers the shared writer's failures, recovery and RF64 behavior.
+
+Run LongTempoWarpTests, AudioToolsTests and LongRecordingTests in Debug and Release. Physical Windows decoding/rendering, MP3 system-codec behavior, multi-hour/RF64 files, memory monitoring and listening tests remain required; see WINDOWS_AUDIO_CHECKLIST.md. This remains a fixed-tempo offline render, without live warp markers, transient detection or streaming Session playback.
