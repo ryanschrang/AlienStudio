@@ -8,6 +8,20 @@
 #include <iostream>
 #include <limits>
 #include <vector>
+#include <new>
+
+// Count C++ heap allocation on the calling thread, including actual audio callbacks.
+static thread_local std::size_t allocationCount = 0;
+void* operator new(std::size_t size) {
+    ++allocationCount;
+    if (auto* pointer = std::malloc(size == 0 ? 1 : size)) return pointer;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* pointer) noexcept { std::free(pointer); }
+void operator delete[](void* pointer) noexcept { std::free(pointer); }
+void operator delete(void* pointer, std::size_t) noexcept { std::free(pointer); }
+void operator delete[](void* pointer, std::size_t) noexcept { std::free(pointer); }
 
 static void require(bool ok, const char* message) {
     if (!ok) { std::cerr << message << '\n'; std::exit(1); }
@@ -464,7 +478,79 @@ static void hardwareMidiTests() {
     require(offline.render(512) == 0 && !e.midi.isNoteOn(64), "source switch clears MIDI state coherently");
 }
 
+static void independentTrackMixerTests() {
+    ToneEngine e;
+    e.prepare(48000);
+    e.patternMode.store(1); e.playing.store(true);
+    e.tracks[0].preset.store(0); e.tracks[1].preset.store(1);
+    e.tracks[0].pan.store(-1); e.tracks[1].pan.store(1);
+    e.pianoRollNotes[0].publish(heldPattern(60));
+    e.pianoRollNotes[1].publish(heldPattern(60));
+    std::array<float, 256> l{}, r{};
+    auto render = [&](int blocks) {
+        std::array<double, 3> energy{};
+        for (int b = 0; b < blocks; ++b) {
+            float* out[]{l.data(), r.data()};
+            const auto allocationsBefore = allocationCount;
+            e.audioDeviceIOCallbackWithContext(nullptr, 0, out, 2, 256, {});
+            require(allocationCount == allocationsBefore, "independent mixer callback must not allocate");
+            energy = {};
+            for (std::size_t i = 0; i < l.size(); ++i) {
+                require(std::isfinite(l[i]) && std::isfinite(r[i]), "mixer samples finite");
+                energy[0] += l[i]*l[i]; energy[1] += r[i]*r[i];
+                energy[2] += (l[i]-r[i])*(l[i]-r[i]);
+            }
+        }
+        return energy;
+    };
+    auto energy = render(60);
+    require(energy[0] > 0.001 && energy[1] > 0.001 && energy[2] > 0.001,
+        "same-pitch tracks render independent preset waveforms to opposite channels");
+    require(e.tracks[0].peak.load() > 0 && e.tracks[1].peak.load() > 0,
+        "meters publish each track's output peak");
+    e.tracks[0].mute.store(true);
+    energy = render(60);
+    require(energy[0] == 0 && energy[1] > 0.001, "muting left track preserves right track");
+    e.tracks[0].mute.store(false); e.tracks[0].solo.store(true);
+    energy = render(60);
+    require(energy[0] > 0.001 && energy[1] == 0, "solo isolates track after gain ramp");
+    e.tracks[1].solo.store(true);
+    energy = render(60);
+    require(energy[0] > 0.001 && energy[1] > 0.001, "multiple solos combine");
+    e.tracks[0].gain.store(0);
+    energy = render(60);
+    require(energy[0] == 0 && energy[1] > 0.001, "zero gain silences only its track");
+    e.tracks[0].gain.store(1);
+    alien::PianoRollPattern empty;
+    e.pianoRollNotes[0].publish(empty);
+    energy = render(60);
+    require(energy[0] == 0 && energy[1] > 0.001, "deleting equal-pitch note cannot release another track");
+    alien::SessionAudioClip audio;
+    audio.sampleRate = 48000; audio.channels = 1; audio.frames = 48000;
+    audio.left.assign(audio.frames, 0.5f);
+    audio.buildWaveform();
+    alien::SessionClipLaunch launch;
+    launch.clipIndex = 1; launch.audio = &audio;
+    e.launchQuantizationSteps.store(4);
+    e.pianoRollLaunches[0].publish(launch);
+    e.tracks[0].gain.store(0.5f);
+    render(100); // Cross a beat boundary and settle the ramp.
+    require(std::abs(l.back() - 0.0625f) < 1.0e-5f,
+        "imported audio receives the same track gain and stereo balance");
+    e.tracks[0].mute.store(true);
+    energy = render(60);
+    require(energy[0] == 0 && energy[1] > 0.001,
+        "audio-track mute preserves the independent MIDI track");
+    e.playing.store(false);
+    energy = render(1);
+    require(energy[0] == 0 && energy[1] == 0, "stop clears every independent synth");
+    e.audioDeviceStopped(); e.prepare(44100);
+    energy = render(1);
+    require(energy[0] == 0 && energy[1] == 0, "device restart cannot resurrect notes");
+}
+
 int main() {
+    independentTrackMixerTests();
     perStepPitchAndVelocityTests();
     playbackStopAndRestartTests();
     activeEditingTests();

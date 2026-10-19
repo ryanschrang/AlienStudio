@@ -8,6 +8,7 @@
 #include "MidiInputEngine.h"
 #include "MidiControllerMappings.h"
 #include "SessionAudioClip.h"
+#include "TrackMixer.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -20,6 +21,7 @@ public:
     std::array<std::atomic<int>, 16> stepVelocities{};
     std::atomic<bool> playing{false};
     std::atomic<int> bpm{120}, currentStep{-1}, preset{0};
+    std::array<alien::TrackControls, sessionTracks> tracks;
     NoteQueue notes;
     alien::MidiInputPipe midi;
     alien::MidiControllerMappings controllerMappings;
@@ -49,6 +51,8 @@ public:
         for (auto& player : audioPlayers) player.stop();
         audioClipMode.fill(false);
         synth.prepare(sampleRate);
+        for (auto& voice : trackSynths) voice.prepare(sampleRate);
+        for (auto& mixer : trackMixers) mixer.prepare(sampleRate);
         midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
         discardPendingNotes();
         resetTransport();
@@ -58,7 +62,7 @@ public:
             rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
         for (auto& player : audioPlayers) player.stop();
         audioClipMode.fill(false);
-        synth.allSoundOff(); discardPendingNotes(); resetTransport();
+        allSoundOff(); discardPendingNotes(); resetTransport();
         midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
     }
     void audioDeviceIOCallbackWithContext(const float* const*, int,
@@ -77,11 +81,19 @@ public:
                 rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
             for (auto& player : audioPlayers) player.stop();
             audioClipMode.fill(false);
-            synth.allSoundOff(); resetTransport();
+            allSoundOff(); resetTransport();
             midi.requestReset();
         }
         wasPlaying = playNow; wasMode = modeNow;
         synth.setPatch(alien::presets[static_cast<std::size_t>(juce::jlimit(0, 2, preset.load()))]);
+        bool anySolo = false;
+        for (const auto& track : tracks) anySolo = anySolo || track.solo.load();
+        std::array<float, sessionTracks> peaks{};
+        for (std::size_t t = 0; t < sessionTracks; ++t) {
+            const auto settings = tracks[t].snapshot();
+            trackSynths[t].setPatch(alien::presets[static_cast<std::size_t>(std::clamp(settings.preset, 0, 2))]);
+            trackMixers[t].setTarget(settings, anySolo);
+        }
         NoteQueue::Event event{};
         const bool panic = notes.panic.exchange(false);
         // Bound work per callback even if the producer keeps publishing.
@@ -100,7 +112,7 @@ public:
             synchronizedSceneTracksQueued = 0;
             synchronizedSceneLaunch.store(false);
             activeStepPitch = -1;
-            synth.allSoundOff(); midi.requestReset();
+            allSoundOff(); midi.requestReset();
         }
         midi.process([this](int n, float v, int ch) { sendMidi(n, v, ch); },
             [this](int channel, int controller, int value) {
@@ -170,22 +182,26 @@ public:
             }
             const float value = synth.nextSample();
             float left = value, right = value;
-            bool mixingAudio = false;
-            if (playNow && modeNow == 1) {
-                for (std::size_t track = 0; track < sessionTracks; ++track) {
-                    const bool wasPlaying = audioPlayers[track].isPlaying();
+            for (std::size_t track = 0; track < sessionTracks; ++track) {
+                const float voice = trackSynths[track].nextSample();
+                float trackLeft = voice, trackRight = voice;
+                if (playNow && modeNow == 1) {
                     const auto sample = audioPlayers[track].nextSample();
-                    mixingAudio = mixingAudio || wasPlaying;
-                    left += sample[0] * 0.25f;
-                    right += sample[1] * 0.25f;
+                    trackLeft += sample[0] * 0.25f;
+                    trackRight += sample[1] * 0.25f;
                 }
+                trackMixers[track].process(trackLeft, trackRight);
+                peaks[track] = std::max(peaks[track], std::max(std::abs(trackLeft), std::abs(trackRight)));
+                left += trackLeft; right += trackRight;
             }
-            if (mixingAudio) { left = std::clamp(left, -1.0f, 1.0f); right = std::clamp(right, -1.0f, 1.0f); }
+            left = std::clamp(left, -1.0f, 1.0f);
+            right = std::clamp(right, -1.0f, 1.0f);
             for (int c = 0; c < channels; ++c)
                 if (outputs[c] != nullptr) outputs[c][i] = c == 0 ? left : (c == 1 ? right : (left + right) * 0.5f);
         }
         pianoRollPosition.store(static_cast<int>(rolls[0].positionStep() * 1000.0));
         for (std::size_t track = 0; track < sessionTracks; ++track) {
+            tracks[track].peak.store(peaks[track]);
             sessionTrackPositions[track].store(static_cast<int>(rolls[track].positionStep() * 1000.0));
             activePianoRollClip[track].store(audioClipMode[track] && !audioPlayers[track].isPlaying()
                 ? -1 : rolls[track].activeClipIndex());
@@ -200,7 +216,13 @@ private:
     }
     void sendPattern(std::size_t track, int note, float velocity, bool on) noexcept {
         const int source = static_cast<int>(track) + 2;
-        if (on) synth.noteOn(note, velocity, source); else synth.noteOff(note, source);
+        if (on) trackSynths[track].noteOn(note, velocity, source);
+        else trackSynths[track].noteOff(note, source);
+    }
+    void allSoundOff() noexcept {
+        synth.allSoundOff();
+        for (auto& voice : trackSynths) voice.allSoundOff();
+        for (auto& track : tracks) track.peak.store(0.0f);
     }
     void discardPendingNotes() noexcept {
         NoteQueue::Event event{};
@@ -217,7 +239,9 @@ private:
             sessionTrackPositions[track].store(-1000);
         }
     }
-    alien::SynthEngine synth;
+    alien::SynthEngine synth; // Live keyboard and legacy step sequencer.
+    std::array<alien::SynthEngine, sessionTracks> trackSynths;
+    std::array<alien::TrackMixer, sessionTracks> trackMixers;
     alien::StepClock clock;
     std::array<alien::PianoRollScheduler, sessionTracks> rolls{};
     std::array<alien::SessionAudioPlayer, sessionTracks> audioPlayers{};
