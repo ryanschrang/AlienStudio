@@ -520,3 +520,14 @@ Project v4 saves kit assignments and instrument types; Save portable collects
 kit media as well as Session audio. Older projects remain synth projects.
 This is a sample-based kit with piano-roll sequencing, not audio recording,
 waveform editing, tempo warping, or a completed multi-lane drum step editor.
+
+### Arrangement and WAV export
+
+The Arrangement tab sequences Session scenes per track on a bar grid (up to 128
+bars and 128 non-overlapping regions). Add, move/resize with numeric controls,
+duplicate, delete and undo regions. MIDI patterns repeat inside a region; audio
+clips play once at their decoded speed and cut at the region end. Editing the
+arrangement during playback restarts it. Export renders the same instrument,
+sample and mixer DSP to stereo 48 kHz / 24-bit WAV on a worker thread, for the
+exact song length. Click Export again to cancel; cancelled writes preserve an
+existing destination. Projects now save arrangement data (format v5).

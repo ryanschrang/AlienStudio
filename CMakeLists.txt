@@ -102,3 +102,11 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_branding.py"
             ${ALIEN_STUDIO_BRANDING_TEST_ARGS})
 endif()
+
+if(BUILD_TESTING)
+    add_executable(ArrangementTests tests/ArrangementTests.cpp)
+    target_include_directories(ArrangementTests PRIVATE src)
+    target_compile_definitions(ArrangementTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(ArrangementTests PRIVATE juce::juce_audio_devices juce::juce_audio_formats)
+    add_test(NAME ArrangementTests COMMAND ArrangementTests)
+endif()

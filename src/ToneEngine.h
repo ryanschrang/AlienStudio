@@ -10,6 +10,7 @@
 #include "SessionAudioClip.h"
 #include "TrackMixer.h"
 #include "DrumSampler.h"
+#include "Arrangement.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -26,6 +27,8 @@ public:
     std::array<alien::DrumKitControls, sessionTracks> drumKits;
     std::array<NoteQueue, sessionTracks> drumAuditions;
     std::atomic<int> liveDrumTrack{-1};
+    alien::ArrangementMailbox arrangementMailbox;
+    std::atomic<int> arrangementPosition{-1}; // thousandths of a bar
     NoteQueue notes;
     alien::MidiInputPipe midi;
     alien::MidiControllerMappings controllerMappings;
@@ -74,8 +77,16 @@ public:
         float* const* outputs, int channels, int samples,
         const juce::AudioIODeviceCallbackContext&) override {
         juce::ScopedNoDenormals noDenormals;
-        const bool playNow = playing.load();
+        bool playNow = playing.load();
         const int modeNow = patternMode.load();
+        const bool songChanged = arrangementMailbox.consume(*song);
+        if (songChanged && modeNow == 2) {
+            allSoundOff(); resetTransport();
+            for (std::size_t t = 0; t < sessionTracks; ++t) {
+                rolls[t].stop([this,t](int n,float v,bool on) { sendPattern(t,n,v,on); });
+                audioPlayers[t].stop();
+            }
+        }
         if (synchronizedSceneLaunch.exchange(false)) {
             synchronizedScenePending = true;
             synchronizedSceneTracksQueued = 0;
@@ -132,6 +143,7 @@ public:
             synchronizedSceneLaunch.store(false);
             activeStepPitch = -1;
             allSoundOff(); midi.requestReset();
+            if (modeNow == 2) resetTransport();
         }
         for (std::size_t t = 0; t < sessionTracks; ++t) {
             NoteQueue::Event hit{};
@@ -147,7 +159,7 @@ public:
             });
         for (std::size_t track = 0; track < sessionTracks; ++track) {
             alien::SessionClipLaunch requestedClip;
-            if (pianoRollLaunches[track].consume(requestedClip)) {
+            if (modeNow != 2 && pianoRollLaunches[track].consume(requestedClip)) {
                 const int quantization = synchronizedScenePending
                     ? synchronizedSceneQuantizationSteps : launchQuantizationSteps.load();
                 const int clipIndex = requestedClip.clipIndex == -2
@@ -158,10 +170,41 @@ public:
                 if (synchronizedScenePending)
                     synchronizedSceneTracksQueued |= (1u << track);
             }
-            rolls[track].beginBlock(pianoRollNotes[track], playNow && modeNow == 1, sampleRate, bpm.load(),
-                [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
+            if (modeNow == 2)
+                rolls[track].beginBlock(playNow, sampleRate, bpm.load(),
+                    [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
+            else
+                rolls[track].beginBlock(pianoRollNotes[track], playNow && modeNow == 1, sampleRate, bpm.load(),
+                    [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
         }
         for (int i = 0; i < samples; ++i) {
+            if (playNow && modeNow == 2) {
+                const int bar = static_cast<int>((songStep + 1.0e-8) / 16.0);
+                if (bar >= song->arrangement.lengthBars) {
+                    allSoundOff(); playing.store(false); playNow = false;
+                } else {
+                    if (bar != lastSongBar) {
+                        for (std::size_t t = 0; t < sessionTracks; ++t) {
+                            int regionIndex = -1;
+                            for (std::size_t r = 0; r < song->arrangement.count; ++r) {
+                                const auto& region = song->arrangement.regions[r];
+                                if (region.track == static_cast<int>(t) && bar >= region.startBar
+                                    && bar < region.startBar + region.lengthBars) regionIndex = static_cast<int>(r);
+                            }
+                            if (regionIndex != activeSongRegions[t]) {
+                                startSongRegion(t, regionIndex);
+                                activeSongRegions[t] = regionIndex;
+                            }
+                        }
+                        lastSongBar = bar;
+                    }
+                    for (std::size_t t = 0; t < sessionTracks; ++t)
+                        if (activeSongRegions[t] >= 0) rolls[t].nextSample(
+                            [this,t](int n,float v,bool on) { sendPattern(t,n,v,on); });
+                    arrangementPosition.store(static_cast<int>(songStep * 1000.0 / 16.0));
+                    songStep += static_cast<double>(bpm.load()) * 4.0 / (sampleRate * 60.0);
+                }
+            }
             if (playNow && modeNow == 0) {
                 const auto tick = clock.next(sampleRate, bpm.load());
                 if (tick.noteOff && activeStepPitch >= 0) {
@@ -211,7 +254,7 @@ public:
                 const float voice = trackSynths[track].nextSample();
                 const auto drum = drumSamplers[track].nextSample();
                 float trackLeft = voice + drum[0], trackRight = voice + drum[1];
-                if (playNow && modeNow == 1) {
+                if (playNow && (modeNow == 1 || modeNow == 2)) {
                     const auto sample = audioPlayers[track].nextSample();
                     trackLeft += sample[0] * 0.25f;
                     trackRight += sample[1] * 0.25f;
@@ -234,6 +277,20 @@ public:
         }
     }
 private:
+    void startSongRegion(std::size_t track, int regionIndex) noexcept {
+        auto send = [this,track](int n,float v,bool on) { sendPattern(track,n,v,on); };
+        rolls[track].stop(send); audioPlayers[track].stop();
+        trackSynths[track].allSoundOff(); drumSamplers[track].stop(0);
+        audioClipMode[track] = false;
+        if (regionIndex < 0) return;
+        const auto& region = song->arrangement.regions[static_cast<std::size_t>(regionIndex)];
+        const auto& clip = song->clips[static_cast<std::size_t>(region.scene)][track];
+        rolls[track].queuePattern(clip.audio == nullptr ? clip.pattern : alien::PianoRollPattern{}, region.scene, true);
+        rolls[track].launchPendingNow(send);
+        rolls[track].beginBlock(true, sampleRate, bpm.load(), send);
+        audioPlayers[track].queue(clip.audio, 1); audioPlayers[track].launchPendingNow(sampleRate);
+        audioClipMode[track] = clip.audio != nullptr;
+    }
     void stopMidiDrums() noexcept {
         for (auto& sampler : drumSamplers) for (int channel = 1; channel <= 16; ++channel) sampler.stop(channel + 8);
     }
@@ -274,6 +331,7 @@ private:
         }
     }
     void resetTransport() noexcept {
+        songStep = 0; lastSongBar = -1; activeSongRegions.fill(-2); arrangementPosition.store(-1);
         clock.reset(); wasPlaying = false; currentStep.store(-1); pianoRollPosition.store(-1000);
         activeStepPitch = -1;
         synchronizedScenePending = false;
@@ -283,6 +341,10 @@ private:
             sessionTrackPositions[track].store(-1000);
         }
     }
+    std::unique_ptr<alien::ArrangementPlayback> song = std::make_unique<alien::ArrangementPlayback>();
+    double songStep{};
+    int lastSongBar{-1};
+    std::array<int, sessionTracks> activeSongRegions{-2,-2,-2,-2};
     alien::SynthEngine synth; // Live keyboard and legacy step sequencer.
     std::array<alien::SynthEngine, sessionTracks> trackSynths;
     std::array<alien::TrackMixer, sessionTracks> trackMixers;

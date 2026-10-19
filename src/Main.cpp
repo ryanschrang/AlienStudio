@@ -11,6 +11,8 @@
 #include "TrackMixerPanel.h"
 #include "PortableProject.h"
 #include "DrumSamplerPanel.h"
+#include "ArrangementPanel.h"
+#include "WavExport.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -191,7 +193,11 @@ public:
         play.setTooltip("Start or stop the current pattern");
         play.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff245a55));
         play.setColour(juce::TextButton::buttonOnColourId, AlienStudioLookAndFeel::accent);
-        play.onClick = [this] { releaseNotes(); engine.playing.store(!engine.playing.load()); };
+        play.onClick = [this] {
+            releaseNotes();
+            if (engine.patternMode.load() == 2 && !engine.playing.load()) publishArrangement();
+            engine.playing.store(!engine.playing.load());
+        };
         addAndMakeVisible(tempo);
         tempo.setRange(60, 200, 1);
         tempo.setValue(120);
@@ -287,6 +293,9 @@ public:
             engine.drumAuditions[static_cast<std::size_t>(track)].push(alien::drumBaseNote + pad, 0.8f);
         };
         drumPanel.onRoute = [this](int track) { engine.liveDrumTrack.store(track); };
+        tabs.addTab("Arrangement", AlienStudioLookAndFeel::panel, &arrangementPanel, false);
+        arrangementPanel.onChange = [this] { publishArrangement(); };
+        arrangementPanel.onExport = [this] { chooseWavExport(); };
         tabs.getTabbedButtonBar().addChangeListener(this);
         addAndMakeVisible(workspace);
         devicePanel.addAndMakeVisible(deviceTitle);
@@ -471,6 +480,8 @@ public:
     }
     ~MainComponent() override {
         stopTimer();
+        if (exportCancellation) exportCancellation->store(true);
+        exportFileChooser.reset();
         audioFileChooser.reset();
         projectFileChooser.reset();
         audioImportPool.removeAllJobs(true, -1);
@@ -584,7 +595,9 @@ private:
         keyboard.setLowestVisibleKey(12 * (typingInput.typing.octave() + 1));
     }
     void changeListenerCallback(juce::ChangeBroadcaster*) override {
-        const int newMode = tabs.getCurrentTabIndex() == 0 ? 0 : 1;
+        const int tab = tabs.getCurrentTabIndex();
+        const int newMode = tab == 0 ? 0 : (tab == 5 ? 2 : (tab == 1 || tab == 2 ? 1 : engine.patternMode.load()));
+        if (newMode == 2) publishArrangement();
         if (engine.patternMode.exchange(newMode) != newMode) releaseNotes();
         else pianoRoll.releaseAudition();
     }
@@ -600,6 +613,7 @@ private:
             pads[i]->setPlaybackPosition(i == currentStep);
         midiInput.tick();
         mixerPanel.tick();
+        arrangementPanel.setPlayhead(engine.arrangementPosition.load());
         int controllerAction = -1;
         while (engine.controllerActions.pop(controllerAction)) {
             if (controllerAction < sceneCount) launchScene(controllerAction);
@@ -730,6 +744,7 @@ private:
         project.bpm = engine.bpm.load();
         project.synthPreset = engine.preset.load();
         project.drumPaths = drumPaths;
+        project.arrangement = arrangementPanel.getArrangement();
         for (std::size_t i = 0; i < engine.tracks.size(); ++i)
             project.trackSettings[i] = engine.tracks[i].snapshot();
         for (std::size_t i = 0; i < project.stepPattern.size(); ++i)
@@ -908,6 +923,7 @@ private:
             engine.drumKits[t].samples[p].store(asset.get());
         }
         drumPanel.setPaths(drumPaths);
+        arrangementPanel.setArrangement(result.project.arrangement);
         retainedAudioBytes += result.decodedBytes;
         selectedTrack = result.project.selectedTrack;
         selectedScene = result.project.selectedScene;
@@ -932,12 +948,62 @@ private:
         pianoRoll.setPattern(clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)].pattern);
         loadingClip = false;
         currentProjectFile = file;
+        publishArrangement();
         updateAudioClipEditor();
         updateSessionButtons();
         tabs.setCurrentTabIndex(clips[static_cast<std::size_t>(selectedScene)]
             [static_cast<std::size_t>(selectedTrack)].audio != nullptr ? 2 : 1);
         projectStatus.setText("Opened " + file.getFileName(), juce::dontSendNotification);
         projectStatus.setTooltip(file.getFullPathName());
+    }
+    std::shared_ptr<alien::ArrangementPlayback> captureArrangement() {
+        saveEditedClip();
+        auto song = std::make_shared<alien::ArrangementPlayback>();
+        song->arrangement = arrangementPanel.getArrangement();
+        for (std::size_t scene = 0; scene < 4; ++scene) for (std::size_t track = 0; track < 4; ++track) {
+            song->clips[scene][track].pattern = clips[scene][track].pattern;
+            song->clips[scene][track].audio = clips[scene][track].audio;
+            song->clips[scene][track].clipIndex = static_cast<int>(scene);
+        }
+        return song;
+    }
+    void publishArrangement() { engine.arrangementMailbox.publish(*captureArrangement()); }
+    void chooseWavExport() {
+        if (exportCancellation) { exportCancellation->store(true); arrangementPanel.setStatus("Cancelling export…"); return; }
+        exportFileChooser = std::make_unique<juce::FileChooser>("Export arrangement: stereo 48 kHz / 24-bit WAV",
+            juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("AlienStudioSong.wav"), "*.wav");
+        juce::Component::SafePointer<MainComponent> safe(this);
+        exportFileChooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+            | juce::FileBrowserComponent::warnAboutOverwriting, [safe](const juce::FileChooser& chooser) {
+                if (safe && chooser.getResult() != juce::File{}) safe->startWavExport(chooser.getResult().withFileExtension("wav"));
+            });
+    }
+    void startWavExport(const juce::File& file) {
+        if (exportCancellation) return;
+        auto snapshot = captureArrangement();
+        auto project = std::make_shared<alien::SessionProjectData>();
+        project->bpm = engine.bpm.load(); project->arrangement = snapshot->arrangement;
+        alien::DrumSamplePointers drums{};
+        for (std::size_t t=0;t<4;++t) {
+            project->trackSettings[t]=engine.tracks[t].snapshot();
+            for (std::size_t p=0;p<alien::drumPadCount;++p) drums[t][p]=engine.drumKits[t].samples[p].load();
+        }
+        exportCancellation=std::make_shared<std::atomic<bool>>(false);
+        auto cancel=exportCancellation;
+        const auto assets=retainedAudioAssets; // keep immutable samples alive for the snapshot
+        arrangementPanel.setStatus("Exporting 48 kHz / 24-bit stereo WAV… Click Export WAV again to cancel.");
+        juce::Component::SafePointer<MainComponent> safe(this);
+        std::function<juce::ThreadPoolJob::JobStatus()> job=[safe,file,project,snapshot,drums,cancel,assets] {
+            juce::String error;
+            const bool ok=alien::exportArrangementWav(file,*project,*snapshot,drums,*cancel,error);
+            juce::MessageManager::callAsync([safe,file,ok,error] {
+                if(!safe) return;
+                safe->exportCancellation.reset();
+                safe->arrangementPanel.setStatus(ok ? "Exported " + file.getFullPathName() : error);
+            });
+            return juce::ThreadPoolJob::jobHasFinished;
+        };
+        audioImportPool.addJob(std::move(job));
     }
     void loadDrumSample(int track, int pad, const juce::File& file) {
         if (projectBusy) return;
@@ -1094,6 +1160,9 @@ private:
     alien::MidiInputPanel midiInput{engine.midi};
     alien::TrackMixerPanel mixerPanel{engine.tracks};
     alien::DrumSamplerPanel drumPanel;
+    alien::ArrangementPanel arrangementPanel;
+    std::unique_ptr<juce::FileChooser> exportFileChooser;
+    std::shared_ptr<std::atomic<bool>> exportCancellation;
     std::array<std::array<juce::String, alien::drumPadCount>, 4> drumPaths{};
     juce::AudioDeviceManager audio;
     juce::MidiKeyboardState keyboardState;
