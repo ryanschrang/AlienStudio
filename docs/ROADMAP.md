@@ -1,12 +1,11 @@
 # Alien Studio roadmap
 
 The integration branch combines the redesigned project/controller UI with drum kits,
-arrangement/WAV export, bounded recording and offline tempo matching. Project v6
+arrangement/WAV export, disk-streamed recording and offline tempo matching. Project v6
 also stores initial VST3 instrument/FX racks. See README for the supported workflow
 and WINDOWS_AUDIO_CHECKLIST.md for unverified hardware/plugin checks.
 
-Remaining work: Windows plugin/device listening tests; disk-streamed recording longer
-than 60 seconds; MIDI recording/count-in/overdub; waveform editing; live warp markers;
+Remaining work: Windows plugin/device listening tests; long-file streaming Session playback; MIDI recording/count-in/overdub; waveform editing; live warp markers;
 plugin automation, sidechains/multi-output, freeze and runtime crash isolation.
 
 Historical milestone notes below describe the earlier stacked branches.
@@ -89,10 +88,10 @@ streaming, factory sample packs, and more elaborate pad modulation.
 ## October 2026 implementation update
 
 Implemented foundations now include per-track eight-pad sample kits/browser,
-bar-based arrangement with WAV export, bounded 60-second mono/stereo input takes,
+bar-based arrangement with WAV export, disk-streamed mono/stereo input takes,
 and offline fixed-tempo WSOLA rendering. Audio lab adds explicit input settings,
 record state/meter, destination display and a separate tempo-render workflow.
-Full recording/editing and warping milestones remain open: streaming takes,
+Full recording/editing and warping milestones remain open: streaming playback,
 latency compensation, count-in/punch/overdub, trimming/fades, take lanes/comping,
 automatic BPM, warp markers and transient-aware algorithms. Windows listening and
 visual checks remain separate gates from the passing offline tests.

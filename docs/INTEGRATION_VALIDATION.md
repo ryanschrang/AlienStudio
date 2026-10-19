@@ -32,4 +32,4 @@ cmake --build build --config Release --parallel 2
 ctest --test-dir build -C Release --output-on-failure --no-tests=error
 ```
 
-Repeat with Debug. Use `docs/WINDOWS_AUDIO_CHECKLIST.md` for manual device and plugin checks. Recording and tempo-warp source input remain capped at 60 seconds.
+Repeat with Debug. Use `docs/WINDOWS_AUDIO_CHECKLIST.md` for manual device and plugin checks. Historical integration checks used 60-second recording/tempo-warp bounds. Both now stream from disk; see LONG_RECORDING_VALIDATION.md and LONG_TEMPO_WARP_VALIDATION.md for current validation.
