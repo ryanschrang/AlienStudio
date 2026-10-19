@@ -91,18 +91,7 @@ public:
         clearButton.setButtonText("Clear");
         clearButton.setName("Clear piano roll notes");
         clearButton.setTooltip("Remove all notes from the piano roll");
-        clearButton.onClick = [this] {
-            if (pattern.count == 0) return;
-            releaseAudition();
-            beginEdit();
-            pattern.clear();
-            selection.clear();
-            activeId = 0;
-            insertionStep = 0.0;
-            drag = Drag::none;
-            changed();
-            endEdit();
-        };
+        clearButton.onClick = [this] { clearAllNotes(); };
         addAndMakeVisible(exampleButton);
         exampleButton.setButtonText("Load example");
         exampleButton.setName("Load example piano roll melody");
@@ -303,6 +292,21 @@ public:
         history.clear();
         historyPosition = 0;
         changed();
+    }
+
+    // Removes every note as one undoable edit (the toolbar Clear button and
+    // the Session "Clear clip" action share this).
+    void clearAllNotes() {
+        if (pattern.count == 0) return;
+        releaseAudition();
+        beginEdit();
+        pattern.clear();
+        selection.clear();
+        activeId = 0;
+        insertionStep = 0.0;
+        drag = Drag::none;
+        changed();
+        endEdit();
     }
 
     void setPlayheadStep(double step) {

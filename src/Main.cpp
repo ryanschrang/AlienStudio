@@ -350,9 +350,9 @@ public:
             }
         };
         sessionPanel.addAndMakeVisible(clearController);
-        clearController.setButtonText("Clear");
+        clearController.setButtonText("Unmap");
         clearController.setName("Clear MIDI controller mapping");
-        clearController.setTooltip("Remove the MIDI CC assigned to the selected action");
+        clearController.setTooltip("Remove the MIDI CC assigned to the selected action (enabled once a CC is mapped)");
         clearController.onClick = [this] {
             engine.controllerMappings.cancelLearn();
             learningControllerAction = -1;
@@ -367,6 +367,7 @@ public:
         controllerMappingLabel.setColour(juce::Label::textColourId, col::textDim);
         controllerMappingLabel.setJustificationType(juce::Justification::centredLeft);
         controllerMappingLabel.setText("Unmapped", juce::dontSendNotification);
+        clearController.setEnabled(false);
         for (int scene = 0; scene < sceneCount; ++scene) {
             sessionPanel.addAndMakeVisible(sceneButtons[static_cast<std::size_t>(scene)]);
             auto& sceneButton = sceneButtons[static_cast<std::size_t>(scene)];
@@ -406,6 +407,12 @@ public:
         importAudio.setName("Import audio file to selected Session clip");
         importAudio.setTooltip("Decode a WAV or MP3 off the audio thread and add it to the selected clip");
         importAudio.onClick = [this] { chooseAudioFile(); };
+        sessionPanel.addAndMakeVisible(clearClip);
+        clearClip.setButtonText("Clear clip");
+        clearClip.setGlyph(ui::Glyph::close);
+        clearClip.setName("Clear selected Session clip");
+        clearClip.setTooltip("Remove all notes and audio from the selected clip. Notes can be restored with Undo in the piano roll.");
+        clearClip.onClick = [this] { clearSelectedClip(); };
         sessionPanel.addAndMakeVisible(removeAudio);
         removeAudio.setButtonText("Remove audio");
         removeAudio.setGlyph(ui::Glyph::close);
@@ -420,6 +427,7 @@ public:
         pianoRoll.onChange = [this] {
             auto& clip = clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)];
             clip.pattern = pianoRoll.getPattern();
+            clearClip.setEnabled(clip.audio != nullptr || clip.pattern.count > 0);
             if (loadingClip) return;
             if (clip.audio != nullptr) return;
             engine.requestedPianoRollClip[static_cast<std::size_t>(selectedTrack)].store(selectedScene);
@@ -796,14 +804,16 @@ private:
         importAudio.setBounds(actions.removeFromLeft(124));
         actions.removeFromLeft(6);
         removeAudio.setBounds(actions.removeFromLeft(124));
+        actions.removeFromLeft(6);
+        clearClip.setBounds(actions.removeFromLeft(104));
         actions.removeFromLeft(18);
         mappingBounds = actions;
         actions.removeFromLeft(66); // "MIDI map" caption.
-        controllerTarget.setBounds(actions.removeFromLeft(100));
+        controllerTarget.setBounds(actions.removeFromLeft(92));
         actions.removeFromLeft(6);
-        learnController.setBounds(actions.removeFromLeft(118));
+        learnController.setBounds(actions.removeFromLeft(112));
         actions.removeFromLeft(6);
-        clearController.setBounds(actions.removeFromLeft(60));
+        clearController.setBounds(actions.removeFromLeft(66));
         actions.removeFromLeft(10);
         controllerMappingLabel.setBounds(actions);
         r.removeFromTop(14);
@@ -1314,8 +1324,21 @@ private:
         audioImportStatus.setText("Audio removed from selected clip", juce::dontSendNotification);
         updateSessionButtons();
     }
+    void clearSelectedClip() {
+        auto& clip = clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)];
+        const bool hadAudio = clip.audio != nullptr;
+        if (hadAudio) removeAudioFromSelectedClip();
+        // The selected clip is always the one loaded in the piano roll, so this
+        // clears it as an undoable edit and republishes it through onChange.
+        pianoRoll.clearAllNotes();
+        audioImportStatus.setText("Cleared Track " + juce::String(selectedTrack + 1) + ", Scene "
+            + juce::String(selectedScene + 1), juce::dontSendNotification);
+        updateAudioClipEditor();
+        updateSessionButtons();
+    }
     void updateAudioClipEditor() {
         const auto& clip = clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)];
+        clearClip.setEnabled(clip.audio != nullptr || clip.pattern.count > 0);
         audioWaveform.setClip(clip.audio, clip.audioFileName);
         removeAudio.setEnabled(clip.audio != nullptr);
         if (clip.audio == nullptr && audioImportStatus.getText().isEmpty())
@@ -1323,6 +1346,8 @@ private:
                 + ", Scene " + juce::String(selectedScene + 1), juce::dontSendNotification);
     }
     void updateControllerMappingLabel() {
+        clearController.setEnabled(learningControllerAction >= 0
+            || engine.controllerMappings.mappingFor(controllerTarget.getSelectedId() - 1) >= 0);
         if (learningControllerAction == controllerTarget.getSelectedId() - 1) {
             controllerMappingLabel.setText(ui::utf8("Move a MIDI CC control\xe2\x80\xa6"), juce::dontSendNotification);
             return;
@@ -1420,7 +1445,7 @@ private:
     juce::TextButton clearController;
     std::array<ui::GlyphButton, 4> sceneButtons;
     std::array<alien::SessionClipButton, 16> clipButtons;
-    ui::GlyphButton editSelectedClip, stopClip, importAudio, removeAudio;
+    ui::GlyphButton editSelectedClip, stopClip, importAudio, removeAudio, clearClip;
     alien::AudioClipWaveform audioWaveform;
     std::array<std::array<SessionClipContent, trackCount>, sceneCount> clips{};
     std::vector<std::shared_ptr<alien::SessionAudioClip>> retainedAudioAssets;
