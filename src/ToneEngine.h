@@ -106,7 +106,7 @@ public:
         allSoundOff(); discardPendingNotes(); resetTransport();
         midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
     }
-    std::atomic<alien::AudioCapture*> capture{};
+    std::atomic<alien::AudioCaptureSink*> capture{};
     std::unique_ptr<alien::PluginRuntime> plugins = std::make_unique<alien::PluginRuntime>();
 
     void audioDeviceIOCallbackWithContext(const float* const* inputs, int inputChannels,

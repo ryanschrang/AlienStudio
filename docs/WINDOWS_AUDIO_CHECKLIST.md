@@ -60,9 +60,9 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Enable one input, record voice/instrument, Stop & save, launch the captured clip.
   Repeat with stereo inputs carrying distinct signals. Check input meter, source
   channels, saved WAV sample rate and no unrequested monitoring/feedback.
-- Let a take hit 60 seconds; disconnect/reconfigure the input during capture; close
+- Record past 60 seconds and manually stop; disconnect/reconfigure the input during capture; close
   the main window during capture. Each must stop safely and save captured frames.
-  Test an unwritable destination: take stays in memory and Record take retries Save.
+  Test an unwritable destination: preparation fails before capture. A mid-take write failure retains the partial WAV for Recover takes.
 - Warp a known-BPM drum loop, vocal and stereo mix to slower/faster project tempi.
   Compare pitch, stereo image, transients and exact duration against the original.
   Exercise cancellation, invalid ratios, 60-second input limit, silence and near-full
@@ -81,4 +81,13 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Test 44.1/48/96 kHz, varying device buffer sizes, and input/output device changes.
 - Save portable, remove original source audio, undo/redo, save/reopen; verify collected media.
 - Start an autosave then New/discard/quit; verify discarded recovery does not reappear.
-- Repeat recording/warp/listening checks. Recording and warp input remain capped at 60 seconds.
+- Repeat recording/warp/listening checks. Recording has no one-minute cap; tempo-warp input remains capped at 60 seconds.
+
+
+## Long disk recording
+- Record mono/stereo for at least 5 and 30 minutes at 44.1/48/96 kHz; check duration and beginning/end audio in another editor.
+- Monitor process memory: capture storage should stay constant while the WAV grows.
+- Test disk full, permission failure, a slow/removable drive and input-device stop; inspect the saved prefix or retained partial file and error message.
+- Interrupt the app during a test take, restart, choose Audio lab > Recover takes; inspect recovered duration and channels. Test an existing destination collision without replacing it.
+- Record beyond the 128 MiB decoded-clip budget; verify the WAV stays saved and the UI clearly reports that it was not loaded into Session.
+- Test a take beyond 4 GiB on a suitable filesystem and verify RF64 compatibility. This physical long-duration case has not been verified locally.

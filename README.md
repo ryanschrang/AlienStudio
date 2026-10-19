@@ -4,7 +4,7 @@
 
 Alien Studio is an **independent, original application**, not affiliated with or endorsed by any of those products. We aim to learn from broadly useful workflows without copying proprietary code, artwork, branding, or protected assets.
 
-> **Project status:** Integrated early DAW prototype with up to 16 tracks/32 scenes, 12 built-in sounds, drum sample kits/browser, arrangement playback and WAV export, bounded audio recording and offline tempo matching, plus initial stereo VST3 instrument/FX hosting. Project v6 unifies these features with saving, portable media collection, undo/redo and recovery. Native Windows device, plugin and listening checks remain required; see [the checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
+> **Project status:** Integrated early DAW prototype with up to 16 tracks/32 scenes, 12 built-in sounds, drum sample kits/browser, arrangement playback and WAV export, disk-streamed audio recording and offline tempo matching, plus initial stereo VST3 instrument/FX hosting. Project v6 unifies these features with saving, portable media collection, undo/redo and recovery. Native Windows device, plugin and listening checks remain required; see [the checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
 
 ## Product vision: three connected workspaces
 
@@ -28,7 +28,7 @@ The long-term differentiator is **one shared project and audio engine** across a
 
 ### Next implementation sequence
 1. Verify integrated VST3 instruments/FX and Windows audio/MIDI hardware behavior.
-2. Stream long recording takes to disk; extend editing beyond the current 60-second capture/warp input bounds.
+2. Stream long takes during Session playback and extend editing/tempo warping beyond current memory/input bounds.
 3. MIDI recording, metronome/count-in and overdub.
 4. Waveform trimming/fades, take lanes and live warp-marker workflows.
 5. Plugin automation, sidechains/multi-output routing, freeze and crash isolation during playback.
@@ -537,9 +537,18 @@ Use **More...** in the top bar for **Drums**, **Arrange**, **Audio lab** and
   and delete regions, then play or export a stereo 48 kHz/24-bit WAV. Track/scene
   moves and deletions update region references. Regions do not overlap on one track.
 - Audio lab: configure device inputs and record mono/stereo takes to a new WAV;
-  failed writes retain the take for a retry. Recording is still preallocated and
-  capped at **60 seconds**. Longer streaming recording, full waveform editing,
-  latency compensation for recording, and live warp markers are not implemented.
+  recording streams 24-bit PCM directly to disk with **no 60-second duration cap**.
+  A fixed 262,144-frame FIFO (1 MiB mono / 2 MiB stereo) feeds a dedicated writer.
+  On Stop, the FIFO drains and the file is finalized off the audio thread. A disk
+  overrun stops recording and reports the continuous prefix; write/flush failures
+  retain the unfinished WAV and its recovery journal. **Recover takes...** repairs
+  an interrupted file from its complete audio frames and publishes it without
+  overwriting an existing destination.
+  Takes are loaded into Session when they fit the existing 128 MiB decoded-clip
+  and 512 MiB session budgets. Larger takes remain safely saved at the selected
+  WAV destination, with an explicit message; long-file streaming playback is a
+  separate milestone. Full waveform editing, recording latency compensation and
+  live warp markers remain future work.
   Tempo matching creates a separate WAV from a source up to 60 seconds, with a
   0.5–2x duration ratio and linked-stereo WSOLA processing.
 - Plugins: **Scan VST3...** selects one installed 64-bit `.vst3` bundle. Scanning
@@ -577,3 +586,26 @@ not copied by Save portable. Keep those installed on a destination computer.
 Recovery cleanup is fenced against in-flight autosaves. Portable-media relocation
 updates the active document and undo/redo history for clips and drum samples.
 Project v6 loads both prior v4 dialects, v5 arrangements and versions 1–3.
+
+
+### Long recording files and recovery
+
+The Audio lab shows accepted recording time and time written to disk. Recording
+uses the selected mono/stereo device inputs, 8–192 kHz, and preserves the existing
+monitoring-off behavior. There is no duration field or one-minute stop. Capacity
+now depends on disk throughput/space and filesystem limits. RIFF WAV headers have
+a reserved chunk that switches to RF64 when the file passes 4 GiB; third-party
+RF64 compatibility and physical multi-hour recording remain manual checks.
+
+An in-progress take has an adjacent `*.recording-<id>.partial.wav` file. Its journal
+is in `%APPDATA%\Alien Studio\Recording Recovery` on Windows. WAV headers are
+checkpointed after approximately every second of written audio. Recover takes
+can rebuild a stale header from the payload and discard an incomplete final
+sample frame. A crash may lose queued/in-memory or OS-cached audio; recovery does
+not guarantee survival of every sample after sudden power loss.
+
+If the intended destination already exists when finalizing, it is preserved and
+the unfinished take remains recoverable. Recovery chooses a new sibling filename
+when needed. Keep unfinished WAVs and journals together until recovery succeeds;
+never remove original source recordings to make space automatically. The existing
+60-second limit applies to tempo-warp input only, not recording.
