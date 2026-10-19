@@ -619,6 +619,7 @@ private:
     }
     void timerCallback() override {
         if(activeCapture) {
+            audioTools.setDestination(takeTrack,takeScene);
             audioTools.setMeter(activeCapture->level.load());
             audioTools.setStatus("Recording " + juce::String(activeCapture->frames.load()/activeCapture->sampleRate,1) + " / 60 s — Stop & save take");
             if(activeCapture->done.load())finishRecording();
@@ -1094,8 +1095,9 @@ private:
     }
     void finishRecording() {
         if(!activeCapture)return;
-        // removeAudioCallback waits for any in-flight callback before storage is read.
-        audio.removeAudioCallback(&engine);engine.capture.store(nullptr);audio.addAudioCallback(&engine);
+        // Message-thread-only: use the manager's existing dispatch lock for one
+        // pointer exchange. No allocation/I/O under the lock and no transport reset.
+        { const juce::ScopedLock lock(audio.getAudioCallbackLock());engine.capture.store(nullptr); }
         queueTakeWrite(std::move(activeCapture));
     }
     void queueTakeWrite(std::shared_ptr<alien::AudioCapture> take) {
