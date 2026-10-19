@@ -3,6 +3,7 @@
 #include "PianoRollSequence.h"
 #include "TrackMixer.h"
 #include "DrumSampler.h"
+#include "Arrangement.h"
 #include <juce_core/juce_core.h>
 #include <array>
 #include <cmath>
@@ -20,6 +21,7 @@ struct SessionProjectClip {
 struct SessionProjectData {
     std::array<std::array<SessionProjectClip, sessionProjectTrackCount>, sessionProjectSceneCount> clips{};
     std::array<std::array<juce::String, drumPadCount>, sessionProjectTrackCount> drumPaths{};
+    Arrangement arrangement;
     int launchQuantizationSteps{16};
     int selectedTrack{};
     int selectedScene{};
@@ -39,6 +41,7 @@ struct SessionProjectData {
     }();
 
     bool valid() const noexcept {
+        if (!arrangement.valid()) return false;
         if ((launchQuantizationSteps != 4 && launchQuantizationSteps != 16)
             || selectedTrack < 0 || selectedTrack >= sessionProjectTrackCount
             || selectedScene < 0 || selectedScene >= sessionProjectSceneCount
@@ -61,7 +64,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     auto root = juce::var(new juce::DynamicObject());
     auto* rootObject = root.getDynamicObject();
     rootObject->setProperty("format", "AlienStudioSession");
-    rootObject->setProperty("version", 4);
+    rootObject->setProperty("version", 5);
     rootObject->setProperty("launchQuantizationSteps", project.launchQuantizationSteps);
     rootObject->setProperty("selectedTrack", project.selectedTrack);
     rootObject->setProperty("selectedScene", project.selectedScene);
@@ -99,6 +102,19 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     rootObject->setProperty("stepPitches", juce::var(pitches));
     rootObject->setProperty("stepVelocities", juce::var(velocities));
 
+    auto songValue = juce::var(new juce::DynamicObject());
+    songValue.getDynamicObject()->setProperty("lengthBars", project.arrangement.lengthBars);
+    juce::Array<juce::var> regions;
+    for (std::size_t i = 0; i < project.arrangement.count; ++i) {
+        const auto& r = project.arrangement.regions[i];
+        auto value = juce::var(new juce::DynamicObject());
+        auto* object = value.getDynamicObject();
+        object->setProperty("track",r.track); object->setProperty("scene",r.scene);
+        object->setProperty("startBar",r.startBar); object->setProperty("lengthBars",r.lengthBars);
+        regions.add(value);
+    }
+    songValue.getDynamicObject()->setProperty("regions",juce::var(regions));
+    rootObject->setProperty("arrangement",songValue);
     juce::Array<juce::var> scenes;
     for (const auto& scene : project.clips) {
         juce::Array<juce::var> tracks;
@@ -138,7 +154,7 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         error = "This file is not an Alien Studio session project."; return false;
     }
     const auto version = rootObject->getProperty("version");
-    if (!version.isInt() || (static_cast<int>(version) < 1 || static_cast<int>(version) > 4)) {
+    if (!version.isInt() || (static_cast<int>(version) < 1 || static_cast<int>(version) > 5)) {
         error = "This Alien Studio project version is not supported."; return false;
     }
     const int formatVersion = static_cast<int>(version);
@@ -289,6 +305,23 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         }
     }
 
+    if (formatVersion >= 5) {
+        const auto songValue = rootObject->getProperty("arrangement");
+        const auto* object = songValue.getDynamicObject();
+        if (object == nullptr || !object->getProperty("lengthBars").isInt()) { error="Invalid arrangement."; return false; }
+        parsed.arrangement.lengthBars=static_cast<int>(object->getProperty("lengthBars"));
+        const auto regionsValue=object->getProperty("regions"); const auto* regions=regionsValue.getArray();
+        if (regions==nullptr || regions->size()>Arrangement::capacity) { error="Invalid arrangement regions.";return false; }
+        for (const auto& value : *regions) {
+            const auto* r=value.getDynamicObject();
+            if(r==nullptr || !r->getProperty("track").isInt() || !r->getProperty("scene").isInt()
+                || !r->getProperty("startBar").isInt() || !r->getProperty("lengthBars").isInt()) { error="Invalid region.";return false; }
+            if(!parsed.arrangement.add({static_cast<int>(r->getProperty("track")),static_cast<int>(r->getProperty("scene")),
+                static_cast<int>(r->getProperty("startBar")),static_cast<int>(r->getProperty("lengthBars"))})) {
+                error="Overlapping or out-of-range arrangement region.";return false;
+            }
+        }
+    }
     if (!parsed.valid()) { error = "Project settings are outside the supported range."; return false; }
     destination = std::move(parsed);
     error.clear();
