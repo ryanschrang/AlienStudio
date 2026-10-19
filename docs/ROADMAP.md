@@ -60,3 +60,12 @@ Add autosave/recovery and dirty-state prompts before long recording sessions;
 expand global undo and track capacity with bounded audio scheduling. Add hardware
 results to WINDOWS_AUDIO_CHECKLIST.md. Keep actual test results distinct from
 planned tests, and never label hardware performance verified from CI alone.
+
+## Drum sampler milestone update
+
+Implemented: eight sample pads per track, local file browser, velocity-sensitive
+one-shots, fixed 16-voice polyphony, hat choke pair, external MIDI routing,
+piano-roll sequencing, v4 kit persistence and portable collection. Focused DSP
+and integration tests cover reset, source isolation and allocation-free operation.
+Still later: dedicated multi-lane 16/32/64-step drum editor, sample trimming,
+streaming, factory sample packs, and more elaborate pad modulation.

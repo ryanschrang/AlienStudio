@@ -498,3 +498,25 @@ Live MIDI/typing/mouse input and the legacy step sequencer remain on their separ
 Device rack synth; Session mute/solo does not mute live monitoring. Project format
 v3 stores mixer settings. Versions 1 and 2 load with the old global preset copied
 to all four tracks, centred balance, unity volume, and mute/solo off.
+
+### Drum sampler and sample browser
+
+The **Drums** tab contains a local WAV/MP3 browser and eight pads per Session track.
+Select a track and pad, browse to a file, then use **Load selected file**. Loading
+activates that track's **Drum kit** instrument; the Mixer selector switches between
+Synth and Drum kit. Click a pad or **Play pad** to audition. Empty pads are silent.
+Use piano-roll notes **36–43** for pads 1–8; note velocity controls hit level.
+Each kit has 16 one-shot voices; note-off does not truncate hits. Pads 3/4 choke
+one another within the same input source, suitable for closed/open hi-hats.
+
+The MIDI routing selector sends external MIDI to a selected drum track or back
+to the live synth. Routing is session-only; computer typing remains on the live
+synth. Stop/panic/device reset silences sample tails. Clearing or replacing a pad
+also clears its old voices. Browser decoding runs on the worker, under the shared
+512 MiB retained-audio limit; source files are never altered. No factory samples
+are bundled: use samples you own or have permission to use.
+
+Project v4 saves kit assignments and instrument types; Save portable collects
+kit media as well as Session audio. Older projects remain synth projects.
+This is a sample-based kit with piano-roll sequencing, not audio recording,
+waveform editing, tempo warping, or a completed multi-lane drum step editor.

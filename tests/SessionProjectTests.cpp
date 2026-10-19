@@ -22,6 +22,7 @@ static void portableProjectTests() {
     source.clips[0][0].audioFilePath = first.getFullPathName();
     source.clips[0][1].audioFilePath = second.getFullPathName();
     source.clips[1][0].audioFilePath = first.getFullPathName();
+    source.drumPaths[0][0] = first.getFullPathName();
     juce::String error;
     const auto target = projectDir.getChildFile("Song.alienstudio");
     require(alien::writeSessionProjectFile(target, source, true, saved, error), "collect portable project");
@@ -29,6 +30,7 @@ static void portableProjectTests() {
         && saved.clips[0][0].audioFilePath == saved.clips[1][0].audioFilePath
         && saved.clips[0][0].audioFilePath != saved.clips[0][1].audioFilePath,
         "relative media paths deduplicate reused sources and preserve duplicate basenames");
+    require(saved.drumPaths[0][0] == saved.clips[0][0].audioFilePath, "kit samples collected and deduplicated with clips");
     const auto priorJson = target.loadFileAsString();
     source.clips[1][1].audioFilePath = originals.getChildFile("missing.wav").getFullPathName();
     require(!alien::writeSessionProjectFile(target, source, true, saved, error)
@@ -48,6 +50,8 @@ static void portableProjectTests() {
     // must convert owned media back to relative paths to retain portability.
     for (auto& scene : loaded.clips) for (auto& clip : scene)
         if (clip.audioFilePath.isNotEmpty()) clip.audioFilePath = alien::resolveProjectAudio(movedTarget, clip.audioFilePath).getFullPathName();
+    for (auto& kit : loaded.drumPaths) for (auto& path : kit)
+        if (path.isNotEmpty()) path = alien::resolveProjectAudio(movedTarget, path).getFullPathName();
     require(alien::writeSessionProjectFile(movedTarget, loaded, false, saved, error)
         && !juce::File::isAbsolutePath(saved.clips[0][0].audioFilePath), "normal save retains portable references");
     require(alien::resolveProjectAudio(movedTarget, "../outside.wav") == juce::File{}, "reject escaping relative reference");
@@ -62,8 +66,9 @@ int main() {
     source.selectedScene = 3;
     source.bpm = 137;
     source.synthPreset = 2;
+    source.drumPaths[2][7] = "C:/Drums/snare.wav";
     source.trackSettings[0] = {1, 0.5f, -0.75f, true, false};
-    source.trackSettings[3] = {2, 1.5f, 0.5f, false, true};
+    source.trackSettings[3] = {2, 1.5f, 0.5f, false, true, 1};
     source.stepPattern = {true, false, true, false, false, true, false, false,
         true, false, false, true, false, false, true, false};
     source.stepPitches = {36, 48, 60, 72, 84, 96, 108, 120,
@@ -99,6 +104,7 @@ int main() {
     (*tracks)[0].getDynamicObject()->setProperty("gain", -1.0);
     require(!alien::parseSessionProject(juce::JSON::toString(invalidTracks), restored, error)
         && restored.trackSettings[0].gain == 0.5f, "bad mixer data leaves destination unchanged");
+    require(restored.trackSettings[3].instrument == 1 && restored.drumPaths[2][7] == source.drumPaths[2][7], "drum instrument and pads round-trip");
     const auto& restoredMidi = restored.clips[1][2].pattern;
     require(restoredMidi.loopSteps == 128 && restoredMidi.count == 1
         && restoredMidi.notes[0].pitch == 67 && restoredMidi.notes[0].startStep == 7.25

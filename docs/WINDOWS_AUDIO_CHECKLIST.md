@@ -40,3 +40,12 @@ sample rate, buffer size, MIDI controller, display scale, and pass/fail notes.
 
 No physical-device results supplied yet. Fill in the environment and actual
 observations above before marking this milestone hardware-verified.
+
+## Drum sampler addition (hardware results still NOT RUN)
+
+Load samples into two tracks, audition all eight pads, and sequence pitches 36–43
+at different velocities. Confirm pads 3/4 choke one another, repeated hits overlap,
+and empty pads remain silent. Route a USB controller to each kit, release notes,
+change route, disconnect, Stop and panic; no old sample should remain playing.
+Save portable, move its folder, reopen, and verify kit samples and instrument
+selection. Check the browser and pad buttons at the minimum window size.

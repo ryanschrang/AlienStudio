@@ -9,6 +9,7 @@
 #include "MidiControllerMappings.h"
 #include "SessionAudioClip.h"
 #include "TrackMixer.h"
+#include "DrumSampler.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -22,6 +23,9 @@ public:
     std::atomic<bool> playing{false};
     std::atomic<int> bpm{120}, currentStep{-1}, preset{0};
     std::array<alien::TrackControls, sessionTracks> tracks;
+    std::array<alien::DrumKitControls, sessionTracks> drumKits;
+    std::array<NoteQueue, sessionTracks> drumAuditions;
+    std::atomic<int> liveDrumTrack{-1};
     NoteQueue notes;
     alien::MidiInputPipe midi;
     alien::MidiControllerMappings controllerMappings;
@@ -52,6 +56,7 @@ public:
         audioClipMode.fill(false);
         synth.prepare(sampleRate);
         for (auto& voice : trackSynths) voice.prepare(sampleRate);
+        for (auto& sampler : drumSamplers) sampler.prepare(sampleRate);
         for (auto& mixer : trackMixers) mixer.prepare(sampleRate);
         midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
         discardPendingNotes();
@@ -93,6 +98,20 @@ public:
             const auto settings = tracks[t].snapshot();
             trackSynths[t].setPatch(alien::presets[static_cast<std::size_t>(std::clamp(settings.preset, 0, 2))]);
             trackMixers[t].setTarget(settings, anySolo);
+            if (instrumentModes[t] != settings.instrument) {
+                trackSynths[t].allSoundOff(); drumSamplers[t].stop();
+                instrumentModes[t] = settings.instrument;
+            }
+            for (int pad = 0; pad < alien::drumPadCount; ++pad)
+                drumSamplers[t].setSample(pad, drumKits[t].samples[static_cast<std::size_t>(pad)].load());
+        }
+        const int requestedRoute = std::clamp(liveDrumTrack.load(), -1, 3);
+        const int route = requestedRoute >= 0 && instrumentModes[static_cast<std::size_t>(requestedRoute)] == 1 ? requestedRoute : -1;
+        if (route != currentLiveDrumTrack) {
+            midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
+            stopMidiDrums();
+            for (int channel = 1; channel <= 16; ++channel) synth.allSoundOff(channel + 8);
+            currentLiveDrumTrack = route;
         }
         NoteQueue::Event event{};
         const bool panic = notes.panic.exchange(false);
@@ -114,9 +133,15 @@ public:
             activeStepPitch = -1;
             allSoundOff(); midi.requestReset();
         }
+        for (std::size_t t = 0; t < sessionTracks; ++t) {
+            NoteQueue::Event hit{};
+            for (int n = 0; n < 256 && drumAuditions[t].pop(hit); ++n)
+                if (!panic && instrumentModes[t] == 1) drumSamplers[t].noteOn(hit.note, hit.velocity, 1);
+            if (drumAuditions[t].panic.exchange(false)) drumSamplers[t].stop(1);
+        }
         midi.process([this](int n, float v, int ch) { sendMidi(n, v, ch); },
             [this](int channel, int controller, int value) {
-                if (channel < 0) { controllerMappings.resetEdges(); return; }
+                if (channel < 0) { controllerMappings.resetEdges(); stopMidiDrums(); return; }
                 const int action = controllerMappings.processCC(channel, controller, value);
                 if (action >= 0) controllerActions.push(action);
             });
@@ -184,7 +209,8 @@ public:
             float left = value, right = value;
             for (std::size_t track = 0; track < sessionTracks; ++track) {
                 const float voice = trackSynths[track].nextSample();
-                float trackLeft = voice, trackRight = voice;
+                const auto drum = drumSamplers[track].nextSample();
+                float trackLeft = voice + drum[0], trackRight = voice + drum[1];
                 if (playNow && modeNow == 1) {
                     const auto sample = audioPlayers[track].nextSample();
                     trackLeft += sample[0] * 0.25f;
@@ -208,7 +234,16 @@ public:
         }
     }
 private:
+    void stopMidiDrums() noexcept {
+        for (auto& sampler : drumSamplers) for (int channel = 1; channel <= 16; ++channel) sampler.stop(channel + 8);
+    }
     void sendMidi(int note, float velocity, int channel) noexcept {
+        if (currentLiveDrumTrack >= 0) {
+            auto& sampler = drumSamplers[static_cast<std::size_t>(currentLiveDrumTrack)];
+            if (note < 0) sampler.stop(channel + 8);
+            else sampler.noteOn(note, velocity, channel + 8);
+            return;
+        }
         const int source = channel + 8; // Reserve source channels 2..5 for four Session tracks.
         if (note < 0) synth.allSoundOff(source);
         else if (velocity > 0) synth.noteOn(note, velocity, source);
@@ -216,18 +251,27 @@ private:
     }
     void sendPattern(std::size_t track, int note, float velocity, bool on) noexcept {
         const int source = static_cast<int>(track) + 2;
+        if (instrumentModes[track] == 1) {
+            if (on) drumSamplers[track].noteOn(note, velocity);
+            return;
+        }
         if (on) trackSynths[track].noteOn(note, velocity, source);
         else trackSynths[track].noteOff(note, source);
     }
     void allSoundOff() noexcept {
         synth.allSoundOff();
         for (auto& voice : trackSynths) voice.allSoundOff();
+        for (auto& sampler : drumSamplers) sampler.stop();
         for (auto& track : tracks) track.peak.store(0.0f);
     }
     void discardPendingNotes() noexcept {
         NoteQueue::Event event{};
         for (int n = 0; n < 256 && notes.pop(event); ++n) {}
         notes.panic.store(false);
+        for (auto& queue : drumAuditions) {
+            for (int n = 0; n < 256 && queue.pop(event); ++n) {}
+            queue.panic.store(false);
+        }
     }
     void resetTransport() noexcept {
         clock.reset(); wasPlaying = false; currentStep.store(-1); pianoRollPosition.store(-1000);
@@ -242,6 +286,9 @@ private:
     alien::SynthEngine synth; // Live keyboard and legacy step sequencer.
     std::array<alien::SynthEngine, sessionTracks> trackSynths;
     std::array<alien::TrackMixer, sessionTracks> trackMixers;
+    std::array<alien::DrumSampler, sessionTracks> drumSamplers;
+    std::array<int, sessionTracks> instrumentModes{};
+    int currentLiveDrumTrack{-1};
     alien::StepClock clock;
     std::array<alien::PianoRollScheduler, sessionTracks> rolls{};
     std::array<alien::SessionAudioPlayer, sessionTracks> audioPlayers{};

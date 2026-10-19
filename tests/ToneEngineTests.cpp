@@ -549,7 +549,42 @@ static void independentTrackMixerTests() {
     require(energy[0] == 0 && energy[1] == 0, "device restart cannot resurrect notes");
 }
 
+static void drumTrackIntegrationTests() {
+    alien::SessionAudioClip sample;
+    sample.sampleRate = 48000; sample.channels = 1; sample.frames = 48000;
+    sample.left.assign(sample.frames, 0.25f); sample.buildWaveform();
+    OfflineEngine offline;
+    auto& e = offline.engine;
+    e.tracks[0].instrument.store(1);
+    e.drumKits[0].samples[0].store(&sample);
+    e.patternMode.store(1); e.playing.store(true);
+    e.pianoRollNotes[0].publish(heldPattern(36));
+    require(offline.render(512) > 0, "piano-roll drum note renders a sample");
+    e.playing.store(false);
+    require(offline.render(512) == 0, "transport stop cuts sample tails");
+    e.drumAuditions[0].push(36, 1);
+    require(offline.render(512) > 0, "pad audition works with transport stopped");
+    e.notes.panic.store(true);
+    require(offline.render(512) == 0, "panic cuts audition");
+    e.liveDrumTrack.store(0); offline.render(256);
+    const auto token = e.midi.beginSession(); offline.render(256);
+    e.midi.push(token, 0x90, 36, 100);
+    require(offline.render(512) > 0, "hardware MIDI route plays drum pad");
+    e.midi.push(token, 0x80, 36, 0);
+    require(offline.render(512) > 0, "one-shot drum is not truncated by note-off");
+    e.midi.requestReset(); require(offline.render(512) == 0, "MIDI reset stops released drum tails");
+    e.midi.push(token, 0x90, 36, 100); offline.render(256);
+    e.liveDrumTrack.store(-1);
+    require(offline.render(512) == 0, "changing MIDI route stops previous drum");
+    e.midi.push(token, 0x90, 60, 100); require(offline.render(512) > 0, "live synth route still works");
+    e.liveDrumTrack.store(0); require(offline.render(512) == 0, "changing from synth to kit clears old MIDI synth");
+    e.drumAuditions[0].push(36, 1); offline.render(256);
+    e.drumKits[0].samples[0].store(nullptr);
+    require(offline.render(512) == 0, "clearing a pad stops retained sample playback");
+}
+
 int main() {
+    drumTrackIntegrationTests();
     independentTrackMixerTests();
     perStepPitchAndVelocityTests();
     playbackStopAndRestartTests();

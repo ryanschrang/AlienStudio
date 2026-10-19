@@ -2,6 +2,7 @@
 
 #include "PianoRollSequence.h"
 #include "TrackMixer.h"
+#include "DrumSampler.h"
 #include <juce_core/juce_core.h>
 #include <array>
 #include <cmath>
@@ -18,6 +19,7 @@ struct SessionProjectClip {
 
 struct SessionProjectData {
     std::array<std::array<SessionProjectClip, sessionProjectTrackCount>, sessionProjectSceneCount> clips{};
+    std::array<std::array<juce::String, drumPadCount>, sessionProjectTrackCount> drumPaths{};
     int launchQuantizationSteps{16};
     int selectedTrack{};
     int selectedScene{};
@@ -59,7 +61,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     auto root = juce::var(new juce::DynamicObject());
     auto* rootObject = root.getDynamicObject();
     rootObject->setProperty("format", "AlienStudioSession");
-    rootObject->setProperty("version", 3);
+    rootObject->setProperty("version", 4);
     rootObject->setProperty("launchQuantizationSteps", project.launchQuantizationSteps);
     rootObject->setProperty("selectedTrack", project.selectedTrack);
     rootObject->setProperty("selectedScene", project.selectedScene);
@@ -70,6 +72,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
         auto value = juce::var(new juce::DynamicObject());
         auto* object = value.getDynamicObject();
         object->setProperty("preset", track.preset);
+        object->setProperty("instrument", track.instrument);
         object->setProperty("gain", track.gain);
         object->setProperty("pan", track.pan);
         object->setProperty("mute", track.mute);
@@ -77,6 +80,13 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
         settings.add(value);
     }
     rootObject->setProperty("trackSettings", juce::var(settings));
+    juce::Array<juce::var> kits;
+    for (const auto& kit : project.drumPaths) {
+        juce::Array<juce::var> pads;
+        for (const auto& path : kit) pads.add(path);
+        kits.add(juce::var(pads));
+    }
+    rootObject->setProperty("drumPaths", juce::var(kits));
     juce::Array<juce::var> steps;
     for (const auto enabled : project.stepPattern) steps.add(enabled);
     rootObject->setProperty("stepPattern", juce::var(steps));
@@ -128,7 +138,7 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         error = "This file is not an Alien Studio session project."; return false;
     }
     const auto version = rootObject->getProperty("version");
-    if (!version.isInt() || (static_cast<int>(version) < 1 || static_cast<int>(version) > 3)) {
+    if (!version.isInt() || (static_cast<int>(version) < 1 || static_cast<int>(version) > 4)) {
         error = "This Alien Studio project version is not supported."; return false;
     }
     const int formatVersion = static_cast<int>(version);
@@ -171,6 +181,11 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
             auto& track = parsed.trackSettings[static_cast<std::size_t>(i)];
             track = {static_cast<int>(p), static_cast<float>(g), static_cast<float>(pan),
                 static_cast<bool>(mute), static_cast<bool>(solo)};
+            if (formatVersion >= 4) {
+                const auto instrument = object->getProperty("instrument");
+                if (!instrument.isInt()) { error = "Invalid instrument type."; return false; }
+                track.instrument = static_cast<int>(instrument);
+            }
             if (!track.valid()) { error = "Track settings outside supported range."; return false; }
         }
     }
@@ -197,6 +212,19 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         }
     }
 
+    if (formatVersion >= 4) {
+        const auto kitsValue = rootObject->getProperty("drumPaths");
+        const auto* kits = kitsValue.getArray();
+        if (kits == nullptr || kits->size() != sessionProjectTrackCount) { error = "Invalid drum kits."; return false; }
+        for (int t = 0; t < sessionProjectTrackCount; ++t) {
+            const auto* pads = (*kits)[t].getArray();
+            if (pads == nullptr || pads->size() != drumPadCount) { error = "Invalid drum pads."; return false; }
+            for (int p = 0; p < drumPadCount; ++p) {
+                if (!(*pads)[p].isString()) { error = "Invalid drum sample path."; return false; }
+                parsed.drumPaths[static_cast<std::size_t>(t)][static_cast<std::size_t>(p)] = (*pads)[p].toString();
+            }
+        }
+    }
     const auto scenesValue = rootObject->getProperty("scenes");
     const auto* scenes = scenesValue.getArray();
     if (scenes == nullptr || scenes->size() != sessionProjectSceneCount) {
