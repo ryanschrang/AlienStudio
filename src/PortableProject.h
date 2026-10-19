@@ -25,10 +25,10 @@ inline bool writeSessionProjectFile(const juce::File& target, SessionProjectData
         if (mediaDirectory != juce::File{}) mediaDirectory.deleteRecursively();
         return false;
     };
-    for (auto& scene : project.clips) for (auto& clip : scene) {
-        if (clip.audioFilePath.isEmpty()) continue;
-        const auto source = resolveProjectAudio(target, clip.audioFilePath);
-        if (source == juce::File{}) return fail("Invalid audio reference: " + clip.audioFilePath);
+    auto collectPath = [&](juce::String& path) {
+        if (path.isEmpty()) return true;
+        const auto source = resolveProjectAudio(target, path);
+        if (source == juce::File{}) return fail("Invalid audio reference: " + path);
         if (collectAudio) {
             if (!source.existsAsFile()) return fail("Missing audio: " + source.getFullPathName());
             int index = originals.indexOf(source.getFullPathName());
@@ -45,13 +45,18 @@ inline bool writeSessionProjectFile(const juce::File& target, SessionProjectData
                 copies.add(destination.getRelativePathFrom(target.getParentDirectory()).replaceCharacter('\\', '/'));
                 index = copies.size() - 1;
             }
-            clip.audioFilePath = copies[index];
+            path = copies[index];
         } else {
-            clip.audioFilePath = source.isAChildOf(target.getParentDirectory())
+            path = source.isAChildOf(target.getParentDirectory())
                 ? source.getRelativePathFrom(target.getParentDirectory()).replaceCharacter('\\', '/')
                 : source.getFullPathName();
         }
-    }
+        return true;
+    };
+    for (auto& scene : project.clips) for (auto& clip : scene)
+        if (!collectPath(clip.audioFilePath)) return false;
+    for (auto& kit : project.drumPaths) for (auto& path : kit)
+        if (!collectPath(path)) return false;
     const auto json = serializeSessionProject(project);
     juce::TemporaryFile temporary(target);
     if (json.isEmpty() || !temporary.getFile().replaceWithText(json)

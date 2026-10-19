@@ -13,10 +13,13 @@ public:
         for (std::size_t i = 0; i < tracks.size(); ++i) {
             const auto name = "Track " + juce::String(static_cast<int>(i + 1));
             auto& strip = strips[i];
-            for (auto* component : std::array<juce::Component*, 8>{&strip.title, &strip.preset,
+            for (auto* component : std::array<juce::Component*, 9>{&strip.title, &strip.instrument, &strip.preset,
                 &strip.gainLabel, &strip.gain, &strip.panLabel, &strip.pan, &strip.mute, &strip.solo})
                 addAndMakeVisible(component);
             strip.title.setText(name, juce::dontSendNotification);
+            strip.instrument.addItem("Synth", 1); strip.instrument.addItem("Drum kit", 2);
+            strip.instrument.setName(name + " instrument type");
+            strip.instrument.onChange = [this, i] { tracks[i].instrument.store(strips[i].instrument.getSelectedId() - 1); };
             strip.preset.addItem("Lead (saw)", 1);
             strip.preset.addItem("Bass (square)", 2);
             strip.preset.addItem("Pluck (sine)", 3);
@@ -47,6 +50,7 @@ public:
     void refreshSettings() {
         for (std::size_t i = 0; i < tracks.size(); ++i) {
             const auto s = tracks[i].snapshot();
+            strips[i].instrument.setSelectedId(s.instrument + 1, juce::dontSendNotification);
             strips[i].preset.setSelectedId(s.preset + 1, juce::dontSendNotification);
             strips[i].gain.setValue(s.gain * 100, juce::dontSendNotification);
             strips[i].pan.setValue(s.pan * 100, juce::dontSendNotification);
@@ -66,7 +70,8 @@ public:
             auto& s = strips[i];
             const int x = 24 + static_cast<int>(i) * width, w = width - 24;
             s.title.setBounds(x, 46, w, 24);
-            s.preset.setBounds(x, 78, w, 28);
+            s.instrument.setBounds(x, 72, w / 2 - 3, 28);
+            s.preset.setBounds(x + w / 2 + 3, 72, w / 2 - 3, 28);
             s.gainLabel.setBounds(x, 116, w, 22); s.gain.setBounds(x, 140, w, 48);
             s.panLabel.setBounds(x, 192, w, 22); s.pan.setBounds(x, 216, w, 48);
             s.mute.setBounds(x, 278, w / 2 - 4, 28);
@@ -86,7 +91,7 @@ public:
 private:
     struct Strip {
         juce::Label title, gainLabel, panLabel;
-        juce::ComboBox preset;
+        juce::ComboBox preset, instrument;
         juce::Slider gain, pan;
         juce::TextButton mute, solo;
     };

@@ -24,6 +24,10 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(DrumSamplerTests tests/DrumSamplerTests.cpp)
+    target_include_directories(DrumSamplerTests PRIVATE src)
+    add_test(NAME DrumSamplerTests COMMAND DrumSamplerTests)
+
     add_executable(SynthEngineTests tests/SynthEngineTests.cpp)
     target_include_directories(SynthEngineTests PRIVATE src)
     add_test(NAME SynthEngineTests COMMAND SynthEngineTests)

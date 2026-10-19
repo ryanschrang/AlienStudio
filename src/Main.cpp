@@ -10,6 +10,7 @@
 #include "SessionProject.h"
 #include "TrackMixerPanel.h"
 #include "PortableProject.h"
+#include "DrumSamplerPanel.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -28,6 +29,7 @@ struct SessionClipContent {
 struct SessionProjectLoadResult {
     alien::SessionProjectData project;
     std::array<std::shared_ptr<alien::SessionAudioClip>, 16> audioAssets{};
+    std::array<std::array<std::shared_ptr<alien::SessionAudioClip>, alien::drumPadCount>, 4> drumAssets{};
     std::size_t decodedBytes{};
     juce::String error;
 };
@@ -274,6 +276,17 @@ public:
         tabs.addTab("Piano roll", AlienStudioLookAndFeel::panel, &pianoRoll, false);
         tabs.addTab("Session", AlienStudioLookAndFeel::panel, &sessionPanel, false);
         tabs.addTab("Mixer", AlienStudioLookAndFeel::panel, &mixerPanel, false);
+        tabs.addTab("Drums", AlienStudioLookAndFeel::panel, &drumPanel, false);
+        drumPanel.onLoad = [this](int track, int pad, const juce::File& file) { loadDrumSample(track, pad, file); };
+        drumPanel.onClear = [this](int track, int pad) {
+            drumPaths[static_cast<std::size_t>(track)][static_cast<std::size_t>(pad)].clear();
+            engine.drumKits[static_cast<std::size_t>(track)].samples[static_cast<std::size_t>(pad)].store(nullptr);
+            drumPanel.setPaths(drumPaths);
+        };
+        drumPanel.onHit = [this](int track, int pad) {
+            engine.drumAuditions[static_cast<std::size_t>(track)].push(alien::drumBaseNote + pad, 0.8f);
+        };
+        drumPanel.onRoute = [this](int track) { engine.liveDrumTrack.store(track); };
         tabs.getTabbedButtonBar().addChangeListener(this);
         addAndMakeVisible(workspace);
         devicePanel.addAndMakeVisible(deviceTitle);
@@ -716,6 +729,7 @@ private:
         project.selectedScene = selectedScene;
         project.bpm = engine.bpm.load();
         project.synthPreset = engine.preset.load();
+        project.drumPaths = drumPaths;
         for (std::size_t i = 0; i < engine.tracks.size(); ++i)
             project.trackSettings[i] = engine.tracks[i].snapshot();
         for (std::size_t i = 0; i < project.stepPattern.size(); ++i)
@@ -757,6 +771,10 @@ private:
                                 if (current.audioFilePath == old.audioFilePath && written.audioFilePath.isNotEmpty())
                                     current.audioFilePath = alien::resolveProjectAudio(target, written.audioFilePath).getFullPathName();
                             }
+                        for (std::size_t t = 0; t < 4; ++t) for (std::size_t p = 0; p < alien::drumPadCount; ++p)
+                            if (safe->drumPaths[t][p] == project.drumPaths[t][p] && saved->drumPaths[t][p].isNotEmpty())
+                                safe->drumPaths[t][p] = alien::resolveProjectAudio(target, saved->drumPaths[t][p]).getFullPathName();
+                        safe->drumPanel.setPaths(safe->drumPaths);
                         safe->currentProjectFile = target;
                         safe->projectStatus.setText("Saved " + target.getFileName(), juce::dontSendNotification);
                         safe->projectStatus.setTooltip(target.getFullPathName());
@@ -774,6 +792,7 @@ private:
         projectBusy = busy;
         saveProjectButton.setEnabled(!busy); portableProjectButton.setEnabled(!busy);
         openProjectButton.setEnabled(!busy); importAudio.setEnabled(!busy);
+        drumPanel.setBusy(busy);
     }
     void chooseProjectToOpen() {
         projectFileChooser = std::make_unique<juce::FileChooser>("Open Alien Studio session",
@@ -821,6 +840,17 @@ private:
                             }
                             result->decodedBytes += bytes;
                             result->audioAssets[cellIndex(track, scene)] = decoded.clip;
+                        }
+                    for (std::size_t t = 0; t < 4 && result->error.isEmpty(); ++t)
+                        for (std::size_t p = 0; p < alien::drumPadCount && result->error.isEmpty(); ++p) {
+                            const auto& path = result->project.drumPaths[t][p];
+                            if (path.isEmpty()) continue;
+                            auto decoded = alien::decodeSessionAudioClip(alien::resolveProjectAudio(file, path));
+                            if (!decoded.clip) { result->error = "Drum sample: " + decoded.error; break; }
+                            const auto bytes = decoded.clip->frames * static_cast<std::size_t>(decoded.clip->channels) * sizeof(float);
+                            if (bytes > maxSessionAudioBytes - result->decodedBytes) { result->error = "Project exceeds 512 MiB audio limit."; break; }
+                            result->decodedBytes += bytes;
+                            result->drumAssets[t][p] = std::move(decoded.clip);
                         }
                 }
             }
@@ -870,6 +900,14 @@ private:
                     ? alien::resolveProjectAudio(file, source.audioFilePath).getFileName() : juce::String{};
                 if (asset != nullptr) retainedAudioAssets.push_back(asset);
             }
+        for (std::size_t t = 0; t < 4; ++t) for (std::size_t p = 0; p < alien::drumPadCount; ++p) {
+            const auto& path = result.project.drumPaths[t][p];
+            drumPaths[t][p] = path.isEmpty() ? juce::String{} : alien::resolveProjectAudio(file, path).getFullPathName();
+            const auto& asset = result.drumAssets[t][p];
+            if (asset) retainedAudioAssets.push_back(asset);
+            engine.drumKits[t].samples[p].store(asset.get());
+        }
+        drumPanel.setPaths(drumPaths);
         retainedAudioBytes += result.decodedBytes;
         selectedTrack = result.project.selectedTrack;
         selectedScene = result.project.selectedScene;
@@ -900,6 +938,34 @@ private:
             [static_cast<std::size_t>(selectedTrack)].audio != nullptr ? 2 : 1);
         projectStatus.setText("Opened " + file.getFileName(), juce::dontSendNotification);
         projectStatus.setTooltip(file.getFullPathName());
+    }
+    void loadDrumSample(int track, int pad, const juce::File& file) {
+        if (projectBusy) return;
+        setProjectBusy(true);
+        drumPanel.setStatus("Loading sample…");
+        juce::Component::SafePointer<MainComponent> safe(this);
+        std::function<juce::ThreadPoolJob::JobStatus()> job = [safe, track, pad, file] {
+            auto result = std::make_shared<alien::AudioClipImportResult>(alien::decodeSessionAudioClip(file));
+            juce::MessageManager::callAsync([safe, track, pad, file, result] {
+                if (!safe) return;
+                safe->setProjectBusy(false);
+                if (!result->clip) { safe->drumPanel.setStatus(result->error); return; }
+                const auto bytes = result->clip->frames * static_cast<std::size_t>(result->clip->channels) * sizeof(float);
+                if (bytes > maxSessionAudioBytes - safe->retainedAudioBytes) {
+                    safe->drumPanel.setStatus("Session audio memory limit reached (512 MiB)."); return;
+                }
+                safe->retainedAudioBytes += bytes;
+                safe->retainedAudioAssets.push_back(result->clip);
+                safe->drumPaths[static_cast<std::size_t>(track)][static_cast<std::size_t>(pad)] = file.getFullPathName();
+                safe->engine.drumKits[static_cast<std::size_t>(track)].samples[static_cast<std::size_t>(pad)].store(result->clip.get());
+                safe->engine.tracks[static_cast<std::size_t>(track)].instrument.store(1);
+                safe->mixerPanel.refreshSettings();
+                safe->drumPanel.setPaths(safe->drumPaths);
+                safe->drumPanel.setStatus("Loaded " + file.getFileName() + ". Play the pad or sequence MIDI " + juce::String(alien::drumBaseNote + pad) + ".");
+            });
+            return juce::ThreadPoolJob::jobHasFinished;
+        };
+        audioImportPool.addJob(std::move(job));
     }
     void chooseAudioFile() {
         audioFileChooser = std::make_unique<juce::FileChooser>("Import audio clip",
@@ -1027,6 +1093,8 @@ private:
     ToneEngine engine;
     alien::MidiInputPanel midiInput{engine.midi};
     alien::TrackMixerPanel mixerPanel{engine.tracks};
+    alien::DrumSamplerPanel drumPanel;
+    std::array<std::array<juce::String, alien::drumPadCount>, 4> drumPaths{};
     juce::AudioDeviceManager audio;
     juce::MidiKeyboardState keyboardState;
     juce::MidiKeyboardComponent keyboard{keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard};
