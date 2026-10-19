@@ -9,6 +9,11 @@
   #define NOMINMAX
  #endif
  #include <windows.h>
+ // JUCE removes the Windows RPC `small` macro before declaring an enum with
+ // that name. This header is included after juce_core, so remove it again.
+ #ifdef small
+  #undef small
+ #endif
 #else
  #include <unistd.h>
  #include <fcntl.h>
