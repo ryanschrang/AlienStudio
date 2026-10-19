@@ -14,6 +14,9 @@ struct TrackSettings {
     }
 };
 
+static_assert(std::atomic<float>::is_always_lock_free, "Track audio controls require lock-free floats");
+static_assert(std::atomic<int>::is_always_lock_free, "Track audio controls require lock-free integers");
+
 struct TrackControls {
     std::atomic<int> preset{0};
     std::atomic<float> gain{1.0f}, pan{0.0f}, peak{0.0f};

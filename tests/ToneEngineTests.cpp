@@ -8,6 +8,20 @@
 #include <iostream>
 #include <limits>
 #include <vector>
+#include <new>
+
+// Count C++ heap allocation on the calling thread, including actual audio callbacks.
+static thread_local std::size_t allocationCount = 0;
+void* operator new(std::size_t size) {
+    ++allocationCount;
+    if (auto* pointer = std::malloc(size == 0 ? 1 : size)) return pointer;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* pointer) noexcept { std::free(pointer); }
+void operator delete[](void* pointer) noexcept { std::free(pointer); }
+void operator delete(void* pointer, std::size_t) noexcept { std::free(pointer); }
+void operator delete[](void* pointer, std::size_t) noexcept { std::free(pointer); }
 
 static void require(bool ok, const char* message) {
     if (!ok) { std::cerr << message << '\n'; std::exit(1); }
@@ -477,7 +491,9 @@ static void independentTrackMixerTests() {
         std::array<double, 3> energy{};
         for (int b = 0; b < blocks; ++b) {
             float* out[]{l.data(), r.data()};
+            const auto allocationsBefore = allocationCount;
             e.audioDeviceIOCallbackWithContext(nullptr, 0, out, 2, 256, {});
+            require(allocationCount == allocationsBefore, "independent mixer callback must not allocate");
             energy = {};
             for (std::size_t i = 0; i < l.size(); ++i) {
                 require(std::isfinite(l[i]) && std::isfinite(r[i]), "mixer samples finite");
@@ -509,6 +525,22 @@ static void independentTrackMixerTests() {
     e.pianoRollNotes[0].publish(empty);
     energy = render(60);
     require(energy[0] == 0 && energy[1] > 0.001, "deleting equal-pitch note cannot release another track");
+    alien::SessionAudioClip audio;
+    audio.sampleRate = 48000; audio.channels = 1; audio.frames = 48000;
+    audio.left.assign(audio.frames, 0.5f);
+    audio.buildWaveform();
+    alien::SessionClipLaunch launch;
+    launch.clipIndex = 1; launch.audio = &audio;
+    e.launchQuantizationSteps.store(4);
+    e.pianoRollLaunches[0].publish(launch);
+    e.tracks[0].gain.store(0.5f);
+    render(100); // Cross a beat boundary and settle the ramp.
+    require(std::abs(l.back() - 0.0625f) < 1.0e-5f,
+        "imported audio receives the same track gain and stereo balance");
+    e.tracks[0].mute.store(true);
+    energy = render(60);
+    require(energy[0] == 0 && energy[1] > 0.001,
+        "audio-track mute preserves the independent MIDI track");
     e.playing.store(false);
     energy = render(1);
     require(energy[0] == 0 && energy[1] == 0, "stop clears every independent synth");
