@@ -42,6 +42,9 @@ struct SessionTrack {
     juce::String name;
     TrackSettings settings;
     int colour{}; // Index into the track colour palette.
+    PluginRackState plugins;
+    std::array<juce::String, drumPadCount> drumPaths{};
+    std::array<std::shared_ptr<const SessionAudioClip>, drumPadCount> drumAssets{};
     std::uint32_t id = newObjectId();
 };
 
@@ -67,6 +70,8 @@ struct ProjectDocument {
     int selectedTrack{};
     int selectedScene{};
     StepSequence steps;
+    Arrangement arrangement;
+    PluginRackState masterPlugins;
 
     static ProjectDocument createDefault(int trackCount = sessionProjectTrackCount,
                                          int sceneCount = sessionProjectSceneCount) {
@@ -134,15 +139,21 @@ struct ProjectDocument {
 // immutable and replaced on every edit.
 inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
     auto sameSettings = [](const TrackSettings& x, const TrackSettings& y) {
-        return x.preset == y.preset && x.gain == y.gain && x.pan == y.pan && x.mute == y.mute && x.solo == y.solo;
+        return x.preset == y.preset && x.gain == y.gain && x.pan == y.pan && x.mute == y.mute && x.solo == y.solo && x.instrument == y.instrument;
     };
+    if (a.masterPlugins != b.masterPlugins) return false;
+    if (a.arrangement.count != b.arrangement.count || a.arrangement.lengthBars != b.arrangement.lengthBars) return false;
+    for (std::size_t i = 0; i < a.arrangement.count; ++i) {
+        const auto& x = a.arrangement.regions[i]; const auto& y = b.arrangement.regions[i];
+        if (x.track != y.track || x.scene != y.scene || x.startBar != y.startBar || x.lengthBars != y.lengthBars) return false;
+    }
     if (a.bpm != b.bpm || a.launchQuantizationSteps != b.launchQuantizationSteps || a.livePreset != b.livePreset
         || a.steps.on != b.steps.on || a.steps.pitch != b.steps.pitch || a.steps.velocity != b.steps.velocity
         || a.tracks.size() != b.tracks.size() || a.scenes.size() != b.scenes.size())
         return false;
     for (std::size_t t = 0; t < a.tracks.size(); ++t)
         if (a.tracks[t].id != b.tracks[t].id || a.tracks[t].name != b.tracks[t].name
-            || a.tracks[t].colour != b.tracks[t].colour || !sameSettings(a.tracks[t].settings, b.tracks[t].settings))
+            || a.tracks[t].plugins != b.tracks[t].plugins || a.tracks[t].drumAssets != b.tracks[t].drumAssets || a.tracks[t].colour != b.tracks[t].colour || !sameSettings(a.tracks[t].settings, b.tracks[t].settings))
             return false;
     for (std::size_t s = 0; s < a.scenes.size(); ++s)
         if (a.scenes[s].id != b.scenes[s].id || a.scenes[s].name != b.scenes[s].name) return false;
@@ -161,6 +172,8 @@ inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
 // strings; decoding is done separately by the loader.
 inline SessionProjectData toProjectData(const ProjectDocument& doc) {
     SessionProjectData data(doc.trackCount(), doc.sceneCount());
+    data.arrangement = doc.arrangement;
+    data.masterPlugins = doc.masterPlugins;
     data.launchQuantizationSteps = doc.launchQuantizationSteps;
     data.selectedTrack = doc.selectedTrack;
     data.selectedScene = doc.selectedScene;
@@ -168,6 +181,8 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
     data.synthPreset = doc.livePreset;
     for (int t = 0; t < doc.trackCount(); ++t) {
         const auto& track = doc.tracks[static_cast<std::size_t>(t)];
+        data.plugins[t] = track.plugins;
+        data.drumPaths[static_cast<std::size_t>(t)] = track.drumPaths;
         data.trackSettings[static_cast<std::size_t>(t)] = track.settings;
         data.trackNames[static_cast<std::size_t>(t)] = track.name;
         data.trackColours[static_cast<std::size_t>(t)] = track.colour;
@@ -188,6 +203,8 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
 
 inline ProjectDocument fromProjectData(const SessionProjectData& data) {
     auto doc = ProjectDocument::createDefault(data.trackCount(), data.sceneCount());
+    doc.arrangement = data.arrangement;
+    doc.masterPlugins = data.masterPlugins;
     doc.launchQuantizationSteps = data.launchQuantizationSteps;
     doc.selectedTrack = data.selectedTrack;
     doc.selectedScene = data.selectedScene;
@@ -195,6 +212,8 @@ inline ProjectDocument fromProjectData(const SessionProjectData& data) {
     doc.livePreset = data.synthPreset;
     for (int t = 0; t < data.trackCount(); ++t) {
         auto& track = doc.tracks[static_cast<std::size_t>(t)];
+        track.plugins = data.plugins[t];
+        track.drumPaths = data.drumPaths[static_cast<std::size_t>(t)];
         track.settings = data.trackSettings[static_cast<std::size_t>(t)];
         if (data.trackNames[static_cast<std::size_t>(t)].isNotEmpty()) track.name = data.trackNames[static_cast<std::size_t>(t)];
         track.colour = data.trackColours[static_cast<std::size_t>(t)];

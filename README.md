@@ -4,7 +4,7 @@
 
 Alien Studio is an **independent, original application**, not affiliated with or endorsed by any of those products. We aim to learn from broadly useful workflows without copying proprietary code, artwork, branding, or protected assets.
 
-> **Project status:** Early music-making prototype with a pitch/velocity step sequencer, piano-roll tools, a MIDI/audio Session grid of up to 16 tracks and 32 scenes, independent Session synths and mixer controls, USB MIDI input, project save/open, and portable audio collection. Windows Debug/Release builds and automated tests run in GitHub Actions. Arrangement, recording, warping, plugin hosting, and production effects remain planned. Native audio-device behavior still requires hands-on Windows testing; see [the verification checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
+> **Project status:** Integrated early DAW prototype with up to 16 tracks/32 scenes, 12 built-in sounds, drum sample kits/browser, arrangement playback and WAV export, bounded audio recording and offline tempo matching, plus initial stereo VST3 instrument/FX hosting. Project v6 unifies these features with saving, portable media collection, undo/redo and recovery. Native Windows device, plugin and listening checks remain required; see [the checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
 
 ## Product vision: three connected workspaces
 
@@ -27,19 +27,12 @@ The long-term differentiator is **one shared project and audio engine** across a
 - [x] GPL-3.0 license file. Dependency attribution/distribution review remains required before releases.
 
 ### Next implementation sequence
-1. Drum sampler and sample browser; extend the step workflow for drum channels.
-2. Shared arrangement timeline and WAV export; move Session material into complete songs.
-3. MIDI recording, metronome, count-in, overdubbing, and explicit input-to-track routing.
-4. Audio recording, trimming, fades, take lanes, and comping.
-5. Automation, EQ/compression/reverb/delay, buses, sends, sidechain, and latency compensation.
-6. VST3 hosting, plugin scan/recovery, state persistence, and freeze/render.
-7. Tempo warping, pitch correction, expressive MIDI/articulations, and optional assisted composition/mastering.
+1. Verify integrated VST3 instruments/FX and Windows audio/MIDI hardware behavior.
+2. Stream long recording takes to disk; extend editing beyond the current 60-second capture/warp input bounds.
+3. MIDI recording, metronome/count-in and overdub.
+4. Waveform trimming/fades, take lanes and live warp-marker workflows.
+5. Plugin automation, sidechains/multi-output routing, freeze and crash isolation during playback.
 
-Autosave/recovery, global undo, project/media management, broader track/scene capacity,
-and Windows device/listening verification accompany these milestones. See
-[the delivery roadmap](docs/ROADMAP.md) for acceptance criteria and current boundaries.
-
-These are **goals**, not promises of feature parity or delivery dates. Priorities will change as the audio engine, stability, and contributor capacity evolve.
 
 ## Build from source (Windows 11)
 
@@ -211,7 +204,7 @@ smaller displays.
 
 Save the session before closing to retain MIDI patterns, track settings, and audio
 references. Unsaved edits are lost; autosave/recovery is not yet implemented.
-MIDI recording, arrangement playback, and external/plugin instruments remain future work.
+MIDI recording remains future work. Arrangement playback and VST3 instruments are available from More... in the top bar.
 Same-pitch overlaps share one gate until the last overlap ends; velocity changes
 to a sounding note apply at its next trigger. Notes end at the four-bar boundary.
 Edits publish at audio-block boundaries; stop, source changes, preset changes and
@@ -411,7 +404,7 @@ listening remains a manual check:
 
 Ghost notes from other tracks, additional instrument types, per-note slides/expression
 and riff generation are separate future additions. These processing
-tools operate on the existing synth clip and do not add plugin hosting.
+tools edit MIDI clips; the separate Plugins view assigns VST3 instruments and effects.
 
 
 ### Computer keyboard piano
@@ -484,7 +477,7 @@ The corrected official icon lives in [`assets/branding`](assets/branding/README.
 Windows builds embed the supplied multi-resolution ICO directly, retaining all
 seven sizes and the complete padded artwork. See that directory's README for
 asset updates, Explorer/title-bar/taskbar checks at different Windows sizes, and
-icon-cache refresh instructions. No startup splash is introduced.
+icon-cache refresh instructions. The approved artwork is used by the startup splash.
 
 
 ### Undo, saving and recovery
@@ -525,7 +518,62 @@ Preset changes affect newly triggered notes; held notes retain their original
 patch until release. Mixer settings also affect imported audio on that track.
 Live MIDI/typing/mouse input and the legacy step sequencer remain on their separate
 Device rack synth; Session mute/solo does not mute live monitoring. Project format
-v4 stores any number of tracks and scenes with their names and colours; v3 stores
+v6 stores track/scene names, drum kits, arrangement and plugin state; v3 stores
 mixer settings for the original four tracks. Versions 1 and 2 load with the old
 global preset copied to all four tracks, centred balance, unity volume, and
-mute/solo off. Older Alien Studio versions cannot open v4 projects.
+mute/solo off. Older Alien Studio versions cannot open v6 projects. Both historical v4 variants and v5 arrangements migrate on load.
+
+
+### Integrated workspaces and VST3 hosting
+
+Use **More...** in the top bar for **Drums**, **Arrange**, **Audio lab** and
+**Plugins**. The four original workspace buttons remain available.
+
+- Drums: load WAV/MP3 samples into eight pads per track, audition and sequence MIDI
+  notes 36–43. Select **Drum kit** in Mixer. The MIDI routing selector in Drums
+  also routes external MIDI to a track's VST3 instrument; typing/mouse piano
+  and the legacy step sequencer continue to use the live synth.
+- Arrange: place Session clips at whole-bar positions; move, resize, duplicate
+  and delete regions, then play or export a stereo 48 kHz/24-bit WAV. Track/scene
+  moves and deletions update region references. Regions do not overlap on one track.
+- Audio lab: configure device inputs and record mono/stereo takes to a new WAV;
+  failed writes retain the take for a retry. Recording is still preallocated and
+  capped at **60 seconds**. Longer streaming recording, full waveform editing,
+  latency compensation for recording, and live warp markers are not implemented.
+  Tempo matching creates a separate WAV from a source up to 60 seconds, with a
+  0.5–2x duration ratio and linked-stereo WSOLA processing.
+- Plugins: **Scan VST3...** selects one installed 64-bit `.vst3` bundle. Scanning
+  runs in a separate child process with a 60-second timeout. Successful identities
+  are cached in the application data folder; failures are logged and retried only
+  by explicitly scanning that bundle again. This first version does not recursively
+  discover an entire plugin folder.
+
+Each Session track has one instrument slot (replacing its built-in synth/kit)
+plus eight ordered FX slots. Master has eight FX slots. Select a target, choose
+an installed plugin, and use **Use instrument** or **Add FX**. Select a rack slot
+for **Open editor**, **Bypass / enable**, **Move FX up/down**, or **Remove**.
+Bypassed instruments are silent; bypassed effects pass audio through. Native
+editors have a generic parameter-editor fallback. Missing or unsupported plugins
+preserve their description, opaque settings and bypass state in the project;
+missing instruments stay silent rather than substituting a different sound.
+
+The engine renders in preallocated chunks of at most 512 samples and timestamps
+Session MIDI within each chunk. Plugin playheads receive tempo, PPQ, 4/4 meter,
+play/stop and sample time. Track latency is aligned up to 96,000 samples per
+rack; changes in reported latency during playback can produce a discontinuity.
+WAV export uses isolated plugin instances, trims initial reported processing
+latency, and includes reported effect tails up to 30 seconds. Export refuses
+missing/unsupported plugins instead of silently omitting them.
+
+Initial scope is stereo-output VST3 instruments and stereo FX without sidechains.
+No VST2, AU, CLAP, multi-output routing, plugin automation lanes, MIDI output from
+plugins, freeze, or bridging of 32-bit plugins is provided. Running processors
+are in-process: scan isolation does not protect the DAW from a plugin crashing
+while loaded. Rack changes, state snapshots (save/autosave/undo), and project
+loads detach/restart the audio callback; native parameter adjustments themselves
+remain live. Plugin binaries/licenses and plugin-internal sample libraries are
+not copied by Save portable. Keep those installed on a destination computer.
+
+Recovery cleanup is fenced against in-flight autosaves. Portable-media relocation
+updates the active document and undo/redo history for clips and drum samples.
+Project v6 loads both prior v4 dialects, v5 arrangements and versions 1–3.

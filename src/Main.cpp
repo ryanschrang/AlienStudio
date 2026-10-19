@@ -7,7 +7,13 @@ class AlienStudioApp : public juce::JUCEApplication {
 public:
     const juce::String getApplicationName() override { return "Alien Studio"; }
     const juce::String getApplicationVersion() override { return "0.1.0"; }
-    void initialise(const juce::String&) override {
+    void initialise(const juce::String& commandLine) override {
+        auto args = juce::StringArray::fromTokens(commandLine, true);
+        args.removeEmptyStrings();
+        if (args.size() == 3 && args[0] == "--scan-vst3") {
+            setApplicationReturnValue(alien::scanPluginBundle(args[1].unquoted(), juce::File(args[2].unquoted())));
+            quit(); return;
+        }
         splash = std::make_unique<alien::branding::SplashWindow>(getApplicationVersion());
         splash->onClick = [this] { finishStartup(); };
         splash->setStatus("Loading interface and audio engine");

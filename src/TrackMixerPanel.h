@@ -28,7 +28,12 @@ public:
         title.setInterceptsMouseClicks(false, false);
         for (std::size_t p = 0; p < presetNames.size(); ++p) preset.addItem(presetNames[p], static_cast<int>(p) + 1);
         preset.setTooltip("Changes new notes on this track; held notes finish with their original sound");
-        preset.onChange = [this] { controls.preset.store(preset.getSelectedId() - 1); edited(true); };
+        preset.addItem("Drum kit", 100);
+        preset.onChange = [this] {
+            controls.instrument.store(preset.getSelectedId() == 100 ? 1 : 0);
+            if (preset.getSelectedId() != 100) controls.preset.store(preset.getSelectedId() - 1);
+            edited(true);
+        };
 
         gainLabel.setText("VOLUME", juce::dontSendNotification);
         gain.setSliderStyle(juce::Slider::LinearVertical);
@@ -92,7 +97,7 @@ public:
 
     void refreshSettings() {
         const auto s = controls.snapshot();
-        preset.setSelectedId(s.preset + 1, juce::dontSendNotification);
+        preset.setSelectedId(s.instrument == 1 ? 100 : s.preset + 1, juce::dontSendNotification);
         gain.setValue(s.gain * 100, juce::dontSendNotification);
         pan.setValue(s.pan * 100, juce::dontSendNotification);
         mute.setToggleState(s.mute, juce::dontSendNotification);

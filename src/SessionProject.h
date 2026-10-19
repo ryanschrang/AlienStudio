@@ -3,6 +3,10 @@
 #include "PianoRollSequence.h"
 #include "TrackMixer.h"
 #include "SynthEngine.h"
+#include "DrumSampler.h"
+#include "Arrangement.h"
+#include "SessionCapacity.h"
+#include "PluginState.h"
 #include <juce_core/juce_core.h>
 #include <array>
 #include <cmath>
@@ -12,12 +16,10 @@ namespace alien {
 
 // Capacity of a session. The audio engine pre-allocates this many tracks so it
 // never allocates while playing; raising either value is a one-line change.
-inline constexpr int maxSessionTracks = 16;
-inline constexpr int maxSessionScenes = 32;
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 4;
+inline constexpr int sessionProjectFormatVersion = 6;
 
 struct SessionProjectClip {
     PianoRollPattern pattern;
@@ -31,6 +33,10 @@ struct SessionProjectData {
     std::vector<juce::String> trackNames;  // Empty entry: use the default name.
     std::vector<int> trackColours;
     std::vector<juce::String> sceneNames;
+    std::vector<std::array<juce::String, drumPadCount>> drumPaths;
+    Arrangement arrangement;
+    std::vector<PluginRackState> plugins;
+    PluginRackState masterPlugins;
     int launchQuantizationSteps{16};
     int selectedTrack{};
     int selectedScene{};
@@ -55,6 +61,8 @@ struct SessionProjectData {
     void resize(int tracks, int scenes) {
         clips.assign(static_cast<std::size_t>(juce::jmax(0, scenes)),
                      std::vector<SessionProjectClip>(static_cast<std::size_t>(juce::jmax(0, tracks))));
+        plugins.assign(static_cast<std::size_t>(juce::jmax(0, tracks)), {});
+        drumPaths.assign(static_cast<std::size_t>(juce::jmax(0, tracks)), {});
         trackSettings.assign(static_cast<std::size_t>(juce::jmax(0, tracks)), TrackSettings{});
         trackNames.assign(static_cast<std::size_t>(juce::jmax(0, tracks)), juce::String{});
         trackColours.clear();
@@ -71,11 +79,14 @@ struct SessionProjectData {
             || static_cast<int>(trackNames.size()) != tracks || static_cast<int>(trackColours.size()) != tracks
             || static_cast<int>(sceneNames.size()) != scenes)
             return false;
+        if (!arrangement.valid(tracks, scenes) || drumPaths.size() != trackSettings.size()) return false;
         if ((launchQuantizationSteps != 4 && launchQuantizationSteps != 16)
             || selectedTrack < 0 || selectedTrack >= tracks
             || selectedScene < 0 || selectedScene >= scenes
             || bpm < 60 || bpm > 200 || synthPreset < 0 || synthPreset >= presetCount)
             return false;
+        if (plugins.size() != trackSettings.size() || !masterPlugins.valid() || !masterPlugins.instrument.descriptionXml.isEmpty()) return false;
+        for (const auto& rack : plugins) if (!rack.valid()) return false;
         for (const auto& track : trackSettings) if (!track.valid()) return false;
         for (const int colour : trackColours) if (colour < 0 || colour > 255) return false;
         for (const auto& scene : clips) {
@@ -102,12 +113,17 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     rootObject->setProperty("selectedScene", project.selectedScene);
     rootObject->setProperty("bpm", project.bpm);
     rootObject->setProperty("synthPreset", project.synthPreset);
+    juce::Array<juce::var> pluginRacks;
+    for (const auto& rack : project.plugins) pluginRacks.add(rackToVar(rack));
+    rootObject->setProperty("plugins", juce::var(pluginRacks));
+    rootObject->setProperty("masterPlugins", rackToVar(project.masterPlugins));
     juce::Array<juce::var> settings;
     for (std::size_t t = 0; t < project.trackSettings.size(); ++t) {
         const auto& track = project.trackSettings[t];
         auto value = juce::var(new juce::DynamicObject());
         auto* object = value.getDynamicObject();
         object->setProperty("preset", track.preset);
+        object->setProperty("instrument", track.instrument);
         object->setProperty("gain", track.gain);
         object->setProperty("pan", track.pan);
         object->setProperty("mute", track.mute);
@@ -120,6 +136,13 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     juce::Array<juce::var> sceneNames;
     for (const auto& name : project.sceneNames) sceneNames.add(name);
     rootObject->setProperty("sceneNames", juce::var(sceneNames));
+    juce::Array<juce::var> kits;
+    for (const auto& kit : project.drumPaths) {
+        juce::Array<juce::var> pads;
+        for (const auto& path : kit) pads.add(path);
+        kits.add(juce::var(pads));
+    }
+    rootObject->setProperty("drumPaths", juce::var(kits));
     juce::Array<juce::var> steps;
     for (const auto enabled : project.stepPattern) steps.add(enabled);
     rootObject->setProperty("stepPattern", juce::var(steps));
@@ -132,6 +155,19 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     rootObject->setProperty("stepPitches", juce::var(pitches));
     rootObject->setProperty("stepVelocities", juce::var(velocities));
 
+    auto songValue = juce::var(new juce::DynamicObject());
+    songValue.getDynamicObject()->setProperty("lengthBars", project.arrangement.lengthBars);
+    juce::Array<juce::var> regions;
+    for (std::size_t i = 0; i < project.arrangement.count; ++i) {
+        const auto& r = project.arrangement.regions[i];
+        auto value = juce::var(new juce::DynamicObject());
+        auto* object = value.getDynamicObject();
+        object->setProperty("track",r.track); object->setProperty("scene",r.scene);
+        object->setProperty("startBar",r.startBar); object->setProperty("lengthBars",r.lengthBars);
+        regions.add(value);
+    }
+    songValue.getDynamicObject()->setProperty("regions",juce::var(regions));
+    rootObject->setProperty("arrangement",songValue);
     juce::Array<juce::var> scenes;
     for (const auto& scene : project.clips) {
         juce::Array<juce::var> tracks;
@@ -229,6 +265,11 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
             auto& track = parsed.trackSettings[static_cast<std::size_t>(i)];
             track = {static_cast<int>(p), static_cast<float>(g), static_cast<float>(pan),
                 static_cast<bool>(mute), static_cast<bool>(solo)};
+            if (object->hasProperty("instrument")) {
+                const auto instrument = object->getProperty("instrument");
+                if (!instrument.isInt()) { error = "Invalid instrument type."; return false; }
+                track.instrument = static_cast<int>(instrument);
+            }
             if (!track.valid()) { error = "Track settings outside supported range."; return false; }
             const auto name = object->getProperty("name"), colour = object->getProperty("colour");
             if (name.isString()) parsed.trackNames[static_cast<std::size_t>(i)] = name.toString().substring(0, 64);
@@ -261,6 +302,19 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         }
     }
 
+    if (rootObject->hasProperty("drumPaths")) {
+        const auto kitsValue = rootObject->getProperty("drumPaths");
+        const auto* kits = kitsValue.getArray();
+        if (kits == nullptr || kits->size() != trackCount) { error = "Invalid drum kits."; return false; }
+        for (int t = 0; t < trackCount; ++t) {
+            const auto* pads = (*kits)[t].getArray();
+            if (pads == nullptr || pads->size() != drumPadCount) { error = "Invalid drum pads."; return false; }
+            for (int p = 0; p < drumPadCount; ++p) {
+                if (!(*pads)[p].isString()) { error = "Invalid drum sample path."; return false; }
+                parsed.drumPaths[static_cast<std::size_t>(t)][static_cast<std::size_t>(p)] = (*pads)[p].toString();
+            }
+        }
+    }
     for (int sceneIndex = 0; sceneIndex < sceneCount; ++sceneIndex) {
         const auto* tracks = (*scenes)[sceneIndex].getArray();
         if (tracks == nullptr || tracks->size() != trackCount) {
@@ -318,6 +372,28 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         }
     }
 
+    if (rootObject->hasProperty("arrangement")) {
+        const auto songValue = rootObject->getProperty("arrangement");
+        const auto* object = songValue.getDynamicObject();
+        if (object == nullptr || !object->getProperty("lengthBars").isInt()) { error="Invalid arrangement."; return false; }
+        parsed.arrangement.lengthBars=static_cast<int>(object->getProperty("lengthBars"));
+        const auto regionsValue=object->getProperty("regions"); const auto* regions=regionsValue.getArray();
+        if (regions==nullptr || regions->size()>Arrangement::capacity) { error="Invalid arrangement regions.";return false; }
+        for (const auto& value : *regions) {
+            const auto* r=value.getDynamicObject();
+            if(r==nullptr || !r->getProperty("track").isInt() || !r->getProperty("scene").isInt()
+                || !r->getProperty("startBar").isInt() || !r->getProperty("lengthBars").isInt()) { error="Invalid region.";return false; }
+            if(!parsed.arrangement.add({static_cast<int>(r->getProperty("track")),static_cast<int>(r->getProperty("scene")),
+                static_cast<int>(r->getProperty("startBar")),static_cast<int>(r->getProperty("lengthBars"))})) {
+                error="Overlapping or out-of-range arrangement region.";return false;
+            }
+        }
+    }
+    if (formatVersion >= 6) {
+        const auto rackValue = rootObject->getProperty("plugins"); const auto* racks = rackValue.getArray();
+        if (!racks || racks->size() != trackCount || !rackFromVar(rootObject->getProperty("masterPlugins"), parsed.masterPlugins)) { error="Invalid plugin racks"; return false; }
+        for (int t=0;t<trackCount;++t) if (!rackFromVar((*racks)[t],parsed.plugins[t])) { error="Invalid plugin state"; return false; }
+    }
     if (!parsed.valid()) { error = "Project settings are outside the supported range."; return false; }
     destination = std::move(parsed);
     error.clear();

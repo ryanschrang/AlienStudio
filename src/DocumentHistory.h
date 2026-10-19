@@ -49,6 +49,12 @@ public:
         position = entries.size() - 1;
     }
 
+    // Media relocation is storage metadata, not an undoable edit. Apply it to
+    // both undo and redo states without changing their content identities.
+    template<class Fn> void relocateMedia(Fn&& relocate) {
+        for (auto& entry : entries) relocate(entry.document);
+    }
+
     bool canUndo() const noexcept { return position > 0; }
     bool canRedo() const noexcept { return position + 1 < entries.size(); }
     juce::String undoLabel() const { return canUndo() ? entries[position].step.label : juce::String{}; }
@@ -68,6 +74,8 @@ public:
         redone = entries[position].step;
         return &entries[position].document;
     }
+
+    void breakCoalescing() { if (!entries.empty()) entries[position].coalesceKey.clear(); }
 
     // Identifies the current state; equal ids mean identical documents.
     std::uint64_t currentId() const noexcept { return entries.empty() ? 0 : entries[position].id; }

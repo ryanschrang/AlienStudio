@@ -10,7 +10,7 @@ namespace alien {
 // and project file actions. It only reports intent through callbacks.
 class TopBar final : public juce::Component {
 public:
-    static constexpr int height = 58;
+    static constexpr int height = 92;
 
     TopBar() {
         namespace col = ui::colours;
@@ -41,6 +41,11 @@ public:
             b.onClick = [this, i] { if (onViewSelected) onViewSelected(i); };
         }
 
+        addAndMakeVisible(extraViews);
+        extraViews.addItem("Drums", 5); extraViews.addItem("Arrange", 6);
+        extraViews.addItem("Audio lab", 7); extraViews.addItem("Plugins", 8);
+        extraViews.setTextWhenNothingSelected("More...");
+        extraViews.onChange = [this] { if (onViewSelected && extraViews.getSelectedId() > 0) onViewSelected(extraViews.getSelectedId() - 1); };
         addAndMakeVisible(play);
         play.setButtonText("Play");
         play.setIconOnly(true);
@@ -107,6 +112,7 @@ public:
     std::function<void(int)> onTempoChanged;
 
     void setActiveView(int index) {
+        extraViews.setSelectedId(index >= 4 ? index + 1 : 0, juce::dontSendNotification);
         for (std::size_t i = 0; i < viewButtons.size(); ++i)
             viewButtons[i].setToggleState(static_cast<int>(i) == index, juce::dontSendNotification);
     }
@@ -136,7 +142,8 @@ public:
     }
 
     void resized() override {
-        auto top = getLocalBounds().reduced(12, 0);
+        extraViews.setBounds(12, 62, 155, 24);
+        auto top = getLocalBounds().withHeight(58).reduced(12, 0);
         const bool compact = getWidth() < 1320;
         brandMark.setBounds(top.removeFromLeft(36).withSizeKeepingCentre(36, 36));
         top.removeFromLeft(8);
@@ -190,6 +197,7 @@ public:
     }
 
 private:
+    juce::ComboBox extraViews;
     branding::LogoMark brandMark;
     juce::Label title, brandSubtitle;
     std::array<ui::GlyphButton, 4> viewButtons;

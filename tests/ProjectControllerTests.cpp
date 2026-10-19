@@ -1,4 +1,5 @@
 #include "ProjectController.h"
+#include "AudioFileWrite.h"
 #include <cstdlib>
 #include <iostream>
 
@@ -197,11 +198,55 @@ static void saveAndAutosaveTests() {
     std::cout << "PASS: autosave, crash recovery and save completion\n";
 }
 
+static void recoveryAndPortableRegressionTests() {
+    const auto root=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("AlienRegression","",false);
+    root.createDirectory(); alien::ProjectController::recoveryDirectoryOverride()=root.getChildFile("Recovery");
+    auto engine=std::make_unique<ToneEngine>(); alien::ProjectController c(*engine);
+    c.setBpm(131);c.commit("Tempo");c.autosaveIfNeeded();
+    // Deliberately discard immediately; the worker may be queued or writing.
+    c.newProject();
+    for(int i=0;i<20;++i)pump(10);
+    require(!alien::ProjectController::hasRecoverableSession(),"New fences an in-flight autosave");
+    c.setBpm(132);c.commit("Tempo");c.autosaveIfNeeded();c.discardRecovery();
+    for(int i=0;i<20;++i)pump(10);
+    require(!alien::ProjectController::hasRecoverableSession(),"Quit/discard fences an in-flight autosave");
+
+    auto clip=std::make_shared<alien::SessionAudioClip>();clip->sampleRate=8000;clip->channels=1;clip->frames=80;clip->left.assign(80,0.1f);clip->buildWaveform();
+    const auto original=root.getChildFile("Original.wav");std::atomic<bool> cancel{false};juce::String error;
+    require(alien::writeClipWav(original,*clip,cancel,error),"create source WAV");
+    require(c.installAudio(original,0,0,clip),"install source audio");
+    c.setBpm(140);c.commit("Tempo before portable save");
+    bool done=false,ok=false;const auto portable=root.getChildFile("Portable.alienstudio");
+    c.writeProject(portable,true,[&](bool result){ok=result;done=true;});
+    for(int i=0;i<100 && !done;++i)pump(10);
+    require(done && ok,"portable save completes");
+    const auto collected=c.document().clip(0,0).audioFilePath;
+    require(collected!=original.getFullPathName() && juce::File(collected).existsAsFile(),"portable audio copied");
+    original.deleteFile();
+    require(c.undo() && c.document().clip(0,0).audioFilePath==collected,"undo retains collected audio path");
+    require(c.redo() && c.document().clip(0,0).audioFilePath==collected,"redo retains collected audio path");
+
+    // Both historical v4 dialects and v5 load into the unified v6 format.
+    auto legacy=juce::JSON::parse(alien::serializeSessionProject(alien::toProjectData(c.document())));
+    auto* object=legacy.getDynamicObject();object->setProperty("version",4);
+    object->removeProperty("plugins");object->removeProperty("masterPlugins");object->removeProperty("drumPaths");object->removeProperty("arrangement");
+    for(auto& value:*object->getProperty("trackSettings").getArray()) value.getDynamicObject()->removeProperty("instrument");
+    alien::SessionProjectData loaded;
+    require(alien::parseSessionProject(juce::JSON::toString(legacy),loaded,error),"redesign v4 with no drum fields migrates");
+    auto combined=alien::toProjectData(c.document());combined.drumPaths[0][2]=collected;combined.trackSettings[0].instrument=1;
+    require(combined.arrangement.add({3,3,0,4}),"add legacy region");
+    auto v5=juce::JSON::parse(alien::serializeSessionProject(combined));v5.getDynamicObject()->setProperty("version",5);
+    require(alien::parseSessionProject(juce::JSON::toString(v5),loaded,error) && loaded.drumPaths[0][2]==collected && loaded.arrangement.count==1,"drum/arrangement v5 migrates");
+    c.discardRecovery();alien::ProjectController::recoveryDirectoryOverride()=juce::File{};root.deleteRecursively();
+    std::cout<<"PASS: recovery fencing, portable undo/redo and both legacy schemas\n";
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     structureTests();
     fileFormatTests();
     undoTests();
     saveAndAutosaveTests();
+    recoveryAndPortableRegressionTests();
     return 0;
 }
