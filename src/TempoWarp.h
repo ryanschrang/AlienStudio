@@ -9,7 +9,7 @@ namespace alien {
 inline std::shared_ptr<SessionAudioClip> warpTempo(const SessionAudioClip& input,
     double ratio,const std::atomic<bool>& cancelled) try {
     if(!input.valid() || !std::isfinite(ratio) || ratio<0.5 || ratio>2
-        || input.frames/input.sampleRate>60 || cancelled.load()) return {};
+        || cancelled.load()) return {};
     const auto frames=static_cast<std::size_t>(std::ceil(input.frames*ratio));
     if(frames>SessionAudioClip::maxDecodedBytes/(input.channels*sizeof(float))) return {};
     auto out=std::make_shared<SessionAudioClip>();

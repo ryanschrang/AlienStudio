@@ -28,7 +28,7 @@ The long-term differentiator is **one shared project and audio engine** across a
 
 ### Next implementation sequence
 1. Verify integrated VST3 instruments/FX and Windows audio/MIDI hardware behavior.
-2. Stream long takes during Session playback and extend editing/tempo warping beyond current memory/input bounds.
+2. Stream long takes during Session playback and extend editing beyond current memory/input bounds.
 3. MIDI recording, metronome/count-in and overdub.
 4. Waveform trimming/fades, take lanes and live warp-marker workflows.
 5. Plugin automation, sidechains/multi-output routing, freeze and crash isolation during playback.
@@ -549,8 +549,11 @@ Use **More...** in the top bar for **Drums**, **Arrange**, **Audio lab** and
   WAV destination, with an explicit message; long-file streaming playback is a
   separate milestone. Full waveform editing, recording latency compensation and
   live warp markers remain future work.
-  Tempo matching creates a separate WAV from a source up to 60 seconds, with a
-  0.5–2x duration ratio and linked-stereo WSOLA processing.
+  Tempo matching reads a chosen WAV/MP3 source in bounded blocks and streams a
+  separate WAV with no 60-second input cap, a 0.5–2x duration ratio and linked-stereo
+  WSOLA processing. Sources too large for Session can be selected directly. Large
+  results stay on disk when they exceed Session memory budgets; Cancel removes
+  unpublished render output, and IO failures retain recoverable partial output.
 - Plugins: **Scan VST3...** selects one installed 64-bit `.vst3` bundle. Scanning
   runs in a separate child process with a 60-second timeout. Successful identities
   are cached in the application data folder; failures are logged and retried only
@@ -607,5 +610,5 @@ not guarantee survival of every sample after sudden power loss.
 If the intended destination already exists when finalizing, it is preserved and
 the unfinished take remains recoverable. Recovery chooses a new sibling filename
 when needed. Keep unfinished WAVs and journals together until recovery succeeds;
-never remove original source recordings to make space automatically. The existing
-60-second limit applies to tempo-warp input only, not recording.
+never remove original source recordings to make space automatically. The
+tempo-warp renderer also streams from disk with no one-minute input cap.

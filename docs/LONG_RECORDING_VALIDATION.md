@@ -20,7 +20,7 @@ Existing AudioToolsTests, ToneEngineTests, SessionProjectTests and ArrangementTe
 
 ## Boundaries
 
-Recording has no one-minute cap. Disk throughput, free space and filesystem limits still apply. The Session player remains RAM-based: takes beyond 128 MiB decoded audio, or the remaining 512 MiB session budget, stay saved on disk and produce a clear UI message instead of being loaded. Streaming long-file playback is separate work. Tempo-warp input remains limited to 60 seconds.
+Recording has no one-minute cap. Disk throughput, free space and filesystem limits still apply. The Session player remains RAM-based: takes beyond 128 MiB decoded audio, or the remaining 512 MiB session budget, stay saved on disk and produce a clear UI message instead of being loaded. Streaming long-file playback is separate work. Tempo-warp input now streams from disk without a 60-second limit; see LONG_TEMPO_WARP_VALIDATION.md.
 
 No physical Windows input/output, multi-hour device recording, real disk-full hardware test or power-loss durability claim is made. Run the updated Windows checklist before treating this milestone as verified on hardware. Recoverable payload can exclude FIFO-resident, partially written or OS-cached samples.
 

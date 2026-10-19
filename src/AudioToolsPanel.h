@@ -14,7 +14,7 @@ public:
         recordHeading.setText("01  RECORD", juce::dontSendNotification); recordHeading.setColour(juce::Label::textColourId, juce::Colour(0xffee8fa0));
         warpHeading.setText("02  TEMPO WARP", juce::dontSendNotification); warpHeading.setColour(juce::Label::textColourId, juce::Colour(0xffa79beb));
         recordNote.setText("Disk streaming / monitoring off", juce::dontSendNotification);
-        warpNote.setText("Fixed tempo / separate WAV / 0.5-2x", juce::dontSendNotification);
+        warpNote.setText("Source file / disk render / 0.5-2x", juce::dontSendNotification);
         recover.setButtonText("Recover takes...");
         recover.onClick=[this]{if(onRecover)onRecover();};
         record.setButtonText("Record take");settings.setButtonText("Audio settings");warp.setButtonText("Render tempo match");

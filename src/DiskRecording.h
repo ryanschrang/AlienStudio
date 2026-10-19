@@ -120,6 +120,7 @@ public:
         if(!stream || !stream->setPosition(0) || !stream->write(header.data(),header.size()) || !stream->setPosition(end))return false;
         stream->flush();return stream->getStatus().wasOk();
     }
+    void discard() { stream.reset();result.partialFile.deleteFile();result.journal.deleteFile();lease.reset(); }
     RecordingResult finish(bool ioFailed) override {
         auto finishingLease=std::move(lease);
         if((result.writtenFrames*channelCount*3 & 1u)!=0 && !stream->writeByte(0))ioFailed=true;
