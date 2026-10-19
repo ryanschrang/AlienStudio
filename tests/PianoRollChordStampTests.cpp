@@ -44,7 +44,7 @@ int main() {
             && samePianoRollPattern(pattern, unchanged), "clip-boundary failure is transactional");
 
     PianoRollPattern full;
-    for (int i = 0; i < 126; ++i) full.add(i, 0, 1);
+    for (std::size_t i = 0; i + 2 < PianoRollPattern::maxNotes; ++i) full.add(static_cast<int>(i % 128), 0, 1);
     const auto fullBefore = full;
     require(stampChord(full, 4, settings).status == ChordStampStatus::capacityExceeded
             && samePianoRollPattern(full, fullBefore), "capacity failure adds no partial chord");

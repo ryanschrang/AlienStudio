@@ -91,18 +91,7 @@ public:
         clearButton.setButtonText("Clear");
         clearButton.setName("Clear piano roll notes");
         clearButton.setTooltip("Remove all notes from the piano roll");
-        clearButton.onClick = [this] {
-            if (pattern.count == 0) return;
-            releaseAudition();
-            beginEdit();
-            pattern.clear();
-            selection.clear();
-            activeId = 0;
-            insertionStep = 0.0;
-            drag = Drag::none;
-            changed();
-            endEdit();
-        };
+        clearButton.onClick = [this] { clearAllNotes(); };
         addAndMakeVisible(exampleButton);
         exampleButton.setButtonText("Load example");
         exampleButton.setName("Load example piano roll melody");
@@ -244,10 +233,10 @@ public:
         updatePitchScroll();
 
         for (auto* label : { &snapLabel, &velocityLabel, &probabilityLabel })
-            label->setColour(juce::Label::textColourId, juce::Colour(0xffc5d6df));
-        velocity.setColour(juce::Slider::thumbColourId, juce::Colour(0xff7ee8a2));
-        velocity.setColour(juce::Slider::trackColourId, juce::Colour(0xff3bc8c8));
-        pitchScroll.setColour(juce::ScrollBar::thumbColourId, juce::Colour(0xff477683));
+            label->setColour(juce::Label::textColourId, juce::Colour(0xff9ea3ab));
+        velocity.setColour(juce::Slider::thumbColourId, juce::Colour(0xfff2f4f6));
+        velocity.setColour(juce::Slider::trackColourId, juce::Colour(0xff4fe0b6));
+        pitchScroll.setColour(juce::ScrollBar::thumbColourId, juce::Colour(0xff31343b));
         updateSelection();
     }
 
@@ -257,6 +246,9 @@ public:
     }
 
     std::function<void()> onChange;
+    // Called once per finished edit gesture (and after this editor's own
+    // undo/redo), so the owner can record a project-wide undo step.
+    std::function<void()> onEditCommitted;
     // Positive velocity starts a preview; zero releases that same pitch.
     std::function<void(int, float)> onAudition;
 
@@ -284,11 +276,13 @@ public:
         endEdit();
         if (!canUndo()) return;
         restore(history[--historyPosition].before);
+        if (onEditCommitted) onEditCommitted();
     }
     void redo() {
         endEdit();
         if (!canRedo()) return;
         restore(history[historyPosition++].after);
+        if (onEditCommitted) onEditCommitted();
     }
 
     void setPattern(const PianoRollPattern& replacement) {
@@ -303,6 +297,21 @@ public:
         history.clear();
         historyPosition = 0;
         changed();
+    }
+
+    // Removes every note as one undoable edit (the toolbar Clear button and
+    // the Session "Clear clip" action share this).
+    void clearAllNotes() {
+        if (pattern.count == 0) return;
+        releaseAudition();
+        beginEdit();
+        pattern.clear();
+        selection.clear();
+        activeId = 0;
+        insertionStep = 0.0;
+        drag = Drag::none;
+        changed();
+        endEdit();
     }
 
     void setPlayheadStep(double step) {
@@ -380,19 +389,19 @@ public:
 
     void paint(juce::Graphics& g) override {
         const auto a = areas();
-        g.fillAll(juce::Colour(0xff111b28));
-        g.setColour(juce::Colour(0xff8ff2b2));
+        g.fillAll(juce::Colour(0xff16171b));
+        g.setColour(juce::Colour(0xff4fe0b6));
         g.setFont(juce::FontOptions(15.0f, juce::Font::bold));
         g.drawText("PIANO ROLL", 12, 7, 88, 29, juce::Justification::centredLeft);
 
         if (panelOpen) {
-            g.setColour(juce::Colour(0xff203342));
+            g.setColour(juce::Colour(0xff1d1f24));
             g.fillRoundedRectangle(10.0f, 44.0f, static_cast<float>(getWidth() - 20), 128.0f, 5.0f);
-            g.setColour(juce::Colour(0xff426572));
+            g.setColour(juce::Colour(0xff363940));
             g.drawRoundedRectangle(10.0f, 44.0f, static_cast<float>(getWidth() - 20), 128.0f, 5.0f, 1.0f);
         }
 
-        g.setColour(juce::Colour(0xff1c2d3d));
+        g.setColour(juce::Colour(0xff1d1f24));
         g.fillRect(a.ruler);
         g.setFont(juce::FontOptions(10.5f));
         const auto rowHeight = rowSize(a);
@@ -403,27 +412,27 @@ public:
                                                   static_cast<float>(a.grid.getWidth()), rowHeight);
             const bool scaleTone = scaleSettings.highlight && isPitchInScale(pitch, scaleSettings);
             const bool tonic = scaleTone && pitch % 12 == scaleSettings.rootPitchClass;
-            g.setColour(tonic ? juce::Colour(0xff254653)
-                              : scaleTone ? juce::Colour(0xff203844)
-                              : isBlack(pitch) ? juce::Colour(0xff152331) : juce::Colour(0xff1b2c39));
+            g.setColour(tonic ? juce::Colour(0xff1f3530)
+                              : scaleTone ? juce::Colour(0xff1c2a27)
+                              : isBlack(pitch) ? juce::Colour(0xff17181c) : juce::Colour(0xff1e2025));
             g.fillRect(rowBounds);
-            g.setColour(pitch % 12 == 0 ? juce::Colour(0xff43666e) : juce::Colour(0xff293c49));
+            g.setColour(pitch % 12 == 0 ? juce::Colour(0xff33363d) : juce::Colour(0xff222429));
             g.drawHorizontalLine(juce::roundToInt(y + rowHeight),
                                  static_cast<float>(a.grid.getX()), static_cast<float>(a.grid.getRight()));
 
             const juce::Rectangle<float> key(static_cast<float>(a.piano.getX()), y,
                                              static_cast<float>(a.piano.getWidth()), rowHeight);
-            g.setColour(pitch == auditionPitch ? juce::Colour(0xff68e6bb)
-                                              : juce::Colour(0xffc2d5d2));
+            g.setColour(pitch == auditionPitch ? juce::Colour(0xff4fe0b6)
+                                              : juce::Colour(0xffe2e4e7));
             g.fillRect(key);
             if (isBlack(pitch)) {
-                g.setColour(pitch == auditionPitch ? juce::Colour(0xff289e9e) : juce::Colour(0xff253443));
+                g.setColour(pitch == auditionPitch ? juce::Colour(0xff2a9d8f) : juce::Colour(0xff1a1b1f));
                 g.fillRect(key.withWidth(key.getWidth() * 0.72f));
             }
-            g.setColour(juce::Colour(0xff637b80));
+            g.setColour(juce::Colour(0xffa6abb2));
             g.drawHorizontalLine(juce::roundToInt(y + rowHeight), key.getX(), key.getRight());
             if (pitch % 12 == 0) {
-                g.setColour(juce::Colour(0xff142b33));
+                g.setColour(juce::Colour(0xff4a4f57));
                 g.drawText(noteName(pitch), key.reduced(3.0f, 0.0f), juce::Justification::centredRight);
             }
         }
@@ -432,12 +441,12 @@ public:
             const auto x = stepX(step, a);
             const bool bar = step % 16 == 0;
             const bool beat = step % 4 == 0;
-            g.setColour(bar ? juce::Colour(0xff5c8089) : beat ? juce::Colour(0xff3a5664)
-                                                                        : juce::Colour(0xff253b49));
+            g.setColour(bar ? juce::Colour(0xff41454d) : beat ? juce::Colour(0xff2d3036)
+                                                                        : juce::Colour(0xff222429));
             g.drawVerticalLine(juce::roundToInt(x), static_cast<float>(a.grid.getY()),
                                static_cast<float>(a.grid.getBottom()));
             if (step < pattern.loopSteps && beat) {
-                g.setColour(bar ? juce::Colour(0xffd7ece9) : juce::Colour(0xff8fabb5));
+                g.setColour(bar ? juce::Colour(0xffe8eaed) : juce::Colour(0xff8a9098));
                 g.drawText(bar ? juce::String(step / 16 + 1)
                                : juce::String(step / 16 + 1) + "." + juce::String((step % 16) / 4 + 1),
                            juce::roundToInt(x) + 4, a.ruler.getY(),
@@ -452,18 +461,18 @@ public:
         if (drag == Drag::marquee) {
             g.setColour(juce::Colour(0x304ce3cb));
             g.fillRect(marquee);
-            g.setColour(juce::Colour(0xff6be6d4));
+            g.setColour(juce::Colour(0xff4fe0b6));
             g.drawRect(marquee, 1.0f);
         }
 
-        g.setColour(juce::Colour(0xff172735));
+        g.setColour(juce::Colour(0xff131417));
         g.fillRect(a.velocity);
         g.setFont(juce::FontOptions(10.5f));
-        g.setColour(juce::Colour(0xff9bb7c0));
+        g.setColour(juce::Colour(0xff686d75));
         g.drawText("VELOCITY", a.piano.getX(), a.velocity.getY() + 3, a.piano.getWidth(), 16,
                    juce::Justification::centredLeft);
         for (int level = 0; level <= 2; ++level) {
-            g.setColour(juce::Colour(0xff2b414e));
+            g.setColour(juce::Colour(0xff24262b));
             const auto y = velocityY(level / 2.0f, a);
             g.drawHorizontalLine(juce::roundToInt(y), static_cast<float>(a.velocity.getX()),
                                  static_cast<float>(a.velocity.getRight()));
@@ -487,17 +496,17 @@ public:
 
         if (std::isfinite(playhead) && playhead >= 0 && playhead < pattern.loopSteps) {
             const auto x = stepX(playhead, a);
-            g.setColour(juce::Colour(0xff60ebdf));
+            g.setColour(juce::Colour(0xffe8eaed));
             g.drawLine(x, static_cast<float>(a.ruler.getY()), x,
                        static_cast<float>(a.velocity.getBottom()), 1.8f);
         }
-        g.setColour(hasKeyboardFocus(false) ? juce::Colour(0xff75d9cf) : juce::Colour(0xff405a68));
+        g.setColour(hasKeyboardFocus(false) ? juce::Colour(0xff4fe0b6) : juce::Colour(0xff2c2e34));
         g.drawRect(a.grid);
         g.setFont(juce::FontOptions(11.0f));
-        g.setColour(juce::Colour(0xffc0d7db));
+        g.setColour(juce::Colour(0xff9ea3ab));
         juce::String status = juce::String(pattern.loopSteps / 16.0, 0) + "-bar loop (session only)  |  "
             + noteName(lowestVisiblePitch) + " - " + noteName(topPitch()) + "  |  "
-            + juce::String(static_cast<int>(pattern.count)) + "/128 notes";
+            + juce::String(static_cast<int>(pattern.count)) + "/" + juce::String(static_cast<int>(PianoRollPattern::maxNotes)) + " notes";
         status += "  |  " + juce::String(static_cast<int>(selection.count)) + " selected";
         status += "  |  Paste at step " + juce::String(insertionStep + 1.0, 3);
         if (const auto* note = pattern.find(activeId))
@@ -508,7 +517,7 @@ public:
         if (statusMessage.isNotEmpty()) status = statusMessage;
         g.drawText(status, 12, a.velocity.getBottom() + 4, getWidth() - 24, 17,
                    juce::Justification::centredLeft);
-        g.setColour(juce::Colour(0xff91abb8));
+        g.setColour(juce::Colour(0xff686d75));
         if (!compactPanel())
             g.drawText("Click: add  |  Right-click: erase  |  Shift-drag: select  |  Ctrl C / V / D: clipboard  |  Alt S/U/R/Q/C/L/I/V/A: tools",
                        12, a.velocity.getBottom() + 21, getWidth() - 24, 17, juce::Justification::centredLeft);
@@ -789,11 +798,11 @@ private:
         if (note.pitch < lowestVisiblePitch || note.pitch > topPitch()) return;
         const auto bounds = noteBounds(note, a);
         const auto opacity = 0.25f + 0.75f * note.probability;
-        g.setColour((isSelected ? juce::Colour(0xff71ead8) : juce::Colour(0xff8bdc98)).withMultipliedAlpha(opacity));
+        g.setColour((isSelected ? juce::Colour(0xffb8f7e4) : juce::Colour(0xff3fc9a2)).withMultipliedAlpha(opacity));
         g.fillRoundedRectangle(bounds, 2.0f);
-        g.setColour(isSelected ? juce::Colour(0xffe0fff7) : juce::Colour(0xffb4edbc));
+        g.setColour(isSelected ? juce::Colour(0xffffffff) : juce::Colour(0xff7af0cf));
         g.drawRoundedRectangle(bounds.reduced(0.5f), 1.5f, 1.0f);
-        g.setColour(juce::Colour(0xff235655));
+        g.setColour(juce::Colour(0xff073b2c));
         g.drawVerticalLine(juce::roundToInt(bounds.getRight() - 3.0f), bounds.getY() + 2.0f, bounds.getBottom() - 2.0f);
         if (bounds.getWidth() > 35.0f && bounds.getHeight() > 12.0f) {
             g.setFont(juce::FontOptions(10.0f));
@@ -802,7 +811,7 @@ private:
     }
     void paintVelocity(juce::Graphics& g, const PianoRollNote& note, const Areas& a, bool isSelected) const {
         const auto x = velocityX(note, a), y = velocityY(note.velocity, a);
-        g.setColour(isSelected ? juce::Colour(0xff7ff4df) : juce::Colour(0xff83c993));
+        g.setColour(isSelected ? juce::Colour(0xffb8f7e4) : juce::Colour(0xff3fc9a2));
         g.drawLine(x, velocityY(0.0f, a), x, y, isSelected ? 2.4f : 1.4f);
         g.fillEllipse(x - 2.5f, y - 2.5f, 5.0f, 5.0f);
     }
@@ -974,6 +983,7 @@ private:
         history.push_back({ editBefore, snapshot() });
         historyPosition = history.size();
         updateSelection();
+        if (onEditCommitted) onEditCommitted();
     }
     void restore(const Snapshot& state) {
         releaseAudition();
@@ -1061,7 +1071,7 @@ private:
     }
     void reportClipboardFailure(ClipboardStatus status) {
         if (status == ClipboardStatus::capacityExceeded)
-            statusMessage = "No changes: copying these notes would exceed the 128-note limit. Delete notes or copy a smaller selection.";
+            statusMessage = juce::String("No changes: copying these notes would exceed the ") + juce::String(static_cast<int>(PianoRollPattern::maxNotes)) + "-note limit. Delete notes or copy a smaller selection.";
         else if (status == ClipboardStatus::outOfBounds)
             statusMessage = "No changes: the copied block would extend beyond the loop. Choose an earlier paste position.";
         else if (status == ClipboardStatus::emptyClipboard)
@@ -1217,7 +1227,7 @@ private:
             } else {
                 endEdit();
                 const auto message = result.status == ChordStampStatus::capacityExceeded
-                    ? "No changes: the chord would exceed the 128-note limit."
+                    ? juce::String("No changes: the chord would exceed the ") + juce::String(static_cast<int>(PianoRollPattern::maxNotes)) + "-note limit."
                     : result.status == ChordStampStatus::outOfBounds
                     ? "No changes: the chord duration extends beyond the loop."
                     : "No changes: the root, inversion, length or velocity is invalid.";
@@ -1254,7 +1264,7 @@ private:
         } else {
             endEdit();
             const auto message = result.status == ProcessingStatus::capacityExceeded
-                ? "No changes: processing would exceed the 128-note limit. Increase slice length or select fewer notes."
+                ? juce::String("No changes: processing would exceed the ") + juce::String(static_cast<int>(PianoRollPattern::maxNotes)) + "-note limit. Increase slice length or select fewer notes."
                 : result.status == ProcessingStatus::invalidInput ? "No changes: the processing settings are invalid."
                 : "No changes: selected notes already match these settings.";
             panelHelp.setText(message, juce::dontSendNotification);

@@ -15,24 +15,24 @@ public:
     }
 
     void paint(juce::Graphics& g) override {
-        g.fillAll(juce::Colour(0xff111724));
-        g.setColour(juce::Colour(0xff354154));
+        g.fillAll(juce::Colour(0xff0d0e11));
+        g.setColour(juce::Colour(0xff26282d));
         g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 5.0f, 1.0f);
         if (clip == nullptr || clip->waveformCount == 0) {
-            g.setColour(juce::Colour(0xff9aabba));
-            g.drawText("Select a clip, then import a WAV or MP3", getLocalBounds().reduced(10),
-                juce::Justification::centredLeft);
+            g.setColour(juce::Colour(0xff686d75));
+            g.drawText("No audio in this clip. Use Import audio to add a WAV or MP3.", getLocalBounds().reduced(10),
+                juce::Justification::centred);
             return;
         }
 
         const auto area = getLocalBounds().reduced(8, 18).toFloat();
         const float laneHeight = clip->channels == 2 ? area.getHeight() * 0.5f : area.getHeight();
-        g.setColour(juce::Colour(0xff314155));
+        g.setColour(juce::Colour(0xff26282d));
         g.drawHorizontalLine(static_cast<int>(area.getY() + laneHeight * 0.5f), area.getX(), area.getRight());
         if (clip->channels == 2)
             g.drawHorizontalLine(static_cast<int>(area.getY() + laneHeight + laneHeight * 0.5f), area.getX(), area.getRight());
 
-        g.setColour(juce::Colour(0xff54e4d0));
+        g.setColour(juce::Colour(0xff4fe0b6));
         const int columns = juce::jmax(1, static_cast<int>(area.getWidth()));
         for (int x = 0; x < columns; ++x) {
             const auto index = std::min(clip->waveformCount - 1,
@@ -44,7 +44,7 @@ public:
                 drawPeak(g, area.getX() + static_cast<float>(x), area.getY() + laneHeight, laneHeight,
                     peak.rightMin, peak.rightMax);
         }
-        g.setColour(juce::Colour(0xffb9ced8));
+        g.setColour(juce::Colour(0xff9ea3ab));
         g.drawText(name, 8, 2, getWidth() - 16, 16, juce::Justification::centredLeft, true);
     }
 

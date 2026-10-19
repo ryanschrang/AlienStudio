@@ -427,7 +427,9 @@ static void checkPianoRollProcessing() {
         "typing note-off remains balanced after processing shortcuts");
 
     alien::PianoRollPattern full;
-    for (int pitch = 0; pitch < 128; ++pitch) full.add(pitch, 0, 4);
+    // Fill the clip to capacity (128 pitches x 8 bars of 4-step notes at 1,024 notes).
+    for (std::size_t i = 0; i < alien::PianoRollPattern::maxNotes; ++i)
+        full.add(static_cast<int>(i % 128), static_cast<double>((i / 128) * 4 % 64), 4);
     roll.setPattern(full);
     shortcut('a', juce::ModifierKeys::ctrlModifier);
     shortcut('u', juce::ModifierKeys::altModifier);

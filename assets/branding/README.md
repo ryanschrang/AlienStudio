@@ -1,17 +1,22 @@
 # Alien Studio branding assets
 
-`AlienStudio_Icon_Corrected.ico` is the approved corrected Windows icon, supplied
-as `1000005180.ico` and renamed without changing its bytes. It contains 16, 24,
-32, 48, 64, 128 and 256 pixel images. Keep the entire alien, headphones and neon
-rounded border, with the original balanced padding. Do not crop, stretch or
-replace these assets with generated art or the older cropped versions.
+`AlienStudio_Icon_Corrected.ico` is the approved corrected Windows icon. It
+contains 16, 24, 32, 48, 64, 128 and 256 pixel images. Keep the entire alien,
+headphones and neon rounded border, with the original balanced padding. Do not
+crop, stretch or replace these assets with generated art or older versions.
 
 `AlienStudio_Icon_Corrected.png` is the original 1024 x 1024 high-resolution
-branding source supplied as `1000005179.png` inside the uploaded ZIP, reserved
-for future branding/splash work. Retain the original supplied file; do not
-reconstruct or upscale it from the ICO. Issue #9 allows splash preparation: this
-asset directory is that preparation. No startup splash or delay is introduced;
-the separate alien/UFO splash artwork is not part of this integration.
+branding source supplied as `1000005179.png`. It is embedded with `juce_add_binary_data` (target
+`AlienStudioBranding`, header `BrandingData.h`) and used, unmodified, for:
+
+- the startup splash screen (`alien::branding::SplashWindow` in `src/Branding.h`),
+  shown for at least 1.6 s while the main window and audio device start; click
+  it to dismiss as soon as the main window is ready;
+- the logo in the app's top bar;
+- the window icon on non-Windows platforms (Windows uses the ICO resource).
+
+Smaller renderings are high-quality downscales made at runtime; the source file
+is never altered. `tests/test_branding.py` pins the SHA-256 hashes of both files.
 
 ## Windows resource integration
 
