@@ -23,6 +23,7 @@ The long-term differentiator is **one shared project and audio engine** across a
 - [x] Session clip launching with up to 16 tracks and 32 scenes (add, rename, reorder, duplicate, delete), beat/bar timing, MIDI CC scene mapping, and WAV/MP3 audio clips.
 - [x] Independent 16-voice Session synths, per-track preset/volume/balance/mute/solo and output meters.
 - [x] Versioned project save/open and portable project copies with collected audio.
+- [x] Project-wide undo/redo, unsaved-changes prompts, one-minute autosave and crash recovery.
 - [x] GPL-3.0 license file. Dependency attribution/distribution review remains required before releases.
 
 ### Next implementation sequence
@@ -485,6 +486,30 @@ seven sizes and the complete padded artwork. See that directory's README for
 asset updates, Explorer/title-bar/taskbar checks at different Windows sizes, and
 icon-cache refresh instructions. No startup splash is introduced.
 
+
+### Undo, saving and recovery
+
+**Undo** and **Redo** (the arrow buttons left of **New**, or Ctrl+Z and
+Ctrl+Shift+Z / Ctrl+Y) cover the whole project: notes, step sequencer, tempo,
+mixer, live sound, launch timing, audio import/removal, Clear clip, and adding,
+renaming, moving, duplicating or deleting tracks and scenes. Hover the buttons
+to see what will be undone. Undoing a clip edit selects that clip again.
+Rapid repeats of one control (mouse-wheel tempo or fader changes) merge into a
+single step. Up to 200 steps are kept. Inside the piano roll, Ctrl+Z still
+uses the piano roll's own note history; those changes also join the project
+history. Undoing a track or scene move or deletion stops Session playback at
+the next launch boundary.
+
+Other shortcuts: Ctrl+N new session, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S
+save as. The window title shows the project name and starts with `*` while
+there are unsaved changes; the status-bar dot turns hollow amber.
+
+New, Open and closing the window ask **Save / Don't Save / Cancel** when there
+are unsaved changes. While a session has unsaved changes, Alien Studio writes
+an autosave copy once a minute to `%APPDATA%\Alien Studio\Recovery` (it never
+overwrites your project file). If Alien Studio does not close normally, the next
+launch offers to recover that work; recovered sessions remain unsaved until you
+save them. Saving, Don't Save on exit, New and Open remove the autosave.
 
 ### Session mixer
 

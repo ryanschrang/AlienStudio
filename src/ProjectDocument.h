@@ -14,6 +14,13 @@
 // Message thread only.
 namespace alien {
 
+// Process-unique identity for tracks and scenes, so restoring an undo state
+// can tell a reorder (engine slots must be reset) from a content change.
+inline std::uint32_t newObjectId() {
+    static std::uint32_t next = 0;
+    return ++next;
+}
+
 inline const std::shared_ptr<const PianoRollPattern>& emptyPattern() {
     static const auto empty = std::make_shared<const PianoRollPattern>();
     return empty;
@@ -35,10 +42,12 @@ struct SessionTrack {
     juce::String name;
     TrackSettings settings;
     int colour{}; // Index into the track colour palette.
+    std::uint32_t id = newObjectId();
 };
 
 struct SessionScene {
     juce::String name;
+    std::uint32_t id = newObjectId();
 };
 
 struct StepSequence {
@@ -119,6 +128,34 @@ struct ProjectDocument {
         selectedScene = juce::jlimit(0, juce::jmax(0, sceneCount() - 1), selectedScene);
     }
 };
+
+// True when two documents have the same content (selection is ignored).
+// Clip contents are compared by identity, which is exact because they are
+// immutable and replaced on every edit.
+inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
+    auto sameSettings = [](const TrackSettings& x, const TrackSettings& y) {
+        return x.preset == y.preset && x.gain == y.gain && x.pan == y.pan && x.mute == y.mute && x.solo == y.solo;
+    };
+    if (a.bpm != b.bpm || a.launchQuantizationSteps != b.launchQuantizationSteps || a.livePreset != b.livePreset
+        || a.steps.on != b.steps.on || a.steps.pitch != b.steps.pitch || a.steps.velocity != b.steps.velocity
+        || a.tracks.size() != b.tracks.size() || a.scenes.size() != b.scenes.size())
+        return false;
+    for (std::size_t t = 0; t < a.tracks.size(); ++t)
+        if (a.tracks[t].id != b.tracks[t].id || a.tracks[t].name != b.tracks[t].name
+            || a.tracks[t].colour != b.tracks[t].colour || !sameSettings(a.tracks[t].settings, b.tracks[t].settings))
+            return false;
+    for (std::size_t s = 0; s < a.scenes.size(); ++s)
+        if (a.scenes[s].id != b.scenes[s].id || a.scenes[s].name != b.scenes[s].name) return false;
+    for (std::size_t s = 0; s < a.clips.size(); ++s)
+        for (std::size_t t = 0; t < a.clips[s].size(); ++t) {
+            const auto& x = a.clips[s][t];
+            const auto& y = b.clips[s][t];
+            // Audio paths are excluded: they only change with the audio itself, or
+            // when a portable save re-points them at collected copies.
+            if (x.pattern != y.pattern || x.audio != y.audio) return false;
+        }
+    return true;
+}
 
 // Conversion to and from the on-disk session format. Audio paths are copied as
 // strings; decoding is done separately by the loader.

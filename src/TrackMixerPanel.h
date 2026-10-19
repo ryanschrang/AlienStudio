@@ -38,7 +38,7 @@ public:
         gain.setDoubleClickReturnValue(true, 100.0);
         gain.textFromValueFunction = [](double v) { return gainToText(v); };
         gain.valueFromTextFunction = [](const juce::String& t) { return textToGain(t); };
-        gain.onValueChange = [this] { controls.gain.store(static_cast<float>(gain.getValue() / 100)); edited(false); };
+        gain.onValueChange = [this] { controls.gain.store(static_cast<float>(gain.getValue() / 100)); edited(!gain.isMouseButtonDown()); };
         gain.onDragEnd = [this] { edited(true); };
         gain.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 64, 20);
 
@@ -57,7 +57,7 @@ public:
             if (s.startsWith("R")) return std::abs(s.substring(1).getDoubleValue());
             return s == "C" ? 0.0 : s.getDoubleValue();
         };
-        pan.onValueChange = [this] { controls.pan.store(static_cast<float>(pan.getValue() / 100)); edited(false); };
+        pan.onValueChange = [this] { controls.pan.store(static_cast<float>(pan.getValue() / 100)); edited(!pan.isMouseButtonDown()); };
         pan.onDragEnd = [this] { edited(true); };
         pan.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 48, 18);
 

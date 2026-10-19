@@ -95,7 +95,7 @@ public:
             button->onClick = [this, button, i] {
                 controller.setStepOn(i, button->getToggleState());
                 selectStep(i);
-                if (onEdited) onEdited();
+                if (onEdited) onEdited(button->getToggleState() ? "Turn on step" : "Turn off step", {});
             };
         }
         for (auto* label : {&selectedStepLabel, &stepPitchLabel, &stepVelocityLabel}) {
@@ -118,8 +118,10 @@ public:
             controller.setStepPitch(selectedStep, static_cast<int>(stepPitch.getValue()));
             updateInspectorText();
             refreshPadInfo();
+            // Keyboard, wheel and typed changes commit immediately (merged when rapid).
+            if (!stepPitch.isMouseButtonDown() && onEdited) onEdited("Change step pitch", "step-pitch");
         };
-        stepPitch.onDragEnd = [this] { if (onEdited) onEdited(); };
+        stepPitch.onDragEnd = [this] { if (onEdited) onEdited("Change step pitch", {}); };
         addAndMakeVisible(stepPitchName);
         stepPitchName.setName("Selected step note name");
         stepPitchName.setFont(ui::monoFont(14.0f, true));
@@ -134,8 +136,9 @@ public:
         stepVelocity.onValueChange = [this] {
             controller.setStepVelocity(selectedStep, static_cast<int>(stepVelocity.getValue()));
             refreshPadInfo();
+            if (!stepVelocity.isMouseButtonDown() && onEdited) onEdited("Change step velocity", "step-velocity");
         };
-        stepVelocity.onDragEnd = [this] { if (onEdited) onEdited(); };
+        stepVelocity.onDragEnd = [this] { if (onEdited) onEdited("Change step velocity", {}); };
         addAndMakeVisible(stepHelp);
         stepHelp.setText("Click a pad to toggle it and select it for editing. The step row plays the live synth.",
                          juce::dontSendNotification);
@@ -145,8 +148,8 @@ public:
         refresh();
     }
 
-    // Called after a committed edit (for undo/dirty tracking).
-    std::function<void()> onEdited;
+    // Called after a committed edit: undo label and an optional merge key.
+    std::function<void(const juce::String&, const juce::String&)> onEdited;
 
     // Re-read everything from the document.
     void refresh() {

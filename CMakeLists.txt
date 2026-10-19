@@ -77,7 +77,7 @@ if(BUILD_TESTING)
     set_tests_properties(ToneEngineTests PROPERTIES TIMEOUT 30)
     add_executable(ProjectControllerTests tests/ProjectControllerTests.cpp)
     target_include_directories(ProjectControllerTests PRIVATE src)
-    target_compile_definitions(ProjectControllerTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_compile_definitions(ProjectControllerTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
     target_link_libraries(ProjectControllerTests PRIVATE juce::juce_gui_basics juce::juce_audio_devices
         juce::juce_audio_formats juce::juce_audio_basics)
     add_test(NAME ProjectControllerTests COMMAND ProjectControllerTests)

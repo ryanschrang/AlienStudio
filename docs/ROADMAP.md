@@ -58,7 +58,8 @@ under the existing limits; collection is not streaming.
 
 ## Reliability alongside every milestone
 
-Add autosave/recovery and dirty-state prompts before long recording sessions;
-expand global undo and track capacity with bounded audio scheduling. Add hardware
+Project-wide undo/redo, autosave/recovery and unsaved-changes prompts are in
+place; extend them to each new feature (recording takes, arrangement edits,
+plugin state). Grow track capacity with bounded audio scheduling. Add hardware
 results to WINDOWS_AUDIO_CHECKLIST.md. Keep actual test results distinct from
 planned tests, and never label hardware performance verified from CI alone.

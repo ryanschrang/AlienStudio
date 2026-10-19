@@ -65,14 +65,30 @@ public:
         tempo.onValueChange = [this] { if (onTempoChanged) onTempoChanged(static_cast<int>(tempo.getValue())); };
         tempo.onDragEnd = [this] { if (onTempoCommitted) onTempoCommitted(); };
 
-        for (auto* b : {&openButton, &saveButton, &portableButton}) {
+        for (auto* b : {&newButton, &openButton, &saveButton, &portableButton, &undoButton, &redoButton}) {
             addAndMakeVisible(b);
             b->getProperties().set("style", "ghost");
         }
+        undoButton.setButtonText("Undo");
+        undoButton.setGlyph(ui::Glyph::undo);
+        undoButton.setIconOnly(true);
+        undoButton.setName("Undo");
+        undoButton.onClick = [this] { if (onUndo) onUndo(); };
+        redoButton.setButtonText("Redo");
+        redoButton.setGlyph(ui::Glyph::redo);
+        redoButton.setIconOnly(true);
+        redoButton.setName("Redo");
+        redoButton.onClick = [this] { if (onRedo) onRedo(); };
+        setUndoState({}, {});
+        newButton.setButtonText("New");
+        newButton.setGlyph(ui::Glyph::newDocument);
+        newButton.setName("New Alien Studio session");
+        newButton.setTooltip("Start a new, empty session (Ctrl+N)");
+        newButton.onClick = [this] { if (onNew) onNew(); };
         saveButton.setButtonText("Save");
         saveButton.setGlyph(ui::Glyph::save);
         saveButton.setName("Save Alien Studio session project");
-        saveButton.setTooltip("Save the session project");
+        saveButton.setTooltip("Save the session project (Ctrl+S)");
         saveButton.onClick = [this] { if (onSave) onSave(); };
         portableButton.setButtonText("Save portable");
         portableButton.setGlyph(ui::Glyph::collect);
@@ -82,12 +98,12 @@ public:
         openButton.setButtonText("Open");
         openButton.setGlyph(ui::Glyph::open);
         openButton.setName("Open Alien Studio session project");
-        openButton.setTooltip("Open a session project");
+        openButton.setTooltip("Open a session project (Ctrl+O)");
         openButton.onClick = [this] { if (onOpen) onOpen(); };
     }
 
     std::function<void(int)> onViewSelected;
-    std::function<void()> onPlayToggled, onTempoCommitted, onOpen, onSave, onSavePortable;
+    std::function<void()> onPlayToggled, onTempoCommitted, onNew, onOpen, onSave, onSavePortable, onUndo, onRedo;
     std::function<void(int)> onTempoChanged;
 
     void setActiveView(int index) {
@@ -104,14 +120,24 @@ public:
 
     void setPosition(int step, bool running, const juce::String& source) { transportDisplay.setPosition(step, running, source); }
     void setTempo(int bpm) { tempo.setValue(bpm, juce::dontSendNotification); }
+    bool isTempoDragging() const { return tempo.isMouseButtonDown(); }
 
     void setBusy(bool busy) {
         saveButton.setEnabled(!busy); portableButton.setEnabled(!busy); openButton.setEnabled(!busy);
+        newButton.setEnabled(!busy);
+    }
+
+    // Empty label: nothing to undo/redo.
+    void setUndoState(const juce::String& undoLabel, const juce::String& redoLabel) {
+        undoButton.setEnabled(undoLabel.isNotEmpty());
+        redoButton.setEnabled(redoLabel.isNotEmpty());
+        undoButton.setTooltip(undoLabel.isNotEmpty() ? "Undo " + undoLabel + " (Ctrl+Z)" : juce::String("Nothing to undo"));
+        redoButton.setTooltip(redoLabel.isNotEmpty() ? "Redo " + redoLabel + " (Ctrl+Shift+Z)" : juce::String("Nothing to redo"));
     }
 
     void resized() override {
         auto top = getLocalBounds().reduced(12, 0);
-        const bool compact = getWidth() < 1180;
+        const bool compact = getWidth() < 1320;
         brandMark.setBounds(top.removeFromLeft(36).withSizeKeepingCentre(36, 36));
         top.removeFromLeft(8);
         if (!compact) {
@@ -132,13 +158,18 @@ public:
             views.removeFromLeft(4);
         }
 
-        auto files = top.removeFromRight(compact ? 112 : 300);
-        for (auto* b : {&portableButton, &saveButton, &openButton}) {
+        auto files = top.removeFromRight(compact ? 152 : 372);
+        for (auto* b : {&portableButton, &saveButton, &openButton, &newButton}) {
             b->setIconOnly(compact);
-            const int w = compact ? 34 : (b == &portableButton ? 128 : 80);
+            const int w = compact ? 34 : (b == &portableButton ? 128 : b == &newButton ? 70 : 76);
             b->setBounds(files.removeFromRight(w).withSizeKeepingCentre(w, 32));
-            files.removeFromRight(4);
+            files.removeFromRight(compact ? 4 : 2);
         }
+        top.removeFromRight(6);
+        auto history = top.removeFromRight(72);
+        redoButton.setBounds(history.removeFromRight(34).withSizeKeepingCentre(34, 32));
+        history.removeFromRight(4);
+        undoButton.setBounds(history.removeFromRight(34).withSizeKeepingCentre(34, 32));
 
         const int transportWidth = 44 + 8 + 300;
         auto transport = top.withSizeKeepingCentre(juce::jmin(top.getWidth(), transportWidth), 44);
@@ -162,7 +193,7 @@ private:
     branding::LogoMark brandMark;
     juce::Label title, brandSubtitle;
     std::array<ui::GlyphButton, 4> viewButtons;
-    ui::GlyphButton play, openButton, saveButton, portableButton;
+    ui::GlyphButton play, newButton, openButton, saveButton, portableButton, undoButton, redoButton;
     juce::Slider tempo{juce::Slider::LinearBarVertical, juce::Slider::NoTextBox};
     ui::TransportDisplay transportDisplay{tempo};
     juce::Rectangle<int> viewSwitchBounds;

@@ -18,6 +18,17 @@ public:
         juce::Timer::callAfterDelay(90, [this] { createMainWindow(); });
     }
     void shutdown() override { splash.reset(); window.reset(); }
+
+    // Closing the window, Alt+F4 or a system shutdown request: offer to save
+    // unsaved changes first. The user can cancel.
+    void systemRequestedQuit() override {
+        if (window != nullptr)
+            if (auto* content = dynamic_cast<MainComponent*>(window->getContentComponent())) {
+                content->requestQuit([] { juce::JUCEApplication::quit(); });
+                return;
+            }
+        quit();
+    }
 private:
     static constexpr juce::uint32 minimumSplashMs = 1600;
 

@@ -107,7 +107,7 @@ public:
     }
     void setEngineStatus(const juce::String& text) { engineStatus.setText(text, juce::dontSendNotification); }
 
-    enum class State { unsaved, busy, saved };
+    enum class State { unsaved, busy, saved, edited };
     void setState(State s) { if (state != s) { state = s; repaint(); } }
 
     void resized() override {
@@ -121,8 +121,15 @@ public:
         g.fillAll(col::window);
         g.setColour(juce::Colours::black);
         g.fillRect(0, 0, getWidth(), 1);
+        const auto dot = juce::Rectangle<float>(6.0f, 6.0f).withCentre({18.0f, getHeight() * 0.5f});
+        if (state == State::edited) {
+            // Hollow dot: saved before, but has unsaved changes.
+            g.setColour(col::warning);
+            g.drawEllipse(dot, 1.4f);
+            return;
+        }
         g.setColour(state == State::busy ? col::warning : state == State::saved ? col::accent : col::textFaint);
-        g.fillEllipse(juce::Rectangle<float>(6.0f, 6.0f).withCentre({18.0f, getHeight() * 0.5f}));
+        g.fillEllipse(dot);
     }
 
 private:

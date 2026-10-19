@@ -95,9 +95,113 @@ static void fileFormatTests() {
     std::cout << "PASS: version 4 project format and 1024-note clips\n";
 }
 
+static void pump(int ms = 50) { juce::MessageManager::getInstance()->runDispatchLoopUntil(ms); }
+
+static void undoTests() {
+    ToneEngine engine;
+    alien::ProjectController c(engine);
+    const auto& d = c.document();
+    int restored = 0;
+    c.onDocumentRestored = [&] { ++restored; };
+    require(!c.canUndo() && !c.canRedo() && !c.isDirty(), "a new project is clean with no history");
+
+    c.setStepOn(3, true);
+    c.commit("Turn on step");
+    require(c.canUndo() && c.undoLabel() == "Turn on step" && c.isDirty(), "an edit is undoable and unsaved");
+    c.commit("Nothing changed");
+    require(c.undoLabel() == "Turn on step", "commits that change nothing are ignored");
+
+    c.setClipPattern(1, 2, patternWith(64), false);
+    c.commit("Edit notes", 1, 2);
+    c.selectClip(3, 3);
+    require(c.addTrack(), "add track");
+    c.commit("Add track");
+    require(d.trackCount() == 5 && engine.activeTracks.load() == 5, "five tracks");
+
+    require(c.undo() && d.trackCount() == 4 && engine.activeTracks.load() == 4, "undo add track restores the engine too");
+    require(c.redoLabel() == "Add track" && c.canRedo(), "redo is available");
+    require(c.undo() && d.clip(1, 2).notes().count == 0 && d.selectedTrack == 1 && d.selectedScene == 2,
+            "undoing a clip edit restores the notes and shows that clip");
+    require(c.undo() && !d.steps.on[3] && engine.steps[3].load() == false && !c.canUndo(),
+            "undo the first edit; the engine step follows");
+    require(!c.isDirty(), "undoing everything returns to the saved state");
+    require(c.redo() && c.redo() && d.clip(1, 2).notes().notes[0].pitch == 64 && c.isDirty(), "redo re-applies edits");
+    const auto unchanged = d.clip(1, 2).pattern;
+    const auto copy = d.clip(1, 2).notes();
+    c.setClipPattern(1, 2, copy, false);
+    require(d.clip(1, 2).pattern == unchanged, "re-loading identical notes is not treated as an edit");
+    c.setBpm(130);
+    c.commit("Change tempo");
+    require(!c.canRedo(), "a new edit clears redo");
+    require(restored == 5, "every undo/redo notifies the views");
+
+    // Rapid continuous edits merge into one step.
+    for (int bpm = 131; bpm < 140; ++bpm) { c.setBpm(bpm); c.commit("Change tempo", -1, -1, "tempo"); }
+    require(c.undo() && d.bpm == 130, "coalesced tempo changes undo in one step");
+
+    // Undo of a reorder keeps playing slots consistent.
+    c.renameTrack(0, "Kick");
+    c.commit("Rename");
+    require(c.moveTrack(0, 2), "move track");
+    c.commit("Move track");
+    require(c.undo() && d.tracks[0].name == "Kick", "undo move track");
+
+    c.newProject();
+    require(!c.canUndo() && !c.isDirty() && d.trackCount() == 4, "new project resets history");
+    std::cout << "PASS: project undo/redo, merging, no-op skipping and unsaved state\n";
+}
+
+static void saveAndAutosaveTests() {
+    const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory)
+        .getNonexistentChildFile("AlienStudioUndoTest", "", false);
+    require(root.createDirectory().wasOk(), "temp directory");
+    alien::ProjectController::recoveryDirectoryOverride() = root.getChildFile("Recovery");
+
+    ToneEngine engine;
+    alien::ProjectController c(engine);
+    c.addTrack();
+    c.renameTrack(4, "Bass");
+    c.commit("Add track");
+    require(c.isDirty() && !alien::ProjectController::hasRecoverableSession(), "dirty, nothing autosaved yet");
+
+    c.autosaveIfNeeded();
+    for (int i = 0; i < 100 && !alien::ProjectController::hasRecoverableSession(); ++i) pump();
+    pump(100);
+    require(alien::ProjectController::hasRecoverableSession(), "autosave writes a recovery file");
+    alien::SessionProjectData recovered;
+    juce::String error;
+    require(alien::parseSessionProject(alien::ProjectController::recoveryFile().loadFileAsString(), recovered, error)
+            && recovered.trackCount() == 5 && recovered.trackNames[4] == "Bass", "autosave contains the latest edits");
+
+    // A second instance recovers it as unsaved work.
+    ToneEngine engine2;
+    alien::ProjectController c2(engine2);
+    bool replaced = false;
+    c2.onDocumentReplaced = [&] { replaced = true; };
+    c2.recoverSession();
+    for (int i = 0; i < 100 && !replaced; ++i) pump();
+    require(replaced && c2.document().trackCount() == 5 && c2.isDirty() && c2.currentFile() == juce::File{},
+            "recovered session is restored and still needs saving");
+
+    // Saving writes the project, clears the unsaved state and removes the autosave.
+    bool saved = false, finished = false;
+    const auto target = root.getChildFile("Song.alienstudio");
+    c2.writeProject(target, false, [&](bool ok) { saved = ok; finished = true; });
+    for (int i = 0; i < 100 && !finished; ++i) pump();
+    require(saved && target.existsAsFile() && !c2.isDirty() && c2.currentFile() == target,
+            "save completes and marks the project clean");
+    require(!alien::ProjectController::hasRecoverableSession(), "a clean save removes the autosave");
+
+    alien::ProjectController::recoveryDirectoryOverride() = juce::File{};
+    root.deleteRecursively();
+    std::cout << "PASS: autosave, crash recovery and save completion\n";
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     structureTests();
     fileFormatTests();
+    undoTests();
+    saveAndAutosaveTests();
     return 0;
 }

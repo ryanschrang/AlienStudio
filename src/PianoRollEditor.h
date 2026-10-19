@@ -246,6 +246,9 @@ public:
     }
 
     std::function<void()> onChange;
+    // Called once per finished edit gesture (and after this editor's own
+    // undo/redo), so the owner can record a project-wide undo step.
+    std::function<void()> onEditCommitted;
     // Positive velocity starts a preview; zero releases that same pitch.
     std::function<void(int, float)> onAudition;
 
@@ -273,11 +276,13 @@ public:
         endEdit();
         if (!canUndo()) return;
         restore(history[--historyPosition].before);
+        if (onEditCommitted) onEditCommitted();
     }
     void redo() {
         endEdit();
         if (!canRedo()) return;
         restore(history[historyPosition++].after);
+        if (onEditCommitted) onEditCommitted();
     }
 
     void setPattern(const PianoRollPattern& replacement) {
@@ -978,6 +983,7 @@ private:
         history.push_back({ editBefore, snapshot() });
         historyPosition = history.size();
         updateSelection();
+        if (onEditCommitted) onEditCommitted();
     }
     void restore(const Snapshot& state) {
         releaseAudition();

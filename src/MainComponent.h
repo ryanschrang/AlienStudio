@@ -18,7 +18,8 @@
 class MainComponent final : public juce::Component,
                             private juce::Timer,
                             private juce::MidiKeyboardState::Listener,
-                            private juce::ChangeListener {
+                            private juce::ChangeListener,
+                            private juce::KeyListener {
 public:
     MainComponent() {
         setLookAndFeel(&studioLookAndFeel);
@@ -48,7 +49,9 @@ public:
         controller.setClipPattern(0, 0, pianoRoll.getPattern(), false);
         controller.pushDocumentToEngine();
         controller.publishClip(0, 0);
+        controller.markAsNewBaseline();
         refreshAll();
+        updateUndoState();
 
         typingInput.octaveChanged = [this] { updateOctave(); };
         updateOctave();
@@ -60,10 +63,13 @@ public:
         resized();
         if (audioError.isNotEmpty())
             showAudioErrorWhenVisible(juce::Component::SafePointer<MainComponent>(this), audioError);
+        if (alien::ProjectController::hasRecoverableSession())
+            offerRecoveryWhenVisible(juce::Component::SafePointer<MainComponent>(this));
     }
 
     ~MainComponent() override {
         stopTimer();
+        if (keySource != nullptr) keySource->removeKeyListener(this);
         tabs.getTabbedButtonBar().removeChangeListener(this);
         releaseNotes();
         keyboardState.removeListener(this);
@@ -84,6 +90,32 @@ public:
 
     void paint(juce::Graphics& g) override { g.fillAll(alien::ui::colours::window); }
 
+    // Ask to save unsaved changes, then run "then" unless the user cancels.
+    void confirmDiscardChanges(const juce::String& action, std::function<void()> then) {
+        if (!controller.isDirty()) { then(); return; }
+        const auto name = projectName();
+        auto* window = new juce::AlertWindow("Save changes to \"" + name + "\"?",
+            "Your changes will be lost if you " + action + " without saving.",
+            juce::MessageBoxIconType::NoIcon, this);
+        window->addButton("Save", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        window->addButton("Don't Save", 2);
+        window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        juce::Component::SafePointer<MainComponent> safe(this);
+        window->enterModalState(true, juce::ModalCallbackFunction::create([safe, then](int result) {
+            if (safe == nullptr) return;
+            if (result == 2) then();
+            else if (result == 1) safe->controller.save([then](bool saved) { if (saved) then(); });
+        }), true);
+    }
+
+    // Close the app, prompting for unsaved changes first.
+    void requestQuit(std::function<void()> quit) {
+        confirmDiscardChanges("close Alien Studio", [quit] {
+            alien::ProjectController::deleteRecoveryFiles();
+            quit();
+        });
+    }
+
     void releaseNotes() {
         pianoRoll.releaseAudition();
         typingInput.release();
@@ -98,10 +130,17 @@ private:
     void wireTopBar() {
         topBar.onViewSelected = [this](int index) { showView(index); };
         topBar.onPlayToggled = [this] { releaseNotes(); engine.playing.store(!engine.playing.load()); };
-        topBar.onTempoChanged = [this](int bpm) { controller.setBpm(bpm); };
-        topBar.onOpen = [this] { controller.chooseProjectToOpen(); };
+        topBar.onTempoChanged = [this](int bpm) {
+            controller.setBpm(bpm);
+            if (!topBar.isTempoDragging()) controller.commit("Change tempo", -1, -1, "tempo");
+        };
+        topBar.onTempoCommitted = [this] { controller.commit("Change tempo", -1, -1, "tempo"); };
+        topBar.onNew = [this] { newProject(); };
+        topBar.onOpen = [this] { openProject(); };
         topBar.onSave = [this] { controller.save(); };
         topBar.onSavePortable = [this] { controller.chooseSavePath(true); };
+        topBar.onUndo = [this] { undo(); };
+        topBar.onRedo = [this] { redo(); };
     }
 
     void wireController() {
@@ -122,6 +161,8 @@ private:
             refreshAll();
             tabs.setCurrentTabIndex(controller.document().selectedClip().hasAudio() ? 2 : 1);
         };
+        controller.onDocumentRestored = [this] { refreshAll(); };
+        controller.onHistoryChanged = [this] { updateUndoState(); };
         controller.onClipContentChanged = [this](int track, int scene) {
             sessionView.refreshSelectedClip();
             const auto& d = controller.document();
@@ -134,6 +175,11 @@ private:
             const auto& d = controller.document();
             controller.setClipPattern(d.selectedTrack, d.selectedScene, pianoRoll.getPattern(), !loadingClip);
             if (!loadingClip) sessionView.refreshSelectedClip();
+        };
+        pianoRoll.onEditCommitted = [this] {
+            if (suppressPianoRollCommit) return;
+            const auto& d = controller.document();
+            controller.commit("Edit notes", d.selectedTrack, d.selectedScene);
         };
         pianoRoll.onAudition = [this](int note, float velocity) {
             if (velocity > 0) keyboardState.noteOn(3, note, velocity);
@@ -151,17 +197,29 @@ private:
         };
         sessionView.onClearClip = [this] { clearSelectedClip(); };
         sessionView.onTitleChanged = [this] { updateEditorTitle(); };
+        sessionView.onEdited = [this](const juce::String& label) {
+            const auto& d = controller.document();
+            const bool clipEdit = label == "Remove audio";
+            controller.commit(label, clipEdit ? d.selectedTrack : -1, clipEdit ? d.selectedScene : -1);
+        };
+        stepsView.onEdited = [this](const juce::String& label, const juce::String& key) {
+            controller.commit(label, -1, -1, key);
+        };
         sessionView.onStructureChanged = [this] {
             mixerPanel.rebuild();
             loadSelectedClip();
         };
-        mixerPanel.onTrackEdited = [this](int track, bool) {
+        mixerPanel.onTrackEdited = [this](int track, bool committed) {
             controller.trackSettingsEdited(track);
             sessionView.repaint();
+            if (committed)
+                controller.commit("Change " + controller.document().tracks[static_cast<std::size_t>(track)].name + " mix",
+                                  -1, -1, "mixer-" + juce::String(track));
         };
         devicesView.onPresetChanged = [this](int preset) {
             releaseNotes();
             controller.setLivePreset(preset);
+            controller.commit("Change live sound");
             stepsView.repaint();
             updateEditorTitle();
         };
@@ -194,8 +252,11 @@ private:
         const int track = d.selectedTrack, scene = d.selectedScene;
         controller.removeAudio(track, scene);
         // The selected clip is the one loaded in the piano roll, so this clears
-        // it as an undoable edit and republishes it through onChange.
+        // it and republishes it through onChange; one undo step covers both.
+        suppressPianoRollCommit = true;
         pianoRoll.clearAllNotes();
+        suppressPianoRollCommit = false;
+        controller.commit("Clear clip", track, scene);
         sessionView.setImportStatus("Cleared Track " + juce::String(track + 1) + ", Scene " + juce::String(scene + 1), {});
         sessionView.refreshSelectedClip();
     }
@@ -226,10 +287,59 @@ private:
 
     void updateOctave() { keyboardDock.setOctave(typingInput.typing.octave()); }
 
+    // Undo / redo / file commands --------------------------------------------
+    void undo() { releaseNotes(); controller.undo(); }
+    void redo() { releaseNotes(); controller.redo(); }
+    void newProject() { confirmDiscardChanges("start a new session", [this] { controller.newProject(); }); }
+    void openProject() { confirmDiscardChanges("open another session", [this] { controller.chooseProjectToOpen(); }); }
+
+    juce::String projectName() const {
+        const auto& file = controller.currentFile();
+        return file != juce::File{} ? file.getFileNameWithoutExtension() : juce::String("Untitled");
+    }
+
+    void updateUndoState() {
+        topBar.setUndoState(controller.canUndo() ? controller.undoLabel() : juce::String{},
+                            controller.canRedo() ? controller.redoLabel() : juce::String{});
+        const bool dirty = controller.isDirty();
+        if (auto* window = getTopLevelComponent(); window != nullptr && window != this)
+            window->setName((dirty ? "*" : "") + projectName() + juce::String(" - Alien Studio"));
+        if (dirty && !wasDirty)
+            statusBar.setProjectStatus(projectName() + juce::String(juce::CharPointer_UTF8("  \xc2\xb7  unsaved changes")),
+                                       "Autosaved every minute; use Save to keep your work.");
+        wasDirty = dirty;
+        updateStatusState();
+    }
+
+    void parentHierarchyChanged() override {
+        auto* window = getTopLevelComponent();
+        if (window == this || window == keySource.getComponent()) return;
+        if (keySource != nullptr) keySource->removeKeyListener(this);
+        keySource = window;
+        if (window != nullptr) window->addKeyListener(this);
+        updateUndoState();
+    }
+
+    // Window-level shortcuts. Text fields and the piano roll handle their own
+    // Ctrl+Z first; this only sees keys nothing else used.
+    bool keyPressed(const juce::KeyPress& key, juce::Component*) override {
+        const auto mods = key.getModifiers();
+        if (!mods.isCommandDown() || mods.isAltDown()) return false;
+        const auto code = juce::CharacterFunctions::toUpperCase(static_cast<juce::juce_wchar>(key.getKeyCode()));
+        if (code == 'Z' && !mods.isShiftDown()) { undo(); return true; }
+        if ((code == 'Z' && mods.isShiftDown()) || code == 'Y') { redo(); return true; }
+        if (code == 'S' && mods.isShiftDown()) { controller.chooseSavePath(false); return true; }
+        if (code == 'S') { controller.save(); return true; }
+        if (code == 'O') { openProject(); return true; }
+        if (code == 'N') { newProject(); return true; }
+        return false;
+    }
+
     void updateStatusState() {
         using State = alien::StatusBar::State;
         statusBar.setState(controller.isBusy() ? State::busy
-                           : controller.currentFile().existsAsFile() ? State::saved : State::unsaved);
+                           : !controller.currentFile().existsAsFile() ? State::unsaved
+                           : controller.isDirty() ? State::edited : State::saved);
     }
 
     void updateEngineStatus() {
@@ -255,6 +365,29 @@ private:
                 "Audio initialization failed",
                 "Alien Studio could not open the default audio output device.\n\n" + error,
                 "OK", safeThis.getComponent());
+        });
+    }
+
+    // After a crash the previous session's autosave is offered once the main
+    // window is on screen.
+    static void offerRecoveryWhenVisible(juce::Component::SafePointer<MainComponent> safeThis) {
+        juce::Timer::callAfterDelay(300, [safeThis] {
+            if (safeThis == nullptr) return;
+            if (!safeThis->isShowing()) { offerRecoveryWhenVisible(safeThis); return; }
+            const auto when = alien::ProjectController::recoveryFile().getLastModificationTime();
+            const auto original = alien::ProjectController::recoveredOriginalFile();
+            auto* window = new juce::AlertWindow("Recover unsaved work?",
+                "Alien Studio did not close normally. An autosave of "
+                    + (original != juce::File{} ? "\"" + original.getFileNameWithoutExtension() + "\"" : juce::String("your session"))
+                    + " from " + when.toString(true, true, false) + " is available.",
+                juce::MessageBoxIconType::NoIcon, safeThis.getComponent());
+            window->addButton("Recover", 1, juce::KeyPress(juce::KeyPress::returnKey));
+            window->addButton("Discard", 0);
+            window->enterModalState(true, juce::ModalCallbackFunction::create([safeThis](int result) {
+                if (safeThis == nullptr) return;
+                if (result == 1) safeThis->controller.recoverSession();
+                else alien::ProjectController::deleteRecoveryFiles();
+            }), true);
         });
     }
 
@@ -294,6 +427,7 @@ private:
         }
         pianoRoll.setPlayheadStep(engine.sessionTrackPositions[static_cast<std::size_t>(d.selectedTrack)].load() / 1000.0);
         if (++statusTicks % 10 == 0) updateEngineStatus();
+        if (statusTicks % (20 * 60) == 0) controller.autosaveIfNeeded(); // Once a minute.
     }
 
     void handleNoteOn(juce::MidiKeyboardState*, int channel, int note, float velocity) override {
@@ -324,6 +458,7 @@ private:
     juce::TabbedComponent tabs{juce::TabbedButtonBar::TabsAtTop};
     alien::CompactWorkspace workspace{tabs, devicesView};
     TypingPianoRouter typingInput{*this, keyboardState};
-    bool loadingClip{};
+    juce::Component::SafePointer<juce::Component> keySource;
+    bool loadingClip{}, suppressPianoRollCommit{}, wasDirty{};
     int statusTicks{};
 };

@@ -94,7 +94,7 @@ inline void drawCard(juce::Graphics& g, juce::Rectangle<float> r, juce::Colour f
 }
 
 enum class Glyph { none, play, stop, plus, minus, open, save, collect, devices, edit,
-                   waveform, learn, close, chevronDown };
+                   waveform, learn, close, chevronDown, undo, redo, newDocument };
 
 inline void drawGlyph(juce::Graphics& g, Glyph glyph, juce::Rectangle<float> r, juce::Colour colour) {
     const float s = juce::jmin(r.getWidth(), r.getHeight());
@@ -186,6 +186,28 @@ inline void drawGlyph(juce::Graphics& g, Glyph glyph, juce::Rectangle<float> r, 
         g.strokePath(p, juce::PathStrokeType(stroke * 0.75f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
         return;
     }
+    case Glyph::undo:
+    case Glyph::redo: {
+        // A curved arrow; redo is the mirror image of undo.
+        const bool flip = glyph == Glyph::redo;
+        auto px = [&](float fx) { return flip ? x + s * (1.0f - fx) : x + s * fx; };
+        p.startNewSubPath(px(0.22f), y + s * 0.42f);
+        p.cubicTo(px(0.40f), y + s * 0.22f, px(0.84f), y + s * 0.26f, px(0.84f), y + s * 0.56f);
+        p.cubicTo(px(0.84f), y + s * 0.78f, px(0.62f), y + s * 0.84f, px(0.44f), y + s * 0.80f);
+        g.strokePath(p, juce::PathStrokeType(stroke * 0.85f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        juce::Path head;
+        head.addTriangle(px(0.12f), y + s * 0.30f, px(0.38f), y + s * 0.30f, px(0.20f), y + s * 0.56f);
+        g.fillPath(head);
+        return;
+    }
+    case Glyph::newDocument:
+        p.startNewSubPath(x + s * 0.24f, y + s * 0.10f); p.lineTo(x + s * 0.58f, y + s * 0.10f);
+        p.lineTo(x + s * 0.78f, y + s * 0.30f); p.lineTo(x + s * 0.78f, y + s * 0.90f);
+        p.lineTo(x + s * 0.24f, y + s * 0.90f); p.closeSubPath();
+        p.startNewSubPath(x + s * 0.51f, y + s * 0.42f); p.lineTo(x + s * 0.51f, y + s * 0.74f);
+        p.startNewSubPath(x + s * 0.35f, y + s * 0.58f); p.lineTo(x + s * 0.67f, y + s * 0.58f);
+        g.strokePath(p, juce::PathStrokeType(stroke * 0.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        return;
     case Glyph::learn:
         g.drawEllipse(r.reduced(s * 0.16f), stroke * 0.8f);
         g.fillEllipse(r.reduced(s * 0.36f));

@@ -3,16 +3,18 @@
 #include "ToneEngine.h"
 #include "AudioClipImport.h"
 #include "PortableProject.h"
+#include "DocumentHistory.h"
+#include "PianoRollProcessing.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <memory>
 #include <vector>
 
 // Owns the ProjectDocument and is the only code that changes it. Every edit
-// goes through here so the audio engine is kept in sync, and so later layers
-// (undo, autosave, dirty tracking) have one place to hook into. File work and
-// audio decoding run on a worker thread; results come back on the message
-// thread. Message thread only; no GUI types.
+// goes through here so the audio engine is kept in sync. Callers report each
+// finished edit with commit(), which feeds undo/redo, the unsaved-changes
+// state and autosave. File work and audio decoding run on a worker thread;
+// results come back on the message thread. Message thread only.
 namespace alien {
 
 class ProjectController {
@@ -20,7 +22,10 @@ public:
     static constexpr std::size_t maxSessionAudioBytes = 512u * 1024u * 1024u;
 
     explicit ProjectController(ToneEngine& toneEngine)
-        : engine(toneEngine), doc(ProjectDocument::createDefault()) {}
+        : engine(toneEngine), doc(ProjectDocument::createDefault()) {
+        history.reset(doc);
+        savedId = history.currentId();
+    }
 
     ~ProjectController() {
         alive.reset();
@@ -40,6 +45,127 @@ public:
     std::function<void()> beforeDocumentReplaced; // e.g. release held notes
     std::function<void()> onDocumentReplaced;     // whole document was opened/replaced
     std::function<void(int, int)> onClipContentChanged;
+    std::function<void()> onDocumentRestored;     // undo/redo replaced the document
+    std::function<void()> onHistoryChanged;       // undo/redo availability or unsaved state changed
+
+    // Undo, redo and unsaved changes -------------------------------------
+    // Call after every finished edit. focusTrack/focusScene name the clip the
+    // edit changed (shown again when it is undone). Edits with the same
+    // coalesceKey made in quick succession become one undo step.
+    void commit(const juce::String& label, int focusTrack = -1, int focusScene = -1,
+                const juce::String& coalesceKey = {}) {
+        history.record(doc, label, focusTrack, focusScene, coalesceKey);
+        historyChanged();
+    }
+
+    // Start a fresh history from the current document (e.g. at startup).
+    void markAsNewBaseline() {
+        history.reset(doc);
+        savedId = history.currentId();
+        historyChanged();
+    }
+
+    bool canUndo() const noexcept { return history.canUndo(); }
+    bool canRedo() const noexcept { return history.canRedo(); }
+    juce::String undoLabel() const { return history.undoLabel(); }
+    juce::String redoLabel() const { return history.redoLabel(); }
+    bool isDirty() const noexcept { return history.currentId() != savedId; }
+
+    bool undo() {
+        DocumentHistory::Step step;
+        if (const auto* state = history.undo(step)) { restore(*state, step); return true; }
+        return false;
+    }
+
+    bool redo() {
+        DocumentHistory::Step step;
+        if (const auto* state = history.redo(step)) { restore(*state, step); return true; }
+        return false;
+    }
+
+    // Replace the song with an empty default project.
+    void newProject() {
+        engine.playing.store(false);
+        if (beforeDocumentReplaced) beforeDocumentReplaced();
+        stopEverySlot();
+        doc = ProjectDocument::createDefault();
+        projectFile = juce::File{};
+        pushDocumentToEngine();
+        history.reset(doc);
+        savedId = history.currentId();
+        deleteRecoveryFiles();
+        if (onDocumentReplaced) onDocumentReplaced();
+        historyChanged();
+        status("New session", {});
+    }
+
+    // Autosave and crash recovery ----------------------------------------
+    static juce::File recoveryDirectory() {
+        if (recoveryDirectoryOverride() != juce::File{}) return recoveryDirectoryOverride();
+        return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+            .getChildFile("Alien Studio").getChildFile("Recovery");
+    }
+    // Tests point autosave somewhere temporary so a real autosave is never touched.
+    static juce::File& recoveryDirectoryOverride() { static juce::File directory; return directory; }
+    static juce::File recoveryFile() { return recoveryDirectory().getChildFile("Autosave.alienstudio"); }
+    static juce::File recoveryInfoFile() { return recoveryDirectory().getChildFile("Autosave.json"); }
+
+    // An autosave left behind means the last session did not close normally.
+    static bool hasRecoverableSession() { return recoveryFile().existsAsFile(); }
+
+    // The project the autosave belonged to, if it had been saved before.
+    static juce::File recoveredOriginalFile() {
+        const auto info = juce::JSON::parse(recoveryInfoFile().loadFileAsString());
+        if (auto* object = info.getDynamicObject()) {
+            const auto path = object->getProperty("projectFile").toString();
+            if (path.isNotEmpty() && juce::File::isAbsolutePath(path)) return juce::File(path);
+        }
+        return {};
+    }
+
+    static void deleteRecoveryFiles() {
+        recoveryFile().deleteFile();
+        recoveryInfoFile().deleteFile();
+    }
+
+    // Write an autosave copy on the worker thread if there are unsaved edits
+    // that have not been autosaved yet. Never touches the user's project file.
+    void autosaveIfNeeded() {
+        if (busy || autosaving || !isDirty() || history.currentId() == autosavedId) return;
+        for (int t = 0; t < doc.trackCount(); ++t) trackSettingsEdited(t);
+        auto project = toProjectData(doc);
+        if (!project.valid()) return;
+        autosaving = true;
+        const auto id = history.currentId();
+        const auto original = projectFile.getFullPathName();
+        std::weak_ptr<int> token = alive;
+        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, project, id, original] {
+            bool ok = recoveryDirectory().createDirectory().wasOk();
+            SessionProjectData written;
+            juce::String error;
+            ok = ok && writeSessionProjectFile(recoveryFile(), project, false, written, error);
+            if (ok) {
+                auto info = juce::var(new juce::DynamicObject());
+                info.getDynamicObject()->setProperty("projectFile", original);
+                info.getDynamicObject()->setProperty("savedAt", juce::Time::getCurrentTime().toISO8601(true));
+                ok = recoveryInfoFile().replaceWithText(juce::JSON::toString(info));
+            }
+            juce::MessageManager::callAsync([this, token, id, ok] {
+                if (token.lock() == nullptr) return;
+                autosaving = false;
+                if (ok) autosavedId = id;
+            });
+            return juce::ThreadPoolJob::jobHasFinished;
+        };
+        pool.addJob(std::move(job));
+    }
+
+    // Open the autosave. The result keeps the original project path (if any)
+    // and counts as unsaved, so the user decides where to keep it.
+    void recoverSession() {
+        recoveringFrom = recoveredOriginalFile();
+        openProject(recoveryFile(), true);
+    }
 
     // Engine synchronisation ---------------------------------------------
     void pushDocumentToEngine() {
@@ -220,6 +346,9 @@ public:
     void setClipPattern(int track, int scene, const PianoRollPattern& pattern, bool publishToEngine) {
         if (!doc.isValidCell(track, scene)) return;
         auto& clip = doc.clip(track, scene);
+        // Re-loading a clip into the editor reports identical notes; keep the
+        // existing object so it does not look like an edit.
+        if (samePianoRollPattern(*clip.pattern, pattern)) return;
         clip.pattern = std::make_shared<const PianoRollPattern>(pattern);
         if (!publishToEngine || clip.hasAudio()) return;
         const auto index = static_cast<std::size_t>(track);
@@ -240,12 +369,14 @@ public:
     }
 
     // Files -----------------------------------------------------------------
-    void save() {
-        if (projectFile.existsAsFile()) writeProject(projectFile, false);
-        else chooseSavePath(false);
+    // done(true) once the project is safely on disk; done(false) if the user
+    // cancelled or the save failed.
+    void save(std::function<void(bool)> done = {}) {
+        if (projectFile.existsAsFile()) writeProject(projectFile, false, std::move(done));
+        else chooseSavePath(false, std::move(done));
     }
 
-    void chooseSavePath(bool portable) {
+    void chooseSavePath(bool portable, std::function<void(bool)> done = {}) {
         projectFileChooser = std::make_unique<juce::FileChooser>("Save Alien Studio session",
             projectFile.getParentDirectory().exists()
                 ? projectFile : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
@@ -253,9 +384,10 @@ public:
         std::weak_ptr<int> token = alive;
         projectFileChooser->launchAsync(juce::FileBrowserComponent::saveMode
             | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
-            [this, token, portable](const juce::FileChooser& chooser) {
-                if (token.lock() != nullptr && chooser.getResult() != juce::File{})
-                    writeProject(chooser.getResult(), portable);
+            [this, token, portable, done](const juce::FileChooser& chooser) {
+                if (token.lock() == nullptr) return;
+                if (chooser.getResult() != juce::File{}) writeProject(chooser.getResult(), portable, done);
+                else if (done) done(false);
             });
     }
 
@@ -282,58 +414,61 @@ public:
             });
     }
 
-    void writeProject(juce::File file, bool portable) {
-        if (busy) return;
+    void writeProject(juce::File file, bool portable, std::function<void(bool)> done = {}) {
+        if (busy) { if (done) done(false); return; }
         for (int t = 0; t < doc.trackCount(); ++t) trackSettingsEdited(t);
         const auto project = toProjectData(doc);
         if (alien::serializeSessionProject(project).isEmpty()) {
             status("Could not save: session data is invalid", {});
+            if (done) done(false);
             return;
         }
+        const auto savingId = history.currentId();
         const auto target = file.hasFileExtension("alienstudio") ? file : file.withFileExtension("alienstudio");
         setBusy(true);
         status(portable ? ui8("Collecting audio\xe2\x80\xa6") : ui8("Saving project\xe2\x80\xa6"), {});
         std::weak_ptr<int> token = alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, target, project, portable] {
+        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, target, project, portable, savingId, done] {
             auto saved = std::make_shared<SessionProjectData>();
             juce::String error;
             const bool success = writeSessionProjectFile(target, project, portable, *saved, error);
-            juce::MessageManager::callAsync([this, token, target, success, saved, project, error] {
+            juce::MessageManager::callAsync([this, token, target, success, saved, project, error, savingId, done] {
                 if (token.lock() == nullptr) return;
                 setBusy(false);
-                if (!success) { status("Save failed: " + error, error); return; }
-                // Update only audio references from this snapshot; keep edits made while saving.
-                // Skip if the grid was restructured while saving.
-                if (project.sceneCount() != doc.sceneCount() || project.trackCount() != doc.trackCount()) {
-                    projectFile = target;
-                    status("Saved " + target.getFileName(), target.getFullPathName());
-                    return;
-                }
-                for (int s = 0; s < doc.sceneCount(); ++s)
-                    for (int t = 0; t < doc.trackCount(); ++t) {
-                        auto& current = doc.clip(t, s);
-                        const auto& old = project.clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
-                        const auto& written = saved->clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
-                        if (current.audioFilePath == old.audioFilePath && written.audioFilePath.isNotEmpty())
-                            current.audioFilePath = resolveProjectAudio(target, written.audioFilePath).getFullPathName();
-                    }
+                if (!success) { status("Save failed: " + error, error); if (done) done(false); return; }
+                // Edits made while the file was being written stay unsaved.
+                // Point audio references at what was written (collected media), unless
+                // the grid was restructured while saving. Keep edits made meanwhile.
+                if (project.sceneCount() == doc.sceneCount() && project.trackCount() == doc.trackCount())
+                    for (int s = 0; s < doc.sceneCount(); ++s)
+                        for (int t = 0; t < doc.trackCount(); ++t) {
+                            auto& current = doc.clip(t, s);
+                            const auto& old = project.clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
+                            const auto& written = saved->clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
+                            if (current.audioFilePath == old.audioFilePath && written.audioFilePath.isNotEmpty())
+                                current.audioFilePath = resolveProjectAudio(target, written.audioFilePath).getFullPathName();
+                        }
                 projectFile = target;
+                savedId = savingId;
+                if (!isDirty()) deleteRecoveryFiles();
                 status("Saved " + target.getFileName(), target.getFullPathName());
+                historyChanged();
+                if (done) done(true);
             });
             return juce::ThreadPoolJob::jobHasFinished;
         };
         pool.addJob(std::move(job));
     }
 
-    void openProject(const juce::File& file) {
+    void openProject(const juce::File& file, bool recovered = false) {
         if (busy) return;
         setBusy(true);
         status(ui8("Opening project\xe2\x80\xa6"), {});
         std::weak_ptr<int> token = alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, file] {
+        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, file, recovered] {
             auto result = std::make_shared<LoadResult>(loadProjectFile(file));
-            juce::MessageManager::callAsync([this, token, file, result] {
-                if (token.lock() != nullptr) finishLoad(file, *result);
+            juce::MessageManager::callAsync([this, token, file, result, recovered] {
+                if (token.lock() != nullptr) finishLoad(file, *result, recovered);
             });
             return juce::ThreadPoolJob::jobHasFinished;
         };
@@ -394,7 +529,7 @@ private:
         return result;
     }
 
-    void finishLoad(const juce::File& file, const LoadResult& result) {
+    void finishLoad(const juce::File& file, const LoadResult& result, bool recovered) {
         setBusy(false);
         if (result.error.isNotEmpty()) { status("Open failed: " + result.error, result.error); return; }
         if (result.decodedBytes > maxSessionAudioBytes - retainedBytes) {
@@ -421,10 +556,18 @@ private:
             }
         retainedBytes += result.decodedBytes;
         doc = std::move(loaded);
-        projectFile = file;
+        projectFile = recovered ? recoveringFrom : file;
         pushDocumentToEngine();
+        history.reset(doc);
+        // A recovered session has never been saved by the user.
+        savedId = recovered ? 0 : history.currentId();
+        autosavedId = 0;
+        if (!recovered) deleteRecoveryFiles();
         if (onDocumentReplaced) onDocumentReplaced();
-        status("Opened " + file.getFileName(), file.getFullPathName());
+        historyChanged();
+        if (recovered) status("Recovered unsaved work" + (projectFile != juce::File{} ? " for " + projectFile.getFileName() : juce::String{})
+                              + juce::String(juce::CharPointer_UTF8(" \xe2\x80\x94 save to keep it")), {});
+        else status("Opened " + file.getFileName(), file.getFullPathName());
     }
 
     void finishImport(const juce::File& file, int track, int scene, const AudioClipImportResult& result) {
@@ -442,9 +585,45 @@ private:
         clip.audioFileName = file.getFileName();
         clip.audioFilePath = file.getFullPathName();
         republishIfLive(track, scene);
+        commit("Import audio", track, scene);
         importStatus("Imported " + file.getFileName(), file.getFullPathName());
         if (onClipContentChanged) onClipContentChanged(track, scene);
     }
+
+    // Apply an undo/redo state and bring the engine in line with it.
+    void restore(const ProjectDocument& state, const DocumentHistory::Step& step) {
+        const auto previous = doc;
+        bool reordered = previous.trackCount() != state.trackCount() || previous.sceneCount() != state.sceneCount();
+        for (int t = 0; !reordered && t < state.trackCount(); ++t)
+            reordered = previous.tracks[static_cast<std::size_t>(t)].id != state.tracks[static_cast<std::size_t>(t)].id;
+        for (int s = 0; !reordered && s < state.sceneCount(); ++s)
+            reordered = previous.scenes[static_cast<std::size_t>(s)].id != state.scenes[static_cast<std::size_t>(s)].id;
+        doc = state;
+        // Keep the user's current selection unless the step names a clip.
+        doc.selectedTrack = step.focusTrack >= 0 ? step.focusTrack : previous.selectedTrack;
+        doc.selectedScene = step.focusScene >= 0 ? step.focusScene : previous.selectedScene;
+        doc.clampSelection();
+        if (reordered) stopEverySlot();
+        pushDocumentToEngine();
+        if (!reordered) {
+            // Live clips pick up restored content; audio changes relaunch.
+            for (int t = 0; t < doc.trackCount(); ++t) {
+                const auto index = static_cast<std::size_t>(t);
+                const int active = engine.activePianoRollClip[index].load();
+                const int requested = engine.requestedPianoRollClip[index].load();
+                if (requested >= 0 && requested < doc.sceneCount() && requested != active) publishClip(t, requested);
+                if (active < 0 || active >= doc.sceneCount() || requested != active) continue;
+                const auto& before = previous.clip(t, active);
+                const auto& after = doc.clip(t, active);
+                if (before.audio != after.audio) publishClip(t, active);
+                else if (!after.hasAudio() && before.pattern != after.pattern) engine.pianoRollNotes[index].publish(after.notes());
+            }
+        }
+        if (onDocumentRestored) onDocumentRestored();
+        historyChanged();
+    }
+
+    void historyChanged() { if (onHistoryChanged) onHistoryChanged(); }
 
     void publishStop(std::size_t track) {
         engine.requestedPianoRollClip[track].store(-1);
@@ -486,6 +665,10 @@ private:
     std::size_t retainedBytes{};
     juce::ThreadPool pool{1};
     std::unique_ptr<juce::FileChooser> audioFileChooser, projectFileChooser;
+    DocumentHistory history;
+    std::uint64_t savedId{}, autosavedId{};
+    bool autosaving{};
+    juce::File recoveringFrom;
     std::shared_ptr<int> alive = std::make_shared<int>(0);
 };
 
