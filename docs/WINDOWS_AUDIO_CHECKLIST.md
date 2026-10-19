@@ -49,3 +49,23 @@ and empty pads remain silent. Route a USB controller to each kit, release notes,
 change route, disconnect, Stop and panic; no old sample should remain playing.
 Save portable, move its folder, reopen, and verify kit samples and instrument
 selection. Check the browser and pad buttons at the minimum window size.
+
+## Arrangement and Audio lab (hardware/UI results still NOT RUN)
+
+- Check track-colored regions and Audio lab cards at 960x650 and 100/150/200%
+  scaling. Check focus, text readability, selected pad/region states and meter.
+- Arrange MIDI, drums and stereo audio with gaps. Compare live playback to exported
+  WAV at 60, 120 and 200 BPM. Verify region boundaries, exact ending, Stop/restart,
+  mute/solo/pan, cancelled export and unwritable output paths.
+- Enable one input, record voice/instrument, Stop & save, launch the captured clip.
+  Repeat with stereo inputs carrying distinct signals. Check input meter, source
+  channels, saved WAV sample rate and no unrequested monitoring/feedback.
+- Let a take hit 60 seconds; disconnect/reconfigure the input during capture; close
+  the main window during capture. Each must stop safely and save captured frames.
+  Test an unwritable destination: take stays in memory and Record take retries Save.
+- Warp a known-BPM drum loop, vocal and stereo mix to slower/faster project tempi.
+  Compare pitch, stereo image, transients and exact duration against the original.
+  Exercise cancellation, invalid ratios, 60-second input limit, silence and near-full
+  session memory. Reimport the original before comparing another ratio.
+- Save portable with recorded/warped clips, move folder, reopen and export.
+  Changing project tempo must not claim to live-warp already rendered audio.

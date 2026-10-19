@@ -11,6 +11,7 @@
 #include "TrackMixer.h"
 #include "DrumSampler.h"
 #include "Arrangement.h"
+#include "AudioCapture.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -66,6 +67,7 @@ public:
         resetTransport();
     }
     void audioDeviceStopped() override {
+        if (auto* take = capture.load()) take->done.store(true);
         for (std::size_t track = 0; track < sessionTracks; ++track)
             rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
         for (auto& player : audioPlayers) player.stop();
@@ -73,10 +75,13 @@ public:
         allSoundOff(); discardPendingNotes(); resetTransport();
         midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
     }
-    void audioDeviceIOCallbackWithContext(const float* const*, int,
+    std::atomic<alien::AudioCapture*> capture{};
+
+    void audioDeviceIOCallbackWithContext(const float* const* inputs, int inputChannels,
         float* const* outputs, int channels, int samples,
         const juce::AudioIODeviceCallbackContext&) override {
         juce::ScopedNoDenormals noDenormals;
+        if (auto* take = capture.load(std::memory_order_acquire)) take->append(inputs,inputChannels,samples);
         bool playNow = playing.load();
         const int modeNow = patternMode.load();
         const bool songChanged = arrangementMailbox.consume(*song);

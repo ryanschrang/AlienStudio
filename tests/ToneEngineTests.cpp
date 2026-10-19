@@ -583,7 +583,22 @@ static void drumTrackIntegrationTests() {
     require(offline.render(512) == 0, "clearing a pad stops retained sample playback");
 }
 
+static void arrangementCaptureRealtimeTests() {
+    auto engine=std::make_unique<ToneEngine>();engine->prepare(48000);
+    auto song=std::make_unique<alien::ArrangementPlayback>();song->arrangement.lengthBars=1;
+    song->arrangement.add({0,0,0,1});song->clips[0][0].pattern=heldPattern();
+    engine->arrangementMailbox.publish(*song);engine->patternMode.store(2);engine->playing.store(true);
+    alien::AudioCapture take(48000,2,1);engine->capture.store(&take);
+    std::array<float,256> l{},r{},in{};in.fill(0.3f);float* outputs[]{l.data(),r.data()};const float* inputs[]{in.data(),in.data()};
+    const auto before=allocationCount;
+    for(int b=0;b<400;++b)engine->audioDeviceIOCallbackWithContext(inputs,2,outputs,2,256,{});
+    require(before==allocationCount,"arrangement plus capture callback must not allocate");
+    require(take.done.load() && take.frames.load()==48000 && !engine->playing.load(),"capture capacity and arrangement stop independently");
+    engine->capture.store(nullptr);
+}
+
 int main() {
+    arrangementCaptureRealtimeTests();
     drumTrackIntegrationTests();
     independentTrackMixerTests();
     perStepPitchAndVelocityTests();

@@ -33,7 +33,8 @@ int main() {
     check(alien::exportArrangementWav(file,*project,*song,drums,cancel,error),"export succeeds");
     juce::WavAudioFormat format;std::unique_ptr<juce::AudioFormatReader> reader(format.createReaderFor(file.createInputStream().release(),true));
     check(reader && reader->lengthInSamples==288000 && reader->sampleRate==48000 && reader->bitsPerSample==24 && reader->numChannels==2,"WAV format and exact duration");reader.reset();
-    const auto before=file.loadFileAsString();cancel.store(true);
-    check(!alien::exportArrangementWav(file,*project,*song,drums,cancel,error) && file.loadFileAsString()==before,"cancel preserves destination");
+    juce::MemoryBlock before,after;file.loadFileAsData(before);cancel.store(true);
+    check(!alien::exportArrangementWav(file,*project,*song,drums,cancel,error),"cancel rejects export");file.loadFileAsData(after);
+    check(before==after,"cancel preserves every destination byte");
     file.deleteFile();std::cout<<"Arrangement playback, persistence and WAV export passed\n";
 }

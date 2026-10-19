@@ -69,3 +69,14 @@ piano-roll sequencing, v4 kit persistence and portable collection. Focused DSP
 and integration tests cover reset, source isolation and allocation-free operation.
 Still later: dedicated multi-lane 16/32/64-step drum editor, sample trimming,
 streaming, factory sample packs, and more elaborate pad modulation.
+
+## October 2026 implementation update
+
+Implemented foundations now include per-track eight-pad sample kits/browser,
+bar-based arrangement with WAV export, bounded 60-second mono/stereo input takes,
+and offline fixed-tempo WSOLA rendering. Audio lab adds explicit input settings,
+record state/meter, destination display and a separate tempo-render workflow.
+Full recording/editing and warping milestones remain open: streaming takes,
+latency compensation, count-in/punch/overdub, trimming/fades, take lanes/comping,
+automatic BPM, warp markers and transient-aware algorithms. Windows listening and
+visual checks remain separate gates from the passing offline tests.
