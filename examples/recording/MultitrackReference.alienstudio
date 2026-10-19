@@ -1,0 +1,314 @@
+{
+  "format": "AlienStudioSession",
+  "version": 6,
+  "launchQuantizationSteps": 16,
+  "selectedTrack": 0,
+  "selectedScene": 0,
+  "bpm": 120,
+  "synthPreset": 0,
+  "plugins": [
+    {
+      "instrument": {
+        "description": "",
+        "state": "",
+        "bypass": false
+      },
+      "effects": []
+    },
+    {
+      "instrument": {
+        "description": "",
+        "state": "",
+        "bypass": false
+      },
+      "effects": []
+    },
+    {
+      "instrument": {
+        "description": "",
+        "state": "",
+        "bypass": false
+      },
+      "effects": []
+    },
+    {
+      "instrument": {
+        "description": "",
+        "state": "",
+        "bypass": false
+      },
+      "effects": []
+    }
+  ],
+  "masterPlugins": {
+    "instrument": {
+      "description": "",
+      "state": "",
+      "bypass": false
+    },
+    "effects": []
+  },
+  "trackSettings": [
+    {
+      "name": "Reference Pulse",
+      "colour": 0,
+      "preset": 0,
+      "instrument": 0,
+      "gain": 0.7,
+      "pan": 0,
+      "mute": false,
+      "solo": false
+    },
+    {
+      "name": "Low Reference",
+      "colour": 1,
+      "preset": 1,
+      "instrument": 0,
+      "gain": 0.7,
+      "pan": 0,
+      "mute": false,
+      "solo": false
+    },
+    {
+      "name": "Mid Reference",
+      "colour": 2,
+      "preset": 2,
+      "instrument": 0,
+      "gain": 0.7,
+      "pan": 0,
+      "mute": false,
+      "solo": false
+    },
+    {
+      "name": "High Reference",
+      "colour": 3,
+      "preset": 0,
+      "instrument": 0,
+      "gain": 0.7,
+      "pan": 0,
+      "mute": false,
+      "solo": false
+    }
+  ],
+  "sceneNames": [
+    "Reference",
+    "Record Here",
+    "Alternate Take",
+    "Recovery"
+  ],
+  "drumPaths": [
+    [
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ]
+  ],
+  "stepPattern": [
+    true,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+  ],
+  "stepPitches": [
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57
+  ],
+  "stepVelocities": [
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90
+  ],
+  "arrangement": {
+    "lengthBars": 16,
+    "regions": [
+      {
+        "track": 0,
+        "scene": 0,
+        "startBar": 0,
+        "lengthBars": 2
+      },
+      {
+        "track": 1,
+        "scene": 0,
+        "startBar": 0,
+        "lengthBars": 2
+      },
+      {
+        "track": 2,
+        "scene": 0,
+        "startBar": 0,
+        "lengthBars": 2
+      },
+      {
+        "track": 3,
+        "scene": 0,
+        "startBar": 0,
+        "lengthBars": 2
+      }
+    ]
+  },
+  "scenes": [
+    [
+      {
+        "loopSteps": 64,
+        "audioFilePath": "Media/reference-1.wav",
+        "notes": []
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "Media/reference-2.wav",
+        "notes": []
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "Media/reference-3.wav",
+        "notes": []
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "Media/reference-4.wav",
+        "notes": []
+      }
+    ],
+    [
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": []
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": []
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": []
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": []
+      }
+    ],
+    [
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": []
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": []
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": []
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": []
+      }
+    ],
+    [
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": []
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": []
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": []
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": []
+      }
+    ]
+  ]
+}
