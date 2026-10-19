@@ -4,7 +4,7 @@
 
 Alien Studio is an **independent, original application**, not affiliated with or endorsed by any of those products. We aim to learn from broadly useful workflows without copying proprietary code, artwork, branding, or protected assets.
 
-> **Project status:** Early music-making prototype with a pitch/velocity step sequencer, piano-roll tools, a four-track/four-scene MIDI/audio Session grid, independent Session synths and mixer controls, USB MIDI input, project save/open, and portable audio collection. Windows Debug/Release builds and automated tests run in GitHub Actions. Arrangement, recording, warping, plugin hosting, and production effects remain planned. Native audio-device behavior still requires hands-on Windows testing; see [the verification checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
+> **Project status:** Early music-making prototype with a pitch/velocity step sequencer, piano-roll tools, a four-track/four-scene MIDI/audio Session grid, independent Session synths and mixer controls, USB MIDI input, project save/open, and portable audio collection. Windows Debug/Release builds and automated tests run in GitHub Actions. Drum kits/browser, bar-based arrangement, WAV export, bounded audio takes and offline fixed-tempo warping are implemented foundations. Full audio editing, live warp markers, plugin hosting and production effects remain planned. Native audio-device behavior still requires hands-on Windows testing; see [the verification checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
 
 ## Product vision: three connected workspaces
 
@@ -23,16 +23,19 @@ The long-term differentiator is **one shared project and audio engine** across a
 - [x] Four-track/four-scene clip launching, beat/bar timing, MIDI CC scene mapping, and WAV/MP3 audio clips.
 - [x] Independent 16-voice Session synths, per-track preset/volume/balance/mute/solo and output meters.
 - [x] Versioned project save/open and portable project copies with collected audio.
+- [x] Eight-pad kits per track with a WAV/MP3 browser and hardware MIDI drum routing.
+- [x] Bar-based arrangement, project persistence and stereo WAV export.
+- [x] Mono/stereo input takes up to 60 seconds and offline fixed-tempo audio matching.
 - [x] GPL-3.0 license file. Dependency attribution/distribution review remains required before releases.
 
 ### Next implementation sequence
-1. Drum sampler and sample browser; extend the step workflow for drum channels.
-2. Shared arrangement timeline and WAV export; move Session material into complete songs.
+1. Extend the sampler with multi-lane drum steps, kit presets and sample editing.
+2. Refine arrangement with drag editing, seeking, fades and audio trimming.
 3. MIDI recording, metronome, count-in, overdubbing, and explicit input-to-track routing.
-4. Audio recording, trimming, fades, take lanes, and comping.
+4. Extend bounded audio recording to disk streaming, latency compensation, take lanes and comping.
 5. Automation, EQ/compression/reverb/delay, buses, sends, sidechain, and latency compensation.
 6. VST3 hosting, plugin scan/recovery, state persistence, and freeze/render.
-7. Tempo warping, pitch correction, expressive MIDI/articulations, and optional assisted composition/mastering.
+7. Extend offline tempo matching with warp markers and transient handling; add pitch correction and expressive MIDI/articulations.
 
 Autosave/recovery, global undo, project/media management, broader track/scene capacity,
 and Windows device/listening verification accompany these milestones. See
@@ -210,7 +213,7 @@ smaller displays.
 
 Save the session before closing to retain MIDI patterns, track settings, and audio
 references. Unsaved edits are lost; autosave/recovery is not yet implemented.
-MIDI recording, arrangement playback, and external/plugin instruments remain future work.
+MIDI recording and external/plugin instruments remain future work. The Arrangement tab now sequences Session material.
 Same-pitch overlaps share one gate until the last overlap ends; velocity changes
 to a sounding note apply at its next trigger. Notes end at the four-bar boundary.
 Edits publish at audio-block boundaries; stop, source changes, preset changes and
@@ -518,8 +521,7 @@ are bundled: use samples you own or have permission to use.
 
 Project v4 saves kit assignments and instrument types; Save portable collects
 kit media as well as Session audio. Older projects remain synth projects.
-This is a sample-based kit with piano-roll sequencing, not audio recording,
-waveform editing, tempo warping, or a completed multi-lane drum step editor.
+The kit uses piano-roll sequencing; a dedicated multi-lane drum step editor remains future work. Audio recording and fixed-tempo matching are available separately in Audio lab.
 
 ### Arrangement and WAV export
 
@@ -531,3 +533,34 @@ arrangement during playback restarts it. Export renders the same instrument,
 sample and mixer DSP to stereo 48 kHz / 24-bit WAV on a worker thread, for the
 exact song length. Click Export again to cancel; cancelled writes preserve an
 existing destination. Projects now save arrangement data (format v5).
+
+### Audio lab: recording and tempo matching
+
+Select the destination in Session, then open **Audio lab**. **Audio settings**
+selects the device and enables its input channels. Select mono (first active input)
+or stereo (first two active inputs), click **Record take**, and choose a new WAV
+filename. Capture starts immediately, independently of Play. Click **Stop & save
+take**, or let the 60-second limit stop it. The take is written as 24-bit WAV at the
+device sample rate and replaces the selected Session clip only after a successful
+write. Monitoring is off. Failed writes retain the take in memory for Save retry;
+normal window close stops and saves an active take. Force quit/crash recovery is
+not implemented. Recording buffers are allocated before capture; file writing and
+waveform analysis happen off the audio thread. Device stop ends the current take.
+
+For tempo matching, select an audio Session clip, enter its known **source BPM**,
+set the project tempo and choose **Render tempo match**. This renders an independent
+WAV and replaces the Session reference after success; the original file is retained
+on disk. Save portable collects the resulting WAV just like other imported media.
+The render uses linked-stereo waveform-similarity overlap-add (WSOLA), with exact
+output duration and a supported duration ratio of 0.5–2× for sources up to 60 seconds.
+Click **Cancel tempo render** to stop processing. Reimport the original file before
+making a different warp to avoid repeatedly processing an already warped result.
+
+This is fixed-tempo, offline matching: project tempo changes do not automatically
+re-warp files. There is no BPM detection, marker editor, transient-aware mode,
+phase-vocoder mode, MIDI recording, punch-in, overdub, count-in, input monitoring,
+recording latency compensation, or full waveform editing yet. Complex polyphonic
+and percussive material can exhibit artifacts; listening tests on representative
+material remain necessary. The algorithm follows the general method described in
+[Driedger & Müller’s TSM review](https://www.mdpi.com/2076-3417/6/2/57), with an original
+implementation and no new binary dependency.

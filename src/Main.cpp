@@ -13,6 +13,9 @@
 #include "DrumSamplerPanel.h"
 #include "ArrangementPanel.h"
 #include "WavExport.h"
+#include "AudioToolsPanel.h"
+#include "TempoWarp.h"
+#include "AudioFileWrite.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -296,6 +299,10 @@ public:
         tabs.addTab("Arrangement", AlienStudioLookAndFeel::panel, &arrangementPanel, false);
         arrangementPanel.onChange = [this] { publishArrangement(); };
         arrangementPanel.onExport = [this] { chooseWavExport(); };
+        tabs.addTab("Audio lab", AlienStudioLookAndFeel::panel, &audioTools, false);
+        audioTools.onRecord=[this]{chooseRecording();};
+        audioTools.onSettings=[this]{showAudioSettings();};
+        audioTools.onWarp=[this]{chooseTempoWarp();};
         tabs.getTabbedButtonBar().addChangeListener(this);
         addAndMakeVisible(workspace);
         devicePanel.addAndMakeVisible(deviceTitle);
@@ -478,8 +485,17 @@ public:
         startTimerHz(20);
         resized();
     }
+    bool requestClose() {
+        if(activeCapture){closeAfterTake=true;finishRecording();return false;}
+        if(unsavedTake || audioWorkCancellation){audioTools.setStatus("Save the retained take or wait for the audio operation before closing.");tabs.setCurrentTabIndex(6);return false;}
+        return true;
+    }
     ~MainComponent() override {
         stopTimer();
+        if(audioWorkCancellation)audioWorkCancellation->store(true);
+        audio.removeAudioCallback(&engine);engine.capture.store(nullptr);activeCapture.reset();
+        takeFileChooser.reset();warpFileChooser.reset();
+        if(audioSettingsWindow)delete audioSettingsWindow.getComponent();
         if (exportCancellation) exportCancellation->store(true);
         exportFileChooser.reset();
         audioFileChooser.reset();
@@ -602,6 +618,12 @@ private:
         else pianoRoll.releaseAudition();
     }
     void timerCallback() override {
+        if(activeCapture) {
+            audioTools.setDestination(takeTrack,takeScene);
+            audioTools.setMeter(activeCapture->level.load());
+            audioTools.setStatus("Recording " + juce::String(activeCapture->frames.load()/activeCapture->sampleRate,1) + " / 60 s — Stop & save take");
+            if(activeCapture->done.load())finishRecording();
+        }
         const bool isPlaying = engine.playing.load();
         if (play.getToggleState() != isPlaying)
             play.setToggleState(isPlaying, juce::dontSendNotification);
@@ -1033,7 +1055,113 @@ private:
         };
         audioImportPool.addJob(std::move(job));
     }
+    void showAudioSettings() {
+        if(projectBusy || activeCapture) return;
+        if(audioSettingsWindow){audioSettingsWindow->toFront(true);return;}
+        auto* selector=new juce::AudioDeviceSelectorComponent(audio,0,2,0,2,false,false,true,false);
+        selector->setSize(560,420);
+        juce::DialogWindow::LaunchOptions options;options.content.setOwned(selector);
+        options.dialogTitle="Audio input & output";options.dialogBackgroundColour=AlienStudioLookAndFeel::panel;
+        options.useNativeTitleBar=true;options.resizable=false;audioSettingsWindow=options.launchAsync();
+    }
+    void chooseRecording() {
+        if(activeCapture){finishRecording();return;}
+        if((projectBusy && !unsavedTake) || audioWorkCancellation)return;
+        const int track=selectedTrack,scene=selectedScene;
+        takeFileChooser=std::make_unique<juce::FileChooser>("Save new recording",
+            juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getNonexistentChildFile("AlienTake",".wav"),"*.wav");
+        juce::Component::SafePointer<MainComponent> safe(this);
+        takeFileChooser->launchAsync(juce::FileBrowserComponent::saveMode|juce::FileBrowserComponent::canSelectFiles,
+            [safe,track,scene](const juce::FileChooser& chooser){if(safe && chooser.getResult()!=juce::File{})safe->beginRecording(chooser.getResult().withFileExtension("wav"),track,scene);});
+    }
+    void beginRecording(const juce::File& file,int track,int scene) {
+        if((projectBusy && !unsavedTake) || activeCapture)return;
+        if(file.exists()){audioTools.setStatus("Choose a new filename to preserve existing audio.");return;}
+        if(unsavedTake){takeTarget=file;setProjectBusy(true);queueTakeWrite({});return;}
+        auto* device=audio.getCurrentAudioDevice();
+        if(!device || device->getActiveInputChannels().countNumberOfSetBits()<audioTools.inputChannels()) {
+            audioTools.setStatus("Enable the required input channels in Audio settings, then Record take.");return;
+        }
+        const double rate=device->getCurrentSampleRate();
+        if(rate<8000 || rate>192000 || !std::isfinite(rate)){audioTools.setStatus("Unsupported input sample rate.");return;}
+        const auto bytes=static_cast<std::size_t>(rate)*60*static_cast<std::size_t>(audioTools.inputChannels())*sizeof(float);
+        if(bytes>maxSessionAudioBytes-retainedAudioBytes){audioTools.setStatus("Insufficient session audio capacity for a 60-second take.");return;}
+        try { activeCapture=std::make_shared<alien::AudioCapture>(rate,audioTools.inputChannels()); }
+        catch(const std::bad_alloc&){audioTools.setStatus("Not enough memory to record.");return;}
+        takeTarget=file;takeTrack=track;takeScene=scene;
+        setProjectBusy(true);audioTools.setBusy(true,true);audioTools.setDestination(track,scene);
+        engine.capture.store(activeCapture.get(),std::memory_order_release);
+        audioTools.setStatus("Recording… Input is not monitored. Stop & save take when finished.");
+    }
+    void finishRecording() {
+        if(!activeCapture)return;
+        // Message-thread-only: use the manager's existing dispatch lock for one
+        // pointer exchange. No allocation/I/O under the lock and no transport reset.
+        { const juce::ScopedLock lock(audio.getAudioCallbackLock());engine.capture.store(nullptr); }
+        queueTakeWrite(std::move(activeCapture));
+    }
+    void queueTakeWrite(std::shared_ptr<alien::AudioCapture> take) {
+        const auto file=takeTarget;const int track=takeTrack,scene=takeScene;
+        const auto retained=unsavedTake;
+        audioTools.setBusy(true);audioTools.setMeter(0);audioTools.setStatus("Saving take…");
+        audioWorkCancellation=std::make_shared<std::atomic<bool>>(false);auto cancel=audioWorkCancellation;
+        juce::Component::SafePointer<MainComponent> safe(this);
+        std::function<juce::ThreadPoolJob::JobStatus()> job=[safe,take,retained,file,track,scene,cancel]{
+            auto result=std::make_shared<alien::AudioClipImportResult>();result->clip=take?take->finish():retained;
+            if(!result->clip)result->error="No input samples captured.";
+            else alien::writeClipWav(file,*result->clip,*cancel,result->error);
+            juce::MessageManager::callAsync([safe,file,track,scene,result]{if(!safe)return;
+                safe->audioWorkCancellation.reset();safe->setProjectBusy(false);safe->audioTools.setBusy(false);
+                if(result->clip && result->error.isEmpty()){
+                    safe->unsavedTake.reset();safe->finishAudioImport(file,track,scene,*result);
+                    safe->audioTools.setStatus("Saved take: "+file.getFullPathName());
+                    if(safe->closeAfterTake)juce::JUCEApplication::getInstance()->systemRequestedQuit();
+                } else {
+                    safe->unsavedTake=result->clip;safe->closeAfterTake=false;
+                    if(safe->unsavedTake)safe->setProjectBusy(true);
+                    safe->audioTools.setStatus(result->error+" Take retained in memory. Record take retries Save to a new file.");
+                }
+            });return juce::ThreadPoolJob::jobHasFinished;
+        };audioImportPool.addJob(std::move(job));
+    }
+    void chooseTempoWarp() {
+        if(audioWorkCancellation){audioWorkCancellation->store(true);audioTools.setStatus("Cancelling tempo render…");return;}
+        if(projectBusy)return;
+        const int track=selectedTrack,scene=selectedScene;
+        const auto& clip=clips[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
+        if(!clip.audio){audioTools.setStatus("Select an audio clip in Session before rendering a tempo match.");return;}
+        const double ratio=audioTools.sourceBpm()/engine.bpm.load();
+        if(ratio<0.5 || ratio>2 || clip.audio->frames/clip.audio->sampleRate>60){audioTools.setStatus("Use a clip up to 60 seconds and a duration ratio between 0.5 and 2.");return;}
+        warpFileChooser=std::make_unique<juce::FileChooser>("Save tempo-matched audio as a new WAV",
+            juce::File(clip.audioFilePath).getSiblingFile(juce::File(clip.audioFilePath).getFileNameWithoutExtension()+"-warped.wav"),"*.wav");
+        const auto* source=clip.audio;
+        juce::Component::SafePointer<MainComponent> safe(this);
+        warpFileChooser->launchAsync(juce::FileBrowserComponent::saveMode|juce::FileBrowserComponent::canSelectFiles,
+            [safe,source,track,scene,ratio](const juce::FileChooser& chooser){if(safe && chooser.getResult()!=juce::File{})safe->startTempoWarp(chooser.getResult().withFileExtension("wav"),source,track,scene,ratio);});
+    }
+    void startTempoWarp(const juce::File& file,const alien::SessionAudioClip* source,int track,int scene,double ratio) {
+        if(projectBusy)return;
+        if(file.exists()){audioTools.setStatus("Choose a new filename to preserve existing audio.");return;}
+        const auto bytes=static_cast<std::size_t>(std::ceil(source->frames*ratio))*static_cast<std::size_t>(source->channels)*sizeof(float);
+        if(bytes>maxSessionAudioBytes-retainedAudioBytes){audioTools.setStatus("Session audio capacity exceeded.");return;}
+        setProjectBusy(true);audioTools.setBusy(true,false,true);audioTools.setStatus("Rendering pitch-preserving tempo match…");
+        audioWorkCancellation=std::make_shared<std::atomic<bool>>(false);auto cancel=audioWorkCancellation;
+        const auto assets=retainedAudioAssets;
+        juce::Component::SafePointer<MainComponent> safe(this);
+        std::function<juce::ThreadPoolJob::JobStatus()> job=[safe,file,source,track,scene,ratio,cancel,assets]{
+            auto result=std::make_shared<alien::AudioClipImportResult>();result->clip=alien::warpTempo(*source,ratio,*cancel);
+            if(!result->clip)result->error="Tempo render cancelled or exceeds supported limits.";
+            else if(!alien::writeClipWav(file,*result->clip,*cancel,result->error))result->clip.reset();
+            juce::MessageManager::callAsync([safe,file,track,scene,result]{if(!safe)return;
+                safe->audioWorkCancellation.reset();safe->setProjectBusy(false);safe->audioTools.setBusy(false);
+                if(result->clip){safe->finishAudioImport(file,track,scene,*result);safe->audioTools.setStatus("Tempo match saved. Original file preserved; reimport it to restore the source.");}
+                else safe->audioTools.setStatus(result->error);
+            });return juce::ThreadPoolJob::jobHasFinished;
+        };audioImportPool.addJob(std::move(job));
+    }
+
     void chooseAudioFile() {
+        if(projectBusy)return;
         audioFileChooser = std::make_unique<juce::FileChooser>("Import audio clip",
             juce::File{}, "*.wav;*.mp3");
         juce::Component::SafePointer<MainComponent> safe(this);
@@ -1045,13 +1173,15 @@ private:
             });
     }
     void startAudioImport(const juce::File& file, int track, int scene) {
+        if(projectBusy)return;
+        setProjectBusy(true);
         audioImportStatus.setText("Loading audio…", juce::dontSendNotification);
         audioImportStatus.setTooltip(file.getFullPathName());
         juce::Component::SafePointer<MainComponent> safe(this);
         std::function<juce::ThreadPoolJob::JobStatus()> importJob = [safe, file, track, scene] {
             auto result = std::make_shared<alien::AudioClipImportResult>(alien::decodeSessionAudioClip(file));
             juce::MessageManager::callAsync([safe, file, track, scene, result] {
-                if (safe != nullptr) safe->finishAudioImport(file, track, scene, *result);
+                if (safe != nullptr) { safe->setProjectBusy(false); safe->finishAudioImport(file, track, scene, *result); }
             });
             return juce::ThreadPoolJob::jobHasFinished;
         };
@@ -1084,6 +1214,7 @@ private:
         if (engine.activePianoRollClip[static_cast<std::size_t>(track)].load() == scene
             || engine.requestedPianoRollClip[static_cast<std::size_t>(track)].load() == scene)
             publishSessionClip(track, scene, false);
+        publishArrangement();
         audioImportStatus.setText("Imported " + file.getFileName(), juce::dontSendNotification);
         audioImportStatus.setTooltip(file.getFullPathName());
         updateSessionButtons();
@@ -1104,6 +1235,7 @@ private:
     }
     void updateAudioClipEditor() {
         const auto& clip = clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)];
+        audioTools.setDestination(selectedTrack,selectedScene);
         audioWaveform.setClip(clip.audio, clip.audioFileName);
         removeAudio.setEnabled(clip.audio != nullptr);
         if (clip.audio == nullptr && audioImportStatus.getText().isEmpty())
@@ -1161,6 +1293,15 @@ private:
     alien::TrackMixerPanel mixerPanel{engine.tracks};
     alien::DrumSamplerPanel drumPanel;
     alien::ArrangementPanel arrangementPanel;
+    alien::AudioToolsPanel audioTools;
+    std::shared_ptr<alien::AudioCapture> activeCapture;
+    std::shared_ptr<alien::SessionAudioClip> unsavedTake;
+    bool closeAfterTake{};
+    std::shared_ptr<std::atomic<bool>> audioWorkCancellation;
+    std::unique_ptr<juce::FileChooser> takeFileChooser,warpFileChooser;
+    juce::Component::SafePointer<juce::DialogWindow> audioSettingsWindow;
+    juce::File takeTarget;
+    int takeTrack{},takeScene{};
     std::unique_ptr<juce::FileChooser> exportFileChooser;
     std::shared_ptr<std::atomic<bool>> exportCancellation;
     std::array<std::array<juce::String, alien::drumPadCount>, 4> drumPaths{};
@@ -1237,7 +1378,10 @@ private:
             if (!isActiveWindow())
                 if (auto* content = dynamic_cast<MainComponent*>(getContentComponent())) content->releaseNotes();
         }
-        void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
+        void closeButtonPressed() override {
+            if(auto* main=dynamic_cast<MainComponent*>(getContentComponent());main && !main->requestClose())return;
+            juce::JUCEApplication::getInstance()->systemRequestedQuit();
+        }
     };
     std::unique_ptr<Window> window;
 };
