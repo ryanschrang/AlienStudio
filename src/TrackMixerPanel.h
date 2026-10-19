@@ -2,6 +2,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "TrackMixer.h"
 #include "StudioWidgets.h"
+#include "SynthEngine.h"
 #include <array>
 #include <cmath>
 
@@ -31,12 +32,11 @@ public:
             strip.title.setJustificationType(juce::Justification::centred);
             strip.title.setColour(juce::Label::textColourId, ui::colours::accentInk);
             strip.title.setInterceptsMouseClicks(false, false);
-            strip.preset.addItem("Lead (saw)", 1);
-            strip.preset.addItem("Bass (square)", 2);
-            strip.preset.addItem("Pluck (sine)", 3);
+            for (std::size_t p = 0; p < presetNames.size(); ++p)
+                strip.preset.addItem(presetNames[p], static_cast<int>(p) + 1);
             strip.preset.setName(name + " instrument");
             strip.preset.setTooltip("Changes new notes on this track; held notes finish with their original sound");
-            strip.preset.onChange = [this, i] { tracks[i].preset.store(strips[i].preset.getSelectedId() - 1); };
+            strip.preset.onChange = [this, i] { tracks[i].preset.store(strips[i].preset.getSelectedId() - 1); edited(i, true); };
 
             strip.gainLabel.setText("VOLUME", juce::dontSendNotification);
             strip.gain.setSliderStyle(juce::Slider::LinearVertical);
@@ -48,7 +48,8 @@ public:
             strip.gain.textFromValueFunction = [](double v) { return gainToText(v); };
             strip.gain.valueFromTextFunction = [](const juce::String& t) { return textToGain(t); };
             strip.gain.setColour(juce::Slider::trackColourId, ui::trackColour(static_cast<int>(i)));
-            strip.gain.onValueChange = [this, i] { tracks[i].gain.store(static_cast<float>(strips[i].gain.getValue() / 100)); };
+            strip.gain.onValueChange = [this, i] { tracks[i].gain.store(static_cast<float>(strips[i].gain.getValue() / 100)); edited(i, false); };
+            strip.gain.onDragEnd = [this, i] { edited(i, true); };
             strip.gain.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 64, 20);
 
             strip.panLabel.setText("PAN", juce::dontSendNotification);
@@ -68,7 +69,8 @@ public:
                 return s == "C" ? 0.0 : s.getDoubleValue();
             };
             strip.pan.setColour(juce::Slider::rotarySliderFillColourId, ui::trackColour(static_cast<int>(i)));
-            strip.pan.onValueChange = [this, i] { tracks[i].pan.store(static_cast<float>(strips[i].pan.getValue() / 100)); };
+            strip.pan.onValueChange = [this, i] { tracks[i].pan.store(static_cast<float>(strips[i].pan.getValue() / 100)); edited(i, false); };
+            strip.pan.onDragEnd = [this, i] { edited(i, true); };
             strip.pan.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 48, 18);
 
             for (auto* label : {&strip.gainLabel, &strip.panLabel}) {
@@ -84,12 +86,16 @@ public:
             strip.mute.setColour(juce::TextButton::textColourOnId, ui::colours::accentInk);
             strip.solo.setColour(juce::TextButton::textColourOnId, juce::Colour(0xff06162a));
             strip.mute.setClickingTogglesState(true); strip.solo.setClickingTogglesState(true);
-            strip.mute.onClick = [this, i] { tracks[i].mute.store(strips[i].mute.getToggleState()); };
-            strip.solo.onClick = [this, i] { tracks[i].solo.store(strips[i].solo.getToggleState()); };
+            strip.mute.onClick = [this, i] { tracks[i].mute.store(strips[i].mute.getToggleState()); edited(i, true); };
+            strip.solo.onClick = [this, i] { tracks[i].solo.store(strips[i].solo.getToggleState()); edited(i, true); };
         }
         refreshSettings();
         for (auto& strip : strips) { strip.gain.updateText(); strip.pan.updateText(); }
     }
+
+    // Called whenever a strip control changes the engine. "committed" is true
+    // for discrete changes and at the end of a fader/knob drag.
+    std::function<void(int, bool)> onTrackEdited;
 
     void refreshSettings() {
         for (std::size_t i = 0; i < tracks.size(); ++i) {
@@ -170,6 +176,10 @@ public:
 
 private:
     static constexpr int gap = 10;
+
+    void edited(std::size_t track, bool committed) {
+        if (onTrackEdited) onTrackEdited(static_cast<int>(track), committed);
+    }
 
     static juce::String gainToText(double percent) {
         if (percent <= 0.0) return "-inf dB";

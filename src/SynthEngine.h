@@ -15,6 +15,10 @@ inline constexpr std::array<Patch, 3> presets{{
     {Waveform::square, 0.005, 0.12, 0.6, 0.08, 900.0},
     {Waveform::sine, 0.002, 0.18, 0.0, 0.12, 6000.0}
 }};
+// Display names, index-aligned with presets.
+inline constexpr std::array<const char*, presets.size()> presetNames{{
+    "Lead (saw)", "Bass (square)", "Pluck (sine)"
+}};
 
 class Envelope {
 public:
