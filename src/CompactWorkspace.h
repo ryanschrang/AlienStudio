@@ -18,6 +18,7 @@ public:
         addAndMakeVisible(toggle);
         toggle.setName("Workspace view switch");
         toggle.setTooltip("Switch between the editor and devices (Shift+Tab)");
+        toggle.getProperties().set("style", "ghost");
         toggle.onClick = [this] { showDevices(editor.isVisible()); };
         addComponentListener(this);
         updateToggle();
@@ -29,6 +30,14 @@ public:
     }
 
     bool isDeviceView() const noexcept { return devices.isVisible(); }
+
+    // Title and subtitle drawn in the header while the editor is showing.
+    void setEditorTitle(const juce::String& newTitle, const juce::String& newSubtitle = {}) {
+        if (editorTitle == newTitle && editorSubtitle == newSubtitle) return;
+        editorTitle = newTitle;
+        editorSubtitle = newSubtitle;
+        repaint(0, 0, getWidth(), headerHeight);
+    }
 
     void showDevices(bool shouldShow) {
         if (shouldShow == isDeviceView()) return;
@@ -45,17 +54,29 @@ public:
 
     void resized() override {
         auto area = getLocalBounds();
-        auto header = area.removeFromTop(42);
-        toggle.setBounds(header.removeFromRight(150).reduced(2, 4));
+        auto header = area.removeFromTop(headerHeight);
+        toggle.setBounds(header.removeFromRight(132).reduced(4, 5));
         editor.setBounds(area);
         devices.setBounds(area);
     }
 
     void paint(juce::Graphics& g) override {
-        g.setColour(juce::Colour(0xffb9ced8));
-        g.setFont(15.0f);
-        g.drawText(isDeviceView() ? "Synth & MIDI devices" : "Pattern editor",
-                   12, 0, getWidth() - 174, 42, juce::Justification::centredLeft);
+        auto header = juce::Rectangle<int>(0, 0, getWidth(), headerHeight);
+        g.setColour(juce::Colour(0xff1d1f24));
+        g.fillRect(header);
+        g.setColour(juce::Colour(0xff26282d));
+        g.fillRect(header.removeFromBottom(1));
+        const auto title = isDeviceView() ? juce::String("Devices") : editorTitle;
+        const auto subtitle = isDeviceView() ? juce::String("Live synth and MIDI input") : editorSubtitle;
+        auto f = juce::Font(juce::FontOptions(13.0f, juce::Font::bold));
+        g.setFont(f);
+        g.setColour(juce::Colour(0xffe8eaed));
+        const int titleWidth = static_cast<int>(juce::GlyphArrangement::getStringWidth(f, title)) + 2;
+        g.drawText(title, 14, 0, titleWidth, headerHeight, juce::Justification::centredLeft);
+        g.setFont(juce::FontOptions(12.5f));
+        g.setColour(juce::Colour(0xff686d75));
+        g.drawText(subtitle, 14 + titleWidth + 12, 0, juce::jmax(0, getWidth() - titleWidth - 180), headerHeight,
+                   juce::Justification::centredLeft, true);
     }
 
     std::function<void(bool)> onViewChanged;
@@ -87,6 +108,8 @@ private:
         repaint();
     }
 
+    static constexpr int headerHeight = 36;
+    juce::String editorTitle{"Pattern editor"}, editorSubtitle;
     juce::Component& editor;
     juce::Component& devices;
     juce::TextButton toggle;

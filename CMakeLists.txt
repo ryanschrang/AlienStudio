@@ -8,7 +8,11 @@ FetchContent_MakeAvailable(JUCE)
 juce_add_gui_app(AlienStudio PRODUCT_NAME "Alien Studio" COMPANY_NAME "Alien Studio")
 target_sources(AlienStudio PRIVATE src/Main.cpp)
 target_compile_definitions(AlienStudio PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
-target_link_libraries(AlienStudio PRIVATE juce::juce_audio_utils juce::juce_gui_extra)
+# Branding artwork embedded for the splash screen and in-app logo (the Windows
+# executable icon is embedded separately from the ICO below).
+juce_add_binary_data(AlienStudioBranding HEADER_NAME BrandingData.h NAMESPACE BrandingData
+    SOURCES assets/branding/AlienStudio_Icon_Corrected.png)
+target_link_libraries(AlienStudio PRIVATE AlienStudioBranding juce::juce_audio_utils juce::juce_gui_extra)
 juce_generate_juce_header(AlienStudio)
 
 if(WIN32)
@@ -41,6 +45,7 @@ if(BUILD_TESTING)
     add_test(NAME SessionAudioClipTests COMMAND SessionAudioClipTests)
     add_executable(SessionProjectTests tests/SessionProjectTests.cpp)
     target_include_directories(SessionProjectTests PRIVATE src)
+    target_compile_definitions(SessionProjectTests PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)
     target_link_libraries(SessionProjectTests PRIVATE juce::juce_core)
     add_test(NAME SessionProjectTests COMMAND SessionProjectTests)
     add_executable(AudioClipImportTests tests/AudioClipImportTests.cpp)

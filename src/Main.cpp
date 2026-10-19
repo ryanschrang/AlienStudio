@@ -10,6 +10,8 @@
 #include "SessionProject.h"
 #include "TrackMixerPanel.h"
 #include "PortableProject.h"
+#include "StudioWidgets.h"
+#include "Branding.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -17,6 +19,9 @@
 #include <memory>
 #include <utility>
 #include <vector>
+
+namespace ui = alien::ui;
+namespace col = alien::ui::colours;
 
 struct SessionClipContent {
     alien::PianoRollPattern pattern;
@@ -32,110 +37,12 @@ struct SessionProjectLoadResult {
     juce::String error;
 };
 
-class AlienStudioLookAndFeel final : public juce::LookAndFeel_V4 {
-public:
-    static const juce::Colour background;
-    static const juce::Colour panel;
-    static const juce::Colour control;
-    static const juce::Colour text;
-    static const juce::Colour muted;
-    static const juce::Colour accent;
-
-    AlienStudioLookAndFeel() {
-        setColour(juce::ResizableWindow::backgroundColourId, background);
-        setColour(juce::Label::textColourId, text);
-        setColour(juce::TextButton::buttonColourId, control);
-        setColour(juce::TextButton::buttonOnColourId, accent);
-        setColour(juce::TextButton::textColourOffId, text);
-        setColour(juce::TextButton::textColourOnId, background);
-        setColour(juce::ComboBox::backgroundColourId, control);
-        setColour(juce::ComboBox::outlineColourId, juce::Colour(0xff344253));
-        setColour(juce::ComboBox::textColourId, text);
-        setColour(juce::ComboBox::arrowColourId, accent);
-        setColour(juce::Slider::trackColourId, accent);
-        setColour(juce::Slider::backgroundColourId, juce::Colour(0xff303b4b));
-        setColour(juce::Slider::thumbColourId, juce::Colour(0xffe5f4f2));
-        setColour(juce::Slider::textBoxTextColourId, text);
-        setColour(juce::Slider::textBoxBackgroundColourId, control);
-        setColour(juce::Slider::textBoxOutlineColourId, juce::Colour(0xff344253));
-        setColour(juce::TabbedComponent::backgroundColourId, panel);
-        setColour(juce::TabbedComponent::outlineColourId, juce::Colour(0xff283342));
-        setColour(juce::TabbedButtonBar::tabOutlineColourId, juce::Colour(0xff283342));
-        setColour(juce::TabbedButtonBar::frontOutlineColourId, accent);
-        setColour(juce::TabbedButtonBar::tabTextColourId, muted);
-        setColour(juce::TabbedButtonBar::frontTextColourId, text);
-        setColour(juce::PopupMenu::backgroundColourId, panel);
-        setColour(juce::PopupMenu::textColourId, text);
-        setColour(juce::PopupMenu::highlightedBackgroundColourId, accent.withAlpha(0.22f));
-        setColour(juce::PopupMenu::highlightedTextColourId, text);
-    }
-
-    void drawButtonBackground(juce::Graphics& g, juce::Button& button,
-        const juce::Colour& backgroundColour, bool isMouseOverButton, bool isButtonDown) override {
-        auto colour = button.findColour(button.getToggleState()
-            ? juce::TextButton::buttonOnColourId : juce::TextButton::buttonColourId);
-        if (!colour.isOpaque()) colour = backgroundColour;
-        if (isButtonDown) colour = colour.brighter(0.12f);
-        else if (isMouseOverButton) colour = colour.brighter(0.07f);
-        const auto bounds = button.getLocalBounds().toFloat().reduced(0.5f);
-        g.setColour(colour);
-        g.fillRoundedRectangle(bounds, 7.0f);
-        if (button.hasKeyboardFocus(true)) {
-            g.setColour(accent.withAlpha(0.9f));
-            g.drawRoundedRectangle(bounds.reduced(1.0f), 6.0f, 1.3f);
-        }
-    }
-
-    void drawComboBox(juce::Graphics& g, int width, int height, bool isButtonDown,
-        int buttonX, int buttonY, int buttonW, int buttonH, juce::ComboBox& box) override {
-        const auto bounds = juce::Rectangle<float>(0.5f, 0.5f,
-            static_cast<float>(width) - 1.0f, static_cast<float>(height) - 1.0f);
-        g.setColour(box.findColour(juce::ComboBox::backgroundColourId)
-            .brighter(isButtonDown ? 0.08f : 0.0f));
-        g.fillRoundedRectangle(bounds, 6.0f);
-        g.setColour(box.findColour(juce::ComboBox::outlineColourId));
-        g.drawRoundedRectangle(bounds, 6.0f, 1.0f);
-        juce::Path arrow;
-        const auto centreX = static_cast<float>(buttonX) + static_cast<float>(buttonW) * 0.5f;
-        const auto centreY = static_cast<float>(buttonY) + static_cast<float>(buttonH) * 0.5f;
-        arrow.addTriangle(centreX - 4.0f, centreY - 2.0f, centreX + 4.0f, centreY - 2.0f,
-            centreX, centreY + 3.0f);
-        g.setColour(box.findColour(juce::ComboBox::arrowColourId));
-        g.fillPath(arrow);
-    }
-
-    void drawLinearSlider(juce::Graphics& g, int x, int y, int width, int height,
-        float sliderPos, float minSliderPos, float maxSliderPos, juce::Slider::SliderStyle style,
-        juce::Slider& slider) override {
-        juce::ignoreUnused(minSliderPos, maxSliderPos);
-        if (style != juce::Slider::LinearHorizontal && style != juce::Slider::LinearBar)
-            return juce::LookAndFeel_V4::drawLinearSlider(g, x, y, width, height, sliderPos,
-                minSliderPos, maxSliderPos, style, slider);
-        auto track = juce::Rectangle<float>(static_cast<float>(x) + 2.0f,
-            static_cast<float>(y) + static_cast<float>(height) * 0.5f - 2.0f,
-            static_cast<float>(width) - 4.0f, 4.0f);
-        g.setColour(slider.findColour(juce::Slider::backgroundColourId));
-        g.fillRoundedRectangle(track, 2.0f);
-        const auto filledWidth = juce::jlimit(0.0f, track.getWidth(), sliderPos - track.getX());
-        g.setColour(slider.findColour(juce::Slider::trackColourId));
-        g.fillRoundedRectangle(track.withWidth(filledWidth), 2.0f);
-        if (style == juce::Slider::LinearHorizontal) {
-            g.setColour(slider.findColour(juce::Slider::thumbColourId));
-            g.fillEllipse(sliderPos - 6.0f, track.getCentreY() - 6.0f, 12.0f, 12.0f);
-        }
-    }
-};
-
-const juce::Colour AlienStudioLookAndFeel::background{0xff10151e};
-const juce::Colour AlienStudioLookAndFeel::panel{0xff171f2b};
-const juce::Colour AlienStudioLookAndFeel::control{0xff242e3d};
-const juce::Colour AlienStudioLookAndFeel::text{0xffe7f0f2};
-const juce::Colour AlienStudioLookAndFeel::muted{0xff95a8b5};
-const juce::Colour AlienStudioLookAndFeel::accent{0xff63dfc2};
-
+// One pad in the step sequencer row. Groups of four alternate shade so beats
+// read at a glance; the pad shows its note and velocity and lights an LED
+// while the playhead is on it.
 class SequencerStepButton final : public juce::ToggleButton {
 public:
-    explicit SequencerStepButton(const juce::String& label) : juce::ToggleButton(label) {}
+    SequencerStepButton(const juce::String& label, int index) : juce::ToggleButton(label), stepIndex(index) {}
 
     void setPlaybackPosition(bool isCurrent) {
         if (playbackPosition == isCurrent) return;
@@ -143,82 +50,163 @@ public:
         repaint();
     }
 
+    void setStepInfo(const juce::String& note, float velocity01, bool isSelected) {
+        if (note == noteName && std::abs(velocity01 - velocity) < 0.001f && isSelected == selected) return;
+        noteName = note; velocity = velocity01; selected = isSelected;
+        repaint();
+    }
+
     void paintButton(juce::Graphics& g, bool isMouseOver, bool isButtonDown) override {
-        const auto bounds = getLocalBounds().toFloat().reduced(1.0f);
-        auto fill = getToggleState() ? AlienStudioLookAndFeel::accent
-                                     : juce::Colour(0xff263241);
-        if (isMouseOver) fill = fill.brighter(0.08f);
-        if (isButtonDown) fill = fill.brighter(0.12f);
-        g.setColour(fill);
-        g.fillRoundedRectangle(bounds, 6.0f);
-        g.setColour(playbackPosition ? juce::Colour(0xffffcf70)
-                                     : juce::Colour(0xff3b4a5c));
-        g.drawRoundedRectangle(bounds, 6.0f, playbackPosition ? 2.0f : 1.0f);
-        g.setColour(getToggleState() ? juce::Colour(0xff10201f)
-                                     : AlienStudioLookAndFeel::text);
-        g.setFont(juce::FontOptions(14.0f, juce::Font::bold));
-        g.drawText(getButtonText(), getLocalBounds(), juce::Justification::centred);
+        const auto bounds = getLocalBounds().toFloat().reduced(1.5f);
+        const bool on = getToggleState();
+        const bool altGroup = (stepIndex / 4) % 2 == 1;
+        auto base = on ? col::accent : juce::Colour(altGroup ? 0xff24262c : 0xff2c2f36);
+        if (playbackPosition) base = base.brighter(on ? 0.18f : 0.22f);
+        if (isButtonDown) base = base.brighter(0.12f);
+        else if (isMouseOver) base = base.brighter(0.06f);
+        g.setGradientFill(juce::ColourGradient(base.brighter(0.06f), 0.0f, bounds.getY(),
+                                               base.darker(on ? 0.18f : 0.1f), 0.0f, bounds.getBottom(), false));
+        g.fillRoundedRectangle(bounds, 5.0f);
+        g.setColour(juce::Colours::black.withAlpha(0.5f));
+        g.drawRoundedRectangle(bounds, 5.0f, 1.0f);
+
+        // Playhead LED.
+        const auto led = juce::Rectangle<float>(bounds.getWidth() * 0.36f, 3.0f)
+                             .withCentre({bounds.getCentreX(), bounds.getY() + 6.0f});
+        g.setColour(playbackPosition ? col::warning : (on ? col::accentInk.withAlpha(0.28f) : col::inset));
+        g.fillRoundedRectangle(led, 1.5f);
+
+        const auto ink = on ? col::accentInk : col::textDim;
+        auto inner = bounds.reduced(8.0f, 6.0f).withTrimmedTop(8.0f);
+        g.setColour(ink);
+        g.setFont(ui::font(13.0f, true));
+        g.drawText(getButtonText(), inner.removeFromTop(18.0f), juce::Justification::centredLeft, false);
+        if (inner.getHeight() > 26.0f) {
+            g.setColour(on ? ink.withAlpha(0.8f) : col::textFaint);
+            g.setFont(ui::monoFont(11.0f));
+            g.drawText(noteName, inner.removeFromTop(16.0f), juce::Justification::centredLeft, false);
+        }
+        if (on) {
+            // Velocity bar.
+            const auto bar = juce::Rectangle<float>(bounds.getX() + 8.0f, bounds.getBottom() - 9.0f,
+                                                    bounds.getWidth() - 16.0f, 3.0f);
+            g.setColour(col::accentInk.withAlpha(0.2f));
+            g.fillRoundedRectangle(bar, 1.5f);
+            g.setColour(col::accentInk.withAlpha(0.7f));
+            g.fillRoundedRectangle(bar.withWidth(bar.getWidth() * juce::jlimit(0.0f, 1.0f, velocity)), 1.5f);
+        }
+        if (selected) {
+            g.setColour(juce::Colours::white.withAlpha(0.9f));
+            g.drawRoundedRectangle(bounds.reduced(0.5f), 5.0f, 1.6f);
+        }
         if (hasKeyboardFocus(true)) {
-            g.setColour(AlienStudioLookAndFeel::accent);
-            g.drawRoundedRectangle(bounds.reduced(2.0f), 4.0f, 1.0f);
+            g.setColour(col::accent);
+            g.drawRoundedRectangle(bounds.reduced(3.0f), 3.5f, 1.0f);
         }
     }
 
 private:
-    bool playbackPosition{};
+    int stepIndex{};
+    bool playbackPosition{}, selected{};
+    juce::String noteName;
+    float velocity{0.8f};
 };
 
 class MainComponent : public juce::Component, private juce::Timer, private juce::MidiKeyboardState::Listener, private juce::ChangeListener {
 public:
     MainComponent() {
         setLookAndFeel(&studioLookAndFeel);
-        setSize(1120, 720);
+        juce::LookAndFeel::setDefaultLookAndFeel(&studioLookAndFeel);
+        setOpaque(true);
+        setSize(1280, 800);
+
+        // Top bar -----------------------------------------------------------
+        addAndMakeVisible(brandMark);
         addAndMakeVisible(title);
-        title.setText("ALIEN STUDIO", juce::dontSendNotification);
-        title.setFont(juce::FontOptions(16.0f, juce::Font::bold));
-        title.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::text);
-        title.setJustificationType(juce::Justification::centredLeft);
+        title.setText("Alien Studio", juce::dontSendNotification);
+        title.setFont(ui::font(15.0f, true));
+        title.setColour(juce::Label::textColourId, col::text);
+        title.setJustificationType(juce::Justification::bottomLeft);
+        title.setInterceptsMouseClicks(false, false);
         addAndMakeVisible(brandSubtitle);
         brandSubtitle.setText("PATTERN STUDIO", juce::dontSendNotification);
-        brandSubtitle.setFont(juce::FontOptions(9.5f, juce::Font::bold));
-        brandSubtitle.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::accent);
-        brandSubtitle.setJustificationType(juce::Justification::centredLeft);
+        brandSubtitle.setFont(ui::font(9.5f, true));
+        brandSubtitle.setColour(juce::Label::textColourId, col::accent);
+        brandSubtitle.setJustificationType(juce::Justification::topLeft);
+        brandSubtitle.setInterceptsMouseClicks(false, false);
+
+        const std::array<const char*, 4> viewNames{"Steps", "Piano Roll", "Session", "Mixer"};
+        for (int i = 0; i < 4; ++i) {
+            auto& b = viewButtons[static_cast<std::size_t>(i)];
+            addAndMakeVisible(b);
+            b.setButtonText(viewNames[static_cast<std::size_t>(i)]);
+            b.setName("Show " + juce::String(viewNames[static_cast<std::size_t>(i)]) + " view");
+            b.getProperties().set("style", "tab");
+            b.setRadioGroupId(1001);
+            b.setTooltip("Show the " + juce::String(viewNames[static_cast<std::size_t>(i)]) + " view");
+            b.onClick = [this, i] { showView(i); };
+        }
+
         addAndMakeVisible(play);
         play.setButtonText("Play");
+        play.setIconOnly(true);
+        play.setGlyph(ui::Glyph::play);
         play.setName("Start or stop playback");
         play.setTooltip("Start or stop the current pattern");
-        play.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff245a55));
-        play.setColour(juce::TextButton::buttonOnColourId, AlienStudioLookAndFeel::accent);
+        play.setColour(juce::TextButton::buttonColourId, col::control);
+        play.setColour(juce::TextButton::buttonOnColourId, col::accent);
+        play.setGlyphColour(col::accent);
         play.onClick = [this] { releaseNotes(); engine.playing.store(!engine.playing.load()); };
-        addAndMakeVisible(tempo);
+
+        addAndMakeVisible(transportDisplay);
+        tempo.setSliderStyle(juce::Slider::LinearBarVertical);
+        tempo.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
         tempo.setRange(60, 200, 1);
         tempo.setValue(120);
-        tempo.setTooltip("Playback tempo in beats per minute");
+        tempo.setName("Tempo");
+        tempo.setTooltip("Tempo in beats per minute. Drag up/down or use the mouse wheel; double-click resets to 120.");
+        tempo.setDoubleClickReturnValue(true, 120.0);
+        tempo.setMouseDragSensitivity(220);
+        tempo.setColour(juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
         tempo.onValueChange = [this] { engine.bpm.store(static_cast<int>(tempo.getValue())); };
-        addAndMakeVisible(tempoLabel);
-        tempoLabel.setText("BPM", juce::dontSendNotification);
-        tempoLabel.setFont(juce::FontOptions(10.0f, juce::Font::bold));
-        tempoLabel.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::muted);
-        tempoLabel.setJustificationType(juce::Justification::centred);
-        addAndMakeVisible(saveProjectButton);
+        tempoLabel.setText("BPM", juce::dontSendNotification); // Drawn by the transport display.
+
+        for (auto* b : {&openProjectButton, &saveProjectButton, &portableProjectButton}) {
+            addAndMakeVisible(b);
+            b->getProperties().set("style", "ghost");
+        }
         saveProjectButton.setButtonText("Save");
+        saveProjectButton.setGlyph(ui::Glyph::save);
         saveProjectButton.setName("Save Alien Studio session project");
+        saveProjectButton.setTooltip("Save the session project");
         saveProjectButton.onClick = [this] { saveProject(); };
-        addAndMakeVisible(portableProjectButton);
         portableProjectButton.setButtonText("Save portable");
+        portableProjectButton.setGlyph(ui::Glyph::collect);
         portableProjectButton.setName("Save project copy with collected audio");
         portableProjectButton.setTooltip("Save a project file and adjacent media folder; move both together");
         portableProjectButton.onClick = [this] { chooseProjectSavePath(true); };
-        addAndMakeVisible(openProjectButton);
         openProjectButton.setButtonText("Open");
+        openProjectButton.setGlyph(ui::Glyph::open);
         openProjectButton.setName("Open Alien Studio session project");
+        openProjectButton.setTooltip("Open a session project");
         openProjectButton.onClick = [this] { chooseProjectToOpen(); };
+
+        // Status bar ------------------------------------------------------
         addAndMakeVisible(projectStatus);
-        projectStatus.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::muted);
+        projectStatus.setFont(ui::font(12.0f));
+        projectStatus.setColour(juce::Label::textColourId, col::textDim);
         projectStatus.setJustificationType(juce::Justification::centredLeft);
         projectStatus.setText("Unsaved session", juce::dontSendNotification);
+        addAndMakeVisible(engineStatus);
+        engineStatus.setFont(ui::monoFont(11.5f));
+        engineStatus.setColour(juce::Label::textColourId, col::textFaint);
+        engineStatus.setJustificationType(juce::Justification::centredRight);
+
+        // Step sequencer --------------------------------------------------
+        stepsPanel.onPaint = [this](juce::Graphics& g) { paintStepsPanel(g); };
+        stepsPanel.onLayout = [this] { layoutStepsPanel(); };
         for (int i = 0; i < 16; ++i) {
-            auto* button = pads.add(new SequencerStepButton(juce::String(i + 1)));
+            auto* button = pads.add(new SequencerStepButton(juce::String(i + 1), i));
             button->setName("Sequencer step " + juce::String(i + 1));
             button->setTooltip("Toggle sixteenth-note step " + juce::String(i + 1));
             button->setTitle("Step " + juce::String(i + 1));
@@ -232,76 +220,93 @@ public:
         engine.steps[4].store(true); pads[4]->setToggleState(true, juce::dontSendNotification);
         engine.steps[8].store(true); pads[8]->setToggleState(true, juce::dontSendNotification);
         engine.steps[12].store(true); pads[12]->setToggleState(true, juce::dontSendNotification);
-        stepsPanel.addAndMakeVisible(selectedStepLabel);
-        selectedStepLabel.setText("Edit step", juce::dontSendNotification);
-        selectedStepLabel.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::muted);
+        for (auto* label : {&selectedStepLabel, &stepPitchLabel, &stepVelocityLabel}) {
+            stepsPanel.addAndMakeVisible(label);
+            label->setFont(ui::font(10.5f, true));
+            label->setColour(juce::Label::textColourId, col::textFaint);
+        }
+        selectedStepLabel.setText("STEP", juce::dontSendNotification);
         stepsPanel.addAndMakeVisible(stepSelector);
         stepSelector.setName("Selected sequencer step");
         for (int i = 0; i < 16; ++i) stepSelector.addItem("Step " + juce::String(i + 1), i + 1);
         stepSelector.onChange = [this] { selectSequencerStep(stepSelector.getSelectedId() - 1); };
-        stepsPanel.addAndMakeVisible(stepPitchLabel);
-        stepPitchLabel.setText("Pitch", juce::dontSendNotification);
-        stepPitchLabel.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::muted);
+        stepPitchLabel.setText("PITCH", juce::dontSendNotification);
         stepsPanel.addAndMakeVisible(stepPitch);
         stepPitch.setName("Selected step MIDI pitch");
         stepPitch.setTooltip("Set the selected step pitch from MIDI note 0 to 127");
         stepPitch.setRange(0, 127, 1);
-        stepPitch.setTextBoxStyle(juce::Slider::TextBoxRight, false, 42, 26);
+        stepPitch.setTextBoxStyle(juce::Slider::TextBoxRight, false, 46, 24);
         stepPitch.onValueChange = [this] {
             const int pitch = static_cast<int>(stepPitch.getValue());
             engine.stepPitches[static_cast<std::size_t>(selectedStep)].store(pitch);
             stepPitchName.setText(juce::MidiMessage::getMidiNoteName(pitch, true, true, 4),
                 juce::dontSendNotification);
+            refreshPadInfo();
         };
         stepsPanel.addAndMakeVisible(stepPitchName);
         stepPitchName.setName("Selected step note name");
-        stepPitchName.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::text);
-        stepPitchName.setJustificationType(juce::Justification::centredLeft);
-        stepsPanel.addAndMakeVisible(stepVelocityLabel);
-        stepVelocityLabel.setText("Velocity", juce::dontSendNotification);
-        stepVelocityLabel.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::muted);
+        stepPitchName.setFont(ui::monoFont(14.0f, true));
+        stepPitchName.setColour(juce::Label::textColourId, col::accent);
+        stepPitchName.setJustificationType(juce::Justification::centred);
+        stepVelocityLabel.setText("VELOCITY", juce::dontSendNotification);
         stepsPanel.addAndMakeVisible(stepVelocity);
         stepVelocity.setName("Selected step velocity");
         stepVelocity.setTooltip("Set the selected step velocity from 1 to 127");
         stepVelocity.setRange(1, 127, 1);
-        stepVelocity.setTextBoxStyle(juce::Slider::TextBoxRight, false, 42, 26);
+        stepVelocity.setTextBoxStyle(juce::Slider::TextBoxRight, false, 46, 24);
         stepVelocity.onValueChange = [this] {
             engine.stepVelocities[static_cast<std::size_t>(selectedStep)].store(
                 static_cast<int>(stepVelocity.getValue()));
+            refreshPadInfo();
         };
         selectSequencerStep(0);
-        tabs.addTab("16-step sequencer", AlienStudioLookAndFeel::panel, &stepsPanel, false);
-        tabs.addTab("Piano roll", AlienStudioLookAndFeel::panel, &pianoRoll, false);
-        tabs.addTab("Session", AlienStudioLookAndFeel::panel, &sessionPanel, false);
-        tabs.addTab("Mixer", AlienStudioLookAndFeel::panel, &mixerPanel, false);
+        stepsPanel.addAndMakeVisible(stepHelp);
+        stepHelp.setText("Click a pad to toggle it and select it for editing. The step row plays the live synth.",
+                         juce::dontSendNotification);
+        stepHelp.setFont(ui::font(12.5f));
+        stepHelp.setColour(juce::Label::textColourId, col::textFaint);
+        stepHelp.setJustificationType(juce::Justification::centredLeft);
+
+        // Editor tabs: the stock tab bar is hidden; the top-bar view switch drives it.
+        tabs.addTab("16-step sequencer", col::surface, &stepsPanel, false);
+        tabs.addTab("Piano roll", col::surface, &pianoRoll, false);
+        tabs.addTab("Session", col::surface, &sessionPanel, false);
+        tabs.addTab("Mixer", col::surface, &mixerPanel, false);
+        tabs.setTabBarDepth(0);
+        tabs.setOutline(0);
+        tabs.setIndent(0);
         tabs.getTabbedButtonBar().addChangeListener(this);
         addAndMakeVisible(workspace);
-        devicePanel.addAndMakeVisible(deviceTitle);
-        deviceTitle.setText("Device rack", juce::dontSendNotification);
-        deviceTitle.setFont(juce::FontOptions(22.0f, juce::Font::bold));
-        deviceTitle.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::text);
+
+        // Devices -----------------------------------------------------------
+        devicePanel.onPaint = [this](juce::Graphics& g) { paintDevicePanel(g); };
+        devicePanel.onLayout = [this] { layoutDevicePanel(); };
         devicePanel.addAndMakeVisible(deviceHelp);
         deviceHelp.setText("Choose the live keyboard / step synth and MIDI input. Session instruments are in Mixer. Shift+Tab returns.",
                            juce::dontSendNotification);
-        deviceHelp.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::muted);
-        devicePanel.addAndMakeVisible(midiLabel);
-        midiLabel.setText("MIDI input", juce::dontSendNotification);
-        midiLabel.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
+        deviceHelp.setFont(ui::font(12.5f));
+        deviceHelp.setColour(juce::Label::textColourId, col::textFaint);
+        for (auto* label : {&midiLabel, &presetLabel}) {
+            devicePanel.addAndMakeVisible(label);
+            label->setFont(ui::font(10.5f, true));
+            label->setColour(juce::Label::textColourId, col::textFaint);
+        }
+        midiLabel.setText("MIDI INPUT", juce::dontSendNotification);
         devicePanel.addAndMakeVisible(midiInput);
-        stepsPanel.addAndMakeVisible(stepHelp);
-        stepHelp.setText("16 steps  |  Sixteenth notes  |  A3 synth pattern", juce::dontSendNotification);
-        stepHelp.setJustificationType(juce::Justification::centred);
-        sessionPanel.addAndMakeVisible(sessionTitle);
-        sessionTitle.setText("Session scenes", juce::dontSendNotification);
-        sessionTitle.setFont(juce::FontOptions(22.0f, juce::Font::bold));
-        sessionTitle.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::text);
+
+        // Session -------------------------------------------------------------
+        sessionPanel.onPaint = [this](juce::Graphics& g) { paintSessionPanel(g); };
+        sessionPanel.onLayout = [this] { layoutSessionPanel(); };
         sessionPanel.addAndMakeVisible(sessionHelp);
-        sessionHelp.setText("Launch a scene to switch all tracks together. Click a clip to launch; right-click to edit or view audio.",
+        sessionHelp.setText("Click a clip to launch it, right-click to edit. Launch a scene to switch every track together.",
                             juce::dontSendNotification);
-        sessionHelp.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::muted);
+        sessionHelp.setFont(ui::font(12.5f));
+        sessionHelp.setColour(juce::Label::textColourId, col::textFaint);
         sessionPanel.addAndMakeVisible(launchTimingLabel);
-        launchTimingLabel.setText("Launch at", juce::dontSendNotification);
-        launchTimingLabel.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
+        launchTimingLabel.setText("LAUNCH", juce::dontSendNotification);
+        launchTimingLabel.setFont(ui::font(10.5f, true));
+        launchTimingLabel.setColour(juce::Label::textColourId, col::textFaint);
+        launchTimingLabel.setJustificationType(juce::Justification::centredRight);
         sessionPanel.addAndMakeVisible(launchTiming);
         launchTiming.setName("Session launch quantization");
         launchTiming.setTooltip("Choose whether queued clips and scenes launch on the next beat or bar");
@@ -310,6 +315,7 @@ public:
         launchTiming.setSelectedId(2, juce::dontSendNotification);
         launchTiming.onChange = [this] {
             engine.launchQuantizationSteps.store(launchTiming.getSelectedId() == 1 ? 4 : 16);
+            updateEditorTitle();
         };
         sessionPanel.addAndMakeVisible(controllerTarget);
         controllerTarget.setName("MIDI controller mapping action");
@@ -323,75 +329,93 @@ public:
         controllerTarget.onChange = [this] { updateControllerMappingLabel(); };
         sessionPanel.addAndMakeVisible(learnController);
         learnController.setButtonText("Learn CC");
+        learnController.setGlyph(ui::Glyph::learn);
         learnController.setName("Learn MIDI controller");
         learnController.setTooltip("Listen for the next incoming MIDI CC and assign it to the selected Session action");
+        learnController.setColour(juce::TextButton::buttonOnColourId, col::warning);
         learnController.onClick = [this] {
             const int action = controllerTarget.getSelectedId() - 1;
             if (learningControllerAction == action) {
                 engine.controllerMappings.cancelLearn();
                 learningControllerAction = -1;
                 learnController.setButtonText("Learn CC");
+                learnController.setToggleState(false, juce::dontSendNotification);
                 updateControllerMappingLabel();
             } else {
                 learningControllerAction = action;
                 engine.controllerMappings.beginLearn(action);
                 learnController.setButtonText("Cancel learn");
-                controllerMappingLabel.setText("Move a MIDI CC control…", juce::dontSendNotification);
+                learnController.setToggleState(true, juce::dontSendNotification);
+                controllerMappingLabel.setText(ui::utf8("Move a MIDI CC control\xe2\x80\xa6"), juce::dontSendNotification);
             }
         };
         sessionPanel.addAndMakeVisible(clearController);
         clearController.setButtonText("Clear");
         clearController.setName("Clear MIDI controller mapping");
+        clearController.setTooltip("Remove the MIDI CC assigned to the selected action");
         clearController.onClick = [this] {
             engine.controllerMappings.cancelLearn();
             learningControllerAction = -1;
             engine.controllerMappings.clearMapping(controllerTarget.getSelectedId() - 1);
             learnController.setButtonText("Learn CC");
+            learnController.setToggleState(false, juce::dontSendNotification);
             updateControllerMappingLabel();
         };
         sessionPanel.addAndMakeVisible(controllerMappingLabel);
         controllerMappingLabel.setName("MIDI controller assignment");
-        controllerMappingLabel.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
+        controllerMappingLabel.setFont(ui::monoFont(12.0f));
+        controllerMappingLabel.setColour(juce::Label::textColourId, col::textDim);
         controllerMappingLabel.setJustificationType(juce::Justification::centredLeft);
         controllerMappingLabel.setText("Unmapped", juce::dontSendNotification);
         for (int scene = 0; scene < sceneCount; ++scene) {
             sessionPanel.addAndMakeVisible(sceneButtons[static_cast<std::size_t>(scene)]);
             auto& sceneButton = sceneButtons[static_cast<std::size_t>(scene)];
             sceneButton.setName("Launch scene " + juce::String(scene + 1));
-            sceneButton.setButtonText("Launch scene " + juce::String(scene + 1));
+            sceneButton.setButtonText("Scene " + juce::String(scene + 1));
+            sceneButton.setGlyph(ui::Glyph::play);
+            sceneButton.setTooltip("Launch every track's clip in scene " + juce::String(scene + 1));
             sceneButton.onClick = [this, scene] { launchScene(scene); };
             for (int track = 0; track < trackCount; ++track) {
                 const auto index = cellIndex(track, scene);
                 sessionPanel.addAndMakeVisible(clipButtons[index]);
                 auto& button = clipButtons[index];
                 button.setName("Launch track " + juce::String(track + 1) + " scene " + juce::String(scene + 1));
+                button.setTooltip("Track " + juce::String(track + 1) + ", scene " + juce::String(scene + 1)
+                                  + ": click to launch, right-click to edit");
                 button.onClick = [this, track, scene] { selectAndLaunchClip(track, scene); };
                 button.onRightClick = [this, track, scene] { selectClipForEditing(track, scene); };
             }
         }
         sessionPanel.addAndMakeVisible(stopClip);
-        stopClip.setButtonText("Stop all tracks");
+        stopClip.setButtonText("Stop all");
+        stopClip.setGlyph(ui::Glyph::stop);
         stopClip.setName("Stop all Session tracks at selected launch boundary");
+        stopClip.setTooltip("Stop every Session track at the next launch boundary");
         stopClip.onClick = [this] { stopAllSessionTracks(); };
         sessionPanel.addAndMakeVisible(editSelectedClip);
-        editSelectedClip.setButtonText("Edit selected clip");
+        editSelectedClip.setButtonText("Edit clip");
+        editSelectedClip.setGlyph(ui::Glyph::edit);
         editSelectedClip.setName("Edit selected Session clip");
         editSelectedClip.setTooltip("Open the selected MIDI clip in the piano roll or show its audio waveform");
         editSelectedClip.onClick = [this] {
             selectClipForEditing(selectedTrack, selectedScene);
         };
-        addAndMakeVisible(importAudio);
-        importAudio.setButtonText("Import WAV/MP3");
+        sessionPanel.addAndMakeVisible(importAudio);
+        importAudio.setButtonText("Import audio");
+        importAudio.setGlyph(ui::Glyph::waveform);
         importAudio.setName("Import audio file to selected Session clip");
         importAudio.setTooltip("Decode a WAV or MP3 off the audio thread and add it to the selected clip");
         importAudio.onClick = [this] { chooseAudioFile(); };
         sessionPanel.addAndMakeVisible(removeAudio);
         removeAudio.setButtonText("Remove audio");
+        removeAudio.setGlyph(ui::Glyph::close);
         removeAudio.setName("Remove audio from selected Session clip");
+        removeAudio.setTooltip("Remove the audio file from the selected clip");
         removeAudio.onClick = [this] { removeAudioFromSelectedClip(); };
         sessionPanel.addAndMakeVisible(audioImportStatus);
-        audioImportStatus.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
-        audioImportStatus.setJustificationType(juce::Justification::centredLeft);
+        audioImportStatus.setFont(ui::font(12.0f));
+        audioImportStatus.setColour(juce::Label::textColourId, col::textDim);
+        audioImportStatus.setJustificationType(juce::Justification::centredRight);
         sessionPanel.addAndMakeVisible(audioWaveform);
         pianoRoll.onChange = [this] {
             auto& clip = clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)];
@@ -418,54 +442,58 @@ public:
         updateAudioClipEditor();
         publishSessionClip(0, 0, false);
         updateSessionButtons();
-        devicePanel.addAndMakeVisible(presetLabel);
-        presetLabel.setText("Live / step synth", juce::dontSendNotification);
-        presetLabel.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
+        presetLabel.setText("LIVE / STEP SYNTH", juce::dontSendNotification);
         devicePanel.addAndMakeVisible(preset);
+        preset.setName("Live and step synth preset");
+        preset.setTooltip("Sound used by the computer keyboard, on-screen keyboard, MIDI input and step sequencer");
         preset.addItem("Lead (saw)", 1);
         preset.addItem("Bass (square)", 2);
         preset.addItem("Pluck (sine)", 3);
         preset.setSelectedId(1);
-        preset.onChange = [this] { releaseNotes(); engine.preset.store(preset.getSelectedId() - 1); };
-        workspace.onViewChanged = [this](bool) { releaseNotes(); };
+        preset.onChange = [this] {
+            releaseNotes();
+            engine.preset.store(preset.getSelectedId() - 1);
+            stepsPanel.repaint();
+        };
+        workspace.onViewChanged = [this](bool) { releaseNotes(); syncViewButtons(); };
+
+        // Keyboard dock -------------------------------------------------------
         addAndMakeVisible(keyboard);
         keyboard.clearKeyMappings();
         keyboard.setAvailableRange(0, 127);
         keyboard.setOctaveForMiddleC(4);
         keyboard.setLowestVisibleKey(48);
-        keyboard.setColour(juce::MidiKeyboardComponent::whiteNoteColourId, juce::Colour(0xffdce7e8));
-        keyboard.setColour(juce::MidiKeyboardComponent::blackNoteColourId, juce::Colour(0xff202a38));
-        keyboard.setColour(juce::MidiKeyboardComponent::keySeparatorLineColourId, juce::Colour(0xff536274));
-        keyboard.setColour(juce::MidiKeyboardComponent::mouseOverKeyOverlayColourId, AlienStudioLookAndFeel::accent.withAlpha(0.28f));
-        keyboard.setColour(juce::MidiKeyboardComponent::keyDownOverlayColourId, AlienStudioLookAndFeel::accent.withAlpha(0.60f));
-        keyboard.setColour(juce::MidiKeyboardComponent::textLabelColourId, juce::Colour(0xff18222e));
-        keyboard.setColour(juce::MidiKeyboardComponent::shadowColourId, juce::Colour(0x55000000));
+        keyboard.setName("On-screen keyboard");
         typingInput.octaveChanged = [this] { updateOctave(); };
         for (auto* b : {&octaveDown, &octaveUp}) {
             addAndMakeVisible(b);
+            b->setIconOnly(true);
         }
         octaveDown.setButtonText("Octave -"); octaveUp.setButtonText("Octave +");
+        octaveDown.setGlyph(ui::Glyph::minus); octaveUp.setGlyph(ui::Glyph::plus);
+        octaveDown.setTooltip("Octave down (Z)"); octaveUp.setTooltip("Octave up (X)");
         octaveDown.onClick = [this] { typingInput.typing.shift(-1); updateOctave(); };
         octaveUp.onClick = [this] { typingInput.typing.shift(1); updateOctave(); };
+        addAndMakeVisible(octaveReadout);
+        octaveReadout.setFont(ui::monoFont(13.0f, true));
+        octaveReadout.setColour(juce::Label::textColourId, col::accent);
+        octaveReadout.setJustificationType(juce::Justification::centred);
+        octaveReadout.setTooltip("Lowest computer-keyboard note");
         addAndMakeVisible(help);
+        help.setFont(ui::font(12.0f));
+        help.setColour(juce::Label::textColourId, col::textFaint);
+        help.setJustificationType(juce::Justification::centredRight);
         updateOctave();
         keyboard.setVelocity(0.8f, true);
         keyboardState.addListener(this);
         const auto audioError = audio.initialiseWithDefaultDevices(0, 2);
         audio.addAudioCallback(&engine);
+        syncViewButtons();
         startTimerHz(20);
         resized();
         if (audioError.isNotEmpty()) {
             // Wait until the window has finished constructing before showing the alert.
-            juce::MessageManager::callAsync(
-                [safeThis = juce::Component::SafePointer<MainComponent>(this), audioError] {
-                    if (safeThis == nullptr) return;
-                    juce::AlertWindow::showMessageBoxAsync(
-                        juce::MessageBoxIconType::WarningIcon,
-                        "Audio initialization failed",
-                        "Alien Studio could not open the default audio output device.\n\n" + audioError,
-                        "OK", safeThis.getComponent());
-                });
+            showAudioErrorWhenVisible(juce::Component::SafePointer<MainComponent>(this), audioError);
         }
     }
     ~MainComponent() override {
@@ -478,85 +506,118 @@ public:
         keyboardState.removeListener(this);
         audio.removeAudioCallback(&engine);
         audio.closeAudioDevice();
+        juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
         setLookAndFeel(nullptr);
     }
+
     void resized() override {
-        const int right = getWidth() - 20;
-        title.setBounds(20, 4, 166, 24);
-        brandSubtitle.setBounds(21, 27, 160, 15);
-        play.setBounds(194, 8, 82, 34);
-        tempoLabel.setBounds(286, 8, 42, 34);
-        tempo.setBounds(330, 8, 150, 34);
-        saveProjectButton.setBounds(494, 8, 66, 34);
-        openProjectButton.setBounds(568, 8, 66, 34);
-        portableProjectButton.setBounds(642, 8, 112, 34);
-        projectStatus.setBounds(762, 8, juce::jmax(100, right - 762), 34);
-        workspace.setBounds(16, 54, getWidth() - 32, getHeight() - 228);
-        const auto rackWidth = devicePanel.getWidth();
-        deviceTitle.setBounds(24, 18, rackWidth - 48, 34);
-        deviceHelp.setBounds(24, 54, rackWidth - 48, 28);
-        presetLabel.setBounds(30, 108, 120, 30);
-        preset.setBounds(150, 108, juce::jmin(260, rackWidth - 180), 32);
-        midiLabel.setBounds(30, 168, 120, 30);
-        midiInput.setBounds(150, 168, juce::jmax(300, rackWidth - 180), 32);
-        sessionTitle.setBounds(24, 12, sessionPanel.getWidth() - 48, 28);
-        sessionHelp.setBounds(24, 40, sessionPanel.getWidth() - 48, 22);
-        const int labelWidth = 118;
-        const int gridWidth = juce::jmax(280, sessionPanel.getWidth() - labelWidth - 44);
-        const int trackWidth = gridWidth / trackCount;
-        const int sceneHeight = 36;
-        const int sceneGap = 3;
-        const int gridTop = 68;
-        for (int scene = 0; scene < sceneCount; ++scene) {
-            sceneButtons[static_cast<std::size_t>(scene)].setBounds(24, gridTop + scene * (sceneHeight + sceneGap), labelWidth - 8, sceneHeight);
-            for (int track = 0; track < trackCount; ++track)
-                clipButtons[cellIndex(track, scene)].setBounds(labelWidth + 24 + track * trackWidth,
-                    gridTop + scene * (sceneHeight + sceneGap), trackWidth - 8, sceneHeight);
+        auto area = getLocalBounds();
+        const bool compact = getWidth() < 1180;
+
+        // Top bar.
+        auto top = area.removeFromTop(topBarHeight).reduced(12, 0);
+        brandMark.setBounds(top.removeFromLeft(36).withSizeKeepingCentre(36, 36));
+        top.removeFromLeft(8);
+        if (!compact) {
+            auto brand = top.removeFromLeft(118);
+            title.setBounds(brand.removeFromTop(brand.getHeight() / 2 + 2));
+            brandSubtitle.setBounds(brand.translated(1, 0));
         }
-        const int actionY = gridTop + sceneCount * (sceneHeight + sceneGap) + 4;
-        editSelectedClip.setBounds(24, actionY, 174, 30);
-        stopClip.setBounds(206, actionY, 146, 30);
-        launchTimingLabel.setBounds(360, actionY, 76, 30);
-        launchTiming.setBounds(438, actionY, 94, 30);
-        removeAudio.setBounds(544, actionY, 104, 30);
-        audioImportStatus.setBounds(656, actionY, juce::jmax(100, sessionPanel.getWidth() - 680), 30);
-        const int mappingY = actionY + 32;
-        controllerTarget.setBounds(24, mappingY, 130, 30);
-        learnController.setBounds(162, mappingY, 104, 30);
-        clearController.setBounds(274, mappingY, 70, 30);
-        controllerMappingLabel.setBounds(352, mappingY, juce::jmax(100, sessionPanel.getWidth() - 376), 30);
-        const int waveformY = mappingY + 34;
-        const int waveformHeight = juce::jlimit(36, 68, sessionPanel.getHeight() - waveformY - 10);
-        audioWaveform.setBounds(24, waveformY, sessionPanel.getWidth() - 48, waveformHeight);
-        octaveDown.setBounds(20, getHeight() - 154, 100, 30);
-        octaveUp.setBounds(130, getHeight() - 154, 100, 30);
-        importAudio.setBounds(245, getHeight() - 154, 150, 30);
-        help.setBounds(410, getHeight() - 154, getWidth() - 430, 30);
-        keyboard.setBounds(20, getHeight() - 110, getWidth() - 40, 90);
-        const int width = juce::jmax(1, (getWidth() - 60) / 8);
-        stepHelp.setBounds(20, 40, getWidth() - 80, 35);
-        for (int i = 0; i < pads.size(); ++i)
-            pads[i]->setBounds(30 + (i % 8) * width, 110 + (i / 8) * 75, juce::jmax(1, width - 8), 60);
-        selectedStepLabel.setBounds(24, 270, 58, 30);
-        stepSelector.setBounds(84, 270, 82, 30);
-        stepPitchLabel.setBounds(180, 270, 42, 30);
-        stepPitch.setBounds(222, 270, 220, 30);
-        stepPitchName.setBounds(444, 270, 48, 30);
-        stepVelocityLabel.setBounds(510, 270, 58, 30);
-        stepVelocity.setBounds(568, 270, juce::jmax(150, getWidth() - 600), 30);
+        title.setVisible(!compact);
+        brandSubtitle.setVisible(!compact);
+        top.removeFromLeft(compact ? 4 : 10);
+
+        const std::array<int, 4> viewWidths{62, 88, 74, 62};
+        auto views = top.removeFromLeft(viewWidths[0] + viewWidths[1] + viewWidths[2] + viewWidths[3] + 12)
+                         .withSizeKeepingCentre(viewWidths[0] + viewWidths[1] + viewWidths[2] + viewWidths[3] + 12, 32);
+        viewSwitchBounds = views.expanded(4, 4);
+        for (std::size_t i = 0; i < viewButtons.size(); ++i) {
+            viewButtons[i].setBounds(views.removeFromLeft(viewWidths[i]));
+            views.removeFromLeft(4);
+        }
+
+        auto files = top.removeFromRight(compact ? 112 : 300);
+        const bool iconFiles = compact;
+        for (auto* b : {&portableProjectButton, &saveProjectButton, &openProjectButton}) {
+            b->setIconOnly(iconFiles);
+            const int w = iconFiles ? 34 : (b == &portableProjectButton ? 128 : 80);
+            b->setBounds(files.removeFromRight(w).withSizeKeepingCentre(w, 32));
+            files.removeFromRight(4);
+        }
+
+        const int displayWidth = 300;
+        const int transportWidth = 44 + 8 + displayWidth;
+        auto transport = top.withSizeKeepingCentre(juce::jmin(top.getWidth(), transportWidth), 44);
+        play.setBounds(transport.removeFromLeft(44).withSizeKeepingCentre(44, 40));
+        transport.removeFromLeft(8);
+        transportDisplay.setBounds(transport);
+
+        // Status bar and keyboard dock.
+        auto status = area.removeFromBottom(statusBarHeight).reduced(12, 0);
+        engineStatus.setBounds(status.removeFromRight(360));
+        projectStatus.setBounds(status.withTrimmedLeft(14));
+
+        auto dock = area.removeFromBottom(getHeight() < 760 ? dockHeight - 22 : dockHeight);
+        dockBounds = dock;
+        auto dockHeader = dock.removeFromTop(34).reduced(12, 5);
+        dockHeader.removeFromLeft(78); // "Keyboard" caption.
+        octaveDown.setBounds(dockHeader.removeFromLeft(28));
+        octaveReadout.setBounds(dockHeader.removeFromLeft(44));
+        octaveUp.setBounds(dockHeader.removeFromLeft(28));
+        dockHeader.removeFromLeft(12);
+        help.setBounds(dockHeader);
+        keyboard.setBounds(dock.reduced(12, 0).withTrimmedBottom(10));
+        keyboard.setKeyWidth(juce::jlimit(16.0f, 34.0f, static_cast<float>(keyboard.getWidth()) / 36.0f));
+        updateOctave();
+
+        workspace.setBounds(area);
     }
+
     void paint(juce::Graphics& g) override {
-        g.fillAll(AlienStudioLookAndFeel::background);
-        auto header = juce::Rectangle<float>(12.0f, 5.0f, static_cast<float>(getWidth() - 24), 42.0f);
-        g.setColour(AlienStudioLookAndFeel::panel);
-        g.fillRoundedRectangle(header, 10.0f);
-        g.setColour(juce::Colour(0xff273342));
-        g.drawRoundedRectangle(header, 10.0f, 1.0f);
-        auto footer = juce::Rectangle<float>(12.0f, static_cast<float>(getHeight() - 174),
-            static_cast<float>(getWidth() - 24), 158.0f);
-        g.setColour(AlienStudioLookAndFeel::panel);
-        g.fillRoundedRectangle(footer, 10.0f);
+        g.fillAll(col::window);
+        // Top bar.
+        const auto top = getLocalBounds().removeFromTop(topBarHeight);
+        g.setGradientFill(juce::ColourGradient(juce::Colour(0xff1e2025), 0.0f, 0.0f,
+                                               juce::Colour(0xff17181c), 0.0f, static_cast<float>(top.getBottom()), false));
+        g.fillRect(top);
+        g.setColour(juce::Colours::black);
+        g.fillRect(top.getX(), top.getBottom() - 1, top.getWidth(), 1);
+        g.setColour(col::inset.withAlpha(0.8f));
+        g.fillRoundedRectangle(viewSwitchBounds.toFloat(), 7.0f);
+
+        // Keyboard dock.
+        g.setColour(col::raised);
+        g.fillRect(dockBounds);
+        g.setColour(juce::Colours::black);
+        g.fillRect(dockBounds.getX(), dockBounds.getY(), dockBounds.getWidth(), 1);
+        ui::drawCaption(g, "Keyboard", {dockBounds.getX() + 14, dockBounds.getY() + 5, 72, 24}, col::textFaint);
+
+        // Status bar.
+        const auto status = getLocalBounds().removeFromBottom(statusBarHeight);
+        g.setColour(col::window);
+        g.fillRect(status);
+        g.setColour(juce::Colours::black);
+        g.fillRect(status.getX(), status.getY(), status.getWidth(), 1);
+        const auto dotColour = projectBusy ? col::warning
+            : currentProjectFile.existsAsFile() ? col::accent : col::textFaint;
+        g.setColour(dotColour);
+        g.fillEllipse(juce::Rectangle<float>(6.0f, 6.0f).withCentre({18.0f, static_cast<float>(status.getCentreY())}));
     }
+
+    // The main window stays hidden while the startup splash is up, so wait
+    // until it is on screen before showing the audio error.
+    static void showAudioErrorWhenVisible(juce::Component::SafePointer<MainComponent> safeThis, juce::String error) {
+        juce::Timer::callAfterDelay(250, [safeThis, error] {
+            if (safeThis == nullptr) return;
+            if (!safeThis->isShowing()) { showAudioErrorWhenVisible(safeThis, error); return; }
+            juce::AlertWindow::showMessageBoxAsync(
+                juce::MessageBoxIconType::WarningIcon,
+                "Audio initialization failed",
+                "Alien Studio could not open the default audio output device.\n\n" + error,
+                "OK", safeThis.getComponent());
+        });
+    }
+
     void releaseNotes() {
         pianoRoll.releaseAudition();
         typingInput.release();
@@ -566,6 +627,247 @@ public:
         engine.notes.panic.store(true);
     }
 private:
+    static constexpr int topBarHeight = 58, statusBarHeight = 26, dockHeight = 132;
+
+    // View management -------------------------------------------------------
+    void showView(int index) {
+        if (workspace.isDeviceView()) workspace.showDevices(false);
+        tabs.setCurrentTabIndex(index);
+        syncViewButtons();
+    }
+
+    void syncViewButtons() {
+        const int current = tabs.getCurrentTabIndex();
+        for (std::size_t i = 0; i < viewButtons.size(); ++i)
+            viewButtons[i].setToggleState(!workspace.isDeviceView() && static_cast<int>(i) == current,
+                                          juce::dontSendNotification);
+        updateEditorTitle();
+    }
+
+    void updateEditorTitle() {
+        const auto clipName = "Track " + juce::String(selectedTrack + 1) + ui::utf8("  \xc2\xb7  Scene ") + juce::String(selectedScene + 1);
+        switch (tabs.getCurrentTabIndex()) {
+        case 0: workspace.setEditorTitle("Step Sequencer", ui::utf8("16 steps  \xc2\xb7  1/16 notes  \xc2\xb7  ") + preset.getText()); break;
+        case 1: workspace.setEditorTitle("Piano Roll", clipName); break;
+        case 2: workspace.setEditorTitle("Session", ui::utf8("4 tracks  \xc2\xb7  4 scenes  \xc2\xb7  launch on next ")
+                                         + juce::String(engine.launchQuantizationSteps.load() == 4 ? "beat" : "bar")); break;
+        case 3: workspace.setEditorTitle("Mixer", "4 channels"); break;
+        default: break;
+        }
+    }
+
+    // Step sequencer --------------------------------------------------------
+    void refreshPadInfo() {
+        for (int i = 0; i < pads.size(); ++i) {
+            const auto index = static_cast<std::size_t>(i);
+            pads[i]->setStepInfo(juce::MidiMessage::getMidiNoteName(engine.stepPitches[index].load(), true, true, 4),
+                                 static_cast<float>(engine.stepVelocities[index].load()) / 127.0f, i == selectedStep);
+        }
+    }
+
+    void layoutStepsPanel() {
+        auto r = stepsPanel.getLocalBounds().reduced(20, 16);
+        stepHelp.setBounds(r.removeFromTop(22));
+        r.removeFromTop(14);
+        const bool singleRow = r.getWidth() >= 860;
+        const int channelWidth = r.getWidth() >= 1000 ? 150 : 0;
+        const int rowHeight = juce::jlimit(96, 150, (r.getHeight() - 140) / (singleRow ? 2 : 3));
+        auto rack = r.removeFromTop(singleRow ? rowHeight : rowHeight * 2 + 8);
+        rackBounds = rack;
+        channelCardBounds = rack.removeFromLeft(channelWidth);
+        if (channelWidth > 0) rack.removeFromLeft(12);
+        const int perRow = singleRow ? 16 : 8;
+        const int groupGap = 10, padGap = 4;
+        const int groups = perRow / 4;
+        const int padW = (rack.getWidth() - (groups - 1) * groupGap - (perRow - groups) * padGap) / perRow;
+        const int padH = singleRow ? rack.getHeight() : (rack.getHeight() - 8) / 2;
+        for (int i = 0; i < pads.size(); ++i) {
+            const int col = i % perRow, row = i / perRow;
+            const int x = rack.getX() + col * (padW + padGap) + (col / 4) * (groupGap - padGap);
+            pads[i]->setBounds(x, rack.getY() + row * (padH + 8), padW, padH);
+        }
+        r.removeFromTop(18);
+        auto inspector = r.removeFromTop(104);
+        inspectorBounds = inspector;
+        auto row = inspector.reduced(16, 0).withTrimmedTop(56).withHeight(30);
+        auto stepCol = row.removeFromLeft(110);
+        selectedStepLabel.setBounds(stepCol.getX(), stepCol.getY() - 18, 100, 16);
+        stepSelector.setBounds(stepCol.withWidth(100));
+        row.removeFromLeft(14);
+        const int sliderWidth = (row.getWidth() - 70 - 24) / 2;
+        auto pitchCol = row.removeFromLeft(sliderWidth);
+        stepPitchLabel.setBounds(pitchCol.getX(), pitchCol.getY() - 18, 100, 16);
+        stepPitch.setBounds(pitchCol);
+        stepPitchName.setBounds(row.removeFromLeft(64));
+        row.removeFromLeft(24);
+        stepVelocityLabel.setBounds(row.getX(), row.getY() - 18, 100, 16);
+        stepVelocity.setBounds(row);
+    }
+
+    void paintStepsPanel(juce::Graphics& g) {
+        g.fillAll(col::surface);
+        if (!channelCardBounds.isEmpty()) {
+            auto card = channelCardBounds.toFloat();
+            ui::drawCard(g, card, col::raised);
+            g.setColour(col::accent);
+            g.fillRoundedRectangle(card.removeFromLeft(4.0f).reduced(0.0f, 1.0f), 2.0f);
+            auto text = channelCardBounds.reduced(14, 12);
+            ui::drawCaption(g, "Channel", text.removeFromTop(14));
+            g.setColour(col::text);
+            g.setFont(ui::font(14.0f, true));
+            g.drawText("Step Synth", text.removeFromTop(22), juce::Justification::centredLeft, true);
+            g.setColour(col::textDim);
+            g.setFont(ui::font(12.5f));
+            g.drawText(preset.getText(), text.removeFromTop(18), juce::Justification::centredLeft, true);
+            g.setColour(col::textFaint);
+            g.drawText(engine.playing.load() && engine.patternMode.load() == 0 ? "Playing" : ui::utf8("1 bar  \xc2\xb7  16 steps"),
+                       text.removeFromTop(18), juce::Justification::centredLeft, true);
+        }
+        ui::drawCard(g, inspectorBounds.toFloat(), col::raised);
+        ui::drawCaption(g, "Step " + juce::String(selectedStep + 1) + " inspector",
+                        inspectorBounds.reduced(16, 0).removeFromTop(30), col::textDim);
+    }
+
+    // Devices ---------------------------------------------------------------
+    void layoutDevicePanel() {
+        auto r = devicePanel.getLocalBounds().reduced(20, 16);
+        deviceHelp.setBounds(r.removeFromTop(22));
+        r.removeFromTop(14);
+        const int cardWidth = juce::jmin(560, r.getWidth());
+        synthCardBounds = r.removeFromTop(112).withWidth(cardWidth);
+        r.removeFromTop(14);
+        midiCardBounds = r.removeFromTop(112).withWidth(cardWidth);
+        auto synth = synthCardBounds.reduced(18, 14).withTrimmedLeft(4);
+        presetLabel.setBounds(synth.removeFromTop(16));
+        synth.removeFromTop(10);
+        preset.setBounds(synth.removeFromTop(32).withWidth(juce::jmin(280, synth.getWidth())));
+        auto midi = midiCardBounds.reduced(18, 14).withTrimmedLeft(4);
+        midiLabel.setBounds(midi.removeFromTop(16));
+        midi.removeFromTop(10);
+        midiInput.setBounds(midi.removeFromTop(32));
+    }
+
+    void paintDevicePanel(juce::Graphics& g) {
+        g.fillAll(col::surface);
+        for (auto bounds : {synthCardBounds, midiCardBounds}) {
+            auto card = bounds.toFloat();
+            ui::drawCard(g, card, col::raised);
+            g.setColour(bounds == synthCardBounds ? col::accent : col::solo);
+            g.fillRoundedRectangle(card.removeFromLeft(4.0f).reduced(0.0f, 1.0f), 2.0f);
+        }
+        g.setColour(col::textFaint);
+        g.setFont(ui::font(12.0f));
+        g.drawText("Plays from the computer keyboard, the on-screen keyboard, MIDI input and the step sequencer.",
+                   synthCardBounds.reduced(22, 14).removeFromBottom(18), juce::Justification::centredLeft, true);
+        g.drawText("All 16 MIDI channels play the live synth. Hot-plugged controllers reconnect automatically.",
+                   midiCardBounds.reduced(22, 14).removeFromBottom(18), juce::Justification::centredLeft, true);
+    }
+
+    // Session ---------------------------------------------------------------
+    void layoutSessionPanel() {
+        auto r = sessionPanel.getLocalBounds().reduced(16, 12);
+        auto header = r.removeFromTop(30);
+        launchTiming.setBounds(header.removeFromRight(96).reduced(0, 2));
+        launchTimingLabel.setBounds(header.removeFromRight(70));
+        sessionHelp.setBounds(header);
+        r.removeFromTop(8);
+
+        const int sceneColumn = 132, gap = 6;
+        const int trackWidth = (r.getWidth() - sceneColumn - gap * trackCount) / trackCount;
+        const int clipHeight = juce::jlimit(30, 40, (r.getHeight() - 30 - 40 - 50 - 90) / sceneCount - gap);
+        const int headerHeight = 30;
+        trackHeaderBounds = r.withHeight(headerHeight);
+        const int gridTop = r.getY() + headerHeight + gap;
+        for (int scene = 0; scene < sceneCount; ++scene) {
+            const int y = gridTop + scene * (clipHeight + gap);
+            for (int track = 0; track < trackCount; ++track)
+                clipButtons[cellIndex(track, scene)].setBounds(r.getX() + track * (trackWidth + gap), y, trackWidth, clipHeight);
+            sceneButtons[static_cast<std::size_t>(scene)].setBounds(r.getRight() - sceneColumn, y, sceneColumn, clipHeight);
+        }
+        const int stopY = gridTop + sceneCount * (clipHeight + gap);
+        stopClip.setBounds(r.getRight() - sceneColumn, stopY, sceneColumn, 28);
+        gridBounds = juce::Rectangle<int>(r.getX(), r.getY(), r.getWidth(), stopY + 28 - r.getY());
+        r.setTop(stopY + 28 + 14);
+
+        auto actions = r.removeFromTop(30);
+        actionBarBounds = actions;
+        editSelectedClip.setBounds(actions.removeFromLeft(104));
+        actions.removeFromLeft(6);
+        importAudio.setBounds(actions.removeFromLeft(124));
+        actions.removeFromLeft(6);
+        removeAudio.setBounds(actions.removeFromLeft(124));
+        actions.removeFromLeft(18);
+        mappingBounds = actions;
+        actions.removeFromLeft(66); // "MIDI map" caption.
+        controllerTarget.setBounds(actions.removeFromLeft(100));
+        actions.removeFromLeft(6);
+        learnController.setBounds(actions.removeFromLeft(118));
+        actions.removeFromLeft(6);
+        clearController.setBounds(actions.removeFromLeft(60));
+        actions.removeFromLeft(10);
+        controllerMappingLabel.setBounds(actions);
+        r.removeFromTop(14);
+
+        clipDetailBounds = r;
+        auto detail = r.reduced(12, 8);
+        auto detailHeader = detail.removeFromTop(20);
+        audioImportStatus.setBounds(detailHeader.removeFromRight(juce::jmax(100, detailHeader.getWidth() - 220)));
+        detail.removeFromTop(6);
+        audioWaveform.setBounds(detail);
+    }
+
+    void paintSessionPanel(juce::Graphics& g) {
+        g.fillAll(col::surface);
+        const int sceneColumn = 132, gap = 6;
+        const int trackWidth = (gridBounds.getWidth() - sceneColumn - gap * trackCount) / trackCount;
+        for (int track = 0; track < trackCount; ++track) {
+            auto h = juce::Rectangle<int>(gridBounds.getX() + track * (trackWidth + gap), trackHeaderBounds.getY(),
+                                          trackWidth, trackHeaderBounds.getHeight()).toFloat();
+            // Column backdrop.
+            g.setColour(juce::Colours::black.withAlpha(0.18f));
+            g.fillRoundedRectangle(h.withBottom(static_cast<float>(gridBounds.getBottom())), 5.0f);
+            const auto colour = ui::trackColour(track);
+            g.setColour(col::raised);
+            g.fillRoundedRectangle(h, 5.0f);
+            g.setColour(colour);
+            g.fillRoundedRectangle(h.removeFromTop(3.0f), 1.5f);
+            const bool active = engine.activePianoRollClip[static_cast<std::size_t>(track)].load() >= 0;
+            auto text = h.reduced(10.0f, 0.0f);
+            if (active) {
+                g.setColour(col::accent);
+                juce::Path p;
+                const auto tri = text.removeFromRight(10.0f).withSizeKeepingCentre(8.0f, 9.0f);
+                p.addTriangle(tri.getX(), tri.getY(), tri.getX(), tri.getBottom(), tri.getRight(), tri.getCentreY());
+                g.fillPath(p);
+            }
+            g.setColour(col::text);
+            g.setFont(ui::font(13.0f, true));
+            g.drawText(juce::String(track + 1), text.removeFromLeft(16.0f), juce::Justification::centredLeft, false);
+            static const std::array<const char*, 3> presetNames{"Lead", "Bass", "Pluck"};
+            const int presetIndex = juce::jlimit(0, 2, engine.tracks[static_cast<std::size_t>(track)].preset.load());
+            g.setColour(col::textDim);
+            g.setFont(ui::font(12.5f));
+            g.drawText(presetNames[static_cast<std::size_t>(presetIndex)], text, juce::Justification::centredLeft, true);
+        }
+        auto sceneHeader = juce::Rectangle<int>(gridBounds.getRight() - sceneColumn, trackHeaderBounds.getY(),
+                                                sceneColumn, trackHeaderBounds.getHeight());
+        g.setColour(col::raised);
+        g.fillRoundedRectangle(sceneHeader.toFloat(), 5.0f);
+        ui::drawCaption(g, "Scenes", sceneHeader.reduced(10, 0), col::textDim);
+
+        ui::drawCaption(g, "MIDI map", mappingBounds.withWidth(62), col::textFaint);
+        g.setColour(col::line);
+        g.fillRect(mappingBounds.getX() - 10, mappingBounds.getY() + 5, 1, mappingBounds.getHeight() - 10);
+
+        ui::drawCard(g, clipDetailBounds.toFloat(), col::raised);
+        ui::drawCaption(g, ui::utf8("Clip  \xc2\xb7  Track ") + juce::String(selectedTrack + 1) + ui::utf8("  \xc2\xb7  Scene ") + juce::String(selectedScene + 1),
+                        clipDetailBounds.reduced(12, 8).removeFromTop(20), ui::trackColour(selectedTrack));
+    }
+
+    juce::Rectangle<int> viewSwitchBounds, dockBounds;
+    juce::Rectangle<int> rackBounds, channelCardBounds, inspectorBounds;
+    juce::Rectangle<int> synthCardBounds, midiCardBounds;
+    juce::Rectangle<int> trackHeaderBounds, gridBounds, actionBarBounds, mappingBounds, clipDetailBounds;
     void selectSequencerStep(int step) {
         selectedStep = juce::jlimit(0, 15, step);
         stepSelector.setSelectedId(selectedStep + 1, juce::dontSendNotification);
@@ -575,28 +877,41 @@ private:
         stepPitchName.setText(juce::MidiMessage::getMidiNoteName(pitch, true, true, 4),
             juce::dontSendNotification);
         stepVelocity.setValue(engine.stepVelocities[index].load(), juce::dontSendNotification);
+        refreshPadInfo();
+        stepsPanel.repaint(inspectorBounds);
     }
 
     void updateOctave() {
-        help.setText("Play notes (outside text fields): A W S E D F T G Y H U J | Z/X octave | C"
-                     + juce::String(typingInput.typing.octave()), juce::dontSendNotification);
+        help.setText(ui::utf8("Computer keys  A W S E D F T G Y H U J  \xc2\xb7  Z / X octave  \xc2\xb7  works outside text fields"),
+                     juce::dontSendNotification);
+        octaveReadout.setText("C" + juce::String(typingInput.typing.octave()), juce::dontSendNotification);
         keyboard.setLowestVisibleKey(12 * (typingInput.typing.octave() + 1));
     }
     void changeListenerCallback(juce::ChangeBroadcaster*) override {
         const int newMode = tabs.getCurrentTabIndex() == 0 ? 0 : 1;
         if (engine.patternMode.exchange(newMode) != newMode) releaseNotes();
         else pianoRoll.releaseAudition();
+        syncViewButtons();
     }
     void timerCallback() override {
         const bool isPlaying = engine.playing.load();
-        if (play.getToggleState() != isPlaying)
+        if (play.getToggleState() != isPlaying) {
             play.setToggleState(isPlaying, juce::dontSendNotification);
+            play.setGlyph(isPlaying ? ui::Glyph::stop : ui::Glyph::play);
+            stepsPanel.repaint(channelCardBounds);
+        }
         const juce::String transportText = isPlaying ? "Stop" : "Play";
         if (play.getButtonText() != transportText) play.setButtonText(transportText);
-        const int currentStep = engine.patternMode.load() == 0 && isPlaying
-            ? engine.currentStep.load() : -1;
+        const bool stepMode = engine.patternMode.load() == 0;
+        const int currentStep = stepMode && isPlaying ? engine.currentStep.load() : -1;
         for (int i = 0; i < pads.size(); ++i)
             pads[i]->setPlaybackPosition(i == currentStep);
+        int displayStep = currentStep;
+        if (!stepMode) {
+            const int position = engine.sessionTrackPositions[static_cast<std::size_t>(selectedTrack)].load();
+            displayStep = position >= 0 ? position / 1000 : -1;
+        }
+        transportDisplay.setPosition(displayStep, isPlaying || displayStep >= 0, stepMode ? "Steps" : "Session");
         midiInput.tick();
         mixerPanel.tick();
         int controllerAction = -1;
@@ -609,6 +924,7 @@ private:
             if (learningControllerAction == learnedAction) {
                 learningControllerAction = -1;
                 learnController.setButtonText("Learn CC");
+                learnController.setToggleState(false, juce::dontSendNotification);
             }
             updateControllerMappingLabel();
         }
@@ -621,7 +937,19 @@ private:
         }
         pianoRoll.setPlayheadStep(engine.sessionTrackPositions[static_cast<std::size_t>(selectedTrack)].load() / 1000.0);
         updateSessionButtons();
-        repaint();
+        if (sessionPanel.isShowing()) sessionPanel.repaint(trackHeaderBounds);
+        if (++statusTicks % 10 == 0) updateEngineStatus();
+    }
+    void updateEngineStatus() {
+        juce::String text = "No audio device";
+        if (auto* device = audio.getCurrentAudioDevice()) {
+            auto name = device->getName();
+            if (name.length() > 28) name = name.substring(0, 27) + "...";
+            text = name + ui::utf8("  \xc2\xb7  ") + juce::String(device->getCurrentSampleRate() / 1000.0, 1) + ui::utf8(" kHz  \xc2\xb7  ")
+                + juce::String(device->getCurrentBufferSizeSamples()) + ui::utf8(" smp  \xc2\xb7  CPU ")
+                + juce::String(juce::roundToInt(audio.getCpuUsage() * 100.0)) + "%";
+        }
+        engineStatus.setText(text, juce::dontSendNotification);
     }
     void handleNoteOn(juce::MidiKeyboardState*, int channel, int note, float velocity) override {
         if (channel == 4) return; // MIDI highlight only; sound uses its own audio pipe.
@@ -669,6 +997,8 @@ private:
         pianoRoll.setPattern(clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)].pattern);
         loadingClip = false;
         updateAudioClipEditor();
+        updateEditorTitle();
+        sessionPanel.repaint(clipDetailBounds);
     }
     void launchScene(int scene) {
         saveEditedClip();
@@ -750,7 +1080,7 @@ private:
         }
         const auto target = file.hasFileExtension("alienstudio") ? file : file.withFileExtension("alienstudio");
         setProjectBusy(true);
-        projectStatus.setText(portable ? "Collecting audio…" : "Saving project…", juce::dontSendNotification);
+        projectStatus.setText(portable ? ui::utf8("Collecting audio\xe2\x80\xa6") : ui::utf8("Saving project\xe2\x80\xa6"), juce::dontSendNotification);
         juce::Component::SafePointer<MainComponent> safe(this);
         std::function<juce::ThreadPoolJob::JobStatus()> saveJob = [safe, target, project, portable] {
             auto saved = std::make_shared<alien::SessionProjectData>();
@@ -786,6 +1116,7 @@ private:
         projectBusy = busy;
         saveProjectButton.setEnabled(!busy); portableProjectButton.setEnabled(!busy);
         openProjectButton.setEnabled(!busy); importAudio.setEnabled(!busy);
+        repaint(0, getHeight() - statusBarHeight, 40, statusBarHeight);
     }
     void chooseProjectToOpen() {
         projectFileChooser = std::make_unique<juce::FileChooser>("Open Alien Studio session",
@@ -802,7 +1133,7 @@ private:
     void startProjectLoad(const juce::File& file) {
         if (projectBusy) return;
         setProjectBusy(true);
-        projectStatus.setText("Opening project…", juce::dontSendNotification);
+        projectStatus.setText(ui::utf8("Opening project\xe2\x80\xa6"), juce::dontSendNotification);
         juce::Component::SafePointer<MainComponent> safe(this);
         std::function<juce::ThreadPoolJob::JobStatus()> loadJob = [safe, file] {
             auto result = std::make_shared<SessionProjectLoadResult>();
@@ -902,6 +1233,7 @@ private:
             engine.stepVelocities[i].store(result.project.stepVelocities[i]);
         }
         selectSequencerStep(selectedStep);
+        updateEditorTitle();
         loadingClip = true;
         pianoRoll.setPattern(clips[static_cast<std::size_t>(selectedScene)][static_cast<std::size_t>(selectedTrack)].pattern);
         loadingClip = false;
@@ -925,7 +1257,7 @@ private:
             });
     }
     void startAudioImport(const juce::File& file, int track, int scene) {
-        audioImportStatus.setText("Loading audio…", juce::dontSendNotification);
+        audioImportStatus.setText(ui::utf8("Loading audio\xe2\x80\xa6"), juce::dontSendNotification);
         audioImportStatus.setTooltip(file.getFullPathName());
         juce::Component::SafePointer<MainComponent> safe(this);
         std::function<juce::ThreadPoolJob::JobStatus()> importJob = [safe, file, track, scene] {
@@ -992,7 +1324,7 @@ private:
     }
     void updateControllerMappingLabel() {
         if (learningControllerAction == controllerTarget.getSelectedId() - 1) {
-            controllerMappingLabel.setText("Move a MIDI CC control…", juce::dontSendNotification);
+            controllerMappingLabel.setText(ui::utf8("Move a MIDI CC control\xe2\x80\xa6"), juce::dontSendNotification);
             return;
         }
         const int code = engine.controllerMappings.mappingFor(controllerTarget.getSelectedId() - 1);
@@ -1008,11 +1340,14 @@ private:
         }
         for (int scene = 0; scene < sceneCount; ++scene) {
             auto& sceneButton = sceneButtons[static_cast<std::size_t>(scene)];
-            sceneButton.setColour(juce::TextButton::buttonColourId,
-                scenePlaying[static_cast<std::size_t>(scene)] ? juce::Colour(0xff245a55)
-                : scene == selectedScene ? juce::Colour(0xff303b4b) : AlienStudioLookAndFeel::control);
-            sceneButton.setButtonText(
-                (scene == selectedScene ? "Selected | " : "") + juce::String("Launch scene ") + juce::String(scene + 1));
+            const bool playingScene = scenePlaying[static_cast<std::size_t>(scene)];
+            const auto sceneColour = playingScene ? juce::Colour(0xff1d3a31) : scene == selectedScene ? col::hover : col::control;
+            if (sceneButton.findColour(juce::TextButton::buttonColourId) != sceneColour) {
+                sceneButton.setColour(juce::TextButton::buttonColourId, sceneColour);
+                sceneButton.setGlyphColour(playingScene ? col::accent : col::textDim);
+            }
+            sceneButton.setTitle((scene == selectedScene ? "Selected, " : "") + juce::String("Launch scene ")
+                                 + juce::String(scene + 1));
             for (int track = 0; track < trackCount; ++track) {
                 const auto index = static_cast<std::size_t>(track);
                 const int active = engine.activePianoRollClip[index].load();
@@ -1025,34 +1360,51 @@ private:
                 else if (scene == requested) text += " | Queued";
                 if (track == selectedTrack && scene == selectedScene) text += " | Edit";
                 auto& button = clipButtons[cellIndex(track, scene)];
-                button.setButtonText(text);
-                button.setColour(juce::TextButton::buttonColourId,
-                    scene == active ? juce::Colour(0xff245a55)
-                    : scene == requested ? juce::Colour(0xff67522e)
-                    : track == selectedTrack && scene == selectedScene ? juce::Colour(0xff303b4b)
-                    : AlienStudioLookAndFeel::control);
+                if (button.getButtonText() != text) button.setButtonText(text);
+
+                alien::SessionClipButton::Visual visual;
+                const auto noteCount = static_cast<int>(clip.pattern.count);
+                visual.kind = clip.audio != nullptr ? alien::SessionClipButton::Kind::audio
+                    : noteCount > 0 ? alien::SessionClipButton::Kind::midi : alien::SessionClipButton::Kind::empty;
+                visual.colour = ui::trackColour(track);
+                visual.label = clip.audio != nullptr ? clip.audioFileName
+                    : juce::String(noteCount) + (noteCount == 1 ? " note" : " notes");
+                visual.playing = scene == active;
+                visual.queued = scene != active && scene == requested;
+                visual.selected = track == selectedTrack && scene == selectedScene;
+                if (visual.playing && clip.audio == nullptr && clip.pattern.loopSteps > 0) {
+                    const int position = engine.sessionTrackPositions[index].load();
+                    if (position >= 0)
+                        visual.progress = static_cast<float>(std::fmod(position / 1000.0, static_cast<double>(clip.pattern.loopSteps))
+                                                             / static_cast<double>(clip.pattern.loopSteps));
+                }
+                button.setVisual(visual);
             }
         }
-        stopClip.setButtonText("Stop all tracks");
     }
-    AlienStudioLookAndFeel studioLookAndFeel;
+    ui::StudioLookAndFeel studioLookAndFeel;
+    juce::TooltipWindow tooltipWindow{this, 650};
     ToneEngine engine;
     alien::MidiInputPanel midiInput{engine.midi};
     alien::TrackMixerPanel mixerPanel{engine.tracks};
     juce::AudioDeviceManager audio;
     juce::MidiKeyboardState keyboardState;
     juce::MidiKeyboardComponent keyboard{keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard};
-    juce::TextButton octaveDown, octaveUp;
-    juce::Label help;
+    ui::GlyphButton octaveDown, octaveUp;
+    juce::Label help, octaveReadout;
     juce::ComboBox preset;
+    alien::branding::LogoMark brandMark;
     juce::Label title;
     juce::Label brandSubtitle, tempoLabel;
-    juce::TextButton play;
-    juce::TextButton saveProjectButton, openProjectButton, portableProjectButton;
-    juce::Label projectStatus;
-    juce::Slider tempo{juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight};
+    std::array<ui::GlyphButton, 4> viewButtons;
+    ui::GlyphButton play;
+    ui::GlyphButton saveProjectButton, openProjectButton, portableProjectButton;
+    juce::Label projectStatus, engineStatus;
+    juce::Slider tempo{juce::Slider::LinearBarVertical, juce::Slider::NoTextBox};
+    ui::TransportDisplay transportDisplay{tempo};
+    int statusTicks{};
     juce::OwnedArray<SequencerStepButton> pads;
-    juce::Component stepsPanel;
+    ui::PaintedPanel stepsPanel;
     juce::Label stepHelp;
     juce::Label selectedStepLabel, stepPitchLabel, stepPitchName, stepVelocityLabel;
     juce::ComboBox stepSelector;
@@ -1060,14 +1412,15 @@ private:
     juce::Slider stepVelocity{juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight};
     alien::PianoRollEditor pianoRoll;
     juce::TabbedComponent tabs{juce::TabbedButtonBar::TabsAtTop};
-    juce::Component sessionPanel;
-    juce::Label sessionTitle, sessionHelp, launchTimingLabel, controllerMappingLabel;
+    ui::PaintedPanel sessionPanel;
+    juce::Label sessionHelp, launchTimingLabel, controllerMappingLabel;
     juce::Label audioImportStatus;
     juce::ComboBox launchTiming, controllerTarget;
-    juce::TextButton learnController, clearController;
-    std::array<juce::TextButton, 4> sceneButtons;
+    ui::GlyphButton learnController;
+    juce::TextButton clearController;
+    std::array<ui::GlyphButton, 4> sceneButtons;
     std::array<alien::SessionClipButton, 16> clipButtons;
-    juce::TextButton editSelectedClip, stopClip, importAudio, removeAudio;
+    ui::GlyphButton editSelectedClip, stopClip, importAudio, removeAudio;
     alien::AudioClipWaveform audioWaveform;
     std::array<std::array<SessionClipContent, trackCount>, sceneCount> clips{};
     std::vector<std::shared_ptr<alien::SessionAudioClip>> retainedAudioAssets;
@@ -1079,8 +1432,8 @@ private:
     int selectedTrack{}, selectedScene{}, selectedStep{};
     int learningControllerAction{-1};
     bool loadingClip{}, projectBusy{};
-    juce::Component devicePanel;
-    juce::Label deviceTitle, deviceHelp, presetLabel, midiLabel;
+    ui::PaintedPanel devicePanel;
+    juce::Label deviceHelp, presetLabel, midiLabel;
     alien::CompactWorkspace workspace{tabs, devicePanel};
     TypingPianoRouter typingInput{*this, keyboardState};
 };
@@ -1090,13 +1443,46 @@ public:
     const juce::String getApplicationName() override { return "Alien Studio"; }
     const juce::String getApplicationVersion() override { return "0.1.0"; }
     void initialise(const juce::String&) override {
-        window = std::make_unique<Window>(getApplicationName());
+        splash = std::make_unique<alien::branding::SplashWindow>(getApplicationVersion());
+        splash->onClick = [this] { finishStartup(); };
+        splash->setStatus("Loading interface and audio engine");
+        splash->setProgress(0.55f);
+        splash->showCentred();
+        startedAt = juce::Time::getMillisecondCounter();
+        // Let the splash paint before the (synchronous) main window construction.
+        juce::Timer::callAfterDelay(90, [this] { createMainWindow(); });
     }
-    void shutdown() override { window.reset(); }
+    void shutdown() override { splash.reset(); window.reset(); }
 private:
+    static constexpr juce::uint32 minimumSplashMs = 1600;
+
+    void createMainWindow() {
+        if (window != nullptr) return;
+        window = std::make_unique<Window>(getApplicationName());
+        // Keep it hidden behind the splash. JUCE's Linux peer can map the native
+        // window while it is being sized, so hide the peer explicitly as well.
+        window->setVisible(false);
+        if (auto* peer = window->getPeer()) peer->setVisible(false);
+        if (splash != nullptr) { splash->setStatus("Ready"); splash->setProgress(1.0f); }
+        const auto elapsed = juce::Time::getMillisecondCounter() - startedAt;
+        const int remaining = elapsed >= minimumSplashMs ? 0 : static_cast<int>(minimumSplashMs - elapsed);
+        juce::Timer::callAfterDelay(remaining, [this] { finishStartup(); });
+    }
+
+    void finishStartup() {
+        if (window == nullptr || startupFinished) return;
+        startupFinished = true;
+        window->setVisible(true);
+        window->toFront(true);
+        if (splash != nullptr) {
+            splash->onDismissed = [this] { splash.reset(); };
+            splash->dismiss();
+        }
+    }
+
     class Window : public juce::DocumentWindow {
     public:
-        explicit Window(juce::String name) : DocumentWindow(name, juce::Colours::black,
+        explicit Window(juce::String name) : juce::DocumentWindow(name, alien::ui::colours::window,
             juce::DocumentWindow::allButtons) {
             setUsingNativeTitleBar(true);
             setContentOwned(new MainComponent(), true);
@@ -1106,7 +1492,11 @@ private:
                 centreWithSize(juce::jmin(getWidth(), display->userArea.getWidth() - 40),
                                juce::jmin(getHeight(), display->userArea.getHeight() - 40));
             else centreWithSize(getWidth(), getHeight());
-            setVisible(true);
+           #if ! JUCE_WINDOWS
+            // Windows takes the icon from the embedded ICO resource; elsewhere set it here.
+            setIcon(alien::branding::artworkAtSize(256));
+           #endif
+            // Shown by the application once the startup splash finishes.
         }
         void activeWindowStatusChanged() override {
             if (!isActiveWindow())
@@ -1115,5 +1505,8 @@ private:
         void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
     };
     std::unique_ptr<Window> window;
+    std::unique_ptr<alien::branding::SplashWindow> splash;
+    juce::uint32 startedAt{};
+    bool startupFinished{};
 };
 START_JUCE_APPLICATION(AlienStudioApp)
