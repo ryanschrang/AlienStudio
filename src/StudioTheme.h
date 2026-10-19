@@ -34,10 +34,10 @@ inline const juce::Colour lcdText  {0xff8ff5d6};
 } // namespace colours
 
 inline juce::Colour trackColour(int index) {
-    static const std::array<juce::Colour, 4> palette{
-        juce::Colour(0xff4fe0b6), juce::Colour(0xff9d85ff),
-        juce::Colour(0xffffb547), juce::Colour(0xffff6f9f)};
-    return palette[static_cast<std::size_t>(((index % 4) + 4) % 4)];
+    static const std::array<juce::Colour, 8> palette{
+        juce::Colour(0xff4fe0b6), juce::Colour(0xff9d85ff), juce::Colour(0xffffb547), juce::Colour(0xffff6f9f),
+        juce::Colour(0xff5aa9ff), juce::Colour(0xffa6e05a), juce::Colour(0xffff8a5c), juce::Colour(0xff4fd3e0)};
+    return palette[static_cast<std::size_t>(((index % 8) + 8) % 8)];
 }
 
 inline juce::String sansTypefaceName() {

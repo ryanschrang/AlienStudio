@@ -2,28 +2,40 @@
 
 #include "PianoRollSequence.h"
 #include "TrackMixer.h"
+#include "SynthEngine.h"
 #include <juce_core/juce_core.h>
 #include <array>
 #include <cmath>
+#include <vector>
 
 namespace alien {
 
+// Capacity of a session. The audio engine pre-allocates this many tracks so it
+// never allocates while playing; raising either value is a one-line change.
+inline constexpr int maxSessionTracks = 16;
+inline constexpr int maxSessionScenes = 32;
+// Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
+inline constexpr int sessionProjectFormatVersion = 4;
 
 struct SessionProjectClip {
     PianoRollPattern pattern;
     juce::String audioFilePath;
 };
 
+// On-disk representation of a session. clips is [scene][track].
 struct SessionProjectData {
-    std::array<std::array<SessionProjectClip, sessionProjectTrackCount>, sessionProjectSceneCount> clips{};
+    std::vector<std::vector<SessionProjectClip>> clips;
+    std::vector<TrackSettings> trackSettings;
+    std::vector<juce::String> trackNames;  // Empty entry: use the default name.
+    std::vector<int> trackColours;
+    std::vector<juce::String> sceneNames;
     int launchQuantizationSteps{16};
     int selectedTrack{};
     int selectedScene{};
     int bpm{120};
     int synthPreset{};
-    std::array<TrackSettings, sessionProjectTrackCount> trackSettings{};
     std::array<bool, 16> stepPattern{};
     std::array<int, 16> stepPitches = [] {
         std::array<int, 16> values{};
@@ -36,16 +48,41 @@ struct SessionProjectData {
         return values;
     }();
 
+    explicit SessionProjectData(int tracks = sessionProjectTrackCount, int scenes = sessionProjectSceneCount) {
+        resize(tracks, scenes);
+    }
+
+    void resize(int tracks, int scenes) {
+        clips.assign(static_cast<std::size_t>(juce::jmax(0, scenes)),
+                     std::vector<SessionProjectClip>(static_cast<std::size_t>(juce::jmax(0, tracks))));
+        trackSettings.assign(static_cast<std::size_t>(juce::jmax(0, tracks)), TrackSettings{});
+        trackNames.assign(static_cast<std::size_t>(juce::jmax(0, tracks)), juce::String{});
+        trackColours.clear();
+        for (int t = 0; t < tracks; ++t) trackColours.push_back(t);
+        sceneNames.assign(static_cast<std::size_t>(juce::jmax(0, scenes)), juce::String{});
+    }
+
+    int trackCount() const noexcept { return static_cast<int>(trackSettings.size()); }
+    int sceneCount() const noexcept { return static_cast<int>(clips.size()); }
+
     bool valid() const noexcept {
+        const int tracks = trackCount(), scenes = sceneCount();
+        if (tracks < 1 || tracks > maxSessionTracks || scenes < 1 || scenes > maxSessionScenes
+            || static_cast<int>(trackNames.size()) != tracks || static_cast<int>(trackColours.size()) != tracks
+            || static_cast<int>(sceneNames.size()) != scenes)
+            return false;
         if ((launchQuantizationSteps != 4 && launchQuantizationSteps != 16)
-            || selectedTrack < 0 || selectedTrack >= sessionProjectTrackCount
-            || selectedScene < 0 || selectedScene >= sessionProjectSceneCount
-            || bpm < 60 || bpm > 200 || synthPreset < 0 || synthPreset > 2)
+            || selectedTrack < 0 || selectedTrack >= tracks
+            || selectedScene < 0 || selectedScene >= scenes
+            || bpm < 60 || bpm > 200 || synthPreset < 0 || synthPreset >= presetCount)
             return false;
         for (const auto& track : trackSettings) if (!track.valid()) return false;
-        for (const auto& scene : clips)
+        for (const int colour : trackColours) if (colour < 0 || colour > 255) return false;
+        for (const auto& scene : clips) {
+            if (static_cast<int>(scene.size()) != tracks) return false;
             for (const auto& clip : scene)
                 if (!clip.pattern.valid()) return false;
+        }
         for (std::size_t i = 0; i < stepPitches.size(); ++i)
             if (stepPitches[i] < 0 || stepPitches[i] > 127
                 || stepVelocities[i] < 1 || stepVelocities[i] > 127) return false;
@@ -59,14 +96,15 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     auto root = juce::var(new juce::DynamicObject());
     auto* rootObject = root.getDynamicObject();
     rootObject->setProperty("format", "AlienStudioSession");
-    rootObject->setProperty("version", 3);
+    rootObject->setProperty("version", sessionProjectFormatVersion);
     rootObject->setProperty("launchQuantizationSteps", project.launchQuantizationSteps);
     rootObject->setProperty("selectedTrack", project.selectedTrack);
     rootObject->setProperty("selectedScene", project.selectedScene);
     rootObject->setProperty("bpm", project.bpm);
     rootObject->setProperty("synthPreset", project.synthPreset);
     juce::Array<juce::var> settings;
-    for (const auto& track : project.trackSettings) {
+    for (std::size_t t = 0; t < project.trackSettings.size(); ++t) {
+        const auto& track = project.trackSettings[t];
         auto value = juce::var(new juce::DynamicObject());
         auto* object = value.getDynamicObject();
         object->setProperty("preset", track.preset);
@@ -74,9 +112,14 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
         object->setProperty("pan", track.pan);
         object->setProperty("mute", track.mute);
         object->setProperty("solo", track.solo);
+        object->setProperty("name", project.trackNames[t]);
+        object->setProperty("colour", project.trackColours[t]);
         settings.add(value);
     }
     rootObject->setProperty("trackSettings", juce::var(settings));
+    juce::Array<juce::var> sceneNames;
+    for (const auto& name : project.sceneNames) sceneNames.add(name);
+    rootObject->setProperty("sceneNames", juce::var(sceneNames));
     juce::Array<juce::var> steps;
     for (const auto enabled : project.stepPattern) steps.add(enabled);
     rootObject->setProperty("stepPattern", juce::var(steps));
@@ -128,12 +171,26 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         error = "This file is not an Alien Studio session project."; return false;
     }
     const auto version = rootObject->getProperty("version");
-    if (!version.isInt() || (static_cast<int>(version) < 1 || static_cast<int>(version) > 3)) {
+    if (!version.isInt() || (static_cast<int>(version) < 1 || static_cast<int>(version) > sessionProjectFormatVersion)) {
         error = "This Alien Studio project version is not supported."; return false;
     }
     const int formatVersion = static_cast<int>(version);
+    const bool fixedGrid = formatVersion < 4;
 
-    SessionProjectData parsed;
+    const auto scenesValue = rootObject->getProperty("scenes");
+    const auto* scenes = scenesValue.getArray();
+    if (scenes == nullptr || scenes->isEmpty()) { error = "Project contains no scenes."; return false; }
+    const auto* firstScene = (*scenes)[0].getArray();
+    const int sceneCount = scenes->size();
+    const int trackCount = firstScene != nullptr ? firstScene->size() : 0;
+    if (fixedGrid && (sceneCount != sessionProjectSceneCount || trackCount != sessionProjectTrackCount)) {
+        error = "Project must contain exactly four scenes of four tracks."; return false;
+    }
+    if (trackCount < 1 || trackCount > maxSessionTracks || sceneCount > maxSessionScenes) {
+        error = "Project has more tracks or scenes than this version of Alien Studio supports."; return false;
+    }
+
+    SessionProjectData parsed(trackCount, sceneCount);
     const auto quantization = rootObject->getProperty("launchQuantizationSteps");
     const auto selectedTrack = rootObject->getProperty("selectedTrack");
     const auto selectedScene = rootObject->getProperty("selectedScene");
@@ -155,10 +212,11 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
     } else {
         const auto settingsValue = rootObject->getProperty("trackSettings");
         const auto* settings = settingsValue.getArray();
-        if (settings == nullptr || settings->size() != sessionProjectTrackCount) {
-            error = "Project must contain four track settings."; return false;
+        if (settings == nullptr || settings->size() != trackCount) {
+            error = fixedGrid ? "Project must contain four track settings."
+                              : "Project track settings do not match its clips."; return false;
         }
-        for (int i = 0; i < sessionProjectTrackCount; ++i) {
+        for (int i = 0; i < trackCount; ++i) {
             const auto* object = (*settings)[i].getDynamicObject();
             if (object == nullptr) { error = "Invalid track settings."; return false; }
             const auto p = object->getProperty("preset"), g = object->getProperty("gain"),
@@ -172,8 +230,14 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
             track = {static_cast<int>(p), static_cast<float>(g), static_cast<float>(pan),
                 static_cast<bool>(mute), static_cast<bool>(solo)};
             if (!track.valid()) { error = "Track settings outside supported range."; return false; }
+            const auto name = object->getProperty("name"), colour = object->getProperty("colour");
+            if (name.isString()) parsed.trackNames[static_cast<std::size_t>(i)] = name.toString().substring(0, 64);
+            if (colour.isInt()) parsed.trackColours[static_cast<std::size_t>(i)] = juce::jlimit(0, 255, static_cast<int>(colour));
         }
     }
+    if (const auto* names = rootObject->getProperty("sceneNames").getArray())
+        for (int i = 0; i < juce::jmin(sceneCount, names->size()); ++i)
+            if ((*names)[i].isString()) parsed.sceneNames[static_cast<std::size_t>(i)] = (*names)[i].toString().substring(0, 64);
     for (int i = 0; i < 16; ++i) {
         if (!(*steps)[i].isBool()) { error = "Project step pattern is invalid."; return false; }
         parsed.stepPattern[static_cast<std::size_t>(i)] = static_cast<bool>((*steps)[i]);
@@ -184,8 +248,8 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         const auto* pitches = pitchesValue.getArray();
         const auto* velocities = velocitiesValue.getArray();
         if (pitches == nullptr || velocities == nullptr
-            || pitches->size() != parsed.stepPitches.size()
-            || velocities->size() != parsed.stepVelocities.size()) {
+            || pitches->size() != static_cast<int>(parsed.stepPitches.size())
+            || velocities->size() != static_cast<int>(parsed.stepVelocities.size())) {
             error = "Project step note data is missing or invalid."; return false;
         }
         for (int i = 0; i < 16; ++i) {
@@ -197,17 +261,13 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         }
     }
 
-    const auto scenesValue = rootObject->getProperty("scenes");
-    const auto* scenes = scenesValue.getArray();
-    if (scenes == nullptr || scenes->size() != sessionProjectSceneCount) {
-        error = "Project must contain exactly four scenes."; return false;
-    }
-    for (int sceneIndex = 0; sceneIndex < sessionProjectSceneCount; ++sceneIndex) {
+    for (int sceneIndex = 0; sceneIndex < sceneCount; ++sceneIndex) {
         const auto* tracks = (*scenes)[sceneIndex].getArray();
-        if (tracks == nullptr || tracks->size() != sessionProjectTrackCount) {
-            error = "Each project scene must contain exactly four tracks."; return false;
+        if (tracks == nullptr || tracks->size() != trackCount) {
+            error = fixedGrid ? "Each project scene must contain exactly four tracks."
+                              : "Every project scene must contain one clip per track."; return false;
         }
-        for (int trackIndex = 0; trackIndex < sessionProjectTrackCount; ++trackIndex) {
+        for (int trackIndex = 0; trackIndex < trackCount; ++trackIndex) {
             auto& clip = parsed.clips[static_cast<std::size_t>(sceneIndex)][static_cast<std::size_t>(trackIndex)];
             const auto* clipObject = (*tracks)[trackIndex].getDynamicObject();
             if (clipObject == nullptr) { error = "A project clip is invalid."; return false; }
@@ -215,7 +275,7 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
             const auto path = clipObject->getProperty("audioFilePath");
             const auto notesValue = clipObject->getProperty("notes");
             const auto* notes = notesValue.getArray();
-            if (!loopSteps.isInt() || notes == nullptr || notes->size() > PianoRollPattern::maxNotes
+            if (!loopSteps.isInt() || notes == nullptr || notes->size() > static_cast<int>(PianoRollPattern::maxNotes)
                 || (!path.isString() && !path.isVoid())) {
                 error = "A project clip is missing valid pattern or audio data."; return false;
             }
@@ -232,12 +292,9 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
                 const auto lengthTicks = note->getProperty("lengthTicks");
                 const auto velocity = note->getProperty("velocity");
                 const auto probability = note->getProperty("probability");
-                const bool pitchIsInt = pitch.isInt();
-                const bool startIsInt = startTicks.isInt();
-                const bool lengthIsInt = lengthTicks.isInt();
                 const bool velocityIsNumber = velocity.isDouble() || velocity.isInt();
                 const bool probabilityIsNumber = probability.isDouble() || probability.isInt();
-                if (!pitchIsInt || !startIsInt || !lengthIsInt || !velocityIsNumber || !probabilityIsNumber) {
+                if (!pitch.isInt() || !startTicks.isInt() || !lengthTicks.isInt() || !velocityIsNumber || !probabilityIsNumber) {
                     error = "A piano-roll note contains missing or invalid values."; return false;
                 }
                 const int notePitch = static_cast<int>(pitch);

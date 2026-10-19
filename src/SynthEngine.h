@@ -10,15 +10,29 @@ struct Patch {
     Waveform waveform;
     double attack, decay, sustain, release, cutoff;
 };
-inline constexpr std::array<Patch, 3> presets{{
-    {Waveform::saw, 0.01, 0.12, 0.7, 0.18, 8000.0},
-    {Waveform::square, 0.005, 0.12, 0.6, 0.08, 900.0},
-    {Waveform::sine, 0.002, 0.18, 0.0, 0.12, 6000.0}
+// Factory sounds. Indices 0-2 are stored in existing projects and must keep
+// their sound; add new presets only at the end.
+inline constexpr std::array<Patch, 12> presets{{
+    // waveform          attack  decay  sustain release cutoff
+    {Waveform::saw,      0.01,   0.12,  0.7,    0.18,   8000.0}, // Lead (saw)
+    {Waveform::square,   0.005,  0.12,  0.6,    0.08,   900.0},  // Bass (square)
+    {Waveform::sine,     0.002,  0.18,  0.0,    0.12,   6000.0}, // Pluck (sine)
+    {Waveform::sine,     0.004,  0.30,  0.85,   0.10,   400.0},  // Sub Bass
+    {Waveform::saw,      0.002,  0.16,  0.15,   0.08,   700.0},  // Acid Bass
+    {Waveform::saw,      0.45,   0.80,  0.75,   1.20,   2200.0}, // Soft Pad
+    {Waveform::saw,      0.30,   0.40,  0.85,   0.70,   5200.0}, // Strings
+    {Waveform::saw,      0.06,   0.25,  0.70,   0.25,   3200.0}, // Brass
+    {Waveform::square,   0.01,   0.10,  0.65,   0.15,   4200.0}, // Square Lead
+    {Waveform::square,   0.005,  0.05,  1.00,   0.06,   2600.0}, // Organ
+    {Waveform::sine,     0.003,  0.90,  0.25,   0.60,   7000.0}, // Electric Keys
+    {Waveform::sine,     0.001,  1.40,  0.00,   1.20,   9000.0}  // Bell
 }};
 // Display names, index-aligned with presets.
 inline constexpr std::array<const char*, presets.size()> presetNames{{
-    "Lead (saw)", "Bass (square)", "Pluck (sine)"
+    "Lead (saw)", "Bass (square)", "Pluck (sine)", "Sub Bass", "Acid Bass", "Soft Pad",
+    "Strings", "Brass", "Square Lead", "Organ", "Electric Keys", "Bell"
 }};
+inline constexpr int presetCount = static_cast<int>(presets.size());
 
 class Envelope {
 public:

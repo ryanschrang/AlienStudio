@@ -19,9 +19,11 @@ Do not duplicate its change here or assume it is already on main.
 - Portable project copies with deduplicated audio and relative media references.
 - Corrected README claims and a concrete Windows audio verification checklist.
 
-Remaining boundaries: four tracks/four scenes, four-bar editor/128 notes per clip,
-three synth presets, live input on a separate Device rack synth, no recording or
-warping, and no autosave. Audio clips play once at their original duration. A
+Remaining boundaries: up to 16 tracks and 32 scenes (the engine pre-allocates
+this capacity; raise maxSessionTracks/maxSessionScenes to grow it), 1,024 notes
+per clip, 12 factory synth presets, MIDI CC mapping for scenes 1-4 only, live
+input on a separate Device rack synth, and no recording or warping. Reordering
+or deleting tracks/scenes stops Session playback at the next launch boundary. Audio clips play once at their original duration. A
 quantized launch does not tempo-sync their audio. Media is still decoded into RAM
 under the existing limits; collection is not streaming.
 

@@ -4,7 +4,7 @@
 
 Alien Studio is an **independent, original application**, not affiliated with or endorsed by any of those products. We aim to learn from broadly useful workflows without copying proprietary code, artwork, branding, or protected assets.
 
-> **Project status:** Early music-making prototype with a pitch/velocity step sequencer, piano-roll tools, a four-track/four-scene MIDI/audio Session grid, independent Session synths and mixer controls, USB MIDI input, project save/open, and portable audio collection. Windows Debug/Release builds and automated tests run in GitHub Actions. Arrangement, recording, warping, plugin hosting, and production effects remain planned. Native audio-device behavior still requires hands-on Windows testing; see [the verification checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
+> **Project status:** Early music-making prototype with a pitch/velocity step sequencer, piano-roll tools, a MIDI/audio Session grid of up to 16 tracks and 32 scenes, independent Session synths and mixer controls, USB MIDI input, project save/open, and portable audio collection. Windows Debug/Release builds and automated tests run in GitHub Actions. Arrangement, recording, warping, plugin hosting, and production effects remain planned. Native audio-device behavior still requires hands-on Windows testing; see [the verification checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
 
 ## Product vision: three connected workspaces
 
@@ -20,7 +20,7 @@ The long-term differentiator is **one shared project and audio engine** across a
 - [x] C++20/JUCE/CMake project, Windows Debug/Release CI, and automated tests.
 - [x] Polyphonic lead/bass/pluck synth, USB MIDI input/sustain/reconnection, typing and mouse piano.
 - [x] Editable 16-step pitch/velocity sequence and four-bar piano roll with processing, clipboard, and local undo/redo.
-- [x] Four-track/four-scene clip launching, beat/bar timing, MIDI CC scene mapping, and WAV/MP3 audio clips.
+- [x] Session clip launching with up to 16 tracks and 32 scenes (add, rename, reorder, duplicate, delete), beat/bar timing, MIDI CC scene mapping, and WAV/MP3 audio clips.
 - [x] Independent 16-voice Session synths, per-track preset/volume/balance/mute/solo and output meters.
 - [x] Versioned project save/open and portable project copies with collected audio.
 - [x] GPL-3.0 license file. Dependency attribution/distribution review remains required before releases.
@@ -298,8 +298,12 @@ focus is inside the piano roll:
 | Alt+A | Arpeggiate | Sequences each selected simultaneous chord by pitch with rate, gate and direction controls. |
 | Shift+Tab | Editor / devices | Switches the central workspace between the pattern editor and compact Synth & MIDI device rack. |
 
-The **Session** tab provides a four-track by four-scene grid of independent MIDI
-or audio clips. Use **Launch at** to choose the next beat or bar boundary
+The **Session** tab provides a grid of independent MIDI or audio clips. It
+starts with four tracks and four scenes; use **+ Track** and **+ Scene** to add
+more (up to 16 tracks and 32 scenes), and right-click a track header or scene
+button to rename, move, duplicate or delete it. Double-click a track header to
+rename it. The grid scrolls when it is larger than the window; track headers and
+the scene column stay in place. Each clip holds up to 1,024 notes. Use **Launch at** to choose the next beat or bar boundary
 (bar is the default). Left-clicking a track cell queues that clip for the
 selected boundary; right-clicking opens it in the piano roll without changing
 playback. **Edit selected clip** provides the same editing path for keyboard
@@ -484,7 +488,7 @@ icon-cache refresh instructions. No startup splash is introduced.
 
 ### Session mixer
 
-Open **Mixer** to choose Lead, Bass, or Pluck separately for each of the four tracks.
+Open **Mixer** to choose one of 12 factory sounds separately for each track (the strip row scrolls when there are many tracks).
 Each track has 16 voices; a busy track cannot steal another track's voices.
 Volume is 0–200%, with 100% preserving the previous level. Balance ranges from
 left to right, with the centre preserving both stereo channels. Mute overrides
@@ -496,5 +500,7 @@ Preset changes affect newly triggered notes; held notes retain their original
 patch until release. Mixer settings also affect imported audio on that track.
 Live MIDI/typing/mouse input and the legacy step sequencer remain on their separate
 Device rack synth; Session mute/solo does not mute live monitoring. Project format
-v3 stores mixer settings. Versions 1 and 2 load with the old global preset copied
-to all four tracks, centred balance, unity volume, and mute/solo off.
+v4 stores any number of tracks and scenes with their names and colours; v3 stores
+mixer settings for the original four tracks. Versions 1 and 2 load with the old
+global preset copied to all four tracks, centred balance, unity volume, and
+mute/solo off. Older Alien Studio versions cannot open v4 projects.

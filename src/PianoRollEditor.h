@@ -501,7 +501,7 @@ public:
         g.setColour(juce::Colour(0xff9ea3ab));
         juce::String status = juce::String(pattern.loopSteps / 16.0, 0) + "-bar loop (session only)  |  "
             + noteName(lowestVisiblePitch) + " - " + noteName(topPitch()) + "  |  "
-            + juce::String(static_cast<int>(pattern.count)) + "/128 notes";
+            + juce::String(static_cast<int>(pattern.count)) + "/" + juce::String(static_cast<int>(PianoRollPattern::maxNotes)) + " notes";
         status += "  |  " + juce::String(static_cast<int>(selection.count)) + " selected";
         status += "  |  Paste at step " + juce::String(insertionStep + 1.0, 3);
         if (const auto* note = pattern.find(activeId))
@@ -1065,7 +1065,7 @@ private:
     }
     void reportClipboardFailure(ClipboardStatus status) {
         if (status == ClipboardStatus::capacityExceeded)
-            statusMessage = "No changes: copying these notes would exceed the 128-note limit. Delete notes or copy a smaller selection.";
+            statusMessage = juce::String("No changes: copying these notes would exceed the ") + juce::String(static_cast<int>(PianoRollPattern::maxNotes)) + "-note limit. Delete notes or copy a smaller selection.";
         else if (status == ClipboardStatus::outOfBounds)
             statusMessage = "No changes: the copied block would extend beyond the loop. Choose an earlier paste position.";
         else if (status == ClipboardStatus::emptyClipboard)
@@ -1221,7 +1221,7 @@ private:
             } else {
                 endEdit();
                 const auto message = result.status == ChordStampStatus::capacityExceeded
-                    ? "No changes: the chord would exceed the 128-note limit."
+                    ? juce::String("No changes: the chord would exceed the ") + juce::String(static_cast<int>(PianoRollPattern::maxNotes)) + "-note limit."
                     : result.status == ChordStampStatus::outOfBounds
                     ? "No changes: the chord duration extends beyond the loop."
                     : "No changes: the root, inversion, length or velocity is invalid.";
@@ -1258,7 +1258,7 @@ private:
         } else {
             endEdit();
             const auto message = result.status == ProcessingStatus::capacityExceeded
-                ? "No changes: processing would exceed the 128-note limit. Increase slice length or select fewer notes."
+                ? juce::String("No changes: processing would exceed the ") + juce::String(static_cast<int>(PianoRollPattern::maxNotes)) + "-note limit. Increase slice length or select fewer notes."
                 : result.status == ProcessingStatus::invalidInput ? "No changes: the processing settings are invalid."
                 : "No changes: selected notes already match these settings.";
             panelHelp.setText(message, juce::dontSendNotification);

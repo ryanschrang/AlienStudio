@@ -10,18 +10,44 @@
 
 namespace alien {
 
-// Session (clip launcher) page: track headers, the clip grid, scene buttons,
-// clip actions, MIDI CC mapping and the selected clip's detail view.
+// GlyphButton that also reports right-clicks (used for scene buttons).
+class ContextGlyphButton final : public ui::GlyphButton {
+public:
+    using ui::GlyphButton::GlyphButton;
+    std::function<void()> onRightClick;
+    void mouseUp(const juce::MouseEvent& event) override {
+        if (event.mods.isPopupMenu()) { if (onRightClick) onRightClick(); return; }
+        ui::GlyphButton::mouseUp(event);
+    }
+};
+
+// Session (clip launcher) page. Track headers stay pinned at the top and the
+// scene column stays pinned on the right while the clip grid scrolls in both
+// directions, so any number of tracks and scenes fits the window.
 class SessionView final : public juce::Component {
 public:
     SessionView(ProjectController& projectController, ToneEngine& toneEngine)
         : controller(projectController), engine(toneEngine) {
         namespace col = ui::colours;
         addAndMakeVisible(sessionHelp);
-        sessionHelp.setText("Click a clip to launch it, right-click to edit. Launch a scene to switch every track together.",
+        sessionHelp.setText("Click a clip to launch it, right-click to edit. Right-click a track or scene name for more options.",
                             juce::dontSendNotification);
         sessionHelp.setFont(ui::font(12.5f));
         sessionHelp.setColour(juce::Label::textColourId, col::textFaint);
+        for (auto* b : {&addTrackButton, &addSceneButton}) {
+            addAndMakeVisible(b);
+            b->setGlyph(ui::Glyph::plus);
+            b->getProperties().set("style", "ghost");
+        }
+        addTrackButton.setButtonText("Track");
+        addTrackButton.setName("Add track");
+        addTrackButton.setTooltip("Add a Session track (up to " + juce::String(maxSessionTracks) + ")");
+        addTrackButton.onClick = [this] { if (controller.addTrack()) structureChanged(true, "Add track"); };
+        addSceneButton.setButtonText("Scene");
+        addSceneButton.setName("Add scene");
+        addSceneButton.setTooltip("Add a scene (up to " + juce::String(maxSessionScenes) + ")");
+        addSceneButton.onClick = [this] { if (controller.addScene()) structureChanged(true, "Add scene"); };
+
         addAndMakeVisible(launchTimingLabel);
         launchTimingLabel.setText("LAUNCH", juce::dontSendNotification);
         launchTimingLabel.setFont(ui::font(10.5f, true));
@@ -35,8 +61,18 @@ public:
         launchTiming.onChange = [this] {
             controller.setLaunchQuantization(launchTiming.getSelectedId() == 1 ? 4 : 16);
             if (onTitleChanged) onTitleChanged();
-            if (onEdited) onEdited();
+            if (onEdited) onEdited("Change launch timing");
         };
+
+        // Grid: pinned headers, scrolling clips, pinned scene column.
+        addAndMakeVisible(headerStrip);
+        headerStrip.view = this;
+        addAndMakeVisible(viewport);
+        viewport.setViewedComponent(&gridContent, false);
+        viewport.setScrollBarThickness(10);
+        viewport.onScrolled = [this] { syncScroll(); };
+        addAndMakeVisible(sceneStrip);
+        sceneStrip.setInterceptsMouseClicks(false, true);
 
         addAndMakeVisible(controllerTarget);
         controllerTarget.setName("MIDI controller mapping action");
@@ -58,10 +94,8 @@ public:
                 engine.controllerMappings.cancelLearn();
                 setLearning(-1);
             } else {
-                learningAction = action;
                 engine.controllerMappings.beginLearn(action);
-                learnController.setButtonText("Cancel learn");
-                learnController.setToggleState(true, juce::dontSendNotification);
+                setLearning(action);
             }
             updateControllerMappingLabel();
         };
@@ -112,14 +146,14 @@ public:
             if (controller.removeAudio(d.selectedTrack, d.selectedScene)) {
                 setImportStatus("Audio removed from selected clip", {});
                 refreshSelectedClip();
-                if (onEdited) onEdited();
+                if (onEdited) onEdited("Remove audio");
             }
         };
         addAndMakeVisible(clearClip);
         clearClip.setButtonText("Clear clip");
         clearClip.setGlyph(ui::Glyph::close);
         clearClip.setName("Clear selected Session clip");
-        clearClip.setTooltip("Remove all notes and audio from the selected clip. Notes can be restored with Undo in the piano roll.");
+        clearClip.setTooltip("Remove all notes and audio from the selected clip");
         clearClip.onClick = [this] { if (onClearClip) onClearClip(); };
         addAndMakeVisible(audioImportStatus);
         audioImportStatus.setFont(ui::font(12.0f));
@@ -131,32 +165,34 @@ public:
         updateControllerMappingLabel();
     }
 
-    // Navigation and edit notifications for the owner.
-    std::function<void(int, int)> onEditClip;        // open clip in its editor
-    std::function<void()> onSelectionChanged;        // selected clip changed
-    std::function<void()> onClearClip;               // clear the selected clip
-    std::function<void()> onTitleChanged;            // header subtitle text changed
-    std::function<void()> onEdited;                  // a committed document edit
+    // Notifications for the owner.
+    std::function<void(int, int)> onEditClip;           // open a clip in its editor
+    std::function<void()> onSelectionChanged;           // selected clip changed
+    std::function<void()> onClearClip;                  // clear the selected clip
+    std::function<void()> onTitleChanged;               // header subtitle text changed
+    std::function<void()> onStructureChanged;           // tracks/scenes added, removed, renamed or moved
+    std::function<void(const juce::String&)> onEdited;  // a committed document edit, with an undo label
 
-    // Rebuild buttons when the number of tracks or scenes changes.
+    // Rebuild the clip and scene buttons after the grid's shape changes.
     void rebuildGrid() {
         const auto& d = controller.document();
-        for (auto& b : clipButtons) removeChildComponent(b.get());
-        for (auto& b : sceneButtons) removeChildComponent(b.get());
         clipButtons.clear();
         sceneButtons.clear();
         for (int scene = 0; scene < d.sceneCount(); ++scene) {
-            auto sceneButton = std::make_unique<ui::GlyphButton>(ui::Glyph::play);
+            auto sceneButton = std::make_unique<ContextGlyphButton>(ui::Glyph::play);
             sceneButton->setName("Launch scene " + juce::String(scene + 1));
             sceneButton->setButtonText(d.scenes[static_cast<std::size_t>(scene)].name);
-            sceneButton->setTooltip("Launch every track's clip in scene " + juce::String(scene + 1));
+            sceneButton->setTooltip("Launch every track's clip in " + d.scenes[static_cast<std::size_t>(scene)].name
+                                    + ". Right-click to rename, duplicate, move or delete.");
             sceneButton->onClick = [this, scene] { controller.launchScene(scene); refreshClips(); };
-            addAndMakeVisible(*sceneButton);
+            sceneButton->onRightClick = [this, scene] { showSceneMenu(scene); };
+            sceneStrip.addAndMakeVisible(*sceneButton);
             sceneButtons.push_back(std::move(sceneButton));
             for (int track = 0; track < d.trackCount(); ++track) {
                 auto button = std::make_unique<SessionClipButton>();
+                const auto& trackName = d.tracks[static_cast<std::size_t>(track)].name;
                 button->setName("Launch track " + juce::String(track + 1) + " scene " + juce::String(scene + 1));
-                button->setTooltip("Track " + juce::String(track + 1) + ", scene " + juce::String(scene + 1)
+                button->setTooltip(trackName + ", " + d.scenes[static_cast<std::size_t>(scene)].name
                                    + ": click to launch, right-click to edit");
                 button->onClick = [this, track, scene] {
                     controller.launchClip(track, scene);
@@ -167,17 +203,19 @@ public:
                     selectionChanged();
                     if (onEditClip) onEditClip(track, scene);
                 };
-                addAndMakeVisible(*button);
+                gridContent.addAndMakeVisible(*button);
                 clipButtons.push_back(std::move(button));
             }
         }
+        addTrackButton.setEnabled(d.canAddTrack());
+        addSceneButton.setEnabled(d.canAddScene());
         resized();
+        refreshClips();
     }
 
     void refreshFromDocument() {
         launchTiming.setSelectedId(controller.document().launchQuantizationSteps == 4 ? 1 : 2, juce::dontSendNotification);
         refreshSelectedClip();
-        refreshClips();
         repaint();
     }
 
@@ -189,9 +227,10 @@ public:
         removeAudio.setEnabled(clip.hasAudio());
         audioWaveform.setClip(clip.audio.get(), clip.audioFileName);
         if (!clip.hasAudio() && audioImportStatus.getText().isEmpty())
-            audioImportStatus.setText("Selected clip: Track " + juce::String(d.selectedTrack + 1)
-                + ", Scene " + juce::String(d.selectedScene + 1), juce::dontSendNotification);
+            audioImportStatus.setText("Selected clip: " + d.tracks[static_cast<std::size_t>(d.selectedTrack)].name
+                + ", " + d.scenes[static_cast<std::size_t>(d.selectedScene)].name, juce::dontSendNotification);
         repaint(clipDetailBounds);
+        headerStrip.repaint();
         refreshClips();
     }
 
@@ -204,14 +243,15 @@ public:
 
     juce::String subtitle() const {
         const auto& d = controller.document();
-        return juce::String(d.trackCount()) + " tracks" + dot() + juce::String(d.sceneCount()) + " scenes"
+        return juce::String(d.trackCount()) + (d.trackCount() == 1 ? " track" : " tracks") + dot()
+            + juce::String(d.sceneCount()) + (d.sceneCount() == 1 ? " scene" : " scenes")
             + dot() + "launch on next " + (d.launchQuantizationSteps == 4 ? "beat" : "bar");
     }
 
     // 20 Hz from the owner: live clip states and MIDI-learn feedback.
     void tick() {
         refreshClips();
-        if (isShowing()) repaint(trackHeaderBounds);
+        if (isShowing()) headerStrip.repaint();
         const int learned = engine.controllerMappings.takeLearnedAction();
         if (learned >= 0) {
             if (learningAction == learned) setLearning(-1);
@@ -219,32 +259,70 @@ public:
         }
     }
 
+    // Called by the owner when a MIDI controller fired a Session action.
+    void handleControllerAction(int action) {
+        if (action < MidiControllerMappings::sceneCount && action < controller.document().sceneCount())
+            controller.launchScene(action);
+        else if (action == MidiControllerMappings::stopAllAction) controller.stopAllTracks();
+        refreshClips();
+    }
+
     void resized() override {
         const auto& d = controller.document();
-        const int tracks = juce::jmax(1, d.trackCount()), scenes = juce::jmax(1, d.sceneCount());
         auto r = getLocalBounds().reduced(16, 12);
         auto header = r.removeFromTop(30);
         launchTiming.setBounds(header.removeFromRight(96).reduced(0, 2));
         launchTimingLabel.setBounds(header.removeFromRight(70));
+        header.removeFromRight(12);
+        addSceneButton.setBounds(header.removeFromRight(84).reduced(0, 1));
+        header.removeFromRight(4);
+        addTrackButton.setBounds(header.removeFromRight(84).reduced(0, 1));
+        header.removeFromRight(12);
         sessionHelp.setBounds(header);
         r.removeFromTop(8);
 
-        const int trackWidth = (r.getWidth() - sceneColumn - gap * tracks) / tracks;
-        const int clipHeight = juce::jlimit(30, 40, (r.getHeight() - 30 - 40 - 50 - 90) / scenes - gap);
-        trackHeaderBounds = r.withHeight(headerHeight);
-        const int gridTop = r.getY() + headerHeight + gap;
-        for (int scene = 0; scene < static_cast<int>(sceneButtons.size()); ++scene) {
-            const int y = gridTop + scene * (clipHeight + gap);
+        // Reserve the action bar and a minimum clip detail area below the grid.
+        const int belowGrid = 14 + 30 + 14 + 96;
+        const int scenes = juce::jmax(1, d.sceneCount()), tracks = juce::jmax(1, d.trackCount());
+        const int bar = viewport.getScrollBarThickness();
+        const int contentHeight = scenes * (rowHeight + gap);
+        const int wanted = headerHeight + gap + contentHeight + stopRow;
+        const int gridHeight = juce::jlimit(headerHeight + gap + rowHeight + stopRow + 12,
+                                            juce::jmax(120, r.getHeight() - belowGrid), wanted + bar);
+        // Decide scroll bars before sizing tracks so a vertical bar never forces a horizontal one.
+        const int visibleClipsHeight = gridHeight - headerHeight - gap - stopRow;
+        int clipsWidth = r.getWidth() - sceneColumn - gap;
+        bool needsVBar = contentHeight > visibleClipsHeight;
+        if (needsVBar) clipsWidth -= bar;
+        const int trackWidth = juce::jmax(minTrackWidth, (clipsWidth - (tracks - 1) * gap) / tracks);
+        const int contentWidth = tracks * trackWidth + (tracks - 1) * gap;
+        const bool needsHBar = contentWidth > clipsWidth;
+        auto grid = r.removeFromTop(gridHeight);
+        gridBounds = grid;
+
+        auto sceneArea = grid.removeFromRight(sceneColumn);
+        grid.removeFromRight(gap);
+        sceneHeaderBounds = sceneArea.removeFromTop(headerHeight);
+        sceneArea.removeFromTop(gap);
+        stopClip.setBounds(sceneArea.removeFromBottom(28));
+        sceneArea.removeFromBottom(gap);
+
+        headerStrip.setBounds(grid.removeFromTop(headerHeight));
+        grid.removeFromTop(gap);
+        viewport.setBounds(grid.withTrimmedBottom(stopRow));
+        // The clips viewport and the scene strip share the same visible height.
+        const int visibleHeight = viewport.getHeight() - (needsHBar ? viewport.getScrollBarThickness() : 0);
+        sceneStrip.setBounds(sceneArea.getX(), viewport.getY(), sceneColumn, juce::jmax(0, visibleHeight));
+
+        gridContent.setSize(contentWidth, contentHeight);
+        for (int scene = 0; scene < d.sceneCount(); ++scene)
             for (int track = 0; track < d.trackCount(); ++track)
                 if (auto* b = clipButton(track, scene))
-                    b->setBounds(r.getX() + track * (trackWidth + gap), y, trackWidth, clipHeight);
-            sceneButtons[static_cast<std::size_t>(scene)]->setBounds(r.getRight() - sceneColumn, y, sceneColumn, clipHeight);
-        }
-        const int stopY = gridTop + scenes * (clipHeight + gap);
-        stopClip.setBounds(r.getRight() - sceneColumn, stopY, sceneColumn, 28);
-        gridBounds = juce::Rectangle<int>(r.getX(), r.getY(), r.getWidth(), stopY + 28 - r.getY());
-        r.setTop(stopY + 28 + 14);
+                    b->setBounds(track * (trackWidth + gap), scene * (rowHeight + gap), trackWidth, rowHeight);
+        currentTrackWidth = trackWidth;
+        syncScroll();
 
+        r.removeFromTop(14);
         auto actions = r.removeFromTop(30);
         editSelectedClip.setBounds(actions.removeFromLeft(104));
         actions.removeFromLeft(6);
@@ -268,7 +346,7 @@ public:
         clipDetailBounds = r;
         auto detail = r.reduced(12, 8);
         auto detailHeader = detail.removeFromTop(20);
-        audioImportStatus.setBounds(detailHeader.removeFromRight(juce::jmax(100, detailHeader.getWidth() - 220)));
+        audioImportStatus.setBounds(detailHeader.removeFromRight(juce::jmax(100, detailHeader.getWidth() - 260)));
         detail.removeFromTop(6);
         audioWaveform.setBounds(detail);
     }
@@ -277,49 +355,20 @@ public:
         namespace col = ui::colours;
         const auto& d = controller.document();
         g.fillAll(col::surface);
-        const int tracks = juce::jmax(1, d.trackCount());
-        const int trackWidth = (gridBounds.getWidth() - sceneColumn - gap * tracks) / tracks;
-        for (int track = 0; track < d.trackCount(); ++track) {
-            auto h = juce::Rectangle<int>(gridBounds.getX() + track * (trackWidth + gap), trackHeaderBounds.getY(),
-                                          trackWidth, trackHeaderBounds.getHeight()).toFloat();
-            g.setColour(juce::Colours::black.withAlpha(0.18f));
-            g.fillRoundedRectangle(h.withBottom(static_cast<float>(gridBounds.getBottom())), 5.0f);
-            g.setColour(col::raised);
-            g.fillRoundedRectangle(h, 5.0f);
-            g.setColour(ui::trackColour(track));
-            g.fillRoundedRectangle(h.removeFromTop(3.0f), 1.5f);
-            const bool active = track < static_cast<int>(engine.activePianoRollClip.size())
-                && engine.activePianoRollClip[static_cast<std::size_t>(track)].load() >= 0;
-            auto text = h.reduced(10.0f, 0.0f);
-            if (active) {
-                g.setColour(col::accent);
-                juce::Path p;
-                const auto tri = text.removeFromRight(10.0f).withSizeKeepingCentre(8.0f, 9.0f);
-                p.addTriangle(tri.getX(), tri.getY(), tri.getX(), tri.getBottom(), tri.getRight(), tri.getCentreY());
-                g.fillPath(p);
-            }
-            g.setColour(col::text);
-            g.setFont(ui::font(13.0f, true));
-            g.drawText(juce::String(track + 1), text.removeFromLeft(16.0f), juce::Justification::centredLeft, false);
-            g.setColour(col::textDim);
-            g.setFont(ui::font(12.5f));
-            g.drawText(shortPresetName(d.tracks[static_cast<std::size_t>(track)].settings.preset), text,
-                       juce::Justification::centredLeft, true);
-        }
-        auto sceneHeader = juce::Rectangle<int>(gridBounds.getRight() - sceneColumn, trackHeaderBounds.getY(),
-                                                sceneColumn, trackHeaderBounds.getHeight());
+        g.setColour(juce::Colours::black.withAlpha(0.18f));
+        g.fillRoundedRectangle(viewport.getBounds().toFloat(), 5.0f);
         g.setColour(col::raised);
-        g.fillRoundedRectangle(sceneHeader.toFloat(), 5.0f);
-        ui::drawCaption(g, "Scenes", sceneHeader.reduced(10, 0), col::textDim);
+        g.fillRoundedRectangle(sceneHeaderBounds.toFloat(), 5.0f);
+        ui::drawCaption(g, "Scenes", sceneHeaderBounds.reduced(10, 0), col::textDim);
 
         ui::drawCaption(g, "MIDI map", mappingBounds.withWidth(62), col::textFaint);
         g.setColour(col::line);
         g.fillRect(mappingBounds.getX() - 10, mappingBounds.getY() + 5, 1, mappingBounds.getHeight() - 10);
 
         ui::drawCard(g, clipDetailBounds.toFloat(), col::raised);
-        ui::drawCaption(g, "Clip" + dot() + "Track " + juce::String(d.selectedTrack + 1) + dot() + "Scene "
-                               + juce::String(d.selectedScene + 1),
-                        clipDetailBounds.reduced(12, 8).removeFromTop(20), ui::trackColour(d.selectedTrack));
+        const auto& track = d.tracks[static_cast<std::size_t>(d.selectedTrack)];
+        ui::drawCaption(g, "Clip" + dot() + track.name + dot() + d.scenes[static_cast<std::size_t>(d.selectedScene)].name,
+                        clipDetailBounds.reduced(12, 8).removeFromTop(20), ui::trackColour(track.colour));
     }
 
     // Live clip and scene button states.
@@ -331,7 +380,7 @@ public:
             const int active = engine.activePianoRollClip[static_cast<std::size_t>(track)].load();
             if (active >= 0 && active < d.sceneCount()) scenePlaying[static_cast<std::size_t>(active)] = true;
         }
-        for (int scene = 0; scene < static_cast<int>(sceneButtons.size()); ++scene) {
+        for (int scene = 0; scene < static_cast<int>(sceneButtons.size()) && scene < d.sceneCount(); ++scene) {
             auto& sceneButton = *sceneButtons[static_cast<std::size_t>(scene)];
             const bool playingScene = scenePlaying[static_cast<std::size_t>(scene)];
             const auto sceneColour = playingScene ? juce::Colour(0xff1d3a31)
@@ -340,8 +389,8 @@ public:
                 sceneButton.setColour(juce::TextButton::buttonColourId, sceneColour);
                 sceneButton.setGlyphColour(playingScene ? col::accent : col::textDim);
             }
-            sceneButton.setTitle((scene == d.selectedScene ? "Selected, " : "") + juce::String("Launch scene ")
-                                 + juce::String(scene + 1));
+            sceneButton.setTitle((scene == d.selectedScene ? "Selected, " : "") + juce::String("Launch ")
+                                 + d.scenes[static_cast<std::size_t>(scene)].name);
             for (int track = 0; track < d.trackCount(); ++track) {
                 auto* button = clipButton(track, scene);
                 if (button == nullptr) continue;
@@ -361,7 +410,7 @@ public:
                 const auto noteCount = static_cast<int>(clip.notes().count);
                 visual.kind = clip.hasAudio() ? SessionClipButton::Kind::audio
                     : noteCount > 0 ? SessionClipButton::Kind::midi : SessionClipButton::Kind::empty;
-                visual.colour = ui::trackColour(track);
+                visual.colour = ui::trackColour(d.tracks[index].colour);
                 visual.label = clip.hasAudio() ? clip.audioFileName
                     : juce::String(noteCount) + (noteCount == 1 ? " note" : " notes");
                 visual.playing = scene == active;
@@ -378,16 +427,25 @@ public:
         }
     }
 
-    // Called by the owner when a MIDI controller fired a Session action.
-    void handleControllerAction(int action) {
-        if (action < MidiControllerMappings::sceneCount && action < controller.document().sceneCount())
-            controller.launchScene(action);
-        else if (action == MidiControllerMappings::stopAllAction) controller.stopAllTracks();
-        refreshClips();
-    }
-
 private:
-    static constexpr int sceneColumn = 132, gap = 6, headerHeight = 30;
+    static constexpr int sceneColumn = 132, gap = 6, headerHeight = 30, rowHeight = 34, minTrackWidth = 120,
+                         stopRow = 28 + 6;
+
+    // Pinned track headers; scrolls horizontally with the clip grid.
+    struct TrackHeaderStrip final : juce::Component {
+        SessionView* view{};
+        int offsetX{};
+        void paint(juce::Graphics& g) override { if (view != nullptr) view->paintTrackHeaders(g, offsetX); }
+        void mouseUp(const juce::MouseEvent& e) override { if (view != nullptr) view->trackHeaderClicked(e, offsetX); }
+        void mouseDoubleClick(const juce::MouseEvent& e) override {
+            if (view != nullptr) view->renameTrackAt(view->trackAtX(e.x + offsetX));
+        }
+    };
+
+    struct GridViewport final : juce::Viewport {
+        std::function<void()> onScrolled;
+        void visibleAreaChanged(const juce::Rectangle<int>&) override { if (onScrolled) onScrolled(); }
+    };
 
     static juce::String dot() { return juce::String(juce::CharPointer_UTF8("  \xc2\xb7  ")); }
 
@@ -396,10 +454,150 @@ private:
         return juce::String(presetNames[static_cast<std::size_t>(index)]).upToFirstOccurrenceOf(" (", false, false);
     }
 
+    int trackAtX(int contentX) const {
+        const int stride = currentTrackWidth + gap;
+        if (stride <= 0 || contentX < 0) return -1;
+        const int track = contentX / stride;
+        return contentX - track * stride < currentTrackWidth && track < controller.document().trackCount() ? track : -1;
+    }
+
+    void syncScroll() {
+        headerStrip.offsetX = viewport.getViewPositionX();
+        headerStrip.repaint();
+        const int offsetY = viewport.getViewPositionY();
+        for (std::size_t scene = 0; scene < sceneButtons.size(); ++scene)
+            sceneButtons[scene]->setBounds(0, static_cast<int>(scene) * (rowHeight + gap) - offsetY, sceneColumn, rowHeight);
+    }
+
+    void paintTrackHeaders(juce::Graphics& g, int offsetX) {
+        namespace col = ui::colours;
+        const auto& d = controller.document();
+        for (int track = 0; track < d.trackCount(); ++track) {
+            const auto& info = d.tracks[static_cast<std::size_t>(track)];
+            auto h = juce::Rectangle<int>(track * (currentTrackWidth + gap) - offsetX, 0, currentTrackWidth,
+                                          headerStrip.getHeight()).toFloat();
+            if (h.getRight() < 0 || h.getX() > static_cast<float>(headerStrip.getWidth())) continue;
+            g.setColour(track == d.selectedTrack ? col::hover : col::raised);
+            g.fillRoundedRectangle(h, 5.0f);
+            g.setColour(ui::trackColour(info.colour));
+            g.fillRoundedRectangle(h.removeFromTop(3.0f), 1.5f);
+            const bool active = engine.activePianoRollClip[static_cast<std::size_t>(track)].load() >= 0;
+            auto text = h.reduced(10.0f, 0.0f);
+            if (active) {
+                g.setColour(col::accent);
+                juce::Path p;
+                const auto tri = text.removeFromRight(10.0f).withSizeKeepingCentre(8.0f, 9.0f);
+                p.addTriangle(tri.getX(), tri.getY(), tri.getX(), tri.getBottom(), tri.getRight(), tri.getCentreY());
+                g.fillPath(p);
+            }
+            const auto presetText = shortPresetName(info.settings.preset);
+            const auto presetFont = ui::font(12.0f);
+            const float presetWidth = juce::GlyphArrangement::getStringWidth(presetFont, presetText) + 6.0f;
+            g.setColour(col::text);
+            g.setFont(ui::font(13.0f, true));
+            g.drawText(info.name, text.withTrimmedRight(text.getWidth() > presetWidth + 50.0f ? presetWidth : 0.0f),
+                       juce::Justification::centredLeft, true);
+            if (text.getWidth() > presetWidth + 50.0f) {
+                g.setColour(col::textFaint);
+                g.setFont(presetFont);
+                g.drawText(presetText, text, juce::Justification::centredRight, true);
+            }
+        }
+    }
+
+    void trackHeaderClicked(const juce::MouseEvent& e, int offsetX) {
+        const int track = trackAtX(e.x + offsetX);
+        if (track < 0) return;
+        if (e.mods.isPopupMenu()) { showTrackMenu(track); return; }
+        controller.selectClip(track, controller.document().selectedScene);
+        selectionChanged();
+    }
+
+    void showTrackMenu(int track) {
+        const auto& d = controller.document();
+        juce::PopupMenu menu;
+        menu.addSectionHeader(d.tracks[static_cast<std::size_t>(track)].name);
+        menu.addItem(1, "Rename...");
+        menu.addItem(2, "Move left", track > 0);
+        menu.addItem(3, "Move right", track < d.trackCount() - 1);
+        menu.addSeparator();
+        menu.addItem(4, "Add track", d.canAddTrack());
+        menu.addItem(5, "Delete track", d.trackCount() > 1);
+        juce::Component::SafePointer<SessionView> safe(this);
+        menu.showMenuAsync(juce::PopupMenu::Options().withMousePosition(), [safe, track](int result) {
+            if (safe == nullptr) return;
+            auto& c = safe->controller;
+            if (result == 1) safe->renameTrackAt(track);
+            else if (result == 2 && c.moveTrack(track, -1)) safe->structureChanged(true, "Move track");
+            else if (result == 3 && c.moveTrack(track, 1)) safe->structureChanged(true, "Move track");
+            else if (result == 4 && c.addTrack()) safe->structureChanged(true, "Add track");
+            else if (result == 5 && c.deleteTrack(track)) safe->structureChanged(true, "Delete track");
+        });
+    }
+
+    void showSceneMenu(int scene) {
+        const auto& d = controller.document();
+        juce::PopupMenu menu;
+        menu.addSectionHeader(d.scenes[static_cast<std::size_t>(scene)].name);
+        menu.addItem(1, "Rename...");
+        menu.addItem(2, "Duplicate", d.canAddScene());
+        menu.addItem(3, "Move up", scene > 0);
+        menu.addItem(4, "Move down", scene < d.sceneCount() - 1);
+        menu.addSeparator();
+        menu.addItem(5, "Delete scene", d.sceneCount() > 1);
+        juce::Component::SafePointer<SessionView> safe(this);
+        menu.showMenuAsync(juce::PopupMenu::Options().withMousePosition(), [safe, scene](int result) {
+            if (safe == nullptr) return;
+            auto& c = safe->controller;
+            if (result == 1) safe->renameSceneAt(scene);
+            else if (result == 2 && c.duplicateScene(scene)) safe->structureChanged(true, "Duplicate scene");
+            else if (result == 3 && c.moveScene(scene, -1)) safe->structureChanged(true, "Move scene");
+            else if (result == 4 && c.moveScene(scene, 1)) safe->structureChanged(true, "Move scene");
+            else if (result == 5 && c.deleteScene(scene)) safe->structureChanged(true, "Delete scene");
+        });
+    }
+
+    void renameTrackAt(int track) {
+        if (track < 0 || track >= controller.document().trackCount()) return;
+        askForName("Rename track", controller.document().tracks[static_cast<std::size_t>(track)].name,
+            [this, track](const juce::String& name) {
+                if (controller.renameTrack(track, name)) structureChanged(true, "Rename track");
+            });
+    }
+
+    void renameSceneAt(int scene) {
+        if (scene < 0 || scene >= controller.document().sceneCount()) return;
+        askForName("Rename scene", controller.document().scenes[static_cast<std::size_t>(scene)].name,
+            [this, scene](const juce::String& name) {
+                if (controller.renameScene(scene, name)) structureChanged(true, "Rename scene");
+            });
+    }
+
+    void askForName(const juce::String& title, const juce::String& current, std::function<void(const juce::String&)> apply) {
+        auto* window = new juce::AlertWindow(title, {}, juce::MessageBoxIconType::NoIcon, this);
+        window->addTextEditor("name", current);
+        window->addButton("Rename", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        juce::Component::SafePointer<SessionView> safe(this);
+        window->enterModalState(true, juce::ModalCallbackFunction::create(
+            [safe, window, apply](int result) {
+                if (safe != nullptr && result == 1) apply(window->getTextEditorContents("name"));
+            }), true);
+    }
+
+    void structureChanged(bool shapeChanged, const juce::String& label) {
+        if (shapeChanged) rebuildGrid();
+        refreshSelectedClip();
+        repaint();
+        if (onStructureChanged) onStructureChanged();
+        if (onTitleChanged) onTitleChanged();
+        if (onEdited) onEdited(label);
+    }
+
     SessionClipButton* clipButton(int track, int scene) const {
         const int tracks = controller.document().trackCount();
         const auto index = static_cast<std::size_t>(scene * tracks + track);
-        return index < clipButtons.size() ? clipButtons[index].get() : nullptr;
+        return track >= 0 && track < tracks && index < clipButtons.size() ? clipButtons[index].get() : nullptr;
     }
 
     void selectionChanged() {
@@ -409,9 +607,8 @@ private:
 
     void setLearning(int action) {
         learningAction = action;
-        learnController.setButtonText("Learn CC");
+        learnController.setButtonText(action >= 0 ? "Cancel learn" : "Learn CC");
         learnController.setToggleState(action >= 0, juce::dontSendNotification);
-        if (action >= 0) learnController.setButtonText("Cancel learn");
     }
 
     void updateControllerMappingLabel() {
@@ -432,14 +629,18 @@ private:
     ToneEngine& engine;
     juce::Label sessionHelp, launchTimingLabel, controllerMappingLabel, audioImportStatus;
     juce::ComboBox launchTiming, controllerTarget;
-    ui::GlyphButton learnController;
+    ui::GlyphButton addTrackButton, addSceneButton, learnController;
     juce::TextButton clearController;
-    std::vector<std::unique_ptr<ui::GlyphButton>> sceneButtons;
+    TrackHeaderStrip headerStrip;
+    GridViewport viewport;
+    juce::Component gridContent, sceneStrip;
+    std::vector<std::unique_ptr<ContextGlyphButton>> sceneButtons;
     std::vector<std::unique_ptr<SessionClipButton>> clipButtons; // [scene * tracks + track]
     ui::GlyphButton editSelectedClip, stopClip, importAudio, removeAudio, clearClip;
     AudioClipWaveform audioWaveform;
-    juce::Rectangle<int> trackHeaderBounds, gridBounds, mappingBounds, clipDetailBounds;
+    juce::Rectangle<int> gridBounds, sceneHeaderBounds, mappingBounds, clipDetailBounds;
     int learningAction{-1};
+    int currentTrackWidth{minTrackWidth};
 };
 
 } // namespace alien

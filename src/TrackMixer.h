@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include "SynthEngine.h"
 
 namespace alien {
 struct TrackSettings {
@@ -9,7 +10,7 @@ struct TrackSettings {
     float gain{1.0f}, pan{};
     bool mute{}, solo{};
     bool valid() const noexcept {
-        return preset >= 0 && preset < 3 && std::isfinite(gain) && gain >= 0 && gain <= 2
+        return preset >= 0 && preset < presetCount && std::isfinite(gain) && gain >= 0 && gain <= 2
             && std::isfinite(pan) && pan >= -1 && pan <= 1;
     }
 };

@@ -3,6 +3,7 @@
 #include "ToneEngine.h"
 #include "AudioClipImport.h"
 #include "PortableProject.h"
+#include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -50,8 +51,88 @@ public:
             engine.stepPitches[i].store(doc.steps.pitch[i]);
             engine.stepVelocities[i].store(doc.steps.velocity[i]);
         }
-        for (int t = 0; t < doc.trackCount() && t < static_cast<int>(engine.tracks.size()); ++t)
-            engine.tracks[static_cast<std::size_t>(t)].set(doc.tracks[static_cast<std::size_t>(t)].settings);
+        for (std::size_t t = 0; t < engine.tracks.size(); ++t)
+            engine.tracks[t].set(t < doc.tracks.size() ? doc.tracks[t].settings : TrackSettings{});
+        engine.activeTracks.store(doc.trackCount());
+    }
+
+    // Track and scene structure --------------------------------------------
+    // Appending never disturbs playback. Any other structural edit renumbers
+    // tracks or scenes, so Session playback is stopped first; this keeps the
+    // engine's per-track slots and clip indices consistent with the document.
+    bool addTrack() {
+        if (!doc.canAddTrack()) return false;
+        doc.tracks.push_back({doc.nextTrackName(), {}, doc.nextTrackColour()});
+        for (auto& scene : doc.clips) scene.emplace_back();
+        publishStop(static_cast<std::size_t>(doc.trackCount() - 1));
+        pushDocumentToEngine();
+        return true;
+    }
+
+    bool deleteTrack(int track) {
+        if (doc.trackCount() <= 1 || track < 0 || track >= doc.trackCount()) return false;
+        stopEverySlot();
+        doc.tracks.erase(doc.tracks.begin() + track);
+        for (auto& scene : doc.clips) scene.erase(scene.begin() + track);
+        if (doc.selectedTrack > track) --doc.selectedTrack;
+        doc.clampSelection();
+        pushDocumentToEngine();
+        return true;
+    }
+
+    bool moveTrack(int track, int delta) {
+        const int target = track + delta;
+        if (track < 0 || track >= doc.trackCount() || target < 0 || target >= doc.trackCount()) return false;
+        stopEverySlot();
+        std::swap(doc.tracks[static_cast<std::size_t>(track)], doc.tracks[static_cast<std::size_t>(target)]);
+        for (auto& scene : doc.clips)
+            std::swap(scene[static_cast<std::size_t>(track)], scene[static_cast<std::size_t>(target)]);
+        if (doc.selectedTrack == track) doc.selectedTrack = target;
+        else if (doc.selectedTrack == target) doc.selectedTrack = track;
+        pushDocumentToEngine();
+        return true;
+    }
+
+    bool renameTrack(int track, const juce::String& name) {
+        const auto trimmed = name.trim().substring(0, 64);
+        if (track < 0 || track >= doc.trackCount() || trimmed.isEmpty()) return false;
+        doc.tracks[static_cast<std::size_t>(track)].name = trimmed;
+        return true;
+    }
+
+    bool addScene() { return insertScene(doc.sceneCount(), nullptr); }
+
+    bool duplicateScene(int scene) {
+        if (scene < 0 || scene >= doc.sceneCount()) return false;
+        return insertScene(scene + 1, &doc.clips[static_cast<std::size_t>(scene)]);
+    }
+
+    bool deleteScene(int scene) {
+        if (doc.sceneCount() <= 1 || scene < 0 || scene >= doc.sceneCount()) return false;
+        stopEverySlot();
+        doc.scenes.erase(doc.scenes.begin() + scene);
+        doc.clips.erase(doc.clips.begin() + scene);
+        if (doc.selectedScene > scene) --doc.selectedScene;
+        doc.clampSelection();
+        return true;
+    }
+
+    bool moveScene(int scene, int delta) {
+        const int target = scene + delta;
+        if (scene < 0 || scene >= doc.sceneCount() || target < 0 || target >= doc.sceneCount()) return false;
+        stopEverySlot();
+        std::swap(doc.scenes[static_cast<std::size_t>(scene)], doc.scenes[static_cast<std::size_t>(target)]);
+        std::swap(doc.clips[static_cast<std::size_t>(scene)], doc.clips[static_cast<std::size_t>(target)]);
+        if (doc.selectedScene == scene) doc.selectedScene = target;
+        else if (doc.selectedScene == target) doc.selectedScene = scene;
+        return true;
+    }
+
+    bool renameScene(int scene, const juce::String& name) {
+        const auto trimmed = name.trim().substring(0, 64);
+        if (scene < 0 || scene >= doc.sceneCount() || trimmed.isEmpty()) return false;
+        doc.scenes[static_cast<std::size_t>(scene)].name = trimmed;
+        return true;
     }
 
     // The mixer writes the engine directly while a control moves; this copies
@@ -222,8 +303,14 @@ public:
                 setBusy(false);
                 if (!success) { status("Save failed: " + error, error); return; }
                 // Update only audio references from this snapshot; keep edits made while saving.
-                for (int s = 0; s < sessionProjectSceneCount && s < doc.sceneCount(); ++s)
-                    for (int t = 0; t < sessionProjectTrackCount && t < doc.trackCount(); ++t) {
+                // Skip if the grid was restructured while saving.
+                if (project.sceneCount() != doc.sceneCount() || project.trackCount() != doc.trackCount()) {
+                    projectFile = target;
+                    status("Saved " + target.getFileName(), target.getFullPathName());
+                    return;
+                }
+                for (int s = 0; s < doc.sceneCount(); ++s)
+                    for (int t = 0; t < doc.trackCount(); ++t) {
                         auto& current = doc.clip(t, s);
                         const auto& old = project.clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
                         const auto& written = saved->clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
@@ -285,9 +372,10 @@ private:
             return result;
         }
         if (!parseSessionProject(file.loadFileAsString(), result.project, result.error)) return result;
-        result.audio.resize(static_cast<std::size_t>(sessionProjectTrackCount * sessionProjectSceneCount));
-        for (int s = 0; s < sessionProjectSceneCount; ++s)
-            for (int t = 0; t < sessionProjectTrackCount; ++t) {
+        const int tracks = result.project.trackCount(), scenes = result.project.sceneCount();
+        result.audio.resize(static_cast<std::size_t>(tracks * scenes));
+        for (int s = 0; s < scenes; ++s)
+            for (int t = 0; t < tracks; ++t) {
                 const auto& clip = result.project.clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
                 if (clip.audioFilePath.isEmpty()) continue;
                 const auto decoded = decodeSessionAudioClip(resolveProjectAudio(file, clip.audioFilePath));
@@ -301,7 +389,7 @@ private:
                     return result;
                 }
                 result.decodedBytes += bytes;
-                result.audio[static_cast<std::size_t>(s * sessionProjectTrackCount + t)] = decoded.clip;
+                result.audio[static_cast<std::size_t>(s * tracks + t)] = decoded.clip;
             }
         return result;
     }
@@ -327,7 +415,7 @@ private:
                 const auto resolved = resolveProjectAudio(file, clip.audioFilePath);
                 clip.audioFilePath = resolved.getFullPathName();
                 clip.audioFileName = resolved.getFileName();
-                const auto& asset = result.audio[static_cast<std::size_t>(s * sessionProjectTrackCount + t)];
+                const auto& asset = result.audio[static_cast<std::size_t>(s * loaded.trackCount() + t)];
                 clip.audio = asset;
                 if (asset != nullptr) retained.push_back(asset);
             }
@@ -364,6 +452,25 @@ private:
         stopped.pattern.clear();
         stopped.clipIndex = -1;
         engine.pianoRollLaunches[track].publish(stopped);
+    }
+
+    bool insertScene(int index, const std::vector<SessionClip>* copyFrom) {
+        if (!doc.canAddScene() || index < 0 || index > doc.sceneCount()) return false;
+        // Inserting before existing scenes renumbers them.
+        if (index < doc.sceneCount()) stopEverySlot();
+        const auto clips = copyFrom != nullptr ? *copyFrom
+                                               : std::vector<SessionClip>(static_cast<std::size_t>(doc.trackCount()));
+        const auto name = copyFrom != nullptr ? doc.scenes[static_cast<std::size_t>(index - 1)].name + " copy"
+                                              : doc.nextSceneName();
+        doc.scenes.insert(doc.scenes.begin() + index, SessionScene{name});
+        doc.clips.insert(doc.clips.begin() + index, clips);
+        if (doc.selectedScene >= index && index < doc.sceneCount() - 1) ++doc.selectedScene;
+        return true;
+    }
+
+    void stopEverySlot() {
+        engine.synchronizedSceneLaunch.store(false);
+        for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track) publishStop(track);
     }
 
     void setBusy(bool b) { busy = b; if (onBusyChanged) onBusyChanged(b); }

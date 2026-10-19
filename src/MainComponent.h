@@ -151,6 +151,10 @@ private:
         };
         sessionView.onClearClip = [this] { clearSelectedClip(); };
         sessionView.onTitleChanged = [this] { updateEditorTitle(); };
+        sessionView.onStructureChanged = [this] {
+            mixerPanel.rebuild();
+            loadSelectedClip();
+        };
         mixerPanel.onTrackEdited = [this](int track, bool) {
             controller.trackSettingsEdited(track);
             sessionView.repaint();
@@ -169,7 +173,7 @@ private:
         const auto& d = controller.document();
         topBar.setTempo(d.bpm);
         devicesView.setPreset(d.livePreset);
-        mixerPanel.refreshSettings();
+        mixerPanel.rebuild();
         stepsView.refresh();
         sessionView.rebuildGrid();
         sessionView.refreshFromDocument();
@@ -212,8 +216,8 @@ private:
         const auto dot = juce::String(juce::CharPointer_UTF8("  \xc2\xb7  "));
         switch (tabs.getCurrentTabIndex()) {
         case 0: workspace.setEditorTitle("Step Sequencer", stepsView.subtitle()); break;
-        case 1: workspace.setEditorTitle("Piano Roll", "Track " + juce::String(d.selectedTrack + 1) + dot
-                                         + "Scene " + juce::String(d.selectedScene + 1)); break;
+        case 1: workspace.setEditorTitle("Piano Roll", d.tracks[static_cast<std::size_t>(d.selectedTrack)].name + dot
+                                         + d.scenes[static_cast<std::size_t>(d.selectedScene)].name); break;
         case 2: workspace.setEditorTitle("Session", sessionView.subtitle()); break;
         case 3: workspace.setEditorTitle("Mixer", juce::String(d.trackCount()) + " channels"); break;
         default: break;
@@ -315,7 +319,7 @@ private:
     alien::StepSequencerView stepsView{controller};
     alien::PianoRollEditor pianoRoll;
     alien::SessionView sessionView{controller, engine};
-    alien::TrackMixerPanel mixerPanel{engine.tracks};
+    alien::TrackMixerPanel mixerPanel{controller, engine.tracks};
     alien::DevicesView devicesView{engine.midi};
     juce::TabbedComponent tabs{juce::TabbedButtonBar::TabsAtTop};
     alien::CompactWorkspace workspace{tabs, devicesView};

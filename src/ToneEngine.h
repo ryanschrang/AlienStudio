@@ -9,13 +9,34 @@
 #include "MidiControllerMappings.h"
 #include "SessionAudioClip.h"
 #include "TrackMixer.h"
+#include "SessionProject.h"
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <memory>
+
+// Fixed-capacity array stored on the heap. Allocated once at construction, so
+// large per-track buffers do not bloat the engine object (or a test's stack)
+// and nothing is ever allocated on the audio thread.
+template <class T, std::size_t N>
+class FixedHeapArray {
+public:
+    FixedHeapArray() : data(std::make_unique<std::array<T, N>>()) {}
+    T& operator[](std::size_t i) noexcept { return (*data)[i]; }
+    const T& operator[](std::size_t i) const noexcept { return (*data)[i]; }
+    static constexpr std::size_t size() noexcept { return N; }
+    auto begin() noexcept { return data->begin(); }
+    auto end() noexcept { return data->end(); }
+    auto begin() const noexcept { return data->cbegin(); }
+    auto end() const noexcept { return data->cend(); }
+private:
+    std::unique_ptr<std::array<T, N>> data;
+};
 
 class ToneEngine : public juce::AudioIODeviceCallback {
 public:
-    static constexpr std::size_t sessionTracks = 4;
+    // Pre-allocated capacity; activeTracks says how many the session uses.
+    static constexpr std::size_t sessionTracks = static_cast<std::size_t>(alien::maxSessionTracks);
     std::array<std::atomic<bool>, 16> steps{};
     std::array<std::atomic<int>, 16> stepPitches{};
     std::array<std::atomic<int>, 16> stepVelocities{};
@@ -26,18 +47,25 @@ public:
     alien::MidiInputPipe midi;
     alien::MidiControllerMappings controllerMappings;
     alien::MidiControllerActionQueue controllerActions;
-    std::array<alien::PianoRollMailbox, sessionTracks> pianoRollNotes;
-    std::array<alien::SessionClipMailbox, sessionTracks> pianoRollLaunches;
-    std::array<std::atomic<int>, sessionTracks> sessionTrackPositions{-1000, -1000, -1000, -1000};
+    FixedHeapArray<alien::PianoRollMailbox, sessionTracks> pianoRollNotes;
+    FixedHeapArray<alien::SessionClipMailbox, sessionTracks> pianoRollLaunches;
+    std::array<std::atomic<int>, sessionTracks> sessionTrackPositions;
     std::atomic<int> patternMode{0}, pianoRollPosition{-1};
-    std::array<std::atomic<int>, sessionTracks> requestedPianoRollClip{-1, -1, -1, -1};
-    std::array<std::atomic<int>, sessionTracks> activePianoRollClip{-1, -1, -1, -1};
+    std::array<std::atomic<int>, sessionTracks> requestedPianoRollClip;
+    std::array<std::atomic<int>, sessionTracks> activePianoRollClip;
+    // Number of Session tracks in use (scene launches wait for this many).
+    std::atomic<int> activeTracks{alien::sessionProjectTrackCount};
     std::atomic<bool> synchronizedSceneLaunch{false};
     std::atomic<int> launchQuantizationSteps{16}; // One bar by default (16 sixteenth-note steps).
 
     ToneEngine() noexcept {
         for (auto& pitch : stepPitches) pitch.store(57, std::memory_order_relaxed);
         for (auto& velocity : stepVelocities) velocity.store(102, std::memory_order_relaxed);
+        for (std::size_t t = 0; t < sessionTracks; ++t) {
+            sessionTrackPositions[t].store(-1000, std::memory_order_relaxed);
+            requestedPianoRollClip[t].store(-1, std::memory_order_relaxed);
+            activePianoRollClip[t].store(-1, std::memory_order_relaxed);
+        }
     }
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
@@ -85,13 +113,13 @@ public:
             midi.requestReset();
         }
         wasPlaying = playNow; wasMode = modeNow;
-        synth.setPatch(alien::presets[static_cast<std::size_t>(juce::jlimit(0, 2, preset.load()))]);
+        synth.setPatch(alien::presets[static_cast<std::size_t>(juce::jlimit(0, alien::presetCount - 1, preset.load()))]);
         bool anySolo = false;
         for (const auto& track : tracks) anySolo = anySolo || track.solo.load();
         std::array<float, sessionTracks> peaks{};
         for (std::size_t t = 0; t < sessionTracks; ++t) {
             const auto settings = tracks[t].snapshot();
-            trackSynths[t].setPatch(alien::presets[static_cast<std::size_t>(std::clamp(settings.preset, 0, 2))]);
+            trackSynths[t].setPatch(alien::presets[static_cast<std::size_t>(std::clamp(settings.preset, 0, alien::presetCount - 1))]);
             trackMixers[t].setTarget(settings, anySolo);
         }
         NoteQueue::Event event{};
@@ -121,7 +149,7 @@ public:
                 if (action >= 0) controllerActions.push(action);
             });
         for (std::size_t track = 0; track < sessionTracks; ++track) {
-            alien::SessionClipLaunch requestedClip;
+            auto& requestedClip = *launchScratch;
             if (pianoRollLaunches[track].consume(requestedClip)) {
                 const int quantization = synchronizedScenePending
                     ? synchronizedSceneQuantizationSteps : launchQuantizationSteps.load();
@@ -154,8 +182,9 @@ public:
                 }
             }
             if (playNow && modeNow == 1) {
-                constexpr unsigned allSessionTracks = (1u << sessionTracks) - 1u;
-                if (synchronizedScenePending && synchronizedSceneTracksQueued == allSessionTracks
+                const unsigned allSessionTracks = (1u << static_cast<unsigned>(std::clamp(activeTracks.load(), 1,
+                    static_cast<int>(sessionTracks)))) - 1u;
+                if (synchronizedScenePending && (synchronizedSceneTracksQueued & allSessionTracks) == allSessionTracks
                     && rolls[0].launchBoundaryDue(synchronizedSceneQuantizationSteps)) {
                     for (std::size_t track = 0; track < sessionTracks; ++track)
                         rolls[track].launchPendingNow([this, track](int n, float v, bool on) {
@@ -240,17 +269,19 @@ private:
         }
     }
     alien::SynthEngine synth; // Live keyboard and legacy step sequencer.
-    std::array<alien::SynthEngine, sessionTracks> trackSynths;
-    std::array<alien::TrackMixer, sessionTracks> trackMixers;
+    FixedHeapArray<alien::SynthEngine, sessionTracks> trackSynths;
+    FixedHeapArray<alien::TrackMixer, sessionTracks> trackMixers;
     alien::StepClock clock;
-    std::array<alien::PianoRollScheduler, sessionTracks> rolls{};
-    std::array<alien::SessionAudioPlayer, sessionTracks> audioPlayers{};
+    FixedHeapArray<alien::PianoRollScheduler, sessionTracks> rolls;
+    FixedHeapArray<alien::SessionAudioPlayer, sessionTracks> audioPlayers;
+    std::unique_ptr<alien::SessionClipLaunch> launchScratch = std::make_unique<alien::SessionClipLaunch>();
     std::array<bool, sessionTracks> audioClipMode{};
     double sampleRate{44100.0};
     bool wasPlaying{};
     int wasMode{};
     bool synchronizedScenePending{};
     unsigned synchronizedSceneTracksQueued{};
+    static_assert(sessionTracks <= 32, "Scene launch tracking uses a 32-bit mask");
     int synchronizedSceneQuantizationSteps{16};
     int activeStepPitch{-1};
 };

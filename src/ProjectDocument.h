@@ -34,6 +34,7 @@ struct SessionClip {
 struct SessionTrack {
     juce::String name;
     TrackSettings settings;
+    int colour{}; // Index into the track colour palette.
 };
 
 struct SessionScene {
@@ -61,7 +62,7 @@ struct ProjectDocument {
     static ProjectDocument createDefault(int trackCount = sessionProjectTrackCount,
                                          int sceneCount = sessionProjectSceneCount) {
         ProjectDocument d;
-        for (int t = 0; t < trackCount; ++t) d.tracks.push_back({defaultTrackName(t), {}});
+        for (int t = 0; t < trackCount; ++t) d.tracks.push_back({defaultTrackName(t), {}, t});
         for (int s = 0; s < sceneCount; ++s) d.scenes.push_back({defaultSceneName(s)});
         d.clips.assign(static_cast<std::size_t>(sceneCount),
                        std::vector<SessionClip>(static_cast<std::size_t>(trackCount)));
@@ -86,6 +87,33 @@ struct ProjectDocument {
     SessionClip& selectedClip() { return clip(selectedTrack, selectedScene); }
     const SessionClip& selectedClip() const { return clip(selectedTrack, selectedScene); }
 
+    bool canAddTrack() const noexcept { return trackCount() < maxSessionTracks; }
+    bool canAddScene() const noexcept { return sceneCount() < maxSessionScenes; }
+
+    // Next "Track N" / "Scene N" whose number is not already used.
+    juce::String nextTrackName() const {
+        for (int n = 1;; ++n) {
+            bool used = false;
+            for (const auto& t : tracks) used = used || t.name == defaultTrackName(n - 1);
+            if (!used) return defaultTrackName(n - 1);
+        }
+    }
+    juce::String nextSceneName() const {
+        for (int n = 1;; ++n) {
+            bool used = false;
+            for (const auto& s : scenes) used = used || s.name == defaultSceneName(n - 1);
+            if (!used) return defaultSceneName(n - 1);
+        }
+    }
+    int nextTrackColour() const {
+        for (int c = 0; c < 64; ++c) {
+            bool used = false;
+            for (const auto& t : tracks) used = used || t.colour % 8 == c % 8;
+            if (!used) return c % 8;
+        }
+        return trackCount() % 8;
+    }
+
     void clampSelection() noexcept {
         selectedTrack = juce::jlimit(0, juce::jmax(0, trackCount() - 1), selectedTrack);
         selectedScene = juce::jlimit(0, juce::jmax(0, sceneCount() - 1), selectedScene);
@@ -95,19 +123,25 @@ struct ProjectDocument {
 // Conversion to and from the on-disk session format. Audio paths are copied as
 // strings; decoding is done separately by the loader.
 inline SessionProjectData toProjectData(const ProjectDocument& doc) {
-    SessionProjectData data;
+    SessionProjectData data(doc.trackCount(), doc.sceneCount());
     data.launchQuantizationSteps = doc.launchQuantizationSteps;
     data.selectedTrack = doc.selectedTrack;
     data.selectedScene = doc.selectedScene;
     data.bpm = doc.bpm;
     data.synthPreset = doc.livePreset;
-    for (int t = 0; t < sessionProjectTrackCount && t < doc.trackCount(); ++t)
-        data.trackSettings[static_cast<std::size_t>(t)] = doc.tracks[static_cast<std::size_t>(t)].settings;
+    for (int t = 0; t < doc.trackCount(); ++t) {
+        const auto& track = doc.tracks[static_cast<std::size_t>(t)];
+        data.trackSettings[static_cast<std::size_t>(t)] = track.settings;
+        data.trackNames[static_cast<std::size_t>(t)] = track.name;
+        data.trackColours[static_cast<std::size_t>(t)] = track.colour;
+    }
+    for (int s = 0; s < doc.sceneCount(); ++s)
+        data.sceneNames[static_cast<std::size_t>(s)] = doc.scenes[static_cast<std::size_t>(s)].name;
     data.stepPattern = doc.steps.on;
     data.stepPitches = doc.steps.pitch;
     data.stepVelocities = doc.steps.velocity;
-    for (int s = 0; s < sessionProjectSceneCount && s < doc.sceneCount(); ++s)
-        for (int t = 0; t < sessionProjectTrackCount && t < doc.trackCount(); ++t) {
+    for (int s = 0; s < doc.sceneCount(); ++s)
+        for (int t = 0; t < doc.trackCount(); ++t) {
             auto& destination = data.clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
             destination.pattern = doc.clip(t, s).notes();
             destination.audioFilePath = doc.clip(t, s).audioFilePath;
@@ -116,19 +150,26 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
 }
 
 inline ProjectDocument fromProjectData(const SessionProjectData& data) {
-    auto doc = ProjectDocument::createDefault(sessionProjectTrackCount, sessionProjectSceneCount);
+    auto doc = ProjectDocument::createDefault(data.trackCount(), data.sceneCount());
     doc.launchQuantizationSteps = data.launchQuantizationSteps;
     doc.selectedTrack = data.selectedTrack;
     doc.selectedScene = data.selectedScene;
     doc.bpm = data.bpm;
     doc.livePreset = data.synthPreset;
-    for (int t = 0; t < sessionProjectTrackCount; ++t)
-        doc.tracks[static_cast<std::size_t>(t)].settings = data.trackSettings[static_cast<std::size_t>(t)];
+    for (int t = 0; t < data.trackCount(); ++t) {
+        auto& track = doc.tracks[static_cast<std::size_t>(t)];
+        track.settings = data.trackSettings[static_cast<std::size_t>(t)];
+        if (data.trackNames[static_cast<std::size_t>(t)].isNotEmpty()) track.name = data.trackNames[static_cast<std::size_t>(t)];
+        track.colour = data.trackColours[static_cast<std::size_t>(t)];
+    }
+    for (int s = 0; s < data.sceneCount(); ++s)
+        if (data.sceneNames[static_cast<std::size_t>(s)].isNotEmpty())
+            doc.scenes[static_cast<std::size_t>(s)].name = data.sceneNames[static_cast<std::size_t>(s)];
     doc.steps.on = data.stepPattern;
     doc.steps.pitch = data.stepPitches;
     doc.steps.velocity = data.stepVelocities;
-    for (int s = 0; s < sessionProjectSceneCount; ++s)
-        for (int t = 0; t < sessionProjectTrackCount; ++t) {
+    for (int s = 0; s < data.sceneCount(); ++s)
+        for (int t = 0; t < data.trackCount(); ++t) {
             const auto& source = data.clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
             auto& clip = doc.clip(t, s);
             clip.pattern = std::make_shared<const PianoRollPattern>(source.pattern);
