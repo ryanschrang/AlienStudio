@@ -20,7 +20,7 @@ struct PianoRollNote {
 // integer ticks (960 PPQ). Notes end at the clip boundary, never across it.
 // Public times remain doubles for editor geometry and processing operations.
 struct PianoRollPattern {
-    static constexpr std::size_t maxNotes = 128;
+    static constexpr std::size_t maxNotes = 1024;
     static constexpr int defaultLoopSteps = 64, maxLoopSteps = 256, ticksPerStep = 240;
     static constexpr double timeQuantum = 1.0 / ticksPerStep, minLength = timeQuantum;
     static int toTicks(double steps) noexcept {
@@ -46,9 +46,13 @@ struct PianoRollPattern {
             if (std::abs(n.startStep * ticksPerStep - start) > 1e-7
                 || std::abs(n.lengthSteps * ticksPerStep - length) > 1e-7
                 || length < 1 || length > loopSteps * ticksPerStep - start) return false;
-            for (std::size_t j = 0; j < i; ++j) if (notes[j].id == n.id) return false;
         }
-        return true;
+        // IDs must be unique. Sorting a fixed-size copy keeps this O(n log n)
+        // and allocation-free, so it is also safe on the audio thread.
+        std::array<std::uint32_t, maxNotes> ids{};
+        for (std::size_t i = 0; i < count; ++i) ids[i] = notes[i].id;
+        std::sort(ids.begin(), ids.begin() + static_cast<std::ptrdiff_t>(count));
+        return std::adjacent_find(ids.begin(), ids.begin() + static_cast<std::ptrdiff_t>(count)) == ids.begin() + static_cast<std::ptrdiff_t>(count);
     }
     const PianoRollNote* find(std::uint32_t id) const noexcept {
         for (std::size_t i = 0; i < std::min(count, maxNotes); ++i)
@@ -167,8 +171,7 @@ public:
         sampleRate = std::isfinite(rate) && rate > 0 ? rate : 44100.0;
         bpm = std::isfinite(tempo) && tempo > 0 ? std::clamp(tempo, 1.0, 1000.0) : 120.0;
         if (!play) stop(send);
-        PianoRollPattern updated;
-        if (mailbox.consume(updated)) replace(updated, send);
+        if (mailbox.consume(incoming)) replace(incoming, send);
         if (play && !running) {
             running = true; untilStep = 0; step = -1; nextStep = 0; nextEvent = 0; cycle = 0;
             activeClip = loadedClip;
@@ -325,13 +328,9 @@ private:
             if (a.on != b.on) return !a.on;
             return a.note < b.note;
         };
-        // At most 256 entries. Insertion sort uses only this fixed storage.
-        for (std::size_t i = 1; i < eventCount; ++i) {
-            const auto value = events[i];
-            std::size_t j = i;
-            while (j > 0 && less(value, events[j - 1])) { events[j] = events[j - 1]; --j; }
-            events[j] = value;
-        }
+        // At most 2 * maxNotes entries, sorted in place in O(n log n) using only
+        // this fixed storage (no allocation on the audio thread).
+        std::sort(events.begin(), events.begin() + static_cast<std::ptrdiff_t>(eventCount), less);
         nextEvent = 0;
         if (step >= 0) {
             const double ticks = samplePosition() * PianoRollPattern::ticksPerStep;
@@ -367,6 +366,7 @@ private:
     }
     PianoRollPattern pattern;
     PianoRollPattern pendingPattern;
+    PianoRollPattern incoming; // Mailbox scratch: kept off the audio thread's stack.
     std::array<bool, PianoRollPattern::maxNotes> active{};
     std::array<unsigned, 128> held{};
     std::array<Event, PianoRollPattern::maxNotes * 2> events{};

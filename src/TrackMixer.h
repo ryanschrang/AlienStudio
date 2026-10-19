@@ -2,14 +2,16 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include "SynthEngine.h"
 
 namespace alien {
 struct TrackSettings {
     int preset{};
     float gain{1.0f}, pan{};
     bool mute{}, solo{};
+    int instrument{}; // 0 synth, 1 drum sampler
     bool valid() const noexcept {
-        return preset >= 0 && preset < 3 && std::isfinite(gain) && gain >= 0 && gain <= 2
+        return instrument >= 0 && instrument <= 1 && preset >= 0 && preset < presetCount && std::isfinite(gain) && gain >= 0 && gain <= 2
             && std::isfinite(pan) && pan >= -1 && pan <= 1;
     }
 };
@@ -18,15 +20,15 @@ static_assert(std::atomic<float>::is_always_lock_free, "Track audio controls req
 static_assert(std::atomic<int>::is_always_lock_free, "Track audio controls require lock-free integers");
 
 struct TrackControls {
-    std::atomic<int> preset{0};
+    std::atomic<int> preset{0}, instrument{0};
     std::atomic<float> gain{1.0f}, pan{0.0f}, peak{0.0f};
     std::atomic<bool> mute{false}, solo{false};
     TrackSettings snapshot() const noexcept {
-        return {preset.load(), gain.load(), pan.load(), mute.load(), solo.load()};
+        return {preset.load(), gain.load(), pan.load(), mute.load(), solo.load(), instrument.load()};
     }
     void set(const TrackSettings& s) noexcept {
         preset.store(s.preset); gain.store(s.gain); pan.store(s.pan);
-        mute.store(s.mute); solo.store(s.solo);
+        mute.store(s.mute); solo.store(s.solo); instrument.store(s.instrument);
     }
 };
 

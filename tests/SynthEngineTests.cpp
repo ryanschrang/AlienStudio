@@ -98,7 +98,8 @@ int main() {
         synth.allSoundOff(); synth.noteOn(69, 1);
         const double loud = energy(synth, 4096);
         require(quiet > 0 && std::abs(loud / quiet - 4) < 1e-5, "velocity scales amplitude");
-        synth.noteOn(69, 0); energy(synth, 48000);
+        // Wait out this preset's release time (plus margin) before checking silence.
+        synth.noteOn(69, 0); energy(synth, static_cast<int>(std::ceil((patch.release + 0.1) * 48000.0)));
         require(synth.activeVoices() == 0 && energy(synth, 256) == 0, "zero velocity note-off");
     }
     synth.setPatch(presets[2]); synth.noteOn(60, 1); energy(synth, 24000);
