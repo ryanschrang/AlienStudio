@@ -126,6 +126,7 @@ public:
     // Ask to save unsaved changes, then run "then" unless the user cancels.
     void confirmDiscardChanges(const juce::String& action, std::function<void()> then) {
         if (controller.isBusy() || projectBusy) return;
+        if (pluginHost.changed.exchange(false)) controller.runtimePluginEdited();
         if (!controller.isDirty()) { then(); return; }
         const auto name = projectName();
         auto* window = new juce::AlertWindow("Save changes to \"" + name + "\"?",
@@ -435,7 +436,8 @@ private:
 
     // Callbacks ---------------------------------------------------------------
     void changeListenerCallback(juce::ChangeBroadcaster*) override {
-        const int newMode = tabs.getCurrentTabIndex() == 0 ? 0 : tabs.getCurrentTabIndex() == 5 ? 2 : 1;
+        const int tab = tabs.getCurrentTabIndex();
+        const int newMode = tab == 0 ? 0 : tab == 1 || tab == 2 ? 1 : tab == 5 ? 2 : engine.patternMode.load();
         if (engine.patternMode.exchange(newMode) != newMode) releaseNotes();
         else pianoRoll.releaseAudition();
         syncViewButtons();
@@ -668,7 +670,10 @@ private:
         // Native parameters may have changed since the most recent timer tick.
         // State capture and topology changes run only with audio detached.
         pluginHost.changed.store(false);
-        auto tracks=pluginStates(); auto master=controller.document().masterPlugins;
+        auto tracks=pluginStates();
+        bool assigned = !controller.document().masterPlugins.effects.empty();
+        for (const auto& rack : tracks) assigned = assigned || !rack.instrument.descriptionXml.isEmpty() || !rack.effects.empty();
+        if (!assigned) return; auto master=controller.document().masterPlugins;
         audio.removeAudioCallback(&engine);
         pluginHost.snapshot(tracks,master);
         audio.addAudioCallback(&engine);

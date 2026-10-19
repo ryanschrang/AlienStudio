@@ -150,6 +150,7 @@ private:
     static int slotLatency(const Slot& slot) noexcept { return slot.processor && !slot.bypass ? std::clamp(slot.processor->getLatencySamples(),0,maxDelay) : 0; }
     static void process(Slot& slot,juce::AudioBuffer<float>& buffer,juce::MidiBuffer& messages,int samples) {
         if (!slot.processor || slot.bypass) return;
+        if (slot.processor->getTotalNumOutputChannels()!=2 || slot.processor->getTotalNumInputChannels()>2) return;
         // Stack view, no heap or channel-pointer allocation for stereo buffers.
         float* pointers[]{buffer.getWritePointer(0),buffer.getWritePointer(1)};
         juce::AudioBuffer<float> view(pointers,2,samples);

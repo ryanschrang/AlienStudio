@@ -45,6 +45,7 @@ inline std::unique_ptr<juce::AudioPluginInstance> instantiatePlugin(
         if (!bytes.fromBase64Encoding(state.stateBase64)) { error="Invalid plugin state data"; return {}; }
         plugin->setStateInformation(bytes.getData(),static_cast<int>(bytes.getSize()));
     }
+    if (plugin->getTotalNumOutputChannels()!=2 || plugin->getTotalNumInputChannels()!=(instrument?0:2)) { error="Plugin state requested an unsupported bus layout"; return {}; }
     if (plugin->getLatencySamples() > PluginRuntime::maxDelay) { error="Plugin latency exceeds the 96,000-sample host limit"; return {}; }
     error.clear(); return plugin;
 }

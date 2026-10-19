@@ -237,7 +237,7 @@ static void recoveryAndPortableRegressionTests() {
     require(combined.arrangement.add({3,3,0,4}),"add legacy region");
     auto v5=juce::JSON::parse(alien::serializeSessionProject(combined));v5.getDynamicObject()->setProperty("version",5);
     require(alien::parseSessionProject(juce::JSON::toString(v5),loaded,error) && loaded.drumPaths[0][2]==collected && loaded.arrangement.count==1,"drum/arrangement v5 migrates");
-    c.discardRecovery();alien::ProjectController::recoveryDirectoryOverride()={};root.deleteRecursively();
+    c.discardRecovery();alien::ProjectController::recoveryDirectoryOverride()=juce::File{};root.deleteRecursively();
     std::cout<<"PASS: recovery fencing, portable undo/redo and both legacy schemas\n";
 }
 
