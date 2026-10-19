@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PianoRollSequence.h"
+#include "TrackMixer.h"
 #include <juce_core/juce_core.h>
 #include <array>
 #include <cmath>
@@ -22,6 +23,7 @@ struct SessionProjectData {
     int selectedScene{};
     int bpm{120};
     int synthPreset{};
+    std::array<TrackSettings, sessionProjectTrackCount> trackSettings{};
     std::array<bool, 16> stepPattern{};
     std::array<int, 16> stepPitches = [] {
         std::array<int, 16> values{};
@@ -40,6 +42,7 @@ struct SessionProjectData {
             || selectedScene < 0 || selectedScene >= sessionProjectSceneCount
             || bpm < 60 || bpm > 200 || synthPreset < 0 || synthPreset > 2)
             return false;
+        for (const auto& track : trackSettings) if (!track.valid()) return false;
         for (const auto& scene : clips)
             for (const auto& clip : scene)
                 if (!clip.pattern.valid()) return false;
@@ -56,12 +59,24 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     auto root = juce::var(new juce::DynamicObject());
     auto* rootObject = root.getDynamicObject();
     rootObject->setProperty("format", "AlienStudioSession");
-    rootObject->setProperty("version", 2);
+    rootObject->setProperty("version", 3);
     rootObject->setProperty("launchQuantizationSteps", project.launchQuantizationSteps);
     rootObject->setProperty("selectedTrack", project.selectedTrack);
     rootObject->setProperty("selectedScene", project.selectedScene);
     rootObject->setProperty("bpm", project.bpm);
     rootObject->setProperty("synthPreset", project.synthPreset);
+    juce::Array<juce::var> settings;
+    for (const auto& track : project.trackSettings) {
+        auto value = juce::var(new juce::DynamicObject());
+        auto* object = value.getDynamicObject();
+        object->setProperty("preset", track.preset);
+        object->setProperty("gain", track.gain);
+        object->setProperty("pan", track.pan);
+        object->setProperty("mute", track.mute);
+        object->setProperty("solo", track.solo);
+        settings.add(value);
+    }
+    rootObject->setProperty("trackSettings", juce::var(settings));
     juce::Array<juce::var> steps;
     for (const auto enabled : project.stepPattern) steps.add(enabled);
     rootObject->setProperty("stepPattern", juce::var(steps));
@@ -113,7 +128,7 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         error = "This file is not an Alien Studio session project."; return false;
     }
     const auto version = rootObject->getProperty("version");
-    if (!version.isInt() || (static_cast<int>(version) != 1 && static_cast<int>(version) != 2)) {
+    if (!version.isInt() || (static_cast<int>(version) < 1 || static_cast<int>(version) > 3)) {
         error = "This Alien Studio project version is not supported."; return false;
     }
     const int formatVersion = static_cast<int>(version);
@@ -135,6 +150,30 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
     parsed.selectedScene = static_cast<int>(selectedScene);
     parsed.bpm = static_cast<int>(bpm);
     parsed.synthPreset = static_cast<int>(synthPreset);
+    if (formatVersion < 3) {
+        for (auto& track : parsed.trackSettings) track.preset = parsed.synthPreset;
+    } else {
+        const auto settingsValue = rootObject->getProperty("trackSettings");
+        const auto* settings = settingsValue.getArray();
+        if (settings == nullptr || settings->size() != sessionProjectTrackCount) {
+            error = "Project must contain four track settings."; return false;
+        }
+        for (int i = 0; i < sessionProjectTrackCount; ++i) {
+            const auto* object = (*settings)[i].getDynamicObject();
+            if (object == nullptr) { error = "Invalid track settings."; return false; }
+            const auto p = object->getProperty("preset"), g = object->getProperty("gain"),
+                pan = object->getProperty("pan"), mute = object->getProperty("mute"),
+                solo = object->getProperty("solo");
+            if (!p.isInt() || !(g.isDouble() || g.isInt()) || !(pan.isDouble() || pan.isInt())
+                || !mute.isBool() || !solo.isBool()) {
+                error = "Invalid track settings."; return false;
+            }
+            auto& track = parsed.trackSettings[static_cast<std::size_t>(i)];
+            track = {static_cast<int>(p), static_cast<float>(g), static_cast<float>(pan),
+                static_cast<bool>(mute), static_cast<bool>(solo)};
+            if (!track.valid()) { error = "Track settings outside supported range."; return false; }
+        }
+    }
     for (int i = 0; i < 16; ++i) {
         if (!(*steps)[i].isBool()) { error = "Project step pattern is invalid."; return false; }
         parsed.stepPattern[static_cast<std::size_t>(i)] = static_cast<bool>((*steps)[i]);

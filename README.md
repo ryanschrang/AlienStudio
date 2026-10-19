@@ -4,7 +4,7 @@
 
 Alien Studio is an **independent, original application**, not affiliated with or endorsed by any of those products. We aim to learn from broadly useful workflows without copying proprietary code, artwork, branding, or protected assets.
 
-> **Project status:** Early prototype with a 16-step synthesizer sequencer, a four-bar piano roll, note-processing tools, a 16-voice synth, USB MIDI and mouse/computer-keyboard input, and lead/bass/pluck presets. Windows Debug/Release builds and automated tests run in GitHub Actions. The broader professional DAW features below are **planned**; native audio-device behavior still requires hands-on testing.
+> **Project status:** Early music-making prototype with a pitch/velocity step sequencer, piano-roll tools, a four-track/four-scene MIDI/audio Session grid, independent Session synths and mixer controls, USB MIDI input, project save/open, and portable audio collection. Windows Debug/Release builds and automated tests run in GitHub Actions. Arrangement, recording, warping, plugin hosting, and production effects remain planned. Native audio-device behavior still requires hands-on Windows testing; see [the verification checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
 
 ## Product vision: three connected workspaces
 
@@ -16,43 +16,27 @@ The long-term differentiator is **one shared project and audio engine** across a
 
 ## Roadmap
 
-### Phase 0 — Reliable foundation (in progress)
-- [x] Establish C++/JUCE/CMake project and Windows GitHub Actions build workflow.
-- [x] Implement initial 16-step tone sequencer, transport controls, and BPM control in source.
-- [ ] Obtain a passing Windows CI build and test executable on Windows 11.
-- [ ] Add automated tests, crash diagnostics, basic settings, and stable audio-device selection.
-- [ ] Select and publish an open-source license after checking JUCE and third-party dependency obligations.
+### Implemented foundations
+- [x] C++20/JUCE/CMake project, Windows Debug/Release CI, and automated tests.
+- [x] Polyphonic lead/bass/pluck synth, USB MIDI input/sustain/reconnection, typing and mouse piano.
+- [x] Editable 16-step pitch/velocity sequence and four-bar piano roll with processing, clipboard, and local undo/redo.
+- [x] Four-track/four-scene clip launching, beat/bar timing, MIDI CC scene mapping, and WAV/MP3 audio clips.
+- [x] Independent 16-voice Session synths, per-track preset/volume/balance/mute/solo and output meters.
+- [x] Versioned project save/open and portable project copies with collected audio.
+- [x] GPL-3.0 license file. Dependency attribution/distribution review remains required before releases.
 
-### Phase 1 — Usable music sketchpad
-- [ ] Project save/open, undo/redo, autosave, and tempo/time signature.
-- [ ] Multiple tracks and patterns; editable step sequencer and piano roll.
-- [ ] MIDI note editing, quantization, velocity, and basic keyboard input.
-- [ ] Built-in drum sampler and at least one playable synthesizer.
-- [ ] Audio/MIDI rendering and WAV export.
+### Next implementation sequence
+1. Drum sampler and sample browser; extend the step workflow for drum channels.
+2. Shared arrangement timeline and WAV export; move Session material into complete songs.
+3. MIDI recording, metronome, count-in, overdubbing, and explicit input-to-track routing.
+4. Audio recording, trimming, fades, take lanes, and comping.
+5. Automation, EQ/compression/reverb/delay, buses, sends, sidechain, and latency compensation.
+6. VST3 hosting, plugin scan/recovery, state persistence, and freeze/render.
+7. Tempo warping, pitch correction, expressive MIDI/articulations, and optional assisted composition/mastering.
 
-### Phase 2 — Full arrangement and recording
-- [ ] Multitrack arrangement timeline and clip editing.
-- [ ] Audio recording, waveform display, trimming, fades, and basic comping.
-- [ ] Mixer with buses, sends, metering, EQ, compression, and effects.
-- [ ] Automation lanes and non-destructive editing.
-- [ ] Robust audio/MIDI device handling, latency compensation, and project recovery.
-
-### Phase 3 — Live creative workflow
-- [ ] Session-style clip and scene launching with synchronized playback.
-- [ ] Record clip-launch performances into arrangement.
-- [ ] Audio time-stretching/warping and loop synchronization.
-- [x] WAV/MP3 Session clips with waveform preview and quantized playback.
-- [x] MIDI CC learn mappings for Session scene launch and stop actions.
-- [ ] Broader MIDI controller mapping and performance controls.
-
-### Phase 4 — Professional ecosystem
-- [ ] VST3 hosting subject to SDK licensing and compatibility review.
-- [ ] Publish an Alien Studio Plugin SDK with versioned APIs, documentation, and example synth, audio-effect, and MIDI-tool projects.
-- [ ] Design safe extension boundaries for third-party plugins, including validation, crash isolation where feasible, and permission controls for non-audio extensions.
-- [ ] Provide a community plugin manager for discovering, installing, updating, and disabling extensions, with clear provenance and trust warnings.
-- [ ] Advanced MIDI tools, routing, comping, editing, and mixing workflows.
-- [ ] Additional instruments, modulation, mastering tools, and performance optimization.
-- [ ] Optional AI-assisted features where feasible, with clear privacy and licensing controls.
+Autosave/recovery, global undo, project/media management, broader track/scene capacity,
+and Windows device/listening verification accompany these milestones. See
+[the delivery roadmap](docs/ROADMAP.md) for acceptance criteria and current boundaries.
 
 These are **goals**, not promises of feature parity or delivery dates. Priorities will change as the audio engine, stability, and contributor capacity evolve.
 
@@ -71,7 +55,7 @@ CMake fetches JUCE during configuration, so internet access is needed on the fir
 
 ## Free and open-source commitment
 
-Our goal is a fully usable, no-subscription DAW with no feature paywalls. Before distributing binaries or accepting outside contributions, the project needs a clear license, attribution and dependency review (including JUCE), and a contribution policy.
+Our goal is a fully usable, no-subscription DAW with no feature paywalls. The repository includes GPL-3.0; dependency attribution and distribution review (including JUCE), and a contribution policy remain release work.
 
 ## Development principles
 
@@ -86,8 +70,8 @@ Our goal is a fully usable, no-subscription DAW with no feature paywalls. Before
 Select **Lead (saw)**, **Bass (square)**, or **Pluck (sine)**, then click the
 on-screen keyboard. Vertical position controls velocity; computer-keyboard
 notes also work outside text fields and preset selectors. Multiple held keys sound together.
-The original 16 pads still sequence A3 at sixteenth-note intervals, with half-step
-note gates. Stop silences voices and resets the sequence to step 1. The keyboard
+The original 16 pads sequence their selected pitches and velocities at sixteenth-note
+intervals, with half-step note gates (A3/102 are the initial defaults). Stop silences voices and resets the sequence to step 1. The keyboard
 can be played while the transport is stopped. Device restarts clear synth voices.
 External MIDI input is available from the MIDI selector described below.
 
@@ -137,8 +121,9 @@ pitch on that channel; a single note-off releases it, subject to sustain.
 
 MIDI, typing/mouse piano, the step sequencer and piano roll have independent note
 ownership. Releasing a MIDI note does not stop an equal-pitch typing/clip note.
-The synth still shares its existing 16 voices across all sources; overload steals
-voices as before. MIDI highlights appear on the bottom keyboard, including notes
+Live MIDI, typing/mouse input and the legacy step sequencer share a 16-voice synth.
+Each Session track has its own 16-voice synth; voice stealing stays within that engine.
+Live input still uses the Device rack preset and is not routed through the Session mixer. MIDI highlights appear on the bottom keyboard, including notes
 held by sustain. **MIDI activity** flashes when supported messages arrive; it
 does not by itself verify an audible audio-device output.
 
@@ -198,9 +183,10 @@ physical controller/driver and audible Windows output remain manual checks.
 ### Four-bar piano roll
 
 Choose the **Piano roll** tab to edit a separate four-bar synth clip. The original
-**16-step sequencer** remains available. Both share Play / Stop, tempo and preset;
-the selected tab is the active playback source. Switching tabs releases notes
-and starts the selected pattern from its beginning. The window resizes to fit
+**16-step sequencer** remains available. Both share Play / Stop and tempo. The step sequencer uses the Device rack preset;
+Session MIDI clips use their track preset in Mixer. Switching between step mode
+and Session mode resets playback; switching between Piano roll, Session and Mixer
+keeps Session playback running. The window resizes to fit
 smaller displays.
 
 - Left-click an empty grid cell to create a note. New notes reuse the duration
@@ -222,10 +208,9 @@ smaller displays.
 - **Load example** adds an original melody to an empty clip. **Clear** removes the
   clip's notes. Start Play to see the playhead and hear the loop.
 
-Session MIDI patterns and imported audio are held in memory for the current
-session; closing Alien Studio discards them. Project saving, MIDI recording,
-arrangement playback, and separate synth/device assignments per track remain
-future work.
+Save the session before closing to retain MIDI patterns, track settings, and audio
+references. Unsaved edits are lost; autosave/recovery is not yet implemented.
+MIDI recording, arrangement playback, and external/plugin instruments remain future work.
 Same-pitch overlaps share one gate until the last overlap ends; velocity changes
 to a sounding note apply at its next trigger. Notes end at the four-bar boundary.
 Edits publish at audio-block boundaries; stop, source changes, preset changes and
@@ -326,11 +311,15 @@ playing while the Session and Piano roll tabs are changed. Separate clip states
 are held for this session until saved to a project file.
 
 Use **Save** and **Open** in the top bar to store and restore a project. Project
-files preserve the 16-step sequence, tempo, synth preset, all four-by-four MIDI
+files preserve the 16-step sequence, tempo, live/step synth preset, independent track synth/mixer settings, all four-by-four MIDI
 clip patterns, the selected clip, and beat/bar launch timing. MIDI notes retain
-their pitch, timing, velocity and probability. Audio clips retain their source
-file paths and are decoded again on open; the audio files themselves are not
-copied into the project, so keep them at their original paths. If a referenced
+their pitch, timing, velocity and probability. Normal **Save** retains external audio references. **Save portable** writes a project
+copy and collects referenced audio into an adjacent uniquely named media folder.
+Move the project file and its media folder together (or put both inside one folder).
+Collected paths are relative, so moving that folder does not break them; normal
+saves preserve those relative references. Repeated source files are copied once.
+Collection failure leaves an existing project intact; earlier media folders are
+never automatically deleted. Audio is decoded again on open. If a referenced
 file cannot be found or decoded, opening fails without replacing the current
 session. Project reads, writes and audio decoding run off the audio callback.
 
@@ -415,8 +404,8 @@ listening remains a manual check:
    Snap, draw on C#, then move the note upward and downward. Confirm pitches land
    on scale tones; disable Snap and confirm chromatic drawing returns.
 
-Ghost channels, multiple instruments, per-note slides/expression and riff
-generation are separate future additions. These processing
+Ghost notes from other tracks, additional instrument types, per-note slides/expression
+and riff generation are separate future additions. These processing
 tools operate on the existing synth clip and do not add plugin hosting.
 
 
@@ -491,3 +480,21 @@ Windows builds embed the supplied multi-resolution ICO directly, retaining all
 seven sizes and the complete padded artwork. See that directory's README for
 asset updates, Explorer/title-bar/taskbar checks at different Windows sizes, and
 icon-cache refresh instructions. No startup splash is introduced.
+
+
+### Session mixer
+
+Open **Mixer** to choose Lead, Bass, or Pluck separately for each of the four tracks.
+Each track has 16 voices; a busy track cannot steal another track's voices.
+Volume is 0–200%, with 100% preserving the previous level. Balance ranges from
+left to right, with the centre preserving both stereo channels. Mute overrides
+Solo; multiple soloed tracks can play together. Gain changes use a short ramp to
+reduce clicks. Meters show the post-control track peak; final output is clamped
+for protection, not professionally limited or mastered.
+
+Preset changes affect newly triggered notes; held notes retain their original
+patch until release. Mixer settings also affect imported audio on that track.
+Live MIDI/typing/mouse input and the legacy step sequencer remain on their separate
+Device rack synth; Session mute/solo does not mute live monitoring. Project format
+v3 stores mixer settings. Versions 1 and 2 load with the old global preset copied
+to all four tracks, centred balance, unity volume, and mute/solo off.

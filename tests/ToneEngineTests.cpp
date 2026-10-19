@@ -464,7 +464,61 @@ static void hardwareMidiTests() {
     require(offline.render(512) == 0 && !e.midi.isNoteOn(64), "source switch clears MIDI state coherently");
 }
 
+static void independentTrackMixerTests() {
+    ToneEngine e;
+    e.prepare(48000);
+    e.patternMode.store(1); e.playing.store(true);
+    e.tracks[0].preset.store(0); e.tracks[1].preset.store(1);
+    e.tracks[0].pan.store(-1); e.tracks[1].pan.store(1);
+    e.pianoRollNotes[0].publish(heldPattern(60));
+    e.pianoRollNotes[1].publish(heldPattern(60));
+    std::array<float, 256> l{}, r{};
+    auto render = [&](int blocks) {
+        std::array<double, 3> energy{};
+        for (int b = 0; b < blocks; ++b) {
+            float* out[]{l.data(), r.data()};
+            e.audioDeviceIOCallbackWithContext(nullptr, 0, out, 2, 256, {});
+            energy = {};
+            for (std::size_t i = 0; i < l.size(); ++i) {
+                require(std::isfinite(l[i]) && std::isfinite(r[i]), "mixer samples finite");
+                energy[0] += l[i]*l[i]; energy[1] += r[i]*r[i];
+                energy[2] += (l[i]-r[i])*(l[i]-r[i]);
+            }
+        }
+        return energy;
+    };
+    auto energy = render(60);
+    require(energy[0] > 0.001 && energy[1] > 0.001 && energy[2] > 0.001,
+        "same-pitch tracks render independent preset waveforms to opposite channels");
+    require(e.tracks[0].peak.load() > 0 && e.tracks[1].peak.load() > 0,
+        "meters publish each track's output peak");
+    e.tracks[0].mute.store(true);
+    energy = render(60);
+    require(energy[0] == 0 && energy[1] > 0.001, "muting left track preserves right track");
+    e.tracks[0].mute.store(false); e.tracks[0].solo.store(true);
+    energy = render(60);
+    require(energy[0] > 0.001 && energy[1] == 0, "solo isolates track after gain ramp");
+    e.tracks[1].solo.store(true);
+    energy = render(60);
+    require(energy[0] > 0.001 && energy[1] > 0.001, "multiple solos combine");
+    e.tracks[0].gain.store(0);
+    energy = render(60);
+    require(energy[0] == 0 && energy[1] > 0.001, "zero gain silences only its track");
+    e.tracks[0].gain.store(1);
+    alien::PianoRollPattern empty;
+    e.pianoRollNotes[0].publish(empty);
+    energy = render(60);
+    require(energy[0] == 0 && energy[1] > 0.001, "deleting equal-pitch note cannot release another track");
+    e.playing.store(false);
+    energy = render(1);
+    require(energy[0] == 0 && energy[1] == 0, "stop clears every independent synth");
+    e.audioDeviceStopped(); e.prepare(44100);
+    energy = render(1);
+    require(energy[0] == 0 && energy[1] == 0, "device restart cannot resurrect notes");
+}
+
 int main() {
+    independentTrackMixerTests();
     perStepPitchAndVelocityTests();
     playbackStopAndRestartTests();
     activeEditingTests();

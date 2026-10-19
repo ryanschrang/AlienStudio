@@ -8,6 +8,8 @@
 #include "AudioClipImport.h"
 #include "AudioClipWaveform.h"
 #include "SessionProject.h"
+#include "TrackMixerPanel.h"
+#include "PortableProject.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -202,6 +204,11 @@ public:
         saveProjectButton.setButtonText("Save");
         saveProjectButton.setName("Save Alien Studio session project");
         saveProjectButton.onClick = [this] { saveProject(); };
+        addAndMakeVisible(portableProjectButton);
+        portableProjectButton.setButtonText("Save portable");
+        portableProjectButton.setName("Save project copy with collected audio");
+        portableProjectButton.setTooltip("Save a project file and adjacent media folder; move both together");
+        portableProjectButton.onClick = [this] { chooseProjectSavePath(true); };
         addAndMakeVisible(openProjectButton);
         openProjectButton.setButtonText("Open");
         openProjectButton.setName("Open Alien Studio session project");
@@ -266,6 +273,7 @@ public:
         tabs.addTab("16-step sequencer", AlienStudioLookAndFeel::panel, &stepsPanel, false);
         tabs.addTab("Piano roll", AlienStudioLookAndFeel::panel, &pianoRoll, false);
         tabs.addTab("Session", AlienStudioLookAndFeel::panel, &sessionPanel, false);
+        tabs.addTab("Mixer", AlienStudioLookAndFeel::panel, &mixerPanel, false);
         tabs.getTabbedButtonBar().addChangeListener(this);
         addAndMakeVisible(workspace);
         devicePanel.addAndMakeVisible(deviceTitle);
@@ -273,7 +281,7 @@ public:
         deviceTitle.setFont(juce::FontOptions(22.0f, juce::Font::bold));
         deviceTitle.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::text);
         devicePanel.addAndMakeVisible(deviceHelp);
-        deviceHelp.setText("Choose the synth voice and MIDI input used by the current pattern. Shift+Tab returns to the editor.",
+        deviceHelp.setText("Choose the live keyboard / step synth and MIDI input. Session instruments are in Mixer. Shift+Tab returns.",
                            juce::dontSendNotification);
         deviceHelp.setColour(juce::Label::textColourId, AlienStudioLookAndFeel::muted);
         devicePanel.addAndMakeVisible(midiLabel);
@@ -411,7 +419,7 @@ public:
         publishSessionClip(0, 0, false);
         updateSessionButtons();
         devicePanel.addAndMakeVisible(presetLabel);
-        presetLabel.setText("Synth preset", juce::dontSendNotification);
+        presetLabel.setText("Live / step synth", juce::dontSendNotification);
         presetLabel.setColour(juce::Label::textColourId, juce::Colour(0xffb9ced8));
         devicePanel.addAndMakeVisible(preset);
         preset.addItem("Lead (saw)", 1);
@@ -469,7 +477,8 @@ public:
         tempo.setBounds(330, 8, 150, 34);
         saveProjectButton.setBounds(494, 8, 66, 34);
         openProjectButton.setBounds(568, 8, 66, 34);
-        projectStatus.setBounds(648, 8, juce::jmax(100, right - 648), 34);
+        portableProjectButton.setBounds(642, 8, 112, 34);
+        projectStatus.setBounds(762, 8, juce::jmax(100, right - 762), 34);
         workspace.setBounds(16, 54, getWidth() - 32, getHeight() - 228);
         const auto rackWidth = devicePanel.getWidth();
         deviceTitle.setBounds(24, 18, rackWidth - 48, 34);
@@ -577,6 +586,7 @@ private:
         for (int i = 0; i < pads.size(); ++i)
             pads[i]->setPlaybackPosition(i == currentStep);
         midiInput.tick();
+        mixerPanel.tick();
         int controllerAction = -1;
         while (engine.controllerActions.pop(controllerAction)) {
             if (controllerAction < sceneCount) launchScene(controllerAction);
@@ -684,20 +694,21 @@ private:
         if (currentProjectFile.existsAsFile()) writeProject(currentProjectFile);
         else chooseProjectSavePath();
     }
-    void chooseProjectSavePath() {
+    void chooseProjectSavePath(bool portable = false) {
         projectFileChooser = std::make_unique<juce::FileChooser>("Save Alien Studio session",
             currentProjectFile.getParentDirectory().exists()
                 ? currentProjectFile : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
                     .getChildFile("AlienStudioSession.alienstudio"), "*.alienstudio");
         juce::Component::SafePointer<MainComponent> safe(this);
         projectFileChooser->launchAsync(juce::FileBrowserComponent::saveMode
-            | juce::FileBrowserComponent::canSelectFiles,
-            [safe](const juce::FileChooser& chooser) {
+            | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
+            [safe, portable](const juce::FileChooser& chooser) {
                 if (safe != nullptr && chooser.getResult() != juce::File{})
-                    safe->writeProject(chooser.getResult());
+                    safe->writeProject(chooser.getResult(), portable);
             });
     }
-    void writeProject(juce::File file) {
+    void writeProject(juce::File file, bool portable = false) {
+        if (projectBusy) return;
         saveEditedClip();
         alien::SessionProjectData project;
         project.launchQuantizationSteps = engine.launchQuantizationSteps.load();
@@ -705,6 +716,8 @@ private:
         project.selectedScene = selectedScene;
         project.bpm = engine.bpm.load();
         project.synthPreset = engine.preset.load();
+        for (std::size_t i = 0; i < engine.tracks.size(); ++i)
+            project.trackSettings[i] = engine.tracks[i].snapshot();
         for (std::size_t i = 0; i < project.stepPattern.size(); ++i)
             project.stepPattern[i] = engine.steps[i].load();
         for (std::size_t i = 0; i < project.stepPitches.size(); ++i) {
@@ -724,25 +737,43 @@ private:
             return;
         }
         const auto target = file.hasFileExtension("alienstudio") ? file : file.withFileExtension("alienstudio");
-        projectStatus.setText("Saving project…", juce::dontSendNotification);
+        setProjectBusy(true);
+        projectStatus.setText(portable ? "Collecting audio…" : "Saving project…", juce::dontSendNotification);
         juce::Component::SafePointer<MainComponent> safe(this);
-        std::function<juce::ThreadPoolJob::JobStatus()> saveJob = [safe, target, json] {
-            const bool success = target.replaceWithText(json);
-            juce::MessageManager::callAsync([safe, target, success] {
-                if (safe != nullptr) safe->finishProjectSave(target, success);
+        std::function<juce::ThreadPoolJob::JobStatus()> saveJob = [safe, target, project, portable] {
+            auto saved = std::make_shared<alien::SessionProjectData>();
+            juce::String error;
+            const bool success = alien::writeSessionProjectFile(target, project, portable, *saved, error);
+            juce::MessageManager::callAsync([safe, target, success, saved, project, error] {
+                if (safe != nullptr) {
+                    safe->setProjectBusy(false);
+                    if (success) {
+                        // Update only audio references from this snapshot; preserve edits made while saving.
+                        for (int scene = 0; scene < sceneCount; ++scene)
+                            for (int track = 0; track < trackCount; ++track) {
+                                auto& current = safe->clips[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
+                                const auto& old = project.clips[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
+                                const auto& written = saved->clips[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
+                                if (current.audioFilePath == old.audioFilePath && written.audioFilePath.isNotEmpty())
+                                    current.audioFilePath = alien::resolveProjectAudio(target, written.audioFilePath).getFullPathName();
+                            }
+                        safe->currentProjectFile = target;
+                        safe->projectStatus.setText("Saved " + target.getFileName(), juce::dontSendNotification);
+                        safe->projectStatus.setTooltip(target.getFullPathName());
+                    } else {
+                        safe->projectStatus.setText("Save failed: " + error, juce::dontSendNotification);
+                        safe->projectStatus.setTooltip(error);
+                    }
+                }
             });
             return juce::ThreadPoolJob::jobHasFinished;
         };
         audioImportPool.addJob(std::move(saveJob));
     }
-    void finishProjectSave(const juce::File& file, bool success) {
-        if (success) {
-            currentProjectFile = file;
-            projectStatus.setText("Saved " + file.getFileName(), juce::dontSendNotification);
-            projectStatus.setTooltip(file.getFullPathName());
-        } else {
-            projectStatus.setText("Could not write project file", juce::dontSendNotification);
-        }
+    void setProjectBusy(bool busy) {
+        projectBusy = busy;
+        saveProjectButton.setEnabled(!busy); portableProjectButton.setEnabled(!busy);
+        openProjectButton.setEnabled(!busy); importAudio.setEnabled(!busy);
     }
     void chooseProjectToOpen() {
         projectFileChooser = std::make_unique<juce::FileChooser>("Open Alien Studio session",
@@ -757,6 +788,8 @@ private:
             });
     }
     void startProjectLoad(const juce::File& file) {
+        if (projectBusy) return;
+        setProjectBusy(true);
         projectStatus.setText("Opening project…", juce::dontSendNotification);
         juce::Component::SafePointer<MainComponent> safe(this);
         std::function<juce::ThreadPoolJob::JobStatus()> loadJob = [safe, file] {
@@ -773,7 +806,7 @@ private:
                             const auto& clip = result->project.clips[static_cast<std::size_t>(scene)]
                                 [static_cast<std::size_t>(track)];
                             if (clip.audioFilePath.isEmpty()) continue;
-                            const juce::File audioFile(clip.audioFilePath);
+                            const auto audioFile = alien::resolveProjectAudio(file, clip.audioFilePath);
                             const auto decoded = alien::decodeSessionAudioClip(audioFile);
                             if (!decoded.clip) {
                                 result->error = "Track " + juce::String(track + 1) + ", Scene "
@@ -799,6 +832,7 @@ private:
         audioImportPool.addJob(std::move(loadJob));
     }
     void finishProjectLoad(const juce::File& file, const SessionProjectLoadResult& result) {
+        setProjectBusy(false);
         if (result.error.isNotEmpty()) {
             projectStatus.setText("Open failed: " + result.error, juce::dontSendNotification);
             projectStatus.setTooltip(result.error);
@@ -828,11 +862,12 @@ private:
                     [static_cast<std::size_t>(track)];
                 auto& destination = clips[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
                 destination.pattern = source.pattern;
-                destination.audioFilePath = source.audioFilePath;
+                destination.audioFilePath = source.audioFilePath.isEmpty() ? juce::String{}
+                    : alien::resolveProjectAudio(file, source.audioFilePath).getFullPathName();
                 const auto& asset = result.audioAssets[index];
                 destination.audio = asset.get();
                 destination.audioFileName = source.audioFilePath.isNotEmpty()
-                    ? juce::File(source.audioFilePath).getFileName() : juce::String{};
+                    ? alien::resolveProjectAudio(file, source.audioFilePath).getFileName() : juce::String{};
                 if (asset != nullptr) retainedAudioAssets.push_back(asset);
             }
         retainedAudioBytes += result.decodedBytes;
@@ -845,6 +880,9 @@ private:
         engine.bpm.store(result.project.bpm);
         preset.setSelectedId(result.project.synthPreset + 1, juce::dontSendNotification);
         engine.preset.store(result.project.synthPreset);
+        for (std::size_t i = 0; i < engine.tracks.size(); ++i)
+            engine.tracks[i].set(result.project.trackSettings[i]);
+        mixerPanel.refreshSettings();
         for (std::size_t i = 0; i < result.project.stepPattern.size(); ++i) {
             engine.steps[i].store(result.project.stepPattern[i]);
             pads[static_cast<int>(i)]->setToggleState(result.project.stepPattern[i], juce::dontSendNotification);
@@ -988,6 +1026,7 @@ private:
     AlienStudioLookAndFeel studioLookAndFeel;
     ToneEngine engine;
     alien::MidiInputPanel midiInput{engine.midi};
+    alien::TrackMixerPanel mixerPanel{engine.tracks};
     juce::AudioDeviceManager audio;
     juce::MidiKeyboardState keyboardState;
     juce::MidiKeyboardComponent keyboard{keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard};
@@ -997,7 +1036,7 @@ private:
     juce::Label title;
     juce::Label brandSubtitle, tempoLabel;
     juce::TextButton play;
-    juce::TextButton saveProjectButton, openProjectButton;
+    juce::TextButton saveProjectButton, openProjectButton, portableProjectButton;
     juce::Label projectStatus;
     juce::Slider tempo{juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight};
     juce::OwnedArray<SequencerStepButton> pads;
@@ -1027,7 +1066,7 @@ private:
     juce::File currentProjectFile;
     int selectedTrack{}, selectedScene{}, selectedStep{};
     int learningControllerAction{-1};
-    bool loadingClip{};
+    bool loadingClip{}, projectBusy{};
     juce::Component devicePanel;
     juce::Label deviceTitle, deviceHelp, presetLabel, midiLabel;
     alien::CompactWorkspace workspace{tabs, devicePanel};
