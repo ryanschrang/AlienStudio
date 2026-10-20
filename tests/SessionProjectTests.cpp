@@ -137,7 +137,55 @@ static void masterVolumeFormatTests() {
     require(!invalid.valid() && alien::serializeSessionProject(invalid).isEmpty(), "a non-finite master volume is never written");
 }
 
+// Recording settings are an optional object in the file, so older projects keep opening unchanged.
+static void recordingSettingsFormatTests() {
+    juce::String error;
+    alien::SessionProjectData source;
+    require(source.recording == alien::RecordSettings{} && source.recording.countInBars == 1 && !source.recording.metronome,
+        "default recording settings");
+    source.recording.metronome = true; source.recording.metronomeVolume = 0.8f; source.recording.countInBars = 2;
+    source.recording.latencyOffsetMs = -35; source.recording.replace = true;
+    alien::SessionProjectData loaded;
+    require(alien::parseSessionProject(alien::serializeSessionProject(source), loaded, error) && loaded.recording == source.recording,
+        "recording settings round-trip");
+
+    auto withRecording = [&](const std::function<void(juce::DynamicObject&)>& edit, bool remove) {
+        alien::SessionProjectData fresh;
+        fresh.recording = source.recording;
+        auto json = juce::JSON::parse(alien::serializeSessionProject(fresh));
+        if (remove) json.getDynamicObject()->removeProperty("recording");
+        else edit(*json.getDynamicObject()->getProperty("recording").getDynamicObject());
+        alien::SessionProjectData parsed; juce::String message;
+        const bool ok = alien::parseSessionProject(juce::JSON::toString(json), parsed, message);
+        return std::make_pair(ok, parsed.recording);
+    };
+    const auto none = withRecording({}, true);
+    require(none.first && none.second == alien::RecordSettings{}, "a file without recording settings opens with the defaults");
+    require(withRecording([](juce::DynamicObject& o) { o.setProperty("countInBars", 0); }, false).first, "count-in can be switched off");
+    require(withRecording([](juce::DynamicObject& o) { o.setProperty("metronomeVolume", 1); }, false).first, "an integer volume is accepted");
+    for (const auto& [name, value] : std::vector<std::pair<const char*, juce::var>>{
+             {"countInBars", 3}, {"countInBars", -1}, {"countInBars", 1.5}, {"countInBars", "one"},
+             {"latencyOffsetMs", 101}, {"latencyOffsetMs", -101}, {"latencyOffsetMs", 2.5},
+             {"metronomeVolume", 1.5}, {"metronomeVolume", -0.1}, {"metronomeVolume", "loud"},
+             {"metronome", 1}, {"metronome", "yes"}, {"replace", 0}, {"replace", "no"}}) {
+        require(!withRecording([&](juce::DynamicObject& o) { o.setProperty(name, value); }, false).first,
+            "recording settings that are out of range or of the wrong type are rejected");
+    }
+    require(!withRecording([](juce::DynamicObject& o) { o.removeProperty("replace"); }, false).first, "a recording object missing a field is rejected");
+    {
+        alien::SessionProjectData fresh;
+        auto json = juce::JSON::parse(alien::serializeSessionProject(fresh));
+        json.getDynamicObject()->setProperty("recording", 5);
+        alien::SessionProjectData parsed; juce::String message;
+        require(!alien::parseSessionProject(juce::JSON::toString(json), parsed, message), "a recording value that is not an object is rejected");
+    }
+    alien::SessionProjectData invalid;
+    invalid.recording.countInBars = 7;
+    require(!invalid.valid() && alien::serializeSessionProject(invalid).isEmpty(), "invalid recording settings are never written");
+}
+
 int main() {
+    recordingSettingsFormatTests();
     masterVolumeFormatTests();
     pluginStateLimitTests();
     portableProjectTests();

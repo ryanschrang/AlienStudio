@@ -95,12 +95,14 @@ public:
     bool isDirty() const noexcept { return runtimeDirty || history.currentId() != savedId; }
 
     bool undo() {
+        if (take.active) return false; // the take would be written over the restored clip
         DocumentHistory::Step step;
         if (const auto* state = history.undo(step)) { restore(*state, step); return true; }
         return false;
     }
 
     bool redo() {
+        if (take.active) return false;
         DocumentHistory::Step step;
         if (const auto* state = history.redo(step)) { restore(*state, step); return true; }
         return false;
@@ -108,6 +110,7 @@ public:
 
     // Replace the song with an empty default project.
     void newProject() {
+        abandonRecording();
         engine.playing.store(false);
         if (beforeDocumentReplaced) beforeDocumentReplaced();
         stopEverySlot();
@@ -232,6 +235,7 @@ public:
             engine.tracks[t].set(t < doc.tracks.size() ? doc.tracks[t].settings : TrackSettings{});
         engine.activeTracks.store(doc.trackCount());
         engine.masterControls.gain.store(doc.masterGain);
+        engine.recording.apply(doc.recording);
         for (std::size_t t = 0; t < engine.tracks.size(); ++t)
             for (int pad = 0; pad < drumPadCount; ++pad)
                 engine.drumKits[t].samples[pad].store(t < doc.tracks.size() ? doc.tracks[t].drumAssets[pad].get() : nullptr);
@@ -382,6 +386,107 @@ public:
         engine.pianoRollLaunches[index].publish(launch);
     }
 
+    // Recording ---------------------------------------------------------------
+    // What the user is told when a take ends.
+    struct RecordingOutcome {
+        int track{-1}, scene{-1};
+        int notesAdded{};                 // notes now in the clip because of this take
+        bool replaced{};                  // the take replaced the clip's earlier notes
+        bool refused{};                   // the engine could not start the take
+        bool discarded{};                 // the clip changed underneath the take, so nothing was kept
+        bool noteLimitReached{};          // the clip is full (1024 notes)
+        std::uint64_t droppedEvents{};    // played notes the engine had no room to report
+    };
+    struct RecordStart { bool started{}; juce::String reason; };
+    std::function<void(const RecordingOutcome&)> onRecordingFinished;
+
+    // Message thread only. Records into the selected clip, which must be empty
+    // or hold MIDI. The count-in, metronome and monitoring are done by the
+    // engine; the take becomes one undo step when it ends.
+    RecordStart startRecording() {
+        if (take.active) return {false, "Already recording."};
+        if (busy) return {false, "Wait for the current operation to finish."};
+        if (engine.recording.active()) return {false, "The previous take is still finishing. Try again in a moment."};
+        if (engine.patternMode.load() != 1)
+            return {false, "Open the Piano Roll or Session view to record."};
+        const int track = doc.selectedTrack, scene = doc.selectedScene;
+        if (!doc.isValidCell(track, scene)) return {false, "Select a clip to record into."};
+        const auto& clip = doc.clip(track, scene);
+        if (clip.isAudioClip()) return {false, "This clip holds audio. Choose an empty or MIDI clip to record into."};
+
+        take = {};
+        take.active = true;
+        take.track = track; take.scene = scene;
+        take.replace = doc.recording.replace;
+        take.id = ++lastTakeId;
+        take.assembler.reset(clip.notes().loopSteps);
+        take.droppedAtStart = engine.recording.events.droppedCount();
+        for (RecordEvent stale; engine.recording.events.pop(stale);) {}
+
+        engine.recording.apply(doc.recording);
+        engine.recording.targetTrack.store(track);
+        engine.recording.targetScene.store(scene);
+        engine.recording.take.store(take.id);
+        prepareClipForTake(track, scene, take.replace);
+        engine.recording.stopRequested.store(false);
+        engine.recording.startRequested.store(true);
+        return {true, {}};
+    }
+
+    // Ask the engine to end the take; its notes arrive through pollRecording().
+    void stopRecording() {
+        if (!take.active) return;
+        // Cancelled before the engine saw the request: nothing was recorded.
+        if (engine.recording.startRequested.exchange(false)) {
+            RecordEvent refusal;
+            refusal.kind = RecordEventKind::refused;
+            refusal.take = take.id;
+            take.assembler.consume(refusal);
+            take.cancelled = true;
+            finishTake();
+            return;
+        }
+        engine.recording.stopRequested.store(true);
+    }
+
+    bool isRecording() const noexcept { return take.active; }
+    int recordingTrack() const noexcept { return take.active ? take.track : -1; }
+    int recordingScene() const noexcept { return take.active ? take.scene : -1; }
+
+    // Drops a take without keeping it (the document is being replaced).
+    void abandonRecording() {
+        if (!take.active) return;
+        take.active = false;
+        engine.recording.startRequested.store(false);
+        engine.recording.stopRequested.store(true);
+    }
+
+    // Message-thread timer: turns what the engine captured into notes, lets the
+    // looping clip play back what has been recorded so far, and finishes the take.
+    void pollRecording() {
+        if (!take.active) {
+            for (RecordEvent stale; engine.recording.events.pop(stale);) {}
+            return;
+        }
+        bool changed = false, ended = false;
+        for (RecordEvent event; engine.recording.events.pop(event);) {
+            if (event.take != take.id) continue;
+            take.assembler.consume(event);
+            changed = true;
+            if (event.kind == RecordEventKind::refused) take.refused = true;
+            if (event.kind == RecordEventKind::end || event.kind == RecordEventKind::refused) { ended = true; break; }
+        }
+        if (ended) finishTake();
+        else if (changed) previewTake();
+    }
+
+    void setRecordSettings(const RecordSettings& settings) {
+        if (!settings.valid() || settings == doc.recording) return;
+        doc.recording = settings;
+        engine.recording.apply(settings);
+        commit("Change recording settings", -1, -1, "recordSettings");
+    }
+
     // Republish only when the clip is playing or queued, so content changes
     // are heard without launching anything new.
     void republishIfLive(int track, int scene) {
@@ -424,6 +529,7 @@ public:
     // playing queues it to launch, so changes are heard straight away.
     void setClipPattern(int track, int scene, const PianoRollPattern& pattern, bool publishToEngine) {
         if (!doc.isValidCell(track, scene)) return;
+        if (take.active && track == take.track && scene == take.scene) return; // the take owns this clip until it ends
         auto& clip = doc.clip(track, scene);
         // Re-loading a clip into the editor reports identical notes; keep the
         // existing object so it does not look like an edit.
@@ -902,6 +1008,7 @@ private:
                    "Close and restart Alien Studio to release audio from older sessions.");
             return;
         }
+        abandonRecording();
         engine.playing.store(false);
         engine.synchronizedSceneLaunch.store(false);
         if (beforeDocumentReplaced) beforeDocumentReplaced();
@@ -1018,6 +1125,83 @@ private:
 
     void historyChanged() { if (onHistoryChanged) onHistoryChanged(); }
 
+    // Recording helpers -----------------------------------------------------
+    // Makes the target clip the one looping on its track. Overdub leaves a clip
+    // that is already playing untouched; replace plays it silent so only the
+    // new notes are heard while recording.
+    void prepareClipForTake(int track, int scene, bool replace) {
+        const auto index = static_cast<std::size_t>(track);
+        const bool live = engine.playing.load() && engine.activePianoRollClip[index].load() == scene;
+        if (!replace) {
+            if (!live) publishClip(track, scene);
+            return;
+        }
+        auto silent = doc.clip(track, scene).notes();
+        silent.clear();
+        if (live) {
+            engine.pianoRollNotes[index].publish(silent);
+            return;
+        }
+        engine.requestedPianoRollClip[index].store(scene);
+        SessionClipLaunch launch;
+        launch.pattern = silent;
+        launch.clipIndex = scene;
+        engine.pianoRollLaunches[index].publish(launch);
+    }
+
+    // Make the engine play what the document holds for this clip.
+    void syncLiveClip(int track, int scene) {
+        const auto index = static_cast<std::size_t>(track);
+        if (engine.activePianoRollClip[index].load() == scene) engine.pianoRollNotes[index].publish(doc.clip(track, scene).notes());
+        else republishIfLive(track, scene);
+    }
+
+    // The clip loops with everything recorded so far, so a take can be heard
+    // layering up while it is made.
+    void previewTake() {
+        const auto index = static_cast<std::size_t>(take.track);
+        if (take.assembler.notes().size() == take.previewedNotes) return;
+        if (engine.activePianoRollClip[index].load() != take.scene) return;
+        if (!doc.isValidCell(take.track, take.scene) || doc.clip(take.track, take.scene).isAudioClip()) return;
+        bool truncated = false;
+        engine.pianoRollNotes[index].publish(take.assembler.mergeInto(doc.clip(take.track, take.scene).notes(), take.replace, truncated));
+        take.previewedNotes = take.assembler.notes().size();
+    }
+
+    void finishTake() {
+        RecordingOutcome outcome;
+        outcome.track = take.track; outcome.scene = take.scene; outcome.replaced = take.replace;
+        outcome.droppedEvents = engine.recording.events.droppedCount() - take.droppedAtStart;
+        outcome.noteLimitReached = take.assembler.noteLimitReached();
+        outcome.refused = take.refused && !take.cancelled;
+        const int track = take.track, scene = take.scene;
+        const auto recorded = take.assembler.notes().size();
+        const auto assembler = take.assembler;
+        take.active = false; // before the clip is written: the take no longer owns it
+        auto announce = [&] { if (onRecordingFinished) onRecordingFinished(outcome); };
+
+        if (!doc.isValidCell(track, scene) || doc.clip(track, scene).isAudioClip()) {
+            outcome.discarded = true;
+            announce();
+            return;
+        }
+        if (recorded == 0) { // keep what was there (replace played the clip silent)
+            syncLiveClip(track, scene);
+            announce();
+            return;
+        }
+        const auto& base = doc.clip(track, scene).notes();
+        bool truncated = false;
+        const auto merged = assembler.mergeInto(base, take.replace, truncated);
+        outcome.noteLimitReached = outcome.noteLimitReached || truncated;
+        outcome.notesAdded = static_cast<int>(merged.count) - (take.replace ? 0 : static_cast<int>(base.count));
+        const bool changes = !samePianoRollPattern(base, merged);
+        setClipPattern(track, scene, merged, true);
+        if (!changes) syncLiveClip(track, scene);
+        commit("Record MIDI", track, scene);
+        announce();
+    }
+
     void publishStop(std::size_t track) {
         engine.requestedPianoRollClip[track].store(-1);
         SessionClipLaunch stopped;
@@ -1045,6 +1229,7 @@ private:
     }
 
     void stopEverySlot() {
+        abandonRecording(); // tracks or scenes are being renumbered, so the target is no longer valid
         engine.synchronizedSceneLaunch.store(false);
         for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track) publishStop(track);
     }
@@ -1052,6 +1237,17 @@ private:
     void setBusy(bool b) { busy = b; if (onBusyChanged) onBusyChanged(b); }
     void status(const juce::String& text, const juce::String& tip) { if (onProjectStatus) onProjectStatus(text, tip); }
     void importStatus(const juce::String& text, const juce::String& tip) { if (onImportStatus) onImportStatus(text, tip); }
+
+    struct Take {
+        bool active{}, replace{}, refused{}, cancelled{};
+        int track{-1}, scene{-1};
+        std::uint32_t id{};
+        std::uint64_t droppedAtStart{};
+        std::size_t previewedNotes{};
+        RecordingAssembler assembler;
+    };
+    Take take;
+    std::uint32_t lastTakeId{};
 
     ToneEngine& engine;
     ProjectDocument doc;

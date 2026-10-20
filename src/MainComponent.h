@@ -151,6 +151,18 @@ public:
     // Close the app, prompting for unsaved changes first.
     void requestQuit(std::function<void()> quit) {
         if (activeCapture) { closeAfterTake = true; finishRecording(); return; }
+        if (controller.isRecording()) {
+            // Let a MIDI take finish first so what was played is kept (and offered for saving).
+            controller.stopRecording();
+            juce::Component::SafePointer<MainComponent> safe(this);
+            juce::Timer::callAfterDelay(250, [safe, quit] {
+                if (safe == nullptr) return;
+                safe->controller.pollRecording();
+                if (safe->controller.isRecording()) safe->controller.abandonRecording(); // the audio engine is not answering
+                safe->requestQuit(quit);
+            });
+            return;
+        }
         if (projectBusy) { audioTools.setStatus("Finish saving the take or audio operation before closing."); showView(6); return; }
 
         confirmDiscardChanges("close Alien Studio", [this, quit] {
@@ -172,7 +184,21 @@ private:
     // Wiring ------------------------------------------------------------------
     void wireTopBar() {
         topBar.onViewSelected = [this](int index) { showView(index); };
-        topBar.onPlayToggled = [this] { releaseNotes(); engine.playing.store(!engine.playing.load()); };
+        topBar.onPlayToggled = [this] {
+            // During a count-in the transport has not started, so Play/Stop cancels the take instead.
+            if (engine.recording.phase.load() == alien::RecordControls::countIn) { controller.stopRecording(); return; }
+            releaseNotes();
+            engine.playing.store(!engine.playing.load());
+        };
+        topBar.onRecordToggled = [this] { toggleRecording(); };
+        topBar.onMetronomeToggled = [this](bool on) {
+            auto settings = controller.document().recording;
+            settings.metronome = on;
+            controller.setRecordSettings(settings);
+        };
+        topBar.onRecordSettingsChanged = [this](const alien::RecordSettings& settings) {
+            controller.setRecordSettings(settings);
+        };
         topBar.onTempoChanged = [this](int bpm) {
             controller.setBpm(bpm);
             if (!topBar.isTempoDragging()) controller.commit("Change tempo", -1, -1, "tempo");
@@ -208,6 +234,9 @@ private:
         };
         controller.onDocumentRestored = [this] { restorePlugins(); refreshAll(); };
         controller.onHistoryChanged = [this] { updateUndoState(); };
+        controller.onRecordingFinished = [this](const alien::ProjectController::RecordingOutcome& outcome) {
+            finishedRecording(outcome);
+        };
         controller.onClipContentChanged = [this](int track, int scene) {
             sessionView.refreshSelectedClip();
             const auto& d = controller.document();
@@ -282,6 +311,7 @@ private:
     void refreshAll() {
         const auto& d = controller.document();
         topBar.setTempo(d.bpm);
+        topBar.setRecordSettings(d.recording);
         devicesView.setPreset(d.livePreset);
         mixerPanel.rebuild();
         stepsView.refresh();
@@ -298,6 +328,39 @@ private:
         loadingClip = false;
         sessionView.refreshSelectedClip();
         updateEditorTitle();
+    }
+
+    // Recording --------------------------------------------------------------
+    void toggleRecording() {
+        if (controller.isRecording()) { controller.stopRecording(); return; }
+        if (projectBusy || controller.isBusy()) return;
+        // Recording plays Session clips, so make sure the view that does so is showing.
+        if (workspace.isDeviceView() || (tabs.getCurrentTabIndex() != 1 && tabs.getCurrentTabIndex() != 2)) {
+            showView(1);
+            engine.patternMode.store(1); // the tab change reaches the engine only a moment later
+            releaseNotes();
+        }
+        const auto start = controller.startRecording();
+        if (!start.started) statusBar.setProjectStatus(start.reason, start.reason);
+    }
+
+    void finishedRecording(const alien::ProjectController::RecordingOutcome& outcome) {
+        const auto where = "Track " + juce::String(outcome.track + 1) + ", Scene " + juce::String(outcome.scene + 1);
+        juce::String message;
+        if (outcome.refused) message = "Recording could not start. Open the Piano Roll or Session view and try again.";
+        else if (outcome.discarded) message = "The clip changed while recording, so the take was not kept.";
+        else if (outcome.notesAdded <= 0) message = outcome.noteLimitReached ? where + " is full (1024 notes), so nothing was added."
+                                                                           : juce::String("Nothing was recorded.");
+        else {
+            message = "Recorded " + juce::String(outcome.notesAdded) + (outcome.notesAdded == 1 ? " note" : " notes") + " on " + where
+                + (outcome.replaced ? " (replaced the earlier notes)" : "");
+            if (outcome.noteLimitReached) message += ". The clip is full, so later notes were left out";
+        }
+        if (outcome.droppedEvents > 0) message += ". Some played notes could not be captured";
+        statusBar.setProjectStatus(message, message);
+        sessionView.setImportStatus(message, {});
+        sessionView.refreshFromDocument();
+        loadSelectedClip();
     }
 
     void chooseRelinkFolder() {
@@ -358,8 +421,8 @@ private:
     void updateOctave() { keyboardDock.setOctave(typingInput.typing.octave()); }
 
     // Undo / redo / file commands --------------------------------------------
-    void undo() { if (projectBusy || controller.isBusy()) return; snapshotPlugins(SnapshotReason::whenEdited); releaseNotes(); controller.undo(); }
-    void redo() { if (projectBusy || controller.isBusy()) return; snapshotPlugins(SnapshotReason::whenEdited); releaseNotes(); controller.redo(); }
+    void undo() { if (projectBusy || controller.isBusy() || controller.isRecording()) return; snapshotPlugins(SnapshotReason::whenEdited); releaseNotes(); controller.undo(); }
+    void redo() { if (projectBusy || controller.isBusy() || controller.isRecording()) return; snapshotPlugins(SnapshotReason::whenEdited); releaseNotes(); controller.redo(); }
     void newProject() { confirmDiscardChanges("start a new session", [this] { controller.newProject(); }); }
     void openProject() { confirmDiscardChanges("open another session", [this] { controller.chooseProjectToOpen(); }); }
 
@@ -423,6 +486,8 @@ private:
                 + juce::String(juce::roundToInt(audio.getCpuUsage() * 100.0)) + "%";
         }
         statusBar.setEngineStatus(text);
+        if (auto* device = audio.getCurrentAudioDevice(); device != nullptr && device->getCurrentSampleRate() > 0)
+            topBar.setOutputLatencyMs(1000.0 * device->getOutputLatencyInSamples() / device->getCurrentSampleRate());
     }
 
     // The main window stays hidden while the startup splash is up, so wait
@@ -471,6 +536,13 @@ private:
     }
 
     void timerCallback() override {
+        controller.pollRecording();
+        const int recordPhase = engine.recording.phase.load();
+        // A take the engine has not picked up yet already shows as recording.
+        topBar.setRecordState(controller.isRecording() && recordPhase == alien::RecordControls::idle
+                                  ? static_cast<int>(alien::RecordControls::recording) : recordPhase);
+        pianoRoll.setLocked(controller.isRecording() && controller.recordingTrack() == controller.document().selectedTrack
+                            && controller.recordingScene() == controller.document().selectedScene);
         const bool isPlaying = engine.playing.load();
         topBar.setPlaying(isPlaying);
         const bool stepMode = engine.patternMode.load() == 0;

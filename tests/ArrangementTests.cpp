@@ -95,5 +95,16 @@ int main() {
     const double unity=rms(1.0f), half=rms(0.5f), silent=rms(0.0f);
     check(unity>0.001 && std::abs(half/unity-0.5)<0.01,"export follows the master volume");
     check(silent==0.0,"zero master volume exports silence");
+    // The metronome is a monitoring aid: an engine left with it switched on must not put clicks in the file.
+    {
+        auto prepared=std::make_unique<ToneEngine>();
+        alien::RecordSettings clicking; clicking.metronome=true; prepared->recording.apply(clicking);
+        const auto out=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("alien-click-test",".wav");
+        std::atomic<bool> never{false}; alien::DrumSamplePointers noDrums{};
+        check(alien::exportArrangementWav(out,*project,*song,noDrums,never,error,prepared.get()),"export on a prepared engine");
+        juce::MemoryBlock plain,withMetronome; file.loadFileAsData(plain); out.loadFileAsData(withMetronome);
+        check(plain.getSize()>1000 && plain==withMetronome,"the metronome is not part of an exported file");
+        out.deleteFile();
+    }
     file.deleteFile();std::cout<<"Arrangement playback, persistence and WAV export passed\n";
 }

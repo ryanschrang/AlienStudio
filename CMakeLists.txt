@@ -86,6 +86,13 @@ if(BUILD_TESTING)
         juce::juce_audio_formats juce::juce_audio_basics)
     add_test(NAME ProjectControllerTests COMMAND ProjectControllerTests)
     set_tests_properties(ProjectControllerTests PROPERTIES TIMEOUT 60)
+    add_executable(MidiRecordingTests tests/MidiRecordingTests.cpp)
+    target_include_directories(MidiRecordingTests PRIVATE src)
+    target_compile_definitions(MidiRecordingTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(MidiRecordingTests PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_audio_devices
+        juce::juce_audio_formats juce::juce_audio_basics)
+    add_test(NAME MidiRecordingTests COMMAND MidiRecordingTests)
+    set_tests_properties(MidiRecordingTests PROPERTIES TIMEOUT 120)
 endif()
 
 if(BUILD_TESTING)

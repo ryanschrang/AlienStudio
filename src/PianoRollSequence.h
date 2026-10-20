@@ -249,6 +249,10 @@ public:
     int currentStep() const noexcept { return step; }
     int activeClipIndex() const noexcept { return activeClip; }
     double positionStep() const noexcept { return step < 0 ? -1.0 : samplePosition(); }
+    // Read by the recorder to place played notes inside the loop.
+    bool isRunning() const noexcept { return running; }
+    std::uint32_t cycleCount() const noexcept { return cycle; }
+    int loopLengthSteps() const noexcept { return pattern.loopSteps; }
 private:
     struct Event { int ticks{}; std::size_t note{}; bool on{}; };
     static constexpr double tickTolerance = 1e-9;

@@ -94,7 +94,7 @@ inline void drawCard(juce::Graphics& g, juce::Rectangle<float> r, juce::Colour f
 }
 
 enum class Glyph { none, play, stop, plus, minus, open, save, collect, devices, edit,
-                   waveform, learn, close, chevronDown, undo, redo, newDocument };
+                   waveform, learn, close, chevronDown, undo, redo, newDocument, record, metronome };
 
 inline void drawGlyph(juce::Graphics& g, Glyph glyph, juce::Rectangle<float> r, juce::Colour colour) {
     const float s = juce::jmin(r.getWidth(), r.getHeight());
@@ -208,6 +208,19 @@ inline void drawGlyph(juce::Graphics& g, Glyph glyph, juce::Rectangle<float> r, 
         p.startNewSubPath(x + s * 0.35f, y + s * 0.58f); p.lineTo(x + s * 0.67f, y + s * 0.58f);
         g.strokePath(p, juce::PathStrokeType(stroke * 0.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
         return;
+    case Glyph::record:
+        g.fillEllipse(r.reduced(s * 0.2f));
+        return;
+    case Glyph::metronome: {
+        // A tapering case with a swinging arm.
+        p.startNewSubPath(x + s * 0.36f, y + s * 0.12f); p.lineTo(x + s * 0.64f, y + s * 0.12f);
+        p.lineTo(x + s * 0.84f, y + s * 0.88f); p.lineTo(x + s * 0.16f, y + s * 0.88f); p.closeSubPath();
+        g.strokePath(p, juce::PathStrokeType(stroke * 0.85f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        juce::Path arm;
+        arm.startNewSubPath(x + s * 0.5f, y + s * 0.74f); arm.lineTo(x + s * 0.64f, y + s * 0.3f);
+        g.strokePath(arm, pen);
+        return;
+    }
     case Glyph::learn:
         g.drawEllipse(r.reduced(s * 0.16f), stroke * 0.8f);
         g.fillEllipse(r.reduced(s * 0.36f));

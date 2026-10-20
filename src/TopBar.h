@@ -1,6 +1,7 @@
 #pragma once
 #include "StudioWidgets.h"
 #include "Branding.h"
+#include "MidiRecording.h"
 #include <array>
 #include <functional>
 
@@ -57,6 +58,40 @@ public:
         play.setGlyphColour(col::accent);
         play.onClick = [this] { if (onPlayToggled) onPlayToggled(); };
 
+        addAndMakeVisible(record);
+        record.setButtonText("Record");
+        record.setIconOnly(true);
+        record.setGlyph(ui::Glyph::record);
+        record.setName("Record MIDI");
+        record.setTooltip("Record MIDI into the selected clip. Press again to stop.");
+        record.setColour(juce::TextButton::buttonColourId, col::control);
+        record.setColour(juce::TextButton::buttonOnColourId, col::danger);
+        record.setColour(juce::TextButton::textColourOnId, col::text);
+        record.setGlyphColour(col::danger);
+        record.onClick = [this] { if (onRecordToggled) onRecordToggled(); };
+
+        addAndMakeVisible(metronome);
+        metronome.setButtonText("Metronome");
+        metronome.setIconOnly(true);
+        metronome.setGlyph(ui::Glyph::metronome);
+        metronome.setName("Metronome");
+        metronome.setTooltip("Click along with the tempo while playing. The count-in always clicks.");
+        metronome.setClickingTogglesState(true);
+        metronome.setColour(juce::TextButton::buttonColourId, col::control);
+        metronome.setColour(juce::TextButton::buttonOnColourId, col::accent);
+        metronome.setColour(juce::TextButton::textColourOnId, col::accentInk);
+        metronome.setGlyphColour(col::textDim);
+        metronome.onClick = [this] { if (onMetronomeToggled) onMetronomeToggled(metronome.getToggleState()); };
+
+        addAndMakeVisible(recordOptions);
+        recordOptions.setButtonText("Recording options");
+        recordOptions.setIconOnly(true);
+        recordOptions.setGlyph(ui::Glyph::chevronDown);
+        recordOptions.setName("Recording options");
+        recordOptions.setTooltip("Count-in, metronome volume, overdub or replace, and latency compensation");
+        recordOptions.getProperties().set("style", "ghost");
+        recordOptions.onClick = [this] { showRecordOptions(); };
+
         addAndMakeVisible(transportDisplay);
         tempo.setSliderStyle(juce::Slider::LinearBarVertical);
         tempo.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
@@ -108,6 +143,9 @@ public:
     }
 
     std::function<void(int)> onViewSelected;
+    std::function<void()> onRecordToggled;
+    std::function<void(bool)> onMetronomeToggled;
+    std::function<void(const RecordSettings&)> onRecordSettingsChanged;
     std::function<void()> onPlayToggled, onTempoCommitted, onNew, onOpen, onSave, onSavePortable, onUndo, onRedo;
     std::function<void(int)> onTempoChanged;
 
@@ -124,11 +162,35 @@ public:
         play.setButtonText(playing ? "Stop" : "Play");
     }
 
+    // 0 = idle, 1 = counting in, 2 = recording (RecordControls::Phase).
+    void setRecordState(int phase) {
+        if (phase == recordPhase) return;
+        recordPhase = phase;
+        record.setColour(juce::TextButton::buttonOnColourId, phase == RecordControls::countIn ? ui::colours::warning : ui::colours::danger);
+        record.setColour(juce::TextButton::textColourOnId, phase == RecordControls::countIn ? ui::colours::accentInk : ui::colours::text);
+        record.setToggleState(phase != RecordControls::idle, juce::dontSendNotification);
+        record.setTooltip(phase == RecordControls::countIn ? "Counting in. Press to cancel."
+                          : phase == RecordControls::recording ? "Recording. Press to stop."
+                                                               : "Record MIDI into the selected clip. Press again to stop.");
+    }
+
+    void setRecordSettings(const RecordSettings& settings) {
+        recordSettings = settings;
+        metronome.setToggleState(settings.metronome, juce::dontSendNotification);
+    }
+
+    // Shown in the options tooltip so the player can judge the compensation.
+    void setOutputLatencyMs(double ms) {
+        recordOptions.setTooltip("Count-in, metronome volume, overdub or replace, and latency compensation. Device output latency "
+                                 + juce::String(ms, 1) + " ms is compensated automatically.");
+    }
+
     void setPosition(int step, bool running, const juce::String& source) { transportDisplay.setPosition(step, running, source); }
     void setTempo(int bpm) { tempo.setValue(bpm, juce::dontSendNotification); }
     bool isTempoDragging() const { return tempo.isMouseButtonDown(); }
 
     void setBusy(bool busy) {
+        record.setEnabled(!busy || recordPhase != RecordControls::idle);
         saveButton.setEnabled(!busy); portableButton.setEnabled(!busy); openButton.setEnabled(!busy);
         newButton.setEnabled(!busy);
     }
@@ -178,8 +240,14 @@ public:
         history.removeFromRight(4);
         undoButton.setBounds(history.removeFromRight(34).withSizeKeepingCentre(34, 32));
 
-        const int transportWidth = 44 + 8 + 300;
+        const int recordWidth = 34 + 20 + 6 + 40 + 6;
+        const int transportWidth = recordWidth + 44 + 8 + 300;
         auto transport = top.withSizeKeepingCentre(juce::jmin(top.getWidth(), transportWidth), 44);
+        metronome.setBounds(transport.removeFromLeft(34).withSizeKeepingCentre(34, 32));
+        recordOptions.setBounds(transport.removeFromLeft(20).withSizeKeepingCentre(20, 32));
+        transport.removeFromLeft(6);
+        record.setBounds(transport.removeFromLeft(40).withSizeKeepingCentre(40, 40));
+        transport.removeFromLeft(6);
         play.setBounds(transport.removeFromLeft(44).withSizeKeepingCentre(44, 40));
         transport.removeFromLeft(8);
         transportDisplay.setBounds(transport);
@@ -197,11 +265,58 @@ public:
     }
 
 private:
+    void showRecordOptions() {
+        namespace rm = recordmenu;
+        const auto& current = recordSettings;
+        juce::PopupMenu menu;
+        menu.addSectionHeader("Count-in");
+        for (int bars = 0; bars <= RecordSettings::maxCountInBars; ++bars)
+            menu.addItem(rm::countInBase + bars, bars == 0 ? juce::String("Off") : juce::String(bars) + (bars == 1 ? " bar" : " bars"),
+                         true, current.countInBars == bars);
+        menu.addSectionHeader("Metronome volume");
+        const int volume = rm::closestVolumeIndex(current.metronomeVolume);
+        for (int i = 0; i < static_cast<int>(rm::volumeLevels.size()); ++i)
+            menu.addItem(rm::volumeBase + i, rm::volumeNames[static_cast<std::size_t>(i)], true, i == volume);
+        menu.addSectionHeader("Recording over a clip that has notes");
+        menu.addItem(rm::overdubId, "Overdub: add to the notes already there", true, !current.replace);
+        menu.addItem(rm::replaceId, "Replace: start the clip over", true, current.replace);
+
+        juce::PopupMenu latency;
+        bool listed = false;
+        for (int i = 0; i < static_cast<int>(rm::latencyChoices.size()); ++i) {
+            const int ms = rm::latencyChoices[static_cast<std::size_t>(i)];
+            const bool on = ms == current.latencyOffsetMs;
+            listed = listed || on;
+            latency.addItem(rm::latencyBase + i,
+                            ms == 0 ? juce::String("0 ms (device latency only)")
+                                    : (ms > 0 ? "+" : "") + juce::String(ms) + " ms" + (ms > 0 ? " (earlier)" : " (later)"),
+                            true, on);
+        }
+        if (!listed) latency.addItem(9000, "Current: " + juce::String(current.latencyOffsetMs) + " ms", false, true);
+        latency.addSeparator();
+        latency.addItem(rm::nudgeEarlierId, "Nudge earlier by " + juce::String(rm::nudgeMs) + " ms");
+        latency.addItem(rm::nudgeLaterId, "Nudge later by " + juce::String(rm::nudgeMs) + " ms");
+        menu.addSeparator();
+        menu.addSubMenu("Latency compensation (" + (current.latencyOffsetMs > 0 ? juce::String("+") : juce::String())
+                        + juce::String(current.latencyOffsetMs) + " ms)", latency);
+
+        juce::Component::SafePointer<TopBar> safe(this);
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&recordOptions), [safe](int id) {
+            if (safe == nullptr || id <= 0) return;
+            const auto updated = recordmenu::apply(safe->recordSettings, id);
+            if (updated == safe->recordSettings) return;
+            safe->recordSettings = updated;
+            if (safe->onRecordSettingsChanged) safe->onRecordSettingsChanged(updated);
+        });
+    }
+
     juce::ComboBox extraViews;
     branding::LogoMark brandMark;
     juce::Label title, brandSubtitle;
     std::array<ui::GlyphButton, 4> viewButtons;
-    ui::GlyphButton play, newButton, openButton, saveButton, portableButton, undoButton, redoButton;
+    ui::GlyphButton play, record, metronome, recordOptions, newButton, openButton, saveButton, portableButton, undoButton, redoButton;
+    RecordSettings recordSettings;
+    int recordPhase{RecordControls::idle};
     juce::Slider tempo{juce::Slider::LinearBarVertical, juce::Slider::NoTextBox};
     ui::TransportDisplay transportDisplay{tempo};
     juce::Rectangle<int> viewSwitchBounds;

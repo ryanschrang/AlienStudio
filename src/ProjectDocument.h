@@ -73,6 +73,7 @@ struct ProjectDocument {
     int bpm{120};
     int launchQuantizationSteps{16};
     float masterGain{1.0f}; // whole-mix level, 0..maxMasterGain
+    RecordSettings recording; // metronome, count-in and recording options
     int livePreset{};
     int selectedTrack{};
     int selectedScene{};
@@ -148,7 +149,7 @@ inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
     auto sameSettings = [](const TrackSettings& x, const TrackSettings& y) {
         return x.preset == y.preset && x.gain == y.gain && x.pan == y.pan && x.mute == y.mute && x.solo == y.solo && x.instrument == y.instrument;
     };
-    if (a.masterPlugins != b.masterPlugins || a.masterGain != b.masterGain) return false;
+    if (a.masterPlugins != b.masterPlugins || a.masterGain != b.masterGain || !(a.recording == b.recording)) return false;
     if (a.arrangement.count != b.arrangement.count || a.arrangement.lengthBars != b.arrangement.lengthBars) return false;
     for (std::size_t i = 0; i < a.arrangement.count; ++i) {
         const auto& x = a.arrangement.regions[i]; const auto& y = b.arrangement.regions[i];
@@ -183,6 +184,7 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
     data.masterPlugins = doc.masterPlugins;
     data.launchQuantizationSteps = doc.launchQuantizationSteps;
     data.masterGain = doc.masterGain;
+    data.recording = doc.recording;
     data.selectedTrack = doc.selectedTrack;
     data.selectedScene = doc.selectedScene;
     data.bpm = doc.bpm;
@@ -215,6 +217,7 @@ inline ProjectDocument fromProjectData(const SessionProjectData& data) {
     doc.masterPlugins = data.masterPlugins;
     doc.launchQuantizationSteps = data.launchQuantizationSteps;
     doc.masterGain = data.masterGain;
+    doc.recording = data.recording;
     doc.selectedTrack = data.selectedTrack;
     doc.selectedScene = data.selectedScene;
     doc.bpm = data.bpm;

@@ -21,6 +21,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     auto* engine = preparedEngine ? preparedEngine : ownedEngine.get();
     engine->masterControls.gain.store(project.masterGain); // before prepare(), so the export starts at this level
     engine->prepare(48000);
+    engine->recording.metronome.store(false); // a monitoring aid: never part of the file
     for (auto& rack : engine->plugins->racks) {
         if (rack.instrument.processor) rack.instrument.processor->setNonRealtime(true);
         for (auto& slot : rack.effects) if (slot.processor) slot.processor->setNonRealtime(true);
