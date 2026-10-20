@@ -93,6 +93,10 @@ public:
     }
     // Shared by device startup and offline callback regression tests.
     void prepare(double rate) {
+        // A device restart may arrive while a take is active or still pending.
+        // Complete/refuse it before resetting transport state so the controller
+        // cannot remain attached to a take the audio thread has forgotten.
+        resetRecordingForDeviceChange();
         sampleRate = std::isfinite(rate) && rate > 0 ? rate : 44100.0;
         plugins->prepare(sampleRate);
         for (auto& buffer : clipBuffers) buffer.setSize(2, alien::PluginRuntime::blockSize);
@@ -108,14 +112,13 @@ public:
         masterRamp = alien::sanitizedMasterGain(masterControls.gain.load()); // no fade-in on start
         click.prepare(sampleRate);
         monitorTrack = -1; lastClickBeat = -1; countInBeats = 0; countInTotalBeats = 0;
-        recording.phase.store(alien::RecordControls::idle);
         midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
         discardPendingNotes();
         resetTransport();
     }
     void audioDeviceStopped() override {
         if (auto* take = capture.load()) take->done.store(true);
-        if (recording.phase.load() != alien::RecordControls::idle) endRecording();
+        resetRecordingForDeviceChange();
         for (std::size_t track = 0; track < sessionTracks; ++track)
             rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
         for (auto& player : audioPlayers) player.stop();
@@ -422,6 +425,10 @@ private:
         const auto shift = std::llround(delaySamples * alien::ticksPerSample(bpm.load(), sampleRate));
         return alien::recordPosition(roll.cycleCount(), ticks, shift, loopTicks);
     }
+    bool validRecordingTarget(int track, int scene) const noexcept {
+        return track >= 0 && track < std::clamp(activeTracks.load(std::memory_order_relaxed), 1, static_cast<int>(sessionTracks))
+            && scene >= 0 && scene < alien::maxSessionScenes;
+    }
     void pushRecordEvent(alien::RecordEventKind kind, int note, float velocity) noexcept {
         const int target = recording.targetTrack.load(std::memory_order_relaxed);
         const bool validTarget = target >= 0 && target < static_cast<int>(sessionTracks);
@@ -436,21 +443,39 @@ private:
     void captureNote(int note, float velocity) noexcept {
         if (note < 0 || note > 127 || recording.phase.load(std::memory_order_relaxed) != alien::RecordControls::recording) return;
         const int target = recording.targetTrack.load(std::memory_order_relaxed);
-        if (target < 0 || target >= static_cast<int>(sessionTracks)) return;
+        const int scene = recording.targetScene.load(std::memory_order_relaxed);
+        if (!validRecordingTarget(target, scene)) return;
         const auto& roll = rolls[static_cast<std::size_t>(target)];
-        if (!roll.isRunning() || roll.activeClipIndex() != recording.targetScene.load(std::memory_order_relaxed)) return;
+        if (!roll.isRunning() || roll.activeClipIndex() != scene) return;
         pushRecordEvent(velocity > 0 ? alien::RecordEventKind::noteOn : alien::RecordEventKind::noteOff, note, velocity);
     }
     void endRecording() noexcept {
         pushRecordEvent(alien::RecordEventKind::end, 0, 0.0f);
         recording.phase.store(alien::RecordControls::idle);
+        recording.targetTrack.store(-1, std::memory_order_relaxed);
+        recording.targetScene.store(-1, std::memory_order_relaxed);
+    }
+    void resetRecordingForDeviceChange() noexcept {
+        const bool pending = recording.startRequested.exchange(false);
+        recording.stopRequested.store(false, std::memory_order_relaxed);
+        if (recording.phase.load(std::memory_order_relaxed) != alien::RecordControls::idle) endRecording();
+        else if (pending) {
+            pushRecordEvent(alien::RecordEventKind::refused, 0, 0.0f);
+            recording.targetTrack.store(-1, std::memory_order_relaxed);
+            recording.targetScene.store(-1, std::memory_order_relaxed);
+        } else {
+            recording.targetTrack.store(-1, std::memory_order_relaxed);
+            recording.targetScene.store(-1, std::memory_order_relaxed);
+        }
+        recording.phase.store(alien::RecordControls::idle, std::memory_order_relaxed);
     }
     void beginRecording() noexcept {
         if (recording.phase.load() != alien::RecordControls::idle) return; // a take is already running
         const int track = recording.targetTrack.load(), scene = recording.targetScene.load();
-        if (track < 0 || track >= std::clamp(activeTracks.load(), 1, static_cast<int>(sessionTracks)) || scene < 0
-            || patternMode.load() != 1) {
+        if (!validRecordingTarget(track, scene) || patternMode.load() != 1) {
             pushRecordEvent(alien::RecordEventKind::refused, 0, 0.0f); // tells the GUI the request was refused
+            recording.targetTrack.store(-1, std::memory_order_relaxed);
+            recording.targetScene.store(-1, std::memory_order_relaxed);
             return;
         }
         const int bars = std::clamp(recording.countInBars.load(), 0, alien::RecordSettings::maxCountInBars);
@@ -491,8 +516,10 @@ private:
     // While a take is in progress the played notes go to the chosen track's own
     // instrument and mixer, so you hear what the recording will sound like.
     void updateMonitorRoute() noexcept {
-        const int wanted = recording.phase.load() != alien::RecordControls::idle
-            ? std::clamp(recording.targetTrack.load(), -1, static_cast<int>(sessionTracks) - 1) : -1;
+        const int target = recording.targetTrack.load(std::memory_order_relaxed);
+        const int scene = recording.targetScene.load(std::memory_order_relaxed);
+        const int wanted = recording.phase.load(std::memory_order_relaxed) != alien::RecordControls::idle
+                               && validRecordingTarget(target, scene) ? target : -1;
         if (wanted == monitorTrack) return;
         midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); }); // releases through the old route
         if (monitorTrack >= 0) releaseMonitor(static_cast<std::size_t>(monitorTrack));

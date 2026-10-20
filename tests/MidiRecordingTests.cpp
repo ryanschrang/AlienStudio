@@ -659,6 +659,36 @@ void endOfTakeTests() {
         rig.render(256);
         endsOnce(rig, 13, "pressing record then stop at once leaves nothing running");
     }
+    {
+        Rig rig; // a device re-prepare completes an active take before transport state is reset
+        setup(rig, 14);
+        rig.engine.prepare(44100);
+        endsOnce(rig, 14, "preparing a restarted device ends the active take");
+        require(rig.engine.recording.targetTrack.load() == -1 && rig.engine.recording.targetScene.load() == -1
+                && !rig.engine.recording.startRequested.load() && !rig.engine.recording.stopRequested.load(),
+            "device prepare clears the recording target and pending requests");
+    }
+    {
+        Rig rig; // a device transition before the first callback refuses the pending take
+        RecordSettings s;
+        startTake(rig.engine, 0, 0, 15, s);
+        rig.engine.prepare(48000);
+        const auto events = drain(rig.engine);
+        require(events.size() == 1 && events[0].kind == RecordEventKind::refused && events[0].take == 15
+                && rig.phase() == RecordControls::idle && rig.engine.recording.targetTrack.load() == -1
+                && rig.engine.recording.targetScene.load() == -1,
+            "device prepare refuses a pending take instead of leaving stale state");
+    }
+    {
+        Rig rig; // the audio thread independently rejects an out-of-range scene
+        RecordSettings s;
+        startTake(rig.engine, 0, alien::maxSessionScenes, 16, s, false);
+        rig.render(256);
+        const auto events = drain(rig.engine);
+        require(events.size() == 1 && events[0].kind == RecordEventKind::refused && events[0].take == 16
+                && rig.phase() == RecordControls::idle && rig.engine.recording.targetTrack.load() == -1,
+            "an invalid target scene is refused before the callback uses recording state");
+    }
     std::cout << "PASS: ending a take\n";
 }
 
