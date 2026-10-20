@@ -61,6 +61,14 @@ inline bool writeSessionProjectFile(const juce::File& target, SessionProjectData
         if (!collectPath(clip.audioFilePath)) return false;
     for (auto& kit : project.drumPaths) for (auto& path : kit)
         if (!collectPath(path)) return false;
+    // Channel Rack samples: built-in sounds are regenerated, so only files are referenced.
+    for (int c = 0; c < project.channelRack.channelCount; ++c) {
+        auto& channel = project.channelRack.info[static_cast<std::size_t>(c)];
+        if (!channel.isFile()) continue;
+        auto path = juce::String::fromUTF8(channel.sample.c_str(), static_cast<int>(channel.sample.size()));
+        if (!collectPath(path)) return false;
+        channel.sample = path.toStdString();
+    }
     const auto json = serializeSessionProject(project);
     if (json.isNotEmpty() && static_cast<juce::int64>(json.getNumBytesAsUTF8()) > maxProjectFileBytes)
         return fail("The project is larger than the 128 MiB limit this version can reopen. Remove large plugin state or audio references.");

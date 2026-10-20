@@ -8,6 +8,7 @@
 #include "Arrangement.h"
 #include "SessionCapacity.h"
 #include "PluginState.h"
+#include "RackProject.h"
 #include <juce_core/juce_core.h>
 #include <array>
 #include <cmath>
@@ -20,7 +21,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 6;
+inline constexpr int sessionProjectFormatVersion = 7;
 
 struct SessionProjectClip {
     PianoRollPattern pattern;
@@ -38,6 +39,7 @@ struct SessionProjectData {
     Arrangement arrangement;
     std::vector<PluginRackState> plugins;
     PluginRackState masterPlugins;
+    rack::Project channelRack = rack::Project::createDefault(); // Absent before version 7: the starting rack.
     int launchQuantizationSteps{16};
     float masterGain{1.0f}; // Absent in older files: unity.
     RecordSettings recording; // Absent in older files: defaults.
@@ -90,7 +92,8 @@ struct SessionProjectData {
             || !recording.valid())
             return false;
         if (plugins.size() != trackSettings.size() || !masterPlugins.valid() || !masterPlugins.instrument.descriptionXml.isEmpty()) return false;
-        for (const auto& rack : plugins) if (!rack.valid()) return false;
+        for (const auto& pluginRack : plugins) if (!pluginRack.valid()) return false;
+        if (!channelRack.valid()) return false;
         for (const auto& track : trackSettings) if (!track.valid()) return false;
         for (const int colour : trackColours) if (colour < 0 || colour > 255) return false;
         for (const auto& scene : clips) {
@@ -128,8 +131,9 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
         recordingObject->setProperty("replace", project.recording.replace);
         rootObject->setProperty("recording", recordingVar);
     }
+    rootObject->setProperty("channelRack", rack::rackToVar(project.channelRack));
     juce::Array<juce::var> pluginRacks;
-    for (const auto& rack : project.plugins) pluginRacks.add(rackToVar(rack));
+    for (const auto& pluginRack : project.plugins) pluginRacks.add(rackToVar(pluginRack));
     rootObject->setProperty("plugins", juce::var(pluginRacks));
     rootObject->setProperty("masterPlugins", rackToVar(project.masterPlugins));
     juce::Array<juce::var> settings;
@@ -435,6 +439,7 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         if (!racks || racks->size() != trackCount || !rackFromVar(rootObject->getProperty("masterPlugins"), parsed.masterPlugins)) { error="Invalid plugin racks"; return false; }
         for (int t=0;t<trackCount;++t) if (!rackFromVar((*racks)[t],parsed.plugins[t])) { error="Invalid plugin state"; return false; }
     }
+    if (formatVersion >= 7 && !rack::rackFromVar(rootObject->getProperty("channelRack"), parsed.channelRack, error)) return false;
     if (!parsed.valid()) { error = "Project settings are outside the supported range."; return false; }
     destination = std::move(parsed);
     error.clear();

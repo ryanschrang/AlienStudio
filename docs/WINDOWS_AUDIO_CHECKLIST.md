@@ -102,6 +102,31 @@ sample rate, buffer size, MIDI controller, display scale, and pass/fail notes.
     are the heaviest) and watch CPU and dropouts at 44.1/48/96 kHz and small buffers.
     Change the audio device's sample rate with effects loaded and confirm the delay
     times, reverb size and limiter latency still sound and line up correctly.
+20. Channel Rack, feel: open the Rack view. Paint a four-on-the-floor kick, a clap on 2 and 4
+    and eight hats while it plays (Play button). Painting, erasing and dragging across rows must
+    feel immediate, the playhead must stay on the beat at 60/120/200 BPM, and clicking a name
+    must sound at once even while stopped. Try 16/32/64 steps at 100%/150%/200% display scaling
+    and the minimum window size; 16 channels must scroll and nothing may overlap.
+21. Channel Rack, sound: compare each built-in sound (kick, snare, clap, closed/open hat, tom, rim,
+    cowbell) at velocities 20/64/127; draw velocity, pan, pitch and chance with the graph and
+    listen for the right result; chance should vary hit to hit. Set swing to 0/33/66% and
+    confirm every second sixteenth moves later. Closed and open hat in the same choke group
+    must cut each other; mute, solo and volume 0 must be silent without clicks.
+22. Channel Rack, routing: send a channel to Track 1 and confirm that track's fader, pan,
+    mute, solo, meter and FX affect it (and the master does not double it); route to the master
+    again. Delete or reorder that track and confirm the channel moves with it or falls back
+    to the master. Use a VST3 instrument track as the destination and confirm both the
+    instrument and the rack are heard.
+23. Channel Rack, samples and files: load a WAV and an MP3 into channels (long, mono and
+    stereo, 44.1 and 48 kHz) and confirm they play at the right speed. Save, close and reopen
+    (also Save portable). Rename or move the sample file, reopen: the channel should be silent
+    and labelled Missing; Relink audio should repair it. Undo/redo through steps, knobs,
+    patterns, channel moves and sample loads.
+24. Channel Rack, transport and safety: switch tabs, stop and start while hits are ringing,
+    change patterns and lengths while playing, edit steps while playing, and change the audio
+    device and its sample rate. Nothing may stick, click badly, hang or play on after Stop;
+    note any one-block glitch when moving channels or changing sounds during playback.
+    Confirm that the rack is silent in Song mode and in Export WAV (not yet supported).
 
 ## Results
 

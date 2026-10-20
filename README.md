@@ -4,7 +4,7 @@
 
 Alien Studio is an **independent, original application**, not affiliated with or endorsed by any of those products. We aim to learn from broadly useful workflows without copying proprietary code, artwork, branding, or protected assets.
 
-> **Project status:** Integrated early DAW prototype with up to 16 tracks/32 scenes, 12 built-in sounds, drum sample kits/browser, arrangement playback and WAV export, disk-streamed audio recording and offline tempo matching, five built-in stock effects (EQ, compressor, reverb, delay, limiter), plus initial stereo VST3 instrument/FX hosting. Project v6 unifies these features with saving, portable media collection, undo/redo and recovery. Native Windows device, plugin and listening checks remain required; see [the checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
+> **Project status:** Integrated early DAW prototype with up to 16 tracks/32 scenes, 12 built-in sounds, drum sample kits/browser, arrangement playback and WAV export, disk-streamed audio recording and offline tempo matching, five built-in stock effects (EQ, compressor, reverb, delay, limiter), an FL Studio-style Channel Rack with a pattern bank, plus initial stereo VST3 instrument/FX hosting. Project v7 unifies these features with saving, portable media collection, undo/redo and recovery. Native Windows device, plugin and listening checks remain required; see [the checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
 
 ## Product vision: three connected workspaces
 
@@ -26,6 +26,7 @@ The long-term differentiator is **one shared project and audio engine** across a
 - [x] Project-wide undo/redo, unsaved-changes prompts, one-minute autosave and crash recovery.
 - [x] MIDI recording into Session clips (computer keyboard or USB MIDI keyboard) with count-in, metronome, overdub/replace and latency compensation.
 - [x] Stock effects: EQ, compressor, reverb, tempo-synced delay and look-ahead limiter in every track and master FX rack, with custom panels.
+- [x] Channel Rack: FL-style drum step sequencer (16 channels, 16/32/64 steps, pattern bank, per-step velocity/pan/pitch/chance, swing) routed to the master or a Session track.
 - [x] GPL-3.0 license file. Dependency attribution/distribution review remains required before releases.
 
 ### Next implementation sequence
@@ -34,7 +35,8 @@ The long-term differentiator is **one shared project and audio engine** across a
 3. Waveform trimming/fades, take lanes and live warp-marker workflows.
 4. Plugin automation, sidechains/multi-output routing, freeze and crash isolation during playback.
 5. Recording follow-ups: controller data (pitch bend, mod wheel, sustain), quantize-on-record, loop-record takes and punch in/out.
-6. Automation lanes (track volume/pan and the parameters of stock effects) and a mouse-driven arrangement timeline.
+6. A mouse-driven arrangement timeline ("playlist") that places Channel Rack patterns, so patterns play in Song mode and WAV export (today the rack plays only on its own tab).
+7. Automation lanes (track volume/pan and the parameters of stock effects).
 
 
 ## Build from source (Windows 11)
@@ -561,10 +563,10 @@ Preset changes affect newly triggered notes; held notes retain their original
 patch until release. Mixer settings also affect imported audio on that track.
 Live MIDI/typing/mouse input and the legacy step sequencer remain on their separate
 Device rack synth; Session mute/solo does not mute live monitoring. Project format
-v6 stores track/scene names, drum kits, arrangement and plugin state; v3 stores
+v7 stores the Channel Rack and v6 added track/scene names, drum kits, arrangement and plugin state; v3 stores
 mixer settings for the original four tracks. Versions 1 and 2 load with the old
 global preset copied to all four tracks, centred balance, unity volume, and
-mute/solo off. Older Alien Studio versions cannot open v6 projects. Both historical v4 variants and v5 arrangements migrate on load.
+mute/solo off. Older Alien Studio versions cannot open v7 projects, and a v7 project is refused (with a reason) if its Channel Rack is damaged. Both historical v4 variants and v5 arrangements migrate on load.
 
 
 ### Recording MIDI: count-in, metronome, overdub and replace
@@ -660,6 +662,66 @@ a misbehaving plugin) is replaced by silence so feedback paths cannot lock up, a
 audio path never allocates, locks or blocks. The effects are stereo in and stereo out;
 there is no sidechain input yet, and parameter changes made while playing are not yet
 recorded as automation.
+
+### Channel Rack: FL-style step sequencer and pattern bank
+
+Press **Rack** in the top bar (it is the fifth view button; the older tabs keep their
+positions). The old **Steps** tab, with its single 16-step pattern for the live synth,
+is unchanged. The rack is a separate, richer sequencer for drums and samples.
+
+**Channels.** One row per sound, up to 16. A new project starts with Kick, Clap, Hat and
+Snare, all built in (synthesized by Alien Studio, no sample files). Each row has:
+
+- a **light** that is lit when the channel will sound: click to mute, right-click to solo;
+- the **name**: click to hear the sound, double-click to rename, right-click for the channel
+  menu (rename, choose a built-in sound or **Load sample file...**, **Silent**, output,
+  choke group, mute, solo, clear this channel's steps, move up/down, delete);
+- a **pan** knob and a **volume** knob (drag up/down, Shift for fine, mouse wheel, double-click
+  to reset; volume 80% is unity, the top is about +1.9 dB);
+- **S** (solo) and an **output** chip: **M** sends the channel to the master, **T1** to **T16**
+  into that Session track's mixer strip, so its volume/pan/mute/solo, effects and meter apply.
+  A channel routed to a track that is later deleted falls back to the master.
+
+**Steps.** Click or drag to paint steps; a drag across several channels paints each cell it
+crosses without gaps. A press on a lit step erases along the drag instead; right-drag always
+erases. Painting plays the sound. A whole stroke is one undo step. Ruler numbers mark each
+beat, and every group of four steps alternates in shade, as in FL Studio. A **choke group**
+cuts the other channels of the same group when one hits (closed and open hat).
+
+**Graph editor.** Under the rack, the **Velocity / Pan / Pitch / Chance** buttons choose what
+the bars show for the selected channel. Click or drag across the bars to draw (a fast drag
+draws a straight line between the bars it crosses); right-click a bar to reset it. Only lit
+steps can be edited. Pan runs -63 to +63 (the middle snaps to centre), pitch is +-24 semitones,
+chance is the probability (0 to 100%) that the step plays. Marks on a lit step show anything
+that is not the default: a dot for chance below 100%, a bar for pitch, a tick for pan.
+
+**Patterns.** The **Pattern** chooser holds up to 64 patterns. **+** adds an empty one;
+**...** clones, renames, clears or deletes the current one. **Steps** sets the pattern's
+length to 16, 32 or 64 steps (one, two or four bars); longer patterns scroll sideways with the
+scroll bar or Shift + mouse wheel, and 16 channels scroll with the mouse wheel on small windows.
+**Swing** delays every second sixteenth (0% is straight) for all patterns. The Play
+button plays the selected pattern from its first step, looping; switching patterns while it
+plays takes effect at the next block, not on a bar line.
+
+**Saving.** The rack is part of the project (format v7) and of undo/redo. Built-in sounds are
+saved by name; sample files by path, relative when they sit inside the project folder, and
+**Save portable** copies them next to the project. A missing sample opens as a silent,
+red-labelled channel that **Relink audio** can repair, like a missing clip.
+
+**Limits (honest list).**
+- The rack plays **only while the Rack tab is shown**. Patterns are not yet placed on the
+  arrangement, so they do not play in Song mode and are not in **Export WAV**. A mouse-driven
+  arrangement timeline that places patterns is the next planned step.
+- Pitch is set per step (+-24 semitones, which also changes the sample's speed). There is no
+  per-channel root note, sample envelope or start/end trim, no per-channel piano roll, and no
+  per-step note length, flam or sample offset yet; every hit is a one-shot.
+- Channel routing reaches Session mixer strips (volume/pan/mute/solo/FX/meters). Instrument-plugin
+  tracks keep their own audio; the rack is mixed into the same strip afterwards.
+- Changing the order or the sounds of channels while it plays can glitch for one audio block.
+- Loaded sample files stay in memory for the whole session and count towards the 512 MiB audio limit.
+- Verified by automated tests only on a Linux build (model, engine rendering, project file, undo,
+  mouse gestures on the screen's components). Not yet verified on Windows hardware: see the
+  checklist.
 
 ### Integrated workspaces and VST3 hosting
 

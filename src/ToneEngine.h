@@ -15,6 +15,7 @@
 #include "AudioCapture.h"
 #include "PluginRuntime.h"
 #include "MidiRecording.h"
+#include "RackEngine.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -76,6 +77,14 @@ public:
     std::atomic<int> activeTracks{alien::sessionProjectTrackCount};
     std::atomic<bool> synchronizedSceneLaunch{false};
     std::atomic<int> launchQuantizationSteps{16}; // One bar by default (16 sixteenth-note steps).
+    // Channel Rack. The project is published as an immutable snapshot; each
+    // channel's decoded sample is an immutable clip retained by the session
+    // owner; previews from the GUI arrive as (channel, velocity) events.
+    // Pattern mode (patternMode 3) plays the selected pattern in a loop.
+    alien::rack::SnapshotMailbox rackMailbox;
+    alien::rack::RackPlayer::SampleTable rackSamples{};
+    NoteQueue rackAuditions;
+    std::atomic<int> rackStep{-1}; // step of the selected pattern that started last, or -1
 
     ToneEngine() noexcept {
         for (auto& pitch : stepPitches) pitch.store(57, std::memory_order_relaxed);
@@ -103,6 +112,7 @@ public:
         synth.prepare(sampleRate);
         for (auto& voice : trackSynths) voice.prepare(sampleRate);
         for (auto& sampler : drumSamplers) sampler.prepare(sampleRate);
+        rackPlayer.prepare(sampleRate); rackStep.store(-1);
         for (auto& mixer : trackMixers) mixer.prepare(sampleRate);
         masterRampCoefficient = static_cast<float>(1.0 - std::exp(-1.0 / (sampleRate * 0.005)));
         masterRamp = alien::sanitizedMasterGain(masterControls.gain.load()); // no fade-in on start
@@ -175,6 +185,7 @@ private:
             allSoundOff(); resetTransport();
             midi.requestReset();
         }
+        if (const auto* fresh = rackMailbox.consume()) rackSnapshot = fresh;
         wasPlaying = playNow; wasMode = modeNow;
         synth.setPatch(alien::presets[static_cast<std::size_t>(juce::jlimit(0, alien::presetCount - 1, preset.load()))]);
         bool anySolo = false;
@@ -205,6 +216,14 @@ private:
         // Bound work per callback even if the producer keeps publishing.
         for (int n = 0; n < 256 && notes.pop(event); ++n) {
             if (!panic) keyboardNote(event.note, event.velocity);
+        }
+        {   // Previews from the Channel Rack screen (sound whatever the transport is doing).
+            NoteQueue::Event preview{};
+            for (int n = 0; n < 64 && rackAuditions.pop(preview); ++n)
+                if (!panic && preview.note >= 0 && preview.note < alien::rack::maxChannels)
+                    rackPlayer.audition(*rackSnapshot, preview.note, preview.velocity,
+                                        rackSamples[static_cast<std::size_t>(preview.note)].load(std::memory_order_relaxed));
+            if (rackAuditions.panic.exchange(false)) rackPlayer.stop();
         }
         if (panic) {
             for (std::size_t track = 0; track < sessionTracks; ++track)
@@ -355,6 +374,7 @@ private:
         plugins->instruments(samples);
         for (std::size_t t = 0; t < sessionTracks; ++t)
             for (int c = 0; c < 2; ++c) plugins->tracks[t].addFrom(c,0,clipBuffers[t],c,0,samples);
+        renderRack(samples, playNow && modeNow == 3);
         plugins->effectsAndAlign(samples);
         for (int i = 0; i < samples; ++i) {
             float left = plugins->live.getSample(0,i), right = plugins->live.getSample(1,i);
@@ -391,6 +411,27 @@ private:
         }
     }
 private:
+    // Renders the Channel Rack and adds each output bus after the track
+    // instruments, so a plug-in instrument on a track cannot replace it: buses
+    // for Session tracks join that track (and so pass through its effects and
+    // mixer strip), the master bus joins the live bus, aligned like the tracks.
+    void renderRack(int samples, bool running) noexcept {
+        auto& buses = *rackBuses;
+        std::array<float*, alien::rack::RackPlayer::busCount> left{}, right{};
+        for (std::size_t b = 0; b < left.size(); ++b) {
+            std::fill_n(buses.left[b].begin(), samples, 0.0f);
+            std::fill_n(buses.right[b].begin(), samples, 0.0f);
+            left[b] = buses.left[b].data(); right[b] = buses.right[b].data();
+        }
+        rackPlayer.process(*rackSnapshot, rackSamples, running, bpm.load(), activeTracks.load(), samples, left.data(), right.data());
+        rackStep.store(running ? rackPlayer.currentStep() : -1, std::memory_order_relaxed);
+        for (std::size_t t = 0; t < sessionTracks; ++t) {
+            plugins->tracks[t].addFrom(0, 0, left[t], samples);
+            plugins->tracks[t].addFrom(1, 0, right[t], samples);
+        }
+        plugins->live.addFrom(0, 0, left[alien::rack::RackPlayer::masterBus], samples);
+        plugins->live.addFrom(1, 0, right[alien::rack::RackPlayer::masterBus], samples);
+    }
     void startSongRegion(std::size_t track, int regionIndex) noexcept {
         auto send = [this,track](int n,float v,bool on) { sendPattern(track,n,v,on); };
         rolls[track].stop(send); audioPlayers[track].stop();
@@ -555,6 +596,7 @@ private:
     }
     void allSoundOff() noexcept {
         synth.allSoundOff();
+        rackPlayer.stop();
 
         for (std::size_t t=0;t<sessionTracks;++t) if (plugins->hasInstrument(t))
             plugins->silence(t);
@@ -603,6 +645,12 @@ private:
     double countInBeats{}, countInTotalBeats{};
     int monitorTrack{-1}; // track whose instrument plays live input during a take, or -1
     alien::StepClock clock;
+    struct RackBuses {
+        std::array<std::array<float, alien::PluginRuntime::blockSize>, alien::rack::RackPlayer::busCount> left{}, right{};
+    };
+    std::unique_ptr<RackBuses> rackBuses = std::make_unique<RackBuses>();
+    alien::rack::RackPlayer rackPlayer;
+    const alien::rack::Snapshot* rackSnapshot = rackMailbox.current();
     FixedHeapArray<alien::PianoRollScheduler, sessionTracks> rolls;
     FixedHeapArray<alien::SessionAudioPlayer, sessionTracks> audioPlayers;
     std::unique_ptr<alien::SessionClipLaunch> launchScratch = std::make_unique<alien::SessionClipLaunch>();

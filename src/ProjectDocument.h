@@ -80,6 +80,7 @@ struct ProjectDocument {
     StepSequence steps;
     Arrangement arrangement;
     PluginRackState masterPlugins;
+    rack::Project channelRack = rack::Project::createDefault(); // the Channel Rack; decoded samples are held by the ProjectController
 
     static ProjectDocument createDefault(int trackCount = sessionProjectTrackCount,
                                          int sceneCount = sessionProjectSceneCount) {
@@ -150,6 +151,7 @@ inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
         return x.preset == y.preset && x.gain == y.gain && x.pan == y.pan && x.mute == y.mute && x.solo == y.solo && x.instrument == y.instrument;
     };
     if (a.masterPlugins != b.masterPlugins || a.masterGain != b.masterGain || !(a.recording == b.recording)) return false;
+    if (!a.channelRack.sameContent(b.channelRack)) return false; // which pattern is selected is not an edit
     if (a.arrangement.count != b.arrangement.count || a.arrangement.lengthBars != b.arrangement.lengthBars) return false;
     for (std::size_t i = 0; i < a.arrangement.count; ++i) {
         const auto& x = a.arrangement.regions[i]; const auto& y = b.arrangement.regions[i];
@@ -182,6 +184,7 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
     SessionProjectData data(doc.trackCount(), doc.sceneCount());
     data.arrangement = doc.arrangement;
     data.masterPlugins = doc.masterPlugins;
+    data.channelRack = doc.channelRack;
     data.launchQuantizationSteps = doc.launchQuantizationSteps;
     data.masterGain = doc.masterGain;
     data.recording = doc.recording;
@@ -215,6 +218,7 @@ inline ProjectDocument fromProjectData(const SessionProjectData& data) {
     auto doc = ProjectDocument::createDefault(data.trackCount(), data.sceneCount());
     doc.arrangement = data.arrangement;
     doc.masterPlugins = data.masterPlugins;
+    doc.channelRack = data.channelRack;
     doc.launchQuantizationSteps = data.launchQuantizationSteps;
     doc.masterGain = data.masterGain;
     doc.recording = data.recording;
