@@ -110,9 +110,9 @@ int main() {
     // Rendering the same timeline with different callback sizes must produce
     // identical samples: there is no prebuffer timing in the result.
     auto oneBlock = alien::DeterministicStreamedArrangement::create(
-        song, 120.0, 48000.0, 1.0f, cancelled, error);
+        *song, 120.0, 48000.0, 1.0f, cancelled, error);
     auto splitBlocks = alien::DeterministicStreamedArrangement::create(
-        song, 120.0, 48000.0, 1.0f, cancelled, error);
+        *song, 120.0, 48000.0, 1.0f, cancelled, error);
     std::array<juce::AudioBuffer<float>, alien::maxSessionTracks> whole, split;
     prepare(whole, 5); oneBlock->addBlock(whole, 5);
     prepare(split, 5);
@@ -138,7 +138,7 @@ int main() {
 
     cancelled.store(true);
     auto stopped = alien::DeterministicStreamedArrangement::create(
-        song,120.0,48000.0,1.0f,cancelled,error);
+        *song,120.0,48000.0,1.0f,cancelled,error);
     prepare(tracks,5); stopped->addBlock(tracks,5);
     check(stopped->wasCancelled() && stopped->renderedFrames()==0,
           "cancellation stops before another block is read");
