@@ -14,7 +14,7 @@ class AudioClipWaveform final : public juce::Component {
 public:
     enum class State { empty, offline, loading, readyDecoded, readyStreaming, error };
 
-    AudioClipWaveform() { setTooltip("Ctrl+mouse wheel zooms; mouse wheel scrolls a zoomed waveform"); }
+    AudioClipWaveform() = default;
     ~AudioClipWaveform() override { alive.reset(); jobs.removeAllJobs(true, -1); }
 
     void setClip(const SessionAudioClip* replacement, juce::String displayName,
@@ -62,7 +62,8 @@ public:
     void mouseWheelMove(const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) override {
         if (state != State::readyDecoded && state != State::readyStreaming) return;
         if (event.mods.isCtrlDown() || event.mods.isCommandDown()) {
-            const double anchor = juce::jlimit(0.0, 1.0, event.position.x / std::max(1.0f, static_cast<float>(getWidth())));
+            const double anchor = juce::jlimit(0.0, 1.0, static_cast<double>(event.position.x)
+                / std::max(1.0, static_cast<double>(getWidth())));
             const double before = viewStart + anchor / zoom;
             zoom = juce::jlimit(1.0, 128.0, zoom * std::pow(2.0, wheel.deltaY * 2.0));
             viewStart = juce::jlimit(0.0, 1.0 - 1.0 / zoom, before - anchor / zoom);

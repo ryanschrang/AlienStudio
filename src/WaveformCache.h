@@ -37,8 +37,12 @@ public:
             : project.getSiblingFile(project.getFileName() + ".cache").getChildFile("waveforms");
         const auto canonical = source.getFullPathName().toLowerCase();
         const auto utf8 = canonical.toUTF8();
-        const juce::MD5 digest(utf8.getAddress(), utf8.sizeInBytes() - 1);
-        return root.getChildFile(digest.toHexString() + ".awp");
+        std::uint64_t hash = 1469598103934665603ULL;
+        for (std::size_t i=0;i+1<utf8.sizeInBytes();++i) {
+            hash ^= static_cast<unsigned char>(utf8.getAddress()[i]);
+            hash *= 1099511628211ULL;
+        }
+        return root.getChildFile(juce::String::toHexString(static_cast<juce::int64>(hash)) + ".awp");
     }
 
     static WaveformCacheResult loadOrCreate(const juce::File& source, const juce::File& cache,
