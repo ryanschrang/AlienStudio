@@ -12,8 +12,9 @@ public:
             &add,&apply,&duplicate,&remove,&undo,&exportWav,&status}) addAndMakeVisible(c);
         for (int i=1;i<=4;++i) { track.addItem("Track "+juce::String(i),i); scene.addItem("Scene "+juce::String(i),i); }
         track.setSelectedId(1); scene.setSelectedId(1);
-        setup(start,1,128,1,"Start bar "); setup(length,1,128,4,"Bars ");
-        setup(songLength,1,128,16,"Song bars "); setup(page,1,113,1,"View from ");
+        setup(start,1,Arrangement::maxLengthBars,1,"Start bar "); setup(length,1,Arrangement::maxLengthBars,4,"Bars ");
+        setup(songLength,1,Arrangement::maxLengthBars,16,"Song bars ");
+        setup(page,1,Arrangement::maxLengthBars-15,1,"View from ");
         track.setName("Arrangement destination track"); scene.setName("Source Session scene");
         start.setName("Region start bar"); length.setName("Region length in bars");
         songLength.setName("Song duration in bars"); page.setName("First visible timeline bar");
