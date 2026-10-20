@@ -535,7 +535,7 @@ static void independentTrackMixerTests() {
     e.pianoRollLaunches[0].publish(launch);
     e.tracks[0].gain.store(0.5f);
     render(100); // Cross a beat boundary and settle the ramp.
-    require(std::abs(l.back() - 0.0625f) < 1.0e-5f,
+    require(std::abs(l.back() - 0.5f * 0.5f * ToneEngine::audioClipLevel) < 1.0e-5f,
         "imported audio receives the same track gain and stereo balance");
     e.tracks[0].mute.store(true);
     energy = render(60);
@@ -597,7 +597,129 @@ static void arrangementCaptureRealtimeTests() {
     engine->capture.store(nullptr);
 }
 
+// Two one-bar regions on track 0: scene 0 (note 60) then scene 1 (silent unless sceneOneNote >= 0).
+static std::shared_ptr<alien::ArrangementPlayback> twoRegionSong(int lengthBars, int sceneOneNote) {
+    auto song = std::make_shared<alien::ArrangementPlayback>();
+    song->arrangement.lengthBars = lengthBars;
+    require(song->arrangement.add({0, 0, 0, 1}) && song->arrangement.add({0, 1, 1, 1}), "test song regions");
+    song->clips[0][0].pattern = heldPattern(60);
+    if (sceneOneNote >= 0) song->clips[1][0].pattern = heldPattern(sceneOneNote);
+    return song;
+}
+
+// Publishing a song snapshot that carries the same timeline (a note, mixer or
+// tempo edit elsewhere in the project) must not restart the song, while a real
+// change to the timeline must. Snapshot hand-over must not allocate.
+static void arrangementRepublishTests() {
+    auto engine = std::make_unique<ToneEngine>(); engine->prepare(48000);
+    engine->arrangementMailbox.publish(std::shared_ptr<const alien::ArrangementPlayback>(twoRegionSong(4, -1)));
+    engine->patternMode.store(2); engine->playing.store(true);
+    std::array<float, 256> l{}, r{}; float* outputs[]{l.data(), r.data()};
+    long frame = 0; std::array<double, 4> energy{};
+    auto render = [&] {
+        engine->audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 256, {});
+        for (int i = 0; i < 256; ++i) {
+            const auto bar = static_cast<std::size_t>((frame + i) / 96000);
+            if (bar < energy.size()) energy[bar] += static_cast<double>(l[static_cast<std::size_t>(i)]) * l[static_cast<std::size_t>(i)];
+        }
+        frame += 256;
+    };
+    while (engine->arrangementPosition.load() < 500) render();
+    require(energy[0] > 1 && engine->playing.load(), "first region sounds");
+
+    // Same timeline, different clip contents: playback continues without a jump.
+    engine->arrangementMailbox.publish(std::shared_ptr<const alien::ArrangementPlayback>(twoRegionSong(4, 67)));
+    const auto before = allocationCount;
+    render();
+    require(before == allocationCount, "taking a new song snapshot must not allocate");
+    int last = engine->arrangementPosition.load();
+    require(last > 500, "republishing an unchanged timeline keeps the playhead moving");
+    while (frame < 96000 * 2 - 256 && engine->playing.load()) {
+        render();
+        const int now = engine->arrangementPosition.load();
+        require(now >= last, "playhead never jumps back after a same-layout republish");
+        last = now;
+    }
+    require(engine->playing.load(), "song still playing after same-layout republish");
+    while (frame < 96000 * 2 - 256) render();
+    require(energy[1] > 1, "edited clip is heard when its region starts");
+
+    // A real timeline change restarts from the top.
+    engine->arrangementMailbox.publish(std::shared_ptr<const alien::ArrangementPlayback>(twoRegionSong(3, 67)));
+    render();
+    const int restarted = engine->arrangementPosition.load();
+    require(engine->playing.load() && restarted >= 0 && restarted < 50, "a changed timeline restarts the song");
+}
+
+// The final stage: master volume, the output meter and the soft clipper that
+// replaced hard clipping.
+static void masterStageTests() {
+    require(alien::softLimit(0.0f) == 0.0f && alien::softLimit(0.8f) == 0.8f && alien::softLimit(-0.8f) == -0.8f,
+        "soft limiter leaves the range up to -2 dBFS untouched");
+    for (float x = -0.8f; x <= 0.8f; x += 0.01f)
+        require(alien::softLimit(x) == x, "soft limiter is exact below the knee");
+    float previous = alien::softLimit(0.8f);
+    for (float x = 0.81f; x < 50.0f; x += 0.01f) {
+        const float y = alien::softLimit(x);
+        require(y >= previous && y <= 1.0f && y >= 0.8f, "soft limiter rises monotonically and never exceeds full scale");
+        require(alien::softLimit(-x) == -y, "soft limiter is symmetric");
+        previous = y;
+    }
+    require(alien::softLimit(1.0f) < 0.99f && alien::softLimit(1.0f) > 0.9f, "a full-scale peak is bent, not chopped");
+    require(alien::softLimit(1.0e9f) <= 1.0f, "enormous input stays bounded");
+    require(std::abs((alien::softLimit(0.801f) - alien::softLimit(0.8f)) / 0.001f - 1.0f) < 0.02f,
+        "the knee is smooth: slope is 1 where the curve starts");
+
+    alien::SessionAudioClip sample;
+    sample.sampleRate = 48000; sample.channels = 1; sample.frames = 48000 * 4;
+    sample.left.assign(sample.frames, 0.95f); sample.buildWaveform(); // loud enough that +12 dB master drives the mix past full scale
+    OfflineEngine offline;
+    auto& e = offline.engine;
+    e.tracks[0].instrument.store(1);
+    e.drumKits[0].samples[0].store(&sample);
+    e.patternMode.store(1); e.playing.store(true);
+    e.pianoRollNotes[0].publish(heldPattern(36));
+    offline.render(4800);
+    auto settledLevel = [&](float masterGain) {
+        e.masterControls.gain.store(masterGain);
+        offline.render(4800); // several ramp time constants
+        offline.render(256);
+        return offline.left.back();
+    };
+    const float unity = settledLevel(1.0f);
+    require(unity > 0.001f && unity < 0.7f, "test sample plays below the knee at unity master volume");
+    require(std::abs(settledLevel(2.0f) - 2.0f * unity) < 1.0e-4f, "master volume scales the mix linearly");
+    require(std::abs(settledLevel(0.5f) - 0.5f * unity) < 1.0e-4f, "master volume can also lower the mix");
+    require(settledLevel(0.0f) == 0.0f, "zero master volume silences the output exactly");
+    require(std::abs(settledLevel(1.0f) - unity) < 1.0e-5f, "returning to unity restores the level");
+
+    // Overdriven: output stays within full scale while the meter reports the real level.
+    e.tracks[0].gain.store(2.0f);
+    e.masterControls.gain.store(alien::maxMasterGain);
+    offline.render(9600);
+    require(e.masterControls.peak.load() > 1.0f, "master meter reads above 0 dBFS when the soft clipper is working");
+    float worst = 0.0f;
+    for (int block = 0; block < 20; ++block) { offline.render(256); for (float v : offline.left) worst = std::max(worst, std::abs(v)); }
+    require(worst <= 1.0f && worst > 0.8f, "an overdriven mix is bent under full scale rather than chopped");
+    // The steady signal is constant, so the output must be exactly the soft-limited value of the
+    // level the meter reports (a hard clamp would give 1.0 here instead).
+    const float metered = e.masterControls.peak.load();
+    require(std::abs(worst - alien::softLimit(metered)) < 1.0e-4f && worst < 1.0f,
+        "the output stage is the soft limiter applied to the metered level");
+
+    // Master volume and the clip level never allocate in the callback.
+    const auto before = allocationCount;
+    e.masterControls.gain.store(0.7f);
+    offline.render(2048);
+    require(before == allocationCount, "the master stage must not allocate");
+    require(alien::validMasterGain(0.0f) && alien::validMasterGain(alien::maxMasterGain)
+        && !alien::validMasterGain(-0.1f) && !alien::validMasterGain(alien::maxMasterGain * 1.01f)
+        && !alien::validMasterGain(std::numeric_limits<float>::quiet_NaN()), "master volume validity range");
+}
+
 int main() {
+    masterStageTests();
+    arrangementRepublishTests();
     arrangementCaptureRealtimeTests();
     drumTrackIntegrationTests();
     independentTrackMixerTests();

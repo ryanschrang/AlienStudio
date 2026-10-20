@@ -241,8 +241,183 @@ static void recoveryAndPortableRegressionTests() {
     std::cout<<"PASS: recovery fencing, portable undo/redo and both legacy schemas\n";
 }
 
+// The song snapshot sent to the audio thread is large, and every republish used
+// to restart arrangement playback. Edits that do not change clips or the
+// timeline must not publish at all.
+static void arrangementPublishTests() {
+    ToneEngine engine;
+    alien::ProjectController c(engine);
+    c.pushDocumentToEngine();
+    const auto published = [&] { return engine.arrangementMailbox.publishedCount(); };
+    const auto base = published();
+    require(base >= 1, "the initial song is published");
+    c.pushDocumentToEngine();
+    require(published() == base, "re-sending an unchanged project does not republish the song");
+
+    c.renameTrack(0, "Bass"); c.commit("Rename track");
+    c.renameScene(0, "Verse"); c.commit("Rename scene");
+    c.setBpm(133); c.commit("Change tempo");
+    c.trackSettingsEdited(0); c.commit("Change mix");
+    require(published() == base, "renames, tempo and mixer edits leave the song snapshot alone");
+
+    c.setClipPattern(0, 0, patternWith(65), false); c.commit("Edit notes", 0, 0);
+    require(published() == base + 1, "changing clip contents publishes once");
+    c.commit("No-op");
+    require(published() == base + 1, "a commit with no change does not publish");
+
+    alien::Arrangement song; song.lengthBars = 8; song.add({0, 0, 0, 2});
+    c.setArrangement(song);
+    require(published() == base + 2, "changing the timeline publishes once");
+
+    require(c.undo() && published() == base + 3, "undoing the timeline change republishes");
+    require(c.undo() && published() == base + 4, "undoing the note edit republishes");
+    while (c.undo()) {}
+    require(published() == base + 4, "undoing renames, tempo and mix does not republish");
+}
+
+static void masterVolumeTests() {
+    ToneEngine engine;
+    alien::ProjectController c(engine);
+    require(c.document().masterGain == 1.0f && engine.masterControls.gain.load() == 1.0f, "new projects start at unity master volume");
+    engine.masterControls.gain.store(2.0f); // the fader writes the engine directly
+    c.masterGainEdited();
+    c.commit("Change master volume", -1, -1, "master-volume");
+    require(c.document().masterGain == 2.0f && c.canUndo() && c.undoLabel() == "Change master volume", "master volume is an undoable edit");
+    require(alien::toProjectData(c.document()).masterGain == 2.0f, "master volume is saved with the project");
+    require(c.undo() && c.document().masterGain == 1.0f && engine.masterControls.gain.load() == 1.0f, "undo restores the engine's master volume");
+    require(c.redo() && engine.masterControls.gain.load() == 2.0f, "redo re-applies it");
+    engine.masterControls.gain.store(99.0f);
+    c.masterGainEdited();
+    require(c.document().masterGain == alien::maxMasterGain, "an out-of-range value is clamped before it reaches the document");
+    c.newProject();
+    require(engine.masterControls.gain.load() == 1.0f && c.document().masterGain == 1.0f, "a new project resets the master volume");
+}
+
+static void mediaIndexTests() {
+    const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory)
+        .getNonexistentChildFile("AlienStudioMediaIndex", "", false);
+    require(root.createDirectory().wasOk(), "temp directory");
+    auto touch = [&](const char* relative) {
+        const auto file = root.getChildFile(relative);
+        require(file.getParentDirectory().createDirectory().wasOk() && file.replaceWithText("x"), "create index fixture");
+    };
+    touch("a/Kick.WAV"); touch("moved/samples/kick.wav"); touch("moved/kick.wav"); touch("moved/deep/er/snare.mp3"); touch("moved/notes.txt");
+    alien::MediaIndex index(root);
+    require(index.filesIndexed() == 4 && !index.wasTruncated(), "only wav/mp3 files are indexed");
+    // The original lived in <something>/samples/kick.wav: the copy that keeps that folder name wins.
+    auto found = index.candidates("C:\\Music\\Old Project\\samples\\KICK.wav");
+    require(found.size() == 3 && found[0] == root.getChildFile("moved/samples/kick.wav"),
+        "names match case-insensitively and a matching folder layout is preferred");
+    require(index.candidates("/x/y/snare.mp3").size() == 1 && index.candidates("/x/y/hat.wav").empty(), "unknown names have no candidates");
+    require(alien::MissingMedia::fileNameOf("C:\\a\\b\\c.wav") == "c.wav" && alien::MissingMedia::fileNameOf("rel/d.wav") == "d.wav"
+        && alien::MissingMedia::fileNameOf("e.wav") == "e.wav", "file names are read from Windows and POSIX paths");
+    // A file that does not decode is skipped in favour of one that does.
+    auto good = std::make_shared<alien::SessionAudioClip>();
+    good->sampleRate = 8000; good->channels = 1; good->frames = 80; good->left.assign(80, 0.1f); good->buildWaveform();
+    std::atomic<bool> cancel{false}; juce::String error;
+    require(alien::writeClipWav(root.getChildFile("moved/kick.wav"), *good, cancel, error), "write a real WAV");
+    const auto decoded = alien::decodeFirstCandidate(index.candidates("samples/kick.wav"));
+    require(decoded.clip != nullptr && decoded.file == root.getChildFile("moved/kick.wav"), "undecodable candidates are skipped");
+    require(alien::decodeFirstCandidate({}).clip == nullptr, "no candidates, no audio");
+    root.deleteRecursively();
+}
+
+// A moved or deleted audio file used to make the whole project refuse to open.
+static void missingAudioTests() {
+    const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory)
+        .getNonexistentChildFile("AlienStudioMissingAudio", "", false);
+    require(root.createDirectory().wasOk(), "temp directory");
+    alien::ProjectController::recoveryDirectoryOverride() = root.getChildFile("Recovery");
+    std::atomic<bool> cancel{false}; juce::String error;
+    auto makeClip = [](float level) {
+        auto clip = std::make_shared<alien::SessionAudioClip>();
+        clip->sampleRate = 8000; clip->channels = 1; clip->frames = 80; clip->left.assign(80, level); clip->buildWaveform();
+        return clip;
+    };
+    const auto loop = root.getChildFile("samples/sub/loop.wav"), kick = root.getChildFile("samples/kick.wav");
+    require(loop.getParentDirectory().createDirectory().wasOk(), "sample folders");
+    require(alien::writeClipWav(loop, *makeClip(0.2f), cancel, error) && alien::writeClipWav(kick, *makeClip(0.3f), cancel, error), "write samples");
+    const auto song = root.getChildFile("Song.alienstudio");
+    auto waitIdle = [](alien::ProjectController& c) { for (int i = 0; i < 400 && c.isBusy(); ++i) pump(10); require(!c.isBusy(), "controller finishes"); };
+
+    {
+        ToneEngine engine; alien::ProjectController c(engine);
+        require(c.installAudio(loop, 1, 2, makeClip(0.2f)), "install clip");
+        c.loadDrum(kick, 2, 3); waitIdle(c);
+        require(c.document().tracks[2].drumAssets[3] != nullptr, "drum pad loaded");
+        c.setClipPattern(0, 0, patternWith(65), false); c.setBpm(133); c.commit("Edit");
+        bool done = false, ok = false;
+        c.writeProject(song, false, [&](bool r) { ok = r; done = true; });
+        for (int i = 0; i < 200 && !done; ++i) pump(10);
+        require(done && ok, "initial save");
+    }
+    // The sample folder is moved away after the project was saved.
+    const auto moved = root.getChildFile("moved");
+    require(root.getChildFile("samples").moveFileTo(moved), "move samples away");
+    const auto elsewhere = root.getChildFile("empty");
+    require(elsewhere.createDirectory().wasOk(), "empty search folder");
+
+    ToneEngine engine; alien::ProjectController c(engine);
+    juce::String lastStatus, lastTip;
+    c.onProjectStatus = [&](const juce::String& text, const juce::String& tip) { lastStatus = text; lastTip = tip; };
+    c.openProject(song); waitIdle(c);
+    require(c.currentFile() == song && c.document().bpm == 133 && c.document().clip(0, 0).notes().count == 1,
+        "the project opens even though audio is missing, with everything else intact");
+    const auto missing = c.missingMedia();
+    require(missing.size() == 2 && !missing[0].drumPad && missing[0].track == 1 && missing[0].slot == 2
+        && missing[0].fileName() == "loop.wav" && missing[1].drumPad && missing[1].track == 2 && missing[1].slot == 3,
+        "missing clip and drum pad are listed");
+    const auto& offline = c.document().clip(1, 2);
+    require(offline.audioOffline() && !offline.hasAudio() && offline.isAudioClip() && !offline.isEmpty() && offline.audioFileName == "loop.wav",
+        "the clip is offline but keeps its reference and is not treated as empty or MIDI");
+    require(lastStatus.contains("offline") && lastTip.contains("loop.wav") && lastTip.contains("kick.wav"), "the user is told what is offline");
+    require(c.removeAudio(0, 0) == false, "an ordinary MIDI clip has no audio to remove");
+
+    // Saving keeps the references so nothing is lost; a portable save cannot copy what is missing and says so.
+    bool done = false, ok = false;
+    const auto resaved = root.getChildFile("Resaved.alienstudio");
+    c.writeProject(resaved, false, [&](bool r) { ok = r; done = true; });
+    for (int i = 0; i < 200 && !done; ++i) pump(10);
+    alien::SessionProjectData reread;
+    require(done && ok && alien::parseSessionProject(resaved.loadFileAsString(), reread, error)
+        && reread.clips[2][1].audioFilePath.endsWith("loop.wav") && reread.drumPaths[2][3].endsWith("kick.wav"),
+        "saving a project with offline audio keeps the file references");
+    done = false;
+    c.writeProject(root.getChildFile("Portable.alienstudio"), true, [&](bool r) { ok = r; done = true; });
+    for (int i = 0; i < 200 && !done; ++i) pump(10);
+    require(done && !ok && lastStatus.contains("Missing audio"), "a portable save reports the missing file instead of dropping it");
+
+    // Searching the wrong folder changes nothing.
+    c.relinkMissingAudio(elsewhere); waitIdle(c);
+    require(c.missingMedia().size() == 2 && lastStatus.contains("Relinked 0 of 2"), "nothing is relinked from a folder without the files");
+    const auto undoDepthMarker = c.undoLabel();
+
+    // Searching the folder that now holds them restores both in one undoable step.
+    c.relinkMissingAudio(moved); waitIdle(c);
+    require(c.missingMedia().empty() && lastStatus.contains("Relinked 2 of 2"), "both files are found by name");
+    require(c.document().clip(1, 2).hasAudio() && !c.document().clip(1, 2).audioOffline()
+        && c.document().clip(1, 2).audioFilePath == moved.getChildFile("sub/loop.wav").getFullPathName()
+        && c.document().tracks[2].drumAssets[3] != nullptr
+        && c.document().tracks[2].drumPaths[3] == moved.getChildFile("kick.wav").getFullPathName(), "clip and drum pad point at the found files");
+    require(engine.drumKits[2].samples[3].load() == c.document().tracks[2].drumAssets[3].get(), "the drum sampler is given the relinked sample");
+    require(c.undoLabel() == "Relink audio" && c.isDirty(), "relinking is one undoable, unsaved edit");
+    require(c.undo() && c.missingMedia().size() == 2 && c.undoLabel() == undoDepthMarker, "undo returns both to offline");
+    require(c.redo() && c.missingMedia().empty(), "redo brings them back");
+    c.relinkMissingAudio(moved); waitIdle(c);
+    require(lastStatus == "No audio is missing." || c.missingMedia().empty(), "relinking with nothing missing is harmless");
+
+    c.discardRecovery();
+    alien::ProjectController::recoveryDirectoryOverride() = juce::File{};
+    root.deleteRecursively();
+    std::cout << "PASS: missing audio opens offline, keeps references, and relinks by name\n";
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    masterVolumeTests();
+    mediaIndexTests();
+    missingAudioTests();
+    arrangementPublishTests();
     structureTests();
     fileFormatTests();
     undoTests();

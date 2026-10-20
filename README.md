@@ -211,10 +211,11 @@ smaller displays.
   clip's notes. Start Play to see the playhead and hear the loop.
 
 Save the session before closing to retain MIDI patterns, track settings, and audio
-references. Unsaved edits are lost; autosave/recovery is not yet implemented.
-MIDI recording remains future work. Arrangement playback and VST3 instruments are available from More... in the top bar.
+references. Unsaved edits are autosaved once a minute and offered for recovery after an
+abnormal exit (see Undo, saving and recovery below).
+MIDI recording remains future work. Arrangement playback and VST3 instruments are available from **More...** in the top bar.
 Same-pitch overlaps share one gate until the last overlap ends; velocity changes
-to a sounding note apply at its next trigger. Notes end at the four-bar boundary.
+to a sounding note apply at its next trigger. Notes end at the clip's loop boundary.
 Edits publish at audio-block boundaries; stop, source changes, preset changes and
 device restarts clear the scheduler's held notes. Preset/blur panic restarts a
 running clip at the beginning, matching the safe all-notes-off path.
@@ -325,9 +326,27 @@ Move the project file and its media folder together (or put both inside one fold
 Collected paths are relative, so moving that folder does not break them; normal
 saves preserve those relative references. Repeated source files are copied once.
 Collection failure leaves an existing project intact; earlier media folders are
-never automatically deleted. Audio is decoded again on open. If a referenced
-file cannot be found or decoded, opening fails without replacing the current
-session. Project reads, writes and audio decoding run off the audio callback.
+never automatically deleted. Audio is decoded again on open. Project reads,
+writes and audio decoding run off the audio callback.
+
+**Missing audio.** A project only stores the *location* of each audio file, so a
+file that was moved, renamed, deleted or sits on a drive that is not connected
+cannot be loaded. The project still opens: every other clip, note, mixer setting
+and plugin loads normally, and the affected audio clips (and drum pads) stay
+silent and keep their saved path. Offline clips show a dark-red tile with the file
+name, the status line says how many files are offline, and the tooltip lists
+them. Press **Relink audio** (it appears whenever something is offline) and
+choose a folder: it is searched, including sub-folders, for files with the same
+names. If several match, the one whose parent folders best match the original
+location is preferred, and a file that will not decode is skipped. Everything
+found is relinked as one undoable step labelled *Relink audio*; anything not
+found stays offline and can be searched for again in another folder. Saving
+keeps the original path of anything still offline, so nothing is lost. **Save
+portable** cannot copy a file that does not exist, so it stops and names the
+missing file instead of writing a project with a hole in it. Opening an
+autosaved recovery copy follows the same rules. Drum pads whose sample is
+missing are not marked on the pads themselves; they are reported in the status
+line and relinked with the same button. Not yet verified on Windows.
 
 To map a hardware MIDI CC to a Session action, select **Scene 1–4** or
 **Stop all**, click **Learn CC**, then move the desired controller. The learned
@@ -519,8 +538,29 @@ Each track has 16 voices; a busy track cannot steal another track's voices.
 Volume is 0–200%, with 100% preserving the previous level. Balance ranges from
 left to right, with the centre preserving both stereo channels. Mute overrides
 Solo; multiple soloed tracks can play together. Gain changes use a short ramp to
-reduce clicks. Meters show the post-control track peak; final output is clamped
-for protection, not professionally limited or mastered.
+reduce clicks. Meters show the post-control track peak.
+
+The **Master** strip at the right edge of the mixer has a volume fader
+(0–400%, i.e. −∞ to +12 dB, double-click for 0 dB) and an output meter. The
+master volume is applied after the master FX chain, is saved with the project
+(older projects open at 0 dB), is an undoable edit, and is included in WAV
+export. The meter reads the signal *before* the safety limiter, so its red clip
+light at the top (held for about 1.5 s) means the mix reached full scale and
+the limiter is working. The
+limiter is a soft clipper: it leaves everything below 80% of full scale
+untouched and rounds off peaks above that so the output can never exceed full
+scale; it replaces the old hard clamp, which flattened peaks abruptly. It is a
+safety net, not a mastering limiter.
+
+**Gain staging change.** Built-in sounds and imported audio clips used to sit
+quietly (a full 16-voice track was scaled by 1/16 and audio clips by 25%), so a
+project had little usable headroom. Audio clips are now 6 dB louder and
+synthesised voices are 6 dB louder, with the master fader giving 12 dB more if
+needed. Projects saved by earlier versions will therefore sound about 6 dB
+louder for built-in sounds and audio clips than before; hosted VST3 plugins are
+unchanged. The values were chosen by calculation and tests, not by ear, and
+need a listening check on Windows. Lower the master fader to restore the old
+level of an existing project.
 
 Preset changes affect newly triggered notes; held notes retain their original
 patch until release. Mixer settings also affect imported audio on that track.
@@ -589,9 +629,13 @@ Initial scope is stereo-output VST3 instruments and stereo FX without sidechains
 No VST2, AU, CLAP, multi-output routing, plugin automation lanes, MIDI output from
 plugins, freeze, or bridging of 32-bit plugins is provided. Running processors
 are in-process: scan isolation does not protect the DAW from a plugin crashing
-while loaded. Rack changes, state snapshots (save/autosave/undo), and project
-loads detach/restart the audio callback; native parameter adjustments themselves
-remain live. Plugin binaries/licenses and plugin-internal sample libraries are
+while loaded. Rack changes and project loads detach/restart the audio callback; native
+parameter adjustments themselves remain live. Plugin state is only read back (which
+also detaches the callback) when it can matter: Save captures it whenever playback is
+stopped, or while playing only if a plugin was edited; undo, redo and track/scene edits
+capture it only if a plugin was edited; autosave never interrupts playback, so a
+minute-old recovery copy may lack plugin edits made while the transport was running.
+Renaming a track or scene, or editing notes, does not rebuild plugin instances. Plugin binaries/licenses and plugin-internal sample libraries are
 not copied by Save portable. Keep those installed on a destination computer.
 
 Recovery cleanup is fenced against in-flight autosaves. Portable-media relocation

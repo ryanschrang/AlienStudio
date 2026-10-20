@@ -2,6 +2,7 @@
 #include "ProjectDocument.h"
 #include "ToneEngine.h"
 #include "AudioClipImport.h"
+#include "AudioRelink.h"
 #include "PortableProject.h"
 #include "DocumentHistory.h"
 #include "PianoRollProcessing.h"
@@ -11,6 +12,7 @@
 #include <vector>
 #include <mutex>
 #include <map>
+#include <set>
 
 // Owns the ProjectDocument and is the only code that changes it. Every edit
 // goes through here so the audio engine is kept in sync. Callers report each
@@ -51,6 +53,9 @@ public:
     std::function<void(int, int)> onClipContentChanged;
     std::function<void()> onDocumentRestored;     // undo/redo replaced the document
     std::function<void()> onBeforeSnapshot;
+    // Autosave runs unattended while the user may be playing, so it gets its own
+    // hook: the owner can decline to interrupt audio to capture plugin state.
+    std::function<void()> onBeforeAutosaveSnapshot;
     std::function<void()> beforeStructureEdit;
     std::function<void()> onHistoryChanged;       // undo/redo availability or unsaved state changed
 
@@ -75,6 +80,8 @@ public:
     }
 
     void runtimePluginEdited() { runtimeDirty = true; historyChanged(); }
+    // True when a plugin was edited since its state was last copied into the document.
+    bool pluginStateDirty() const noexcept { return runtimeDirty; }
     void setPluginRacks(const std::vector<PluginRackState>& racks, const PluginRackState& master) {
         if (racks.size() != doc.tracks.size()) return;
         for (std::size_t t=0;t<racks.size();++t) doc.tracks[t].plugins = racks[t];
@@ -160,11 +167,22 @@ public:
     // that have not been autosaved yet. Never touches the user's project file.
     void autosaveIfNeeded() {
         if (busy || autosaving || !isDirty()) return;
-        if (onBeforeSnapshot) onBeforeSnapshot();
+        if (onBeforeAutosaveSnapshot) onBeforeAutosaveSnapshot();
+        else if (onBeforeSnapshot) onBeforeSnapshot();
         if (history.currentId() == autosavedId) return;
         for (int t = 0; t < doc.trackCount(); ++t) trackSettingsEdited(t);
+        masterGainEdited();
         auto project = toProjectData(doc);
-        if (!project.valid()) return;
+        if (!project.valid()) {
+            // Say so once; a silent failure would leave the user believing they are protected.
+            if (!autosaveWarned) {
+                autosaveWarned = true;
+                const auto reason = describeInvalidSession(doc);
+                status("Autosave skipped: " + reason, reason);
+            }
+            return;
+        }
+        autosaveWarned = false;
         autosaving = true;
         const auto id = history.currentId();
         const auto original = projectFile.getFullPathName();
@@ -213,6 +231,7 @@ public:
         for (std::size_t t = 0; t < engine.tracks.size(); ++t)
             engine.tracks[t].set(t < doc.tracks.size() ? doc.tracks[t].settings : TrackSettings{});
         engine.activeTracks.store(doc.trackCount());
+        engine.masterControls.gain.store(doc.masterGain);
         for (std::size_t t = 0; t < engine.tracks.size(); ++t)
             for (int pad = 0; pad < drumPadCount; ++pad)
                 engine.drumKits[t].samples[pad].store(t < doc.tracks.size() ? doc.tracks[t].drumAssets[pad].get() : nullptr);
@@ -322,6 +341,7 @@ public:
 
     // The mixer writes the engine directly while a control moves; this copies
     // the result back into the document.
+    void masterGainEdited() { doc.masterGain = sanitizedMasterGain(engine.masterControls.gain.load()); }
     void trackSettingsEdited(int track) {
         if (track < 0 || track >= doc.trackCount() || track >= static_cast<int>(engine.tracks.size())) return;
         doc.tracks[static_cast<std::size_t>(track)].settings = engine.tracks[static_cast<std::size_t>(track)].snapshot();
@@ -356,7 +376,7 @@ public:
         const auto index = static_cast<std::size_t>(track);
         engine.requestedPianoRollClip[index].store(scene);
         SessionClipLaunch launch;
-        launch.pattern = clip.hasAudio() ? PianoRollPattern{} : clip.notes();
+        launch.pattern = clip.isAudioClip() ? PianoRollPattern{} : clip.notes();
         launch.audio = clip.audio.get();
         launch.clipIndex = scene;
         engine.pianoRollLaunches[index].publish(launch);
@@ -409,7 +429,7 @@ public:
         // existing object so it does not look like an edit.
         if (samePianoRollPattern(*clip.pattern, pattern)) return;
         clip.pattern = std::make_shared<const PianoRollPattern>(pattern);
-        if (!publishToEngine || clip.hasAudio()) return;
+        if (!publishToEngine || clip.isAudioClip()) return;
         const auto index = static_cast<std::size_t>(track);
         engine.requestedPianoRollClip[index].store(scene);
         if (engine.activePianoRollClip[index].load() == scene) engine.pianoRollNotes[index].publish(pattern);
@@ -419,7 +439,7 @@ public:
     bool removeAudio(int track, int scene) {
         if (!doc.isValidCell(track, scene)) return false;
         auto& clip = doc.clip(track, scene);
-        if (!clip.hasAudio()) return false;
+        if (!clip.isAudioClip()) return false; // a loaded clip, or an offline reference
         clip.audio.reset();
         clip.audioFileName.clear();
         clip.audioFilePath.clear();
@@ -477,9 +497,11 @@ public:
         if (busy) { if (done) done(false); return; }
         if (onBeforeSnapshot) onBeforeSnapshot();
         for (int t = 0; t < doc.trackCount(); ++t) trackSettingsEdited(t);
+        masterGainEdited();
         const auto project = toProjectData(doc);
-        if (alien::serializeSessionProject(project).isEmpty()) {
-            status("Could not save: session data is invalid", {});
+        if (!project.valid()) {
+            const auto reason = describeInvalidSession(doc);
+            status("Could not save: " + reason, reason);
             if (done) done(false);
             return;
         }
@@ -565,12 +587,50 @@ public:
         auto song = std::make_shared<ArrangementPlayback>();
         song->arrangement = doc.arrangement;
         for (int s = 0; s < doc.sceneCount(); ++s) for (int t = 0; t < doc.trackCount(); ++t) {
-            song->clips[s][t].pattern = doc.clip(t, s).notes();
+            // An offline audio clip stays silent; it must not fall back to playing stray notes.
+            if (!doc.clip(t, s).audioOffline()) song->clips[s][t].pattern = doc.clip(t, s).notes();
             song->clips[s][t].audio = doc.clip(t, s).audio.get();
         }
         return song;
     }
-    void publishArrangement() { engine.arrangementMailbox.publish(*captureArrangement()); }
+    // What the engine currently holds. Commits that do not touch the song (mixer,
+    // tempo, names, plugin state) must not rebuild and re-send a 16 MiB snapshot.
+    // Shared pointers keep every compared clip alive, so an address can never be
+    // reused by a different clip while it is being compared.
+    struct PublishedSong {
+        bool known{};
+        Arrangement arrangement;
+        int tracks{}, scenes{};
+        std::vector<std::shared_ptr<const PianoRollPattern>> patterns;
+        std::vector<std::shared_ptr<const SessionAudioClip>> audio;
+    };
+    bool songDiffersFromPublished() const {
+        if (!published.known || published.tracks != doc.trackCount() || published.scenes != doc.sceneCount()
+            || !published.arrangement.sameLayout(doc.arrangement)) return true;
+        std::size_t index = 0;
+        for (int s = 0; s < doc.sceneCount(); ++s)
+            for (int t = 0; t < doc.trackCount(); ++t, ++index) {
+                const auto& clip = doc.clip(t, s);
+                if (published.patterns[index] != clip.pattern || published.audio[index] != clip.audio) return true;
+            }
+        return false;
+    }
+    void rememberPublishedSong() {
+        published.known = true;
+        published.arrangement = doc.arrangement;
+        published.tracks = doc.trackCount();
+        published.scenes = doc.sceneCount();
+        published.patterns.clear(); published.audio.clear();
+        for (int s = 0; s < doc.sceneCount(); ++s)
+            for (int t = 0; t < doc.trackCount(); ++t) {
+                published.patterns.push_back(doc.clip(t, s).pattern);
+                published.audio.push_back(doc.clip(t, s).audio);
+            }
+    }
+    void publishArrangement() {
+        if (!songDiffersFromPublished()) return;
+        if (engine.arrangementMailbox.publish(captureArrangement())) rememberPublishedSong();
+    }
     void setArrangement(const Arrangement& song) {
         if (!song.valid(doc.trackCount(), doc.sceneCount())) return;
         doc.arrangement = song;
@@ -615,6 +675,60 @@ public:
     }
     std::size_t availableAudioBytes() const noexcept { return maxSessionAudioBytes - retainedBytes; }
 
+    // Audio the project refers to that is not loaded (see MissingMedia), clips
+    // first in scene order, then drum pads.
+    std::vector<MissingMedia> missingMedia() const {
+        std::vector<MissingMedia> result;
+        for (int s = 0; s < doc.sceneCount(); ++s)
+            for (int t = 0; t < doc.trackCount(); ++t) {
+                const auto& clip = doc.clip(t, s);
+                if (clip.audioOffline()) result.push_back({false, t, s, clip.audioFilePath, {}});
+            }
+        for (int t = 0; t < doc.trackCount(); ++t)
+            for (int p = 0; p < drumPadCount; ++p) {
+                const auto& track = doc.tracks[static_cast<std::size_t>(t)];
+                if (track.drumPaths[static_cast<std::size_t>(p)].isNotEmpty() && track.drumAssets[static_cast<std::size_t>(p)] == nullptr)
+                    result.push_back({true, t, p, track.drumPaths[static_cast<std::size_t>(p)], {}});
+            }
+        return result;
+    }
+
+    // Looks for every missing file by name inside `folder` and its subfolders,
+    // loads what it finds off the message thread, and installs it all as one
+    // undoable step. Files that are not found stay offline and keep their saved
+    // reference, so nothing is lost by trying.
+    void relinkMissingAudio(const juce::File& folder) {
+        if (busy) return;
+        const auto missing = missingMedia();
+        if (missing.empty()) { importStatus("No audio is missing.", {}); return; }
+        if (!folder.isDirectory()) { importStatus("Choose a folder to search for the missing audio.", {}); return; }
+        auto wanted = std::make_shared<std::vector<RelinkWant>>();
+        for (const auto& item : missing)
+            wanted->push_back({item, doc.tracks[static_cast<std::size_t>(item.track)].id,
+                               item.drumPad ? 0u : doc.scenes[static_cast<std::size_t>(item.slot)].id});
+        setBusy(true);
+        importStatus(ui8("Searching for missing audio\xe2\x80\xa6"), folder.getFullPathName());
+        std::weak_ptr<int> token = alive;
+        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, folder, wanted] {
+            auto outcome = std::make_shared<RelinkOutcome>();
+            const MediaIndex index(folder);
+            outcome->truncated = index.wasTruncated();
+            // A source used by several clips is decoded once and shared; decoded audio is immutable.
+            std::map<juce::String, RelinkedAudio> decodedByPath;
+            for (const auto& want : *wanted) {
+                auto found = decodedByPath.find(want.item.path);
+                if (found == decodedByPath.end())
+                    found = decodedByPath.emplace(want.item.path, decodeFirstCandidate(index.candidates(want.item.path))).first;
+                outcome->found.push_back(found->second);
+            }
+            juce::MessageManager::callAsync([this, token, wanted, outcome, folder] {
+                if (token.lock() != nullptr) finishRelink(*wanted, *outcome, folder);
+            });
+            return juce::ThreadPoolJob::jobHasFinished;
+        };
+        pool.addJob(std::move(job));
+    }
+
 private:
     bool retain(const std::shared_ptr<SessionAudioClip>& clip) {
         const auto bytes = clip->frames * clip->channels * sizeof(float);
@@ -631,11 +745,101 @@ private:
             ++i;
         }
     }
+    struct RelinkWant {
+        MissingMedia item;
+        std::uint32_t trackId{}, sceneId{}; // identify the target even if tracks or scenes move while searching
+    };
+    struct RelinkOutcome {
+        std::vector<RelinkedAudio> found; // parallel to the wanted list
+        bool truncated{};
+    };
+    bool retainOnce(const std::shared_ptr<SessionAudioClip>& clip, std::set<const SessionAudioClip*>& counted) {
+        if (counted.count(clip.get()) != 0) return true;
+        if (!retain(clip)) return false;
+        counted.insert(clip.get());
+        return true;
+    }
+    void finishRelink(const std::vector<RelinkWant>& wanted, const RelinkOutcome& outcome, const juce::File& folder) {
+        setBusy(false);
+        int relinked = 0;
+        bool memoryFull = false;
+        std::set<const SessionAudioClip*> counted;
+        juce::StringArray stillOffline;
+        const auto trackIndex = [this](std::uint32_t id) {
+            for (int t = 0; t < doc.trackCount(); ++t) if (doc.tracks[static_cast<std::size_t>(t)].id == id) return t;
+            return -1;
+        };
+        const auto sceneIndex = [this](std::uint32_t id) {
+            for (int s = 0; s < doc.sceneCount(); ++s) if (doc.scenes[static_cast<std::size_t>(s)].id == id) return s;
+            return -1;
+        };
+        for (std::size_t i = 0; i < wanted.size(); ++i) {
+            const auto& want = wanted[i];
+            const auto& found = outcome.found[i];
+            const int track = trackIndex(want.trackId);
+            const int scene = want.item.drumPad ? 0 : sceneIndex(want.sceneId);
+            if (track < 0 || scene < 0) continue; // removed while searching
+            auto& owner = doc.tracks[static_cast<std::size_t>(track)];
+            const auto pad = static_cast<std::size_t>(want.item.slot);
+            // Skip anything the user changed while the search ran.
+            const bool unchanged = want.item.drumPad
+                ? owner.drumPaths[pad] == want.item.path && owner.drumAssets[pad] == nullptr
+                : doc.clip(track, scene).audioOffline() && doc.clip(track, scene).audioFilePath == want.item.path;
+            if (!unchanged) continue;
+            if (!found.clip) { stillOffline.addIfNotAlreadyThere(want.item.fileName()); continue; }
+            if (!retainOnce(found.clip, counted)) {
+                memoryFull = true;
+                stillOffline.addIfNotAlreadyThere(want.item.fileName());
+                continue;
+            }
+            if (want.item.drumPad) {
+                owner.drumAssets[pad] = found.clip;
+                owner.drumPaths[pad] = found.file.getFullPathName();
+            } else {
+                auto& clip = doc.clip(track, scene);
+                clip.audio = found.clip;
+                clip.audioFilePath = found.file.getFullPathName();
+                clip.audioFileName = found.file.getFileName();
+                republishIfLive(track, scene);
+            }
+            ++relinked;
+        }
+        if (relinked > 0) {
+            pushDocumentToEngine();
+            commit("Relink audio");
+            if (onDocumentRestored) onDocumentRestored();
+        }
+        auto text = "Relinked " + juce::String(relinked) + " of " + juce::String(static_cast<int>(wanted.size()))
+                  + " missing audio file" + (wanted.size() == 1 ? "" : "s");
+        if (outcome.truncated) text += " (only the first " + juce::String(static_cast<int>(MediaIndex::maxFilesIndexed)) + " files were searched)";
+        if (memoryFull) text += "; audio memory limit reached";
+        if (!stillOffline.isEmpty()) {
+            text += ". Still offline: ";
+            for (int i = 0; i < stillOffline.size() && i < 3; ++i) text += (i ? ", " : "") + stillOffline[i];
+            if (stillOffline.size() > 3) text += " and " + juce::String(stillOffline.size() - 3) + " more";
+        }
+        importStatus(text, folder.getFullPathName());
+        status(text, folder.getFullPathName());
+    }
+
+    static juce::String describeOffline(const std::vector<MissingMedia>& missing) {
+        juce::String text;
+        for (std::size_t i = 0; i < missing.size() && i < 10; ++i) {
+            const auto& m = missing[i];
+            text += (m.drumPad ? "Track " + juce::String(m.track + 1) + ", drum pad " + juce::String(m.slot + 1)
+                               : "Track " + juce::String(m.track + 1) + ", Scene " + juce::String(m.slot + 1))
+                  + ": " + m.fileName() + (m.reason.isNotEmpty() ? " (" + m.reason + ")" : juce::String{}) + "\n";
+        }
+        if (missing.size() > 10) text += "and " + juce::String(static_cast<int>(missing.size()) - 10) + " more\n";
+        return text.trimEnd();
+    }
+
     struct LoadResult {
         SessionProjectData project;
         std::vector<std::shared_ptr<SessionAudioClip>> audio; // [scene * tracks + track]
         std::vector<std::array<std::shared_ptr<SessionAudioClip>, drumPadCount>> drums;
         std::size_t decodedBytes{};
+        std::vector<MissingMedia> missing; // referenced audio that could not be loaded; the project still opens
         juce::String error;
     };
 
@@ -645,7 +849,7 @@ private:
     // Worker thread.
     static LoadResult loadProjectFile(const juce::File& file) {
         LoadResult result;
-        if (file.getSize() <= 0 || file.getSize() > 128 * 1024 * 1024) {
+        if (file.getSize() <= 0 || file.getSize() > maxProjectFileBytes) {
             result.error = "Project file is empty or exceeds the 128 MiB limit.";
             return result;
         }
@@ -656,10 +860,13 @@ private:
             for (int t = 0; t < tracks; ++t) {
                 const auto& clip = result.project.clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
                 if (clip.audioFilePath.isEmpty()) continue;
-                const auto decoded = decodeSessionAudioClip(resolveProjectAudio(file, clip.audioFilePath));
+                const auto location = resolveProjectAudio(file, clip.audioFilePath);
+                const auto decoded = location == juce::File{} ? AudioClipImportResult{{}, "The saved audio location is not valid."}
+                                                              : decodeSessionAudioClip(location);
                 if (!decoded.clip) {
-                    result.error = "Track " + juce::String(t + 1) + ", Scene " + juce::String(s + 1) + ": " + decoded.error;
-                    return result;
+                    // A moved or deleted file must not make the whole project unopenable.
+                    result.missing.push_back({false, t, s, location == juce::File{} ? clip.audioFilePath : location.getFullPathName(), decoded.error});
+                    continue;
                 }
                 const auto bytes = decoded.clip->frames * static_cast<std::size_t>(decoded.clip->channels) * sizeof(float);
                 if (bytes > maxSessionAudioBytes - result.decodedBytes) {
@@ -673,8 +880,13 @@ private:
         for (int t = 0; t < tracks; ++t) for (int p = 0; p < drumPadCount; ++p) {
             const auto& path = result.project.drumPaths[t][p];
             if (path.isEmpty()) continue;
-            const auto decoded = decodeSessionAudioClip(resolveProjectAudio(file, path));
-            if (!decoded.clip) { result.error = decoded.error; return result; }
+            const auto location = resolveProjectAudio(file, path);
+            const auto decoded = location == juce::File{} ? AudioClipImportResult{{}, "The saved audio location is not valid."}
+                                                          : decodeSessionAudioClip(location);
+            if (!decoded.clip) {
+                result.missing.push_back({true, t, p, location == juce::File{} ? path : location.getFullPathName(), decoded.error});
+                continue;
+            }
             const auto bytes = decoded.clip->frames * decoded.clip->channels * sizeof(float);
             if (bytes > maxSessionAudioBytes - result.decodedBytes) { result.error = "Drum audio exceeds memory limit"; return result; }
             result.decodedBytes += bytes; result.drums[t][p] = decoded.clip;
@@ -701,8 +913,12 @@ private:
                 auto& clip = loaded.clip(t, s);
                 if (clip.audioFilePath.isEmpty()) continue;
                 const auto resolved = resolveProjectAudio(file, clip.audioFilePath);
-                clip.audioFilePath = resolved.getFullPathName();
-                clip.audioFileName = resolved.getFileName();
+                if (resolved != juce::File{}) {
+                    clip.audioFilePath = resolved.getFullPathName();
+                    clip.audioFileName = resolved.getFileName();
+                } else {
+                    clip.audioFileName = MissingMedia::fileNameOf(clip.audioFilePath); // keep the saved reference as written
+                }
                 const auto& asset = result.audio[static_cast<std::size_t>(s * loaded.trackCount() + t)];
                 clip.audio = asset;
                 if (asset != nullptr) retained.push_back(asset);
@@ -710,7 +926,10 @@ private:
         for (int t = 0; t < loaded.trackCount(); ++t) for (int p = 0; p < drumPadCount; ++p) {
             auto& track = loaded.tracks[t];
             track.drumAssets[p] = result.drums[t][p];
-            if (track.drumPaths[p].isNotEmpty()) track.drumPaths[p] = resolveProjectAudio(file, track.drumPaths[p]).getFullPathName();
+            if (track.drumPaths[p].isNotEmpty()) {
+                const auto resolved = resolveProjectAudio(file, track.drumPaths[p]);
+                if (resolved != juce::File{}) track.drumPaths[p] = resolved.getFullPathName();
+            }
             if (result.drums[t][p]) retained.push_back(result.drums[t][p]);
         }
         retainedBytes += result.decodedBytes;
@@ -725,9 +944,13 @@ private:
         if (!recovered) discardRecovery();
         if (onDocumentReplaced) onDocumentReplaced();
         historyChanged();
+        const auto offline = result.missing.empty() ? juce::String{}
+            : " - " + juce::String(static_cast<int>(result.missing.size())) + " audio file"
+              + (result.missing.size() == 1 ? " is" : "s are") + " offline (use Relink audio on the Session tab)";
+        const auto offlineDetail = describeOffline(result.missing);
         if (recovered) status("Recovered unsaved work" + (projectFile != juce::File{} ? " for " + projectFile.getFileName() : juce::String{})
-                              + juce::String(juce::CharPointer_UTF8(" \xe2\x80\x94 save to keep it")), {});
-        else status("Opened " + file.getFileName(), file.getFullPathName());
+                              + juce::String(juce::CharPointer_UTF8(" \xe2\x80\x94 save to keep it")) + offline, offlineDetail);
+        else status("Opened " + file.getFileName() + offline, result.missing.empty() ? file.getFullPathName() : offlineDetail);
     }
 
     void finishImport(const juce::File& file, int track, int scene, const AudioClipImportResult& result) {
@@ -776,11 +999,21 @@ private:
                 const auto& before = previous.clip(t, active);
                 const auto& after = doc.clip(t, active);
                 if (before.audio != after.audio) publishClip(t, active);
-                else if (!after.hasAudio() && before.pattern != after.pattern) engine.pianoRollNotes[index].publish(after.notes());
+                else if (!after.isAudioClip() && before.pattern != after.pattern) engine.pianoRollNotes[index].publish(after.notes());
             }
         }
         if (onDocumentRestored) onDocumentRestored();
         historyChanged();
+    }
+
+    // Human-readable cause when the document cannot be serialised.
+    static juce::String describeInvalidSession(const ProjectDocument& d) {
+        auto name = oversizedPluginName(d.masterPlugins);
+        for (std::size_t t = 0; name.isEmpty() && t < d.tracks.size(); ++t) name = oversizedPluginName(d.tracks[t].plugins);
+        if (name.isNotEmpty())
+            return "the saved state of " + name + " is too large to store (limit about "
+                + juce::String(maxPluginStateChars / (1024 * 1024) * 3 / 4) + " MB per plugin)";
+        return "session data is invalid";
     }
 
     void historyChanged() { if (onHistoryChanged) onHistoryChanged(); }
@@ -832,6 +1065,8 @@ private:
     DocumentHistory history;
     std::uint64_t savedId{}, autosavedId{};
     bool runtimeDirty{};
+    bool autosaveWarned{};
+    PublishedSong published;
     bool autosaving{};
     std::mutex recoveryMutex;
     std::atomic<std::uint64_t> recoveryGeneration{};

@@ -38,6 +38,7 @@ struct SessionProjectData {
     std::vector<PluginRackState> plugins;
     PluginRackState masterPlugins;
     int launchQuantizationSteps{16};
+    float masterGain{1.0f}; // Absent in older files: unity.
     int selectedTrack{};
     int selectedScene{};
     int bpm{120};
@@ -83,7 +84,7 @@ struct SessionProjectData {
         if ((launchQuantizationSteps != 4 && launchQuantizationSteps != 16)
             || selectedTrack < 0 || selectedTrack >= tracks
             || selectedScene < 0 || selectedScene >= scenes
-            || bpm < 60 || bpm > 200 || synthPreset < 0 || synthPreset >= presetCount)
+            || bpm < 60 || bpm > 200 || synthPreset < 0 || synthPreset >= presetCount || !validMasterGain(masterGain))
             return false;
         if (plugins.size() != trackSettings.size() || !masterPlugins.valid() || !masterPlugins.instrument.descriptionXml.isEmpty()) return false;
         for (const auto& rack : plugins) if (!rack.valid()) return false;
@@ -113,6 +114,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     rootObject->setProperty("selectedScene", project.selectedScene);
     rootObject->setProperty("bpm", project.bpm);
     rootObject->setProperty("synthPreset", project.synthPreset);
+    rootObject->setProperty("masterGain", project.masterGain);
     juce::Array<juce::var> pluginRacks;
     for (const auto& rack : project.plugins) pluginRacks.add(rackToVar(rack));
     rootObject->setProperty("plugins", juce::var(pluginRacks));
@@ -243,6 +245,13 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
     parsed.selectedScene = static_cast<int>(selectedScene);
     parsed.bpm = static_cast<int>(bpm);
     parsed.synthPreset = static_cast<int>(synthPreset);
+    const auto masterGain = rootObject->getProperty("masterGain");
+    if (masterGain.isDouble() || masterGain.isInt()) {
+        parsed.masterGain = static_cast<float>(static_cast<double>(masterGain));
+        if (!validMasterGain(parsed.masterGain)) { error = "The project's master volume is out of range."; return false; }
+    } else if (!masterGain.isVoid()) {
+        error = "The project's master volume is invalid."; return false;
+    }
     if (formatVersion < 3) {
         for (auto& track : parsed.trackSettings) track.preset = parsed.synthPreset;
     } else {

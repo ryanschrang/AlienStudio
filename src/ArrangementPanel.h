@@ -33,8 +33,15 @@ public:
     }
     std::function<void()> onChange, onExport;
     const Arrangement& getArrangement() const { return data; }
-    void setArrangement(const Arrangement& value) { data=value; selected=-1; history.clear(); syncLength(); repaint(); }
-    void setGridNames(const juce::StringArray& tracks, const juce::StringArray& scenes) {
+    // An unchanged layout (a rename or mix edit elsewhere) keeps the selection and local undo history.
+    void setArrangement(const Arrangement& value) {
+        const bool same=data.sameLayout(value); data=value;
+        if(!same) { selected=-1; history.clear(); }
+        syncLength(); repaint();
+    }
+    // Track and scene names label the rows and regions; colours match the Session grid.
+    void setGridNames(const juce::StringArray& tracks, const juce::StringArray& scenes, const std::vector<juce::Colour>& colours = {}) {
+        trackNames=tracks; sceneNames=scenes; trackColours=colours;
         const int t = track.getSelectedId(), s = scene.getSelectedId();
         track.clear(juce::dontSendNotification); scene.clear(juce::dontSendNotification);
         for (int i = 0; i < tracks.size(); ++i) track.addItem(tracks[i], i + 1);
@@ -43,7 +50,14 @@ public:
         scene.setSelectedId(juce::jlimit(1, scenes.size(), s), juce::dontSendNotification);
         visibleTracks = tracks.size(); repaint();
     }
-    void setPlayhead(int thousandths) { position=thousandths; repaint(); }
+    // Moves the visible 16-bar window along with playback: whenever the playhead enters a new
+    // 16-bar page (including when playback starts). Scrolling by hand stays put within a page.
+    void setPlayhead(int thousandths) {
+        const int playPage=thousandths>=0?thousandths/1000/16:-1;
+        if(playPage>=0 && playPage!=followedPage)
+            page.setValue(juce::jmin(page.getMaximum(),static_cast<double>(playPage*16+1)),juce::dontSendNotification);
+        followedPage=playPage; position=thousandths; repaint();
+    }
     void setStatus(const juce::String& text) { status.setText(text,juce::dontSendNotification); status.setTooltip(text); }
     void resized() override {
         track.setBounds(12,8,110,28); scene.setBounds(130,8,110,28);
@@ -59,7 +73,7 @@ public:
         const float rowHeight=std::max(12.0f,static_cast<float>(getHeight()-145)/visibleTracks);
         for(int t=0;t<visibleTracks;++t) {
             g.setColour(juce::Colour(0xff95a8b5));
-            g.drawText("Track "+juce::String(t+1),12,100+static_cast<int>(t*rowHeight),70,28,juce::Justification::centredLeft);
+            g.drawText(t<trackNames.size()?trackNames[t]:"Track "+juce::String(t+1),12,100+static_cast<int>(t*rowHeight),74,28,juce::Justification::centredLeft,true);
             g.setColour(juce::Colour(0xff293344)); g.fillRect(x,100+t*rowHeight,width,rowHeight-2);
         }
         for(int b=0;b<=16;++b) {
@@ -72,11 +86,11 @@ public:
             if(right<=left) continue;
             auto box=juce::Rectangle<float>(x+(left-first)*barWidth+2,102+r.track*rowHeight,(right-left)*barWidth-4,rowHeight-6);
             const std::array<juce::Colour,4> colours{juce::Colour(0xff55cdb7),juce::Colour(0xff9b8ee8),juce::Colour(0xff69afe2),juce::Colour(0xffdcaf68)};
-            const auto colour=colours[static_cast<std::size_t>(r.track) % colours.size()];
+            const auto colour=static_cast<std::size_t>(r.track)<trackColours.size()?trackColours[static_cast<std::size_t>(r.track)]:colours[static_cast<std::size_t>(r.track) % colours.size()];
             g.setColour(colour.withAlpha(static_cast<int>(i)==selected?0.55f:0.22f));g.fillRoundedRectangle(box,6);
             g.setColour(colour);g.fillRoundedRectangle(box.withWidth(3),1.5f);
             if(static_cast<int>(i)==selected)g.drawRoundedRectangle(box,6,1.5f);
-            g.setColour(juce::Colours::white);g.drawText("Scene "+juce::String(r.scene+1),box.toNearestInt(),juce::Justification::centred);
+            g.setColour(juce::Colours::white);g.drawText(r.scene<sceneNames.size()?sceneNames[r.scene]:"Scene "+juce::String(r.scene+1),box.toNearestInt(),juce::Justification::centred,true);
         }
         const float bar=static_cast<float>(position)/1000;
         if(position>=0 && bar>=first && bar<first+16) { g.setColour(juce::Colours::orange); g.drawVerticalLine(static_cast<int>(x+(bar-first)*barWidth),100,100+visibleTracks*rowHeight); }
@@ -103,11 +117,13 @@ private:
     ArrangementRegion controls() const { return {track.getSelectedId()-1,scene.getSelectedId()-1,static_cast<int>(start.getValue())-1,static_cast<int>(length.getValue())}; }
     void syncLength() { songLength.setValue(data.lengthBars,juce::dontSendNotification); }
     void commit(const Arrangement& next,int index) { if(history.size()==64) history.erase(history.begin());history.push_back(data);data=next;selected=index;changed(); }
-    void changed() { setStatus("Arrangement updated. Changes during playback restart the song.");repaint();if(onChange)onChange(); }
+    void changed() { setStatus("Arrangement updated. Moving, adding or removing regions during playback restarts the song.");repaint();if(onChange)onChange(); }
     void rejected() { setStatus("Region overlaps another clip, exceeds the song length, or no region is selected. No changes made."); }
     Arrangement data;
     std::vector<Arrangement> history;
-    int selected{-1},position{-1},visibleTracks{4};
+    int selected{-1},position{-1},visibleTracks{4},followedPage{-1};
+    juce::StringArray trackNames,sceneNames;
+    std::vector<juce::Colour> trackColours;
     juce::ComboBox track,scene;
     juce::Slider start,length,songLength,page;
     juce::TextButton add,apply,duplicate,remove,undo,exportWav;

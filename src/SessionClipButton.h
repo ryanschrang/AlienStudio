@@ -10,7 +10,7 @@ namespace alien {
 // still maintained for accessibility but the slot draws its own clip tile.
 class SessionClipButton final : public juce::TextButton {
 public:
-    enum class Kind { empty, midi, audio };
+    enum class Kind { empty, midi, audio, offline };
     struct Visual {
         Kind kind{Kind::empty};
         juce::Colour colour{0xff4fe0b6};
@@ -62,12 +62,15 @@ public:
                 g.drawText("Empty", r.withTrimmedLeft(28.0f), juce::Justification::centredLeft, true);
             }
         } else {
-            auto fill = v.playing ? v.colour : v.colour.withMultipliedSaturation(0.75f).withMultipliedBrightness(0.62f);
+            // Offline audio (file not found) is drawn in a muted red that cannot be mistaken for a playable clip.
+            auto fill = v.kind == Kind::offline ? juce::Colour(0xff4a2a2e)
+                : v.playing ? v.colour : v.colour.withMultipliedSaturation(0.75f).withMultipliedBrightness(0.62f);
             if (down) fill = fill.brighter(0.12f);
             else if (over) fill = fill.brighter(0.06f);
             g.setColour(fill);
             g.fillRoundedRectangle(r, radius);
-            const auto textColour = v.playing ? ink : juce::Colour(0xfff1f2f4);
+            const auto textColour = v.kind == Kind::offline ? juce::Colour(0xffe8b4b8)
+                : v.playing ? ink : juce::Colour(0xfff1f2f4);
 
             // Launch triangle.
             const auto tri = juce::Rectangle<float>(10.0f, 10.0f).withCentre({r.getX() + 15.0f, r.getCentreY()});
@@ -86,6 +89,12 @@ public:
                     const float bh = badge.getHeight() * hs[i];
                     g.fillRect(badge.getX() + static_cast<float>(i) * 2.6f, badge.getCentreY() - bh * 0.5f, 1.4f, bh);
                 }
+            }
+            if (v.kind == Kind::offline) {
+                auto badge = textArea.removeFromRight(14.0f);
+                g.setColour(juce::Colour(0xffffb547));
+                g.setFont(juce::FontOptions(13.0f, juce::Font::bold));
+                g.drawText("!", badge, juce::Justification::centred);
             }
             g.setColour(textColour);
             g.setFont(juce::FontOptions(12.5f, v.playing ? juce::Font::bold : juce::Font::plain));

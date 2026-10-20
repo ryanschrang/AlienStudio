@@ -83,6 +83,10 @@ private:
 class SynthEngine {
 public:
     static constexpr std::size_t maxVoices = 16;
+    // Each voice is scaled by this before summing. It used to be 1/maxVoices (-24 dB for
+    // a single note), which left the built-in synth far quieter than any plugin or WAV;
+    // 1/8 keeps a few simultaneous notes under full scale and the master stage handles the rest.
+    static constexpr double voiceMixScale = 1.0 / 8.0;
     void prepare(double rate) noexcept {
         sampleRate = rate > 0 && std::isfinite(rate) ? rate : 44100;
         allSoundOff();
@@ -141,7 +145,7 @@ public:
             if (std::abs(v.filtered) < 1e-20) v.filtered = 0;
             sum += v.filtered * v.envelope.next() * v.velocity;
         }
-        return static_cast<float>(sum / maxVoices);
+        return static_cast<float>(sum * voiceMixScale);
     }
 private:
     static double blep(double t, double dt) noexcept {
