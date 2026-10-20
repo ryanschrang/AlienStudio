@@ -4,7 +4,7 @@
 
 Alien Studio is an **independent, original application**, not affiliated with or endorsed by any of those products. We aim to learn from broadly useful workflows without copying proprietary code, artwork, branding, or protected assets.
 
-> **Project status:** Integrated early DAW prototype with up to 16 tracks/32 scenes, 12 built-in sounds, drum sample kits/browser, arrangement playback and WAV export, disk-streamed audio recording and offline tempo matching, plus initial stereo VST3 instrument/FX hosting. Project v6 unifies these features with saving, portable media collection, undo/redo and recovery. Native Windows device, plugin and listening checks remain required; see [the checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
+> **Project status:** Integrated early DAW prototype with up to 16 tracks/32 scenes, 12 built-in sounds, drum sample kits/browser, arrangement playback and WAV export, disk-streamed audio recording and offline tempo matching, five built-in stock effects (EQ, compressor, reverb, delay, limiter), plus initial stereo VST3 instrument/FX hosting. Project v6 unifies these features with saving, portable media collection, undo/redo and recovery. Native Windows device, plugin and listening checks remain required; see [the checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
 
 ## Product vision: three connected workspaces
 
@@ -25,6 +25,7 @@ The long-term differentiator is **one shared project and audio engine** across a
 - [x] Versioned project save/open and portable project copies with collected audio.
 - [x] Project-wide undo/redo, unsaved-changes prompts, one-minute autosave and crash recovery.
 - [x] MIDI recording into Session clips (computer keyboard or USB MIDI keyboard) with count-in, metronome, overdub/replace and latency compensation.
+- [x] Stock effects: EQ, compressor, reverb, tempo-synced delay and look-ahead limiter in every track and master FX rack, with custom panels.
 - [x] GPL-3.0 license file. Dependency attribution/distribution review remains required before releases.
 
 ### Next implementation sequence
@@ -32,8 +33,8 @@ The long-term differentiator is **one shared project and audio engine** across a
 2. Non-destructive audio arrangement editing.
 3. Multitrack recording, monitoring, punch and takes.
 4. MIDI recording follow-ups: controller data, quantize-on-record, loop-record takes and punch in/out.
-5. Mixer routing and plugin reliability.
-6. Automation, tempo maps and interactive warp markers.
+5. Mixer routing and plugin reliability, including sidechains and multi-output routing.
+6. Automation lanes for track volume/pan and stock/plugin parameters, tempo maps, interactive warp markers, and a mouse-driven arrangement timeline.
 7. Freeze, stems and final delivery.
 
 Track implementation and verification in [the feature checklist](docs/FEATURE_CHECKLIST.md).
@@ -637,6 +638,36 @@ pitch bend, mod wheel, sustain and other controllers are not stored. The take is
 kept in memory until it ends and is written to the project (and autosave) only then,
 so a crash in the middle of a take loses that take.
 
+### Stock effects: EQ, compressor, reverb, delay, limiter
+
+Open **More... > Plugins**, pick a destination (a track or **Master FX**), choose one of the
+**[stock FX]** entries at the top of the list and press **Add FX**. They need no scanning and
+work in the same eight FX slots per track and on Master as VST3 effects, so everything
+described under *Integrated workspaces and VST3 hosting* applies to them: order (Move FX
+up/down), **Bypass / enable**, **Remove**, undo/redo, saving, Save portable, and WAV export
+(which renders them like any other effect). **Open editor** shows the effect's panel.
+
+| Effect | Controls | Notes |
+| --- | --- | --- |
+| **Alien EQ** | Low shelf, two bells (frequency, gain, Q) and high shelf, output level | The curve shows the combined response; drag a numbered handle to set frequency and gain, mouse wheel over a bell changes its width, double-click a handle to flatten it. A flat EQ is bit-exact pass-through. |
+| **Alien Compressor** | Threshold, ratio, attack, release, knee, make-up, mix | Stereo-linked peak detector, gain reduction smoothed in dB, soft knee. The meter shows the reduction; **Mix** gives parallel compression. |
+| **Alien Reverb** | Size, damping, width, pre-delay, mix | A classic room (Freeverb-style) reverb. Its reported tail follows Size and pre-delay, so exported WAVs include the decay. |
+| **Alien Delay** | Time, tempo sync and division, feedback, ping-pong, tone, mix | With **Tempo sync** the time follows the project tempo (1/16 to one bar); ping-pong bounces the repeats left and right; Tone darkens the repeats (set to Open for none). Up to 2 s free, 4 s when synced. |
+| **Alien Limiter** | Gain, ceiling, release | A 2 ms look-ahead limiter. The output never exceeds the ceiling (measured on sample peaks; it is not an inter-sample/true-peak limiter). The look-ahead is reported as latency and the host delays every other track to match. |
+
+All controls are ordinary host parameters: they can be typed ("1.5k", "250 ms", "-6"),
+double-clicked to reset, and are what the upcoming automation lanes will drive. Their
+settings are stored in the project inside the rack entry (a `description` with format
+`AlienStock` plus the state), so no project-format version change was needed; a project
+that names a stock effect this build does not know loads with that slot as a placeholder
+and keeps its saved state. Older Alien Studio builds treat the entry as a missing plugin.
+
+Settings changes are smoothed (no zipper noise or clicks), non-finite input (NaN/infinity from
+a misbehaving plugin) is replaced by silence so feedback paths cannot lock up, and the
+audio path never allocates, locks or blocks. The effects are stereo in and stereo out;
+there is no sidechain input yet, and parameter changes made while playing are not yet
+recorded as automation.
+
 ### Integrated workspaces and VST3 hosting
 
 Use **More...** in the top bar for **Drums**, **Arrange**, **Audio lab** and
@@ -675,7 +706,7 @@ Use **More...** in the top bar for **Drums**, **Arrange**, **Audio lab** and
 
 Each Session track has one instrument slot (replacing its built-in synth/kit)
 plus eight ordered FX slots. Master has eight FX slots. Select a target, choose
-an installed plugin, and use **Use instrument** or **Add FX**. Select a rack slot
+an installed plugin (or a stock effect), and use **Use instrument** or **Add FX**. Select a rack slot
 for **Open editor**, **Bypass / enable**, **Move FX up/down**, or **Remove**.
 Bypassed instruments are silent; bypassed effects pass audio through. Native
 editors have a generic parameter-editor fallback. Missing or unsupported plugins

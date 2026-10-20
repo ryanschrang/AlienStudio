@@ -1,6 +1,7 @@
 #pragma once
 #include "PluginRuntime.h"
 #include "PluginState.h"
+#include "StockEffectEditors.h"
 #include <juce_gui_extra/juce_gui_extra.h>
 
 namespace alien {
@@ -22,10 +23,24 @@ inline int scanPluginBundle(const juce::String& path, const juce::File& output) 
     auto xml = list.createXml();
     return xml && xml->writeTo(output) && list.getNumTypes() > 0 ? 0 : 1;
 }
-inline std::unique_ptr<juce::AudioPluginInstance> instantiatePlugin(
+// Stock effects are recreated from their identifier, with no plugin scan or file.
+inline std::unique_ptr<juce::AudioProcessor> instantiateStock(
+    const juce::PluginDescription& description, const PluginState& state, bool instrument, juce::String& error) {
+    if (instrument) { error="Stock effects go in FX slots, not the instrument slot"; return {}; }
+    auto effect = stock::create(description.fileOrIdentifier);
+    if (!effect) { error="Unknown stock effect \""+description.fileOrIdentifier+"\" (saved by a newer Alien Studio?)"; return {}; }
+    if (state.stateBase64.isNotEmpty()) {
+        juce::MemoryBlock bytes;
+        if (!bytes.fromBase64Encoding(state.stateBase64)) { error="Invalid plugin state data"; return {}; }
+        effect->setStateInformation(bytes.getData(),static_cast<int>(bytes.getSize()));
+    }
+    error.clear(); return effect;
+}
+inline std::unique_ptr<juce::AudioProcessor> instantiatePlugin(
     const PluginState& state, bool instrument, double rate, juce::String& error) {
     juce::PluginDescription description;
     auto xml = juce::parseXML(state.descriptionXml);
+    if (xml && description.loadFromXml(*xml) && stock::isStock(description)) return instantiateStock(description,state,instrument,error);
     if (!xml || !description.loadFromXml(*xml) || description.pluginFormatName != "VST3") { error="Invalid VST3 description"; return {}; }
     if (description.isInstrument != instrument) { error="Choose an instrument for the instrument slot, or an effect for FX"; return {}; }
     juce::AudioPluginFormatManager formats; addHostingFormats(formats);

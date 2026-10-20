@@ -82,6 +82,27 @@ sample rate, buffer size, MIDI controller, display scale, and pass/fail notes.
     launch on the next bar), and record more than 1024 notes (status bar should say
     the clip is full). Nothing should hang, stick, or change the wrong clip.
 
+17. Stock effects, listening: add each stock effect from Plugins > stock FX to a track
+    and to Master FX. EQ: sweep each band's gain and frequency with the mouse while
+    playing; no clicks or zipper noise; the curve matches what you hear (boost
+    a band at a known frequency on a tone). Compressor: with a drum loop, lower the
+    threshold until the meter moves; attack/release should change the punch audibly;
+    Mix at 50% should keep the transients. Reverb: tail should fade smoothly, Size and
+    pre-delay audible, and an exported WAV must include the whole tail. Delay: free time
+    and Tempo sync at several BPMs (change tempo while playing); ping-pong alternates
+    ears; feedback at maximum stays stable. Limiter: push Gain up on a loud mix; the
+    output meter must never pass the ceiling, including in the exported WAV.
+18. Stock effects, project and rack behavior: put several effects on a track, Move FX
+    up/down, Bypass, Remove and Undo each; Save, close, reopen and confirm every
+    knob position returned. Save portable and reopen. A track with a limiter must stay
+    in sync with the other tracks (play two identical clicks, one with the limiter);
+    exported WAV length and alignment must match what you heard. Open the editor of
+    two effects at once and move knobs while playing.
+19. Stock effects, load: add eight effects to each of several tracks (reverbs and delays
+    are the heaviest) and watch CPU and dropouts at 44.1/48/96 kHz and small buffers.
+    Change the audio device's sample rate with effects loaded and confirm the delay
+    times, reverb size and limiter latency still sound and line up correctly.
+
 ## Results
 
 No physical-device results supplied yet. Fill in the environment and actual
