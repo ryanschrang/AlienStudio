@@ -1,0 +1,206 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R 7 0 R 9 0 R 11 0 R] /Count 4 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 3454 >>
+stream
+0.10 0.33 0.46 rg 0 814 595 28 re f
+0.15 0.20 0.26 rg BT /F2 19 Tf 1 0 0 1 44 790 Tm (ALIEN STUDIO) Tj ET
+0.15 0.20 0.26 rg BT /F1 11 Tf 1 0 0 1 44 765 Tm (Feature summary & development milestones) Tj ET
+0.60 0.73 0.78 RG 44 745 m 551 745 l S
+0.10 0.33 0.46 rg BT /F2 12 Tf 1 0 0 1 44 720 Tm (Snapshot | October 19, 2026) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 701 Tm (Windows 11 DAW prototype built with C++20, JUCE 8 and CMake.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 681 Tm (Baseline: main commit 8fbc9f483fe7. Recording and long offline tempo rendering are) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 668 Tm (merged. This report also describes draft additions in the accompanying feature branch.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 648 Tm (Code present, automated coverage and physical-device verification are distinct statuses.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 635 Tm (This is not a claim of feature parity with established DAWs.) Tj ET
+0.10 0.33 0.46 rg BT /F2 12 Tf 1 0 0 1 44 607 Tm (Implemented foundations) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 588 Tm (Music creation: 12 built-in synth presets; polyphony; 16-step pitch/velocity sequencing;) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 575 Tm (piano-roll notes, velocity/probability and processing; eight-pad sampled drums.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 555 Tm (MIDI input: external controllers, sustain and reconnection, plus typing/mouse piano.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 542 Tm (Recording live MIDI performances is still planned.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 522 Tm (Live sessions: up to 16 tracks and 32 scenes; beat/bar clip and scene launches; MIDI CC) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 509 Tm (scene control. Audio clips are one-shots.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 489 Tm (Mixer: independent track instruments, volume, pan, mute/solo and meters.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 469 Tm (Projects: versioned save/open, portable audio collection, undo/redo, save prompts,) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 456 Tm (autosave and recovery.) Tj ET
+0.10 0.33 0.46 rg BT /F2 12 Tf 1 0 0 1 44 428 Tm (Audio and plugin foundations) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 409 Tm (Recording: mono/stereo capture streams to disk with interrupted-take recovery.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 396 Tm (Independent multitrack arming and monitoring are not yet implemented.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 376 Tm (Tempo matching: offline pitch-preserving render to a separate WAV, with 0.5-2x duration) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 363 Tm (ratios and bounded render buffers. Source files are preserved.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 343 Tm (Arrangement: bar-based regions and WAV export. Current model limits: 128 bars and 128) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 330 Tm (regions.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 310 Tm (VST3: initial stereo instruments, track/master FX and editors. User reports missing) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 297 Tm (scanned plugins; compatibility and editor feedback remain incomplete.) Tj ET
+0.15 0.20 0.26 rg BT /F1 8 Tf 1 0 0 1 44 28 Tm (Alien Studio | Feature summary | 2026-10-19) Tj ET
+0.15 0.20 0.26 rg BT /F1 8 Tf 1 0 0 1 516 28 Tm (1 / 4) Tj ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 8 0 R >>
+endobj
+8 0 obj
+<< /Length 3806 >>
+stream
+0.10 0.33 0.46 rg 0 814 595 28 re f
+0.15 0.20 0.26 rg BT /F2 19 Tf 1 0 0 1 44 790 Tm (WHAT STILL NEEDS WORK) Tj ET
+0.15 0.20 0.26 rg BT /F1 11 Tf 1 0 0 1 44 765 Tm (Current limits and agreed delivery order) Tj ET
+0.60 0.73 0.78 RG 44 745 m 551 745 l S
+0.10 0.33 0.46 rg BT /F2 12 Tf 1 0 0 1 44 720 Tm (Current limits to keep visible) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 701 Tm (Session audio is decoded into RAM: 128 MiB per clip and 512 MiB retained per project.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 688 Tm (Recording or rendering a long file does not make that file playable in Session.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 668 Tm (Tempo match is a render workflow, not source preview. Save the output WAV, wait for) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 655 Tm (completion, then launch its loaded Session clip.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 635 Tm (User confirmed the render-and-launch workflow works for a supported file. This does not) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 622 Tm (establish every MP3 codec, long source, plugin or audio device works.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 602 Tm (Plugin scanning is explicit per bundle. Some plugins do not appear; current generic) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 589 Tm (errors need better diagnostics. Adding FX does not automatically select its editor slot.) Tj ET
+0.10 0.33 0.46 rg BT /F2 12 Tf 1 0 0 1 44 561 Tm (Agreed milestone order) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 542 Tm (1. Reliable long-file playback: decoder workers, per-playback cursors, prebuffering,) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 529 Tm (waveforms and useful media errors.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 509 Tm (2. Audio editing: non-destructive trim, split, slip, duplicate, looping, fades and) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 496 Tm (crossfades.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 476 Tm (3. Multitrack recording: arming, input routing, monitoring, punch recording, takes and) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 463 Tm (latency compensation.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 443 Tm (4. MIDI recording: count-in, overdub, sustain capture, timing/quantization and controller) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 430 Tm (editing.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 410 Tm (5. Mixer/plugin reliability: buses, sends, sidechains, multi-output plugins and latency) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 397 Tm (compensation.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 377 Tm (6. Automation and timing: mixer/plugin automation, tempo/time-signature maps and editable) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 364 Tm (warp markers.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 344 Tm (7. Delivery: freeze, stems, effect tails, dependable export and portable projects.) Tj ET
+0.10 0.33 0.46 rg BT /F2 12 Tf 1 0 0 1 44 316 Tm (Completion standard) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 297 Tm (Keep plugin and playback defects active throughout this sequence. For each milestone,) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 284 Tm (require focused tests, Windows Debug/Release CI and a recorded manual scenario on the) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 271 Tm (exact build.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 251 Tm (A feature checklist is maintained in docs/FEATURE_CHECKLIST.md. This PDF is a dated) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 238 Tm (overview, not an automatically updating certification.) Tj ET
+0.15 0.20 0.26 rg BT /F1 8 Tf 1 0 0 1 44 28 Tm (Alien Studio | Feature summary | 2026-10-19) Tj ET
+0.15 0.20 0.26 rg BT /F1 8 Tf 1 0 0 1 516 28 Tm (2 / 4) Tj ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 10 0 R >>
+endobj
+10 0 obj
+<< /Length 3660 >>
+stream
+0.10 0.33 0.46 rg 0 814 595 28 re f
+0.15 0.20 0.26 rg BT /F2 19 Tf 1 0 0 1 44 790 Tm (REPRESENTATIVE PROJECTS) Tj ET
+0.15 0.20 0.26 rg BT /F1 11 Tf 1 0 0 1 44 765 Tm (Repeatable production, performance and recording checks) Tj ET
+0.60 0.73 0.78 RG 44 745 m 551 745 l S
+0.10 0.33 0.46 rg BT /F2 12 Tf 1 0 0 1 44 720 Tm (Production | 120 BPM) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 701 Tm (examples/production/Production.alienstudio) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 681 Tm (Four built-in synth tracks: bass, chords, lead and pulse. Four scenes form a 16-bar) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 668 Tm (arrangement. No third-party media or plugins required.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 648 Tm (Acceptance: audible arrangement, Session audition, mute/solo/pan, note edits, undo/redo,) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 635 Tm (save/reopen and comparison with exported WAV.) Tj ET
+0.10 0.33 0.46 rg BT /F2 12 Tf 1 0 0 1 44 607 Tm (Live performance | 128 BPM) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 588 Tm (examples/live/LivePerformance.alienstudio) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 568 Tm (Four scenes: Build, Full, Break and Finish. Empty clips deliberately exercise) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 555 Tm (transitions. Beat launches are the initial setting.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 535 Tm (Acceptance: switch beat/bar quantization, launch complete scenes, stop/relaunch, check) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 522 Tm (stuck notes and device restart. Test physical MIDI CC separately.) Tj ET
+0.10 0.33 0.46 rg BT /F2 12 Tf 1 0 0 1 44 494 Tm (Recording reference | 120 BPM) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 475 Tm (examples/recording/MultitrackReference.alienstudio) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 455 Tm (Four original mono test WAVs play simultaneously for four seconds. Empty Record Here,) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 442 Tm (Alternate Take and Recovery scenes reserve destinations.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 422 Tm (Acceptance: solo distinct sources, record a new Audio lab take into an empty slot, render) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 409 Tm (a tempo match, launch results, collect portable media and reopen.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 389 Tm (This is a reference session, not proof of simultaneous armed-track recording. That) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 376 Tm (workflow remains planned.) Tj ET
+0.10 0.33 0.46 rg BT /F2 12 Tf 1 0 0 1 44 348 Tm (Long-file extension and results) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 329 Tm (tools/generate_reference_audio.py creates original reference WAVs in bounded blocks, from) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 316 Tm (1 to 3600 seconds. It refuses to replace existing files.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 296 Tm (Generate hours on demand instead of committing huge media. Baseline Session playback) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 283 Tm (should still reject over-budget sources until streaming integration lands.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 263 Tm (Record build/device/sample rate/buffer size, expected and observed behavior, memory use) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 250 Tm (and dropouts in examples/results/TEMPLATE.md. New fixture listening status: NOT RUN.) Tj ET
+0.15 0.20 0.26 rg BT /F1 8 Tf 1 0 0 1 44 28 Tm (Alien Studio | Feature summary | 2026-10-19) Tj ET
+0.15 0.20 0.26 rg BT /F1 8 Tf 1 0 0 1 516 28 Tm (3 / 4) Tj ET
+endstream
+endobj
+11 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 12 0 R >>
+endobj
+12 0 obj
+<< /Length 4782 >>
+stream
+0.10 0.33 0.46 rg 0 814 595 28 re f
+0.15 0.20 0.26 rg BT /F2 19 Tf 1 0 0 1 44 790 Tm (FIRST STREAMING INCREMENT) Tj ET
+0.15 0.20 0.26 rg BT /F1 11 Tf 1 0 0 1 44 765 Tm (Foundation now; integration and hardware acceptance next) Tj ET
+0.60 0.73 0.78 RG 44 745 m 551 745 l S
+0.10 0.33 0.46 rg BT /F2 12 Tf 1 0 0 1 44 720 Tm (Draft additions in this branch) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 701 Tm (StreamingAudioRing: fixed-capacity stereo SPSC storage, interpolation lookahead and) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 688 Tm (explicit consumer advancement. Methods do not allocate, wait, lock or access files.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 668 Tm (Default sample storage is 128 KiB for 16,384 stereo frames, plus control/alignment) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 655 Tm (storage. Each active playback instance needs independent state.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 635 Tm (Tests added for empty/full boundaries, partial writes, ring wrapping, stereo alignment) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 622 Tm (and concurrent producer/consumer order.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 602 Tm (Three actual project fixtures and four original WAV sources, with a native-parser and) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 589 Tm (media-resolution test.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 569 Tm (These additions do not yet remove Session playback limits. CI results must be checked on) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 556 Tm (the PR; local builds and PDF visual rendering were unavailable in this disconnected) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 543 Tm (session.) Tj ET
+0.10 0.33 0.46 rg BT /F2 12 Tf 1 0 0 1 44 515 Tm (Next integration work) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 496 Tm (Separate immutable clip metadata from per-playback decoders. Use bounded shared workers) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 483 Tm (rather than a thread per loaded clip.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 463 Tm (Prebuffer quantized launches; define behavior if storage is late. Seek/relaunch must) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 450 Tm (discard stale generations without resetting a ring under a consumer.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 430 Tm (Integrate large-file import, project reopen, recovered takes and tempo-render results.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 417 Tm (Preserve drum sample bounds and account for buffer/waveform memory.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 397 Tm (Build waveform peaks off-thread; expose missing media, decoder failures and underrun) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 384 Tm (counts. Offline export must be deterministic and independent of worker timing.) Tj ET
+0.10 0.33 0.46 rg BT /F2 12 Tf 1 0 0 1 44 356 Tm (Acceptance before calling streaming complete) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 337 Tm (Test same-source concurrent playback, rapid stop/relaunch, missing/truncated media, slow) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 324 Tm (decoding, sample-rate conversion, EOF and device changes.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 304 Tm (Play several hour-long sources with bounded memory and no callback I/O, allocation, locks) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 291 Tm (or destruction. Use Session for hour-long checks; arrangement is currently capped at 128) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 278 Tm (bars.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 258 Tm (Run Windows Debug/Release tests and at least 15 minutes of audible multitrack playback.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 245 Tm (Verify save/reopen, portable media and live/export agreement within supported timeline) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 232 Tm (lengths.) Tj ET
+0.10 0.33 0.46 rg BT /F2 12 Tf 1 0 0 1 44 204 Tm (Source and maintenance) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 185 Tm (Repository: github.com/ryanschrang/AlienStudio) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 165 Tm (Primary evidence: README.md; src/SessionAudioClip.h; src/SessionProject.h;) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 152 Tm (src/Arrangement.h; LongRecordingTests; LongTempoWarpTests; plugin hosting source.) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 132 Tm (Maintained checklist: docs/FEATURE_CHECKLIST.md | Detailed plan:) Tj ET
+0.15 0.20 0.26 rg BT /F1 10 Tf 1 0 0 1 44 119 Tm (docs/LONG_PLAYBACK_PLAN.md | Scenarios: examples/README.md) Tj ET
+0.15 0.20 0.26 rg BT /F1 8 Tf 1 0 0 1 44 28 Tm (Alien Studio | Feature summary | 2026-10-19) Tj ET
+0.15 0.20 0.26 rg BT /F1 8 Tf 1 0 0 1 516 28 Tm (4 / 4) Tj ET
+endstream
+endobj
+xref
+0 13
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000134 00000 n 
+0000000204 00000 n 
+0000000279 00000 n 
+0000000415 00000 n 
+0000003920 00000 n 
+0000004056 00000 n 
+0000007913 00000 n 
+0000008050 00000 n 
+0000011762 00000 n 
+0000011900 00000 n 
+trailer
+<< /Size 13 /Root 1 0 R >>
+startxref
+16734
+%%EOF
