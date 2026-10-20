@@ -64,7 +64,7 @@ public:
         tabs.addTab("Plugins", alien::ui::colours::surface, &pluginPanel, false);
         pluginPanel.onScan = [this] { choosePluginScan(); };
         pluginPanel.onTarget = [this](int) { refreshPlugins(); };
-        pluginPanel.onAdd = [this](bool instrument, int index) { addPlugin(instrument,index); };
+        pluginPanel.onAdd = [this](bool instrument, int choice) { addPlugin(instrument,choice); };
         pluginPanel.onAction = [this](int op,int slot) { pluginAction(op,slot); };
         if (auto xml = juce::parseXML(pluginListFile())) knownPlugins.recreateFromXml(*xml);
         controller.onBeforeSnapshot = [this] { snapshotPlugins(SnapshotReason::save); };
@@ -868,14 +868,21 @@ private:
         pluginPanel.setStatus(errors.isEmpty()?"Plugin racks restored. Select a slot to open its editor.":"Missing or unsupported plugins (saved state preserved):\n"+errors);
         refreshPlugins();
     }
-    void addPlugin(bool instrument,int index) {
+    void addPlugin(bool instrument,int choice) {
         if(projectBusy || controller.isBusy()) return;
-        auto types=knownPlugins.getTypes(); if(index<0 || index>=types.size())return;
-        if(types[index].isInstrument!=instrument) { pluginPanel.setStatus("Select an instrument for the instrument slot, or an FX plugin for Add FX.");return; }
+        juce::PluginDescription chosen;
+        if(choice>=alien::PluginPanel::stockBase) {
+            const int stockIndex=choice-alien::PluginPanel::stockBase; if(stockIndex<0 || stockIndex>=static_cast<int>(alien::stock::catalog.size()))return;
+            chosen=alien::stock::describe(alien::stock::catalog[static_cast<std::size_t>(stockIndex)]);
+        } else {
+            auto types=knownPlugins.getTypes(); const int index=choice-1; if(index<0 || index>=types.size())return;
+            chosen=types[index];
+        }
+        if(chosen.isInstrument!=instrument) { pluginPanel.setStatus("Select an instrument for the instrument slot, or an FX plugin for Add FX.");return; }
         const int t=pluginTarget(); if(instrument && t==alien::maxSessionTracks)return;
         snapshotPlugins(SnapshotReason::always); auto states=pluginStates();auto master=controller.document().masterPlugins;
         auto& rack=t==alien::maxSessionTracks?master:states[t];
-        alien::PluginState next{types[index].createXml()->toString(),{},false};
+        alien::PluginState next{chosen.createXml()->toString(),{},false};
         if(instrument)rack.instrument=next;
         else { if(rack.effects.size()>=8){pluginPanel.setStatus("Each rack supports eight FX slots.");return;}rack.effects.push_back(next); }
         controller.setPluginRacks(states,master); restorePlugins();

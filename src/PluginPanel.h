@@ -1,5 +1,6 @@
 #pragma once
 #include "PluginState.h"
+#include "StockEffects.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
@@ -7,18 +8,20 @@
 namespace alien {
 class PluginPanel final : public juce::Component {
 public:
+    // Choice ids: stock effects are stockBase + catalog index; scanned VST3 plugins are index + 1.
+    static constexpr int stockBase = 1000;
     PluginPanel() {
         for (auto* c:std::array<juce::Component*,12>{&target,&available,&slot,&scan,&addInstrument,&addEffect,&open,&bypass,&up,&down,&remove,&status}) addAndMakeVisible(c);
         scan.setButtonText("Scan VST3..."); addInstrument.setButtonText("Use instrument"); addEffect.setButtonText("Add FX");
         open.setButtonText("Open editor"); bypass.setButtonText("Bypass / enable"); up.setButtonText("Move FX up"); down.setButtonText("Move FX down"); remove.setButtonText("Remove");
-        available.setTextWhenNothingSelected("Scan a VST3 bundle to choose an instrument or FX");
-        target.setName("Plugin destination track or master"); available.setName("Scanned VST3 plugins"); slot.setName("Instrument or FX slot");
+        available.setTextWhenNothingSelected("Choose a stock effect or a scanned VST3 plugin");
+        target.setName("Plugin destination track or master"); available.setName("Stock effects and scanned VST3 plugins"); slot.setName("Instrument or FX slot");
         target.onChange=[this]{if(onTarget)onTarget(target.getSelectedId()-1);};
         scan.onClick=[this]{if(onScan)onScan();};
-        addInstrument.onClick=[this]{if(onAdd)onAdd(true,available.getSelectedId()-1);};
-        addEffect.onClick=[this]{if(onAdd)onAdd(false,available.getSelectedId()-1);};
+        addInstrument.onClick=[this]{if(onAdd)onAdd(true,available.getSelectedId());};
+        addEffect.onClick=[this]{if(onAdd)onAdd(false,available.getSelectedId());};
         open.onClick=[this]{action(0);}; bypass.onClick=[this]{action(1);}; remove.onClick=[this]{action(2);}; up.onClick=[this]{action(3);}; down.onClick=[this]{action(4);};
-        setStatus("Scan a 64-bit .vst3 bundle, select a track and add an instrument or FX. MIDI routing is selected in Drums.");
+        setStatus("Pick a destination and add one of Alien Studio's stock effects (EQ, compressor, reverb, delay, limiter), or scan a 64-bit .vst3 bundle for an instrument or FX. MIDI routing is selected in Drums.");
     }
     std::function<void()> onScan;
     std::function<void(int)> onTarget;
@@ -31,8 +34,10 @@ public:
         target.addItem("Master FX",maxSessionTracks+1);
         target.setSelectedId(t==maxSessionTracks+1?t:juce::jlimit(1,names.size(),t),juce::dontSendNotification);
         const int selectedPlugin=available.getSelectedId(); available.clear(juce::dontSendNotification);
-        auto descriptions=list.getTypes(); for(int i=0;i<descriptions.size();++i)available.addItem(descriptions[i].name+(descriptions[i].isInstrument?" [instrument]":" [FX]"),i+1);
-        available.setSelectedId(descriptions.isEmpty()?0:juce::jlimit(1,descriptions.size(),selectedPlugin),juce::dontSendNotification);
+        for(std::size_t i=0;i<stock::catalog.size();++i)available.addItem(juce::String(stock::catalog[i].name)+" [stock FX]",stockBase+static_cast<int>(i));
+        auto descriptions=list.getTypes(); if(!descriptions.isEmpty())available.addSeparator();
+        for(int i=0;i<descriptions.size();++i)available.addItem(descriptions[i].name+(descriptions[i].isInstrument?" [instrument]":" [FX]"),i+1);
+        available.setSelectedId(available.indexOfItemId(selectedPlugin)>=0?selectedPlugin:stockBase,juce::dontSendNotification);
         const int s=slot.getSelectedId(); slot.clear(juce::dontSendNotification);
         if(destination()!=maxSessionTracks)slot.addItem("Instrument: "+name(rack.instrument),1);
         for(std::size_t i=0;i<rack.effects.size();++i)slot.addItem("FX "+juce::String(static_cast<int>(i+1))+": "+name(rack.effects[i]),static_cast<int>(i+2));
