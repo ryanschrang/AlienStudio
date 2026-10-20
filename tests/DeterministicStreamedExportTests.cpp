@@ -56,12 +56,12 @@ int main() {
 
     auto source = std::make_shared<MemoryFile>(24000.0, std::vector<float>{0.0f, 1.0f, 0.0f});
     auto clip = streamedClip(source);
-    alien::ArrangementPlayback song;
-    song.arrangement.lengthBars = 1;
-    check(song.arrangement.add({0, 0, 0, 1}), "add streamed region");
-    song.clips[0][0].audio = &clip;
+    auto song = std::make_unique<alien::ArrangementPlayback>();
+    song->arrangement.lengthBars = 1;
+    check(song->arrangement.add({0, 0, 0, 1}), "add streamed region");
+    song->clips[0][0].audio = &clip;
 
-    auto render = alien::DeterministicStreamedArrangement::create(song, 120.0, 48000.0, 1.0f, cancelled, error);
+    auto render = alien::DeterministicStreamedArrangement::create(*song, 120.0, 48000.0, 1.0f, cancelled, error);
     check(render != nullptr && source->openCount == 1, "preflight opens an independent reader");
     std::array<juce::AudioBuffer<float>, alien::maxSessionTracks> tracks;
     prepare(tracks, 5);
@@ -72,11 +72,11 @@ int main() {
               "sample-rate conversion uses deterministic interpolation");
 
     auto project = std::make_unique<alien::SessionProjectData>();
-    project->arrangement = song.arrangement;
+    project->arrangement = song->arrangement;
     const auto output = juce::File::getSpecialLocation(juce::File::tempDirectory)
         .getNonexistentChildFile("alien-streamed-export", ".wav");
     alien::DrumSamplePointers noDrums{};
-    check(alien::exportArrangementWav(output, *project, song, noDrums, cancelled, error),
+    check(alien::exportArrangementWav(output, *project, *song, noDrums, cancelled, error),
           "streamed clip exports through the complete WAV path");
     juce::AudioFormatManager formats; formats.registerBasicFormats();
     std::unique_ptr<juce::AudioFormatReader> exported(formats.createReaderFor(output));
@@ -90,15 +90,15 @@ int main() {
     check(energy > 0.1f, "streamed WAV contains source audio");
     exported.reset(); output.deleteFile();
 
-    alien::ArrangementPlayback duplicates;
-    duplicates.arrangement.lengthBars = 1;
-    check(duplicates.arrangement.add({0,0,0,1}) && duplicates.arrangement.add({1,0,0,1}),
+    auto duplicates = std::make_unique<alien::ArrangementPlayback>();
+    duplicates->arrangement.lengthBars = 1;
+    check(duplicates->arrangement.add({0,0,0,1}) && duplicates->arrangement.add({1,0,0,1}),
           "duplicate source regions are valid on separate tracks");
-    duplicates.clips[0][0].audio = &clip;
-    duplicates.clips[0][1].audio = &clip;
+    duplicates->clips[0][0].audio = &clip;
+    duplicates->clips[0][1].audio = &clip;
     const int before = source->openCount;
     auto duplicateRender = alien::DeterministicStreamedArrangement::create(
-        duplicates, 120.0, 48000.0, 1.0f, cancelled, error);
+        *duplicates, 120.0, 48000.0, 1.0f, cancelled, error);
     check(duplicateRender != nullptr && source->openCount == before + 2,
           "duplicate clips receive independent readers");
     prepare(tracks, 5);
@@ -127,12 +127,12 @@ int main() {
 
     auto missing = std::make_shared<MemoryFile>(48000.0, std::vector<float>{1.0f}, false);
     auto missingClip = streamedClip(missing);
-    alien::ArrangementPlayback missingSong;
-    missingSong.arrangement.lengthBars=1;
-    missingSong.arrangement.add({0,0,0,1});
-    missingSong.clips[0][0].audio=&missingClip;
+    auto missingSong = std::make_unique<alien::ArrangementPlayback>();
+    missingSong->arrangement.lengthBars=1;
+    missingSong->arrangement.add({0,0,0,1});
+    missingSong->clips[0][0].audio=&missingClip;
     auto unavailable = alien::DeterministicStreamedArrangement::create(
-        missingSong,120.0,48000.0,1.0f,cancelled,error);
+        *missingSong,120.0,48000.0,1.0f,cancelled,error);
     check(!unavailable && error.containsIgnoreCase("missing"),
           "a missing file fails during preflight");
 
