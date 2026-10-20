@@ -87,6 +87,8 @@ public:
     std::atomic<int> rackStep{-1}; // step of the selected pattern that started last, or -1
 
     ToneEngine() noexcept {
+        for (std::size_t t = 0; t < sessionTracks; ++t)
+            audioPlayers[t].bind(diskStreams.voice(t * 2), diskStreams.voice(t * 2 + 1));
         for (auto& pitch : stepPitches) pitch.store(57, std::memory_order_relaxed);
         for (auto& velocity : stepVelocities) velocity.store(102, std::memory_order_relaxed);
         for (std::size_t t = 0; t < sessionTracks; ++t) {
@@ -94,6 +96,16 @@ public:
             requestedPianoRollClip[t].store(-1, std::memory_order_relaxed);
             activePianoRollClip[t].store(-1, std::memory_order_relaxed);
         }
+    }
+
+    const alien::DiskAudioFile* retainDiskAudioSource(std::shared_ptr<const alien::DiskAudioFile> source) {
+        return diskStreams.retain(std::move(source));
+    }
+    std::uint64_t sessionStreamUnderruns(std::size_t track) const noexcept {
+        return track < sessionTracks ? audioPlayers[track].underrunCount() : 0;
+    }
+    bool sessionStreamFailed(std::size_t track) const noexcept {
+        return track < sessionTracks && audioPlayers[track].streamFailed();
     }
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
@@ -335,7 +347,13 @@ private:
             if (playNow && modeNow == 1) {
                 const unsigned allSessionTracks = (1u << static_cast<unsigned>(std::clamp(activeTracks.load(), 1,
                     static_cast<int>(sessionTracks)))) - 1u;
-                if (synchronizedScenePending && (synchronizedSceneTracksQueued & allSessionTracks) == allSessionTracks
+                bool synchronizedAudioReady = true;
+                if (synchronizedScenePending)
+                    for (std::size_t track = 0; track < sessionTracks; ++track)
+                        synchronizedAudioReady = synchronizedAudioReady && (!audioPlayers[track].pendingIsAudio()
+                            || audioPlayers[track].pendingReady() || audioPlayers[track].pendingFailed());
+                if (synchronizedScenePending && synchronizedAudioReady
+                    && (synchronizedSceneTracksQueued & allSessionTracks) == allSessionTracks
                     && rolls[0].launchBoundaryDue(synchronizedSceneQuantizationSteps)) {
                     for (std::size_t track = 0; track < sessionTracks; ++track)
                         rolls[track].launchPendingNow([this, track](int n, float v, bool on) {
@@ -678,6 +696,7 @@ private:
     std::unique_ptr<RackBuses> rackBuses = std::make_unique<RackBuses>();
     alien::rack::RackPlayer rackPlayer;
     const alien::rack::Snapshot* rackSnapshot = rackMailbox.current();
+    alien::DiskAudioStreamService diskStreams;
     FixedHeapArray<alien::PianoRollScheduler, sessionTracks> rolls;
     FixedHeapArray<alien::SessionAudioPlayer, sessionTracks> audioPlayers;
     std::unique_ptr<alien::SessionClipLaunch> launchScratch = std::make_unique<alien::SessionClipLaunch>();
