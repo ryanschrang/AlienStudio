@@ -52,3 +52,11 @@ independent instances and 200,000 samples across two concurrent threads.
 
 Use examples/README.md as the repeatable human test entry point. Large audio is
 generated on demand; do not commit hours of audio or third-party plugin binaries.
+
+## Decoder-worker follow-up
+
+The stacked worker PR adds DiskAudioStreamService and JuceDiskAudioFile with
+independent playback readers, bounded shared-worker admission, prebuffer flags
+and generation-tagged source frames. See [DISK_STREAM_WORKER.md](DISK_STREAM_WORKER.md).
+This implements the worker substrate; no Session playback/import limit is lifted
+until endpoint binding, launch policy, metadata import and waveform work are integrated.

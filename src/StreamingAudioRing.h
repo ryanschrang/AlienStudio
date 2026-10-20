@@ -9,14 +9,25 @@ namespace alien {
 // One decoder producer and one playback consumer. Construct before playback;
 // never reset while either side is running. Seek/relaunch coordination belongs
 // to the stream owner, which must also keep each consumer's ring independent.
-template<std::size_t Capacity = 16384>
+struct StreamingStereoFrame { float left{}, right{}; };
+template<std::size_t Capacity = 16384, class Sample = StreamingStereoFrame>
 class StreamingAudioRing {
 public:
-    struct Frame { float left{}, right{}; };
+    using Frame = Sample;
     static_assert(Capacity > 1 && (Capacity & (Capacity - 1)) == 0);
     static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
     static constexpr std::size_t capacity = Capacity;
     static constexpr std::size_t sampleStorageBytes = Capacity * sizeof(Frame);
+
+    // Snapshot for the owning side only; neither method changes a cursor.
+    std::size_t writable() const noexcept {
+        return Capacity - static_cast<std::size_t>(written.load(std::memory_order_relaxed)
+            - read.load(std::memory_order_acquire));
+    }
+    std::size_t available() const noexcept {
+        return static_cast<std::size_t>(written.load(std::memory_order_acquire)
+            - read.load(std::memory_order_relaxed));
+    }
 
     // Producer only. Partial writes are permitted; no unread frame is replaced.
     std::size_t write(std::span<const Frame> input) noexcept {

@@ -28,7 +28,7 @@ Draft work below is not available in main until this PR is merged.
 | QA-01 | Production and live starter sessions | Draft in this PR | Self-contained built-in MIDI sounds; native parser test added |
 | QA-02 | Four-track recording reference session | Draft in this PR | Original four-second WAVs; record/monitoring acceptance still pending |
 | STREAM-01 | Fixed-size SPSC stereo playback ring | Draft in this PR | New boundary/wrap/concurrency tests; not connected to Session |
-| STREAM-02 | Decoder worker, prebuffer and per-playback reader | Planned: next implementation | Independent cursors for duplicate clips; no callback file I/O |
+| STREAM-02 | Decoder worker, prebuffer and per-playback reader | Draft in stacked worker PR | Shared worker, independent readers, generation-tagged seek/restart; Session integration pending |
 | STREAM-03 | Large-file import, project load and render auto-load | Planned | Stream above decoded budget; preserve drum sampler limits |
 | STREAM-04 | Long waveform cache, seek/relaunch and missing media UI | Planned | Background peaks; no blank or misleading waveform |
 | STREAM-05 | Streamed arrangement playback/export | Planned | Deterministic offline reads; no wall-clock underruns in export |
