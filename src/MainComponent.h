@@ -7,8 +7,10 @@
 #include "TrackMixerPanel.h"
 #include "ProjectController.h"
 #include "StepSequencerView.h"
+#include "ChannelRackView.h"
 #include "SessionView.h"
 #include "TopBar.h"
+#include "ViewModes.h"
 #include "ShellPanels.h"
 #include "StudioWidgets.h"
 #include "DrumSamplerPanel.h"
@@ -62,6 +64,8 @@ public:
         audioTools.onWarp = [this] { chooseTempoWarp(); };
         audioTools.onRecover = [this] { chooseTakeRecovery(); };
         tabs.addTab("Plugins", alien::ui::colours::surface, &pluginPanel, false);
+        tabs.addTab("Channel rack", alien::ui::colours::surface, &rackView, false);   // index 8: appended so earlier tab numbers never change
+        rackView.onTitleChanged = [this] { updateEditorTitle(); };
         pluginPanel.onScan = [this] { choosePluginScan(); };
         pluginPanel.onTarget = [this](int) { refreshPlugins(); };
         pluginPanel.onAdd = [this](bool instrument, int choice) { addPlugin(instrument,choice); };
@@ -315,6 +319,7 @@ private:
         devicesView.setPreset(d.livePreset);
         mixerPanel.rebuild();
         stepsView.refresh();
+        rackView.refresh();
         sessionView.rebuildGrid();
         sessionView.refreshFromDocument();
         loadSelectedClip();
@@ -414,6 +419,7 @@ private:
         case 5: workspace.setEditorTitle("Arrangement", "Session clips on a shared timeline"); break;
         case 6: workspace.setEditorTitle("Audio Lab", "Record a take or render a tempo match"); break;
         case 7: workspace.setEditorTitle("Plugin Rack", "VST3 instruments and ordered track / master FX"); break;
+        case 8: workspace.setEditorTitle("Channel Rack", rackView.subtitle()); break;
         default: break;
         }
     }
@@ -529,7 +535,7 @@ private:
     // Callbacks ---------------------------------------------------------------
     void changeListenerCallback(juce::ChangeBroadcaster*) override {
         const int tab = tabs.getCurrentTabIndex();
-        const int newMode = tab == 0 ? 0 : tab == 1 || tab == 2 ? 1 : tab == 5 ? 2 : engine.patternMode.load();
+        const int newMode = alien::patternModeForTab(tab, engine.patternMode.load());
         if (engine.patternMode.exchange(newMode) != newMode) releaseNotes();
         else pianoRoll.releaseAudition();
         syncViewButtons();
@@ -550,12 +556,15 @@ private:
         stepsView.setPlayhead(currentStep);
         stepsView.setPlaying(isPlaying && stepMode);
         const auto& d = controller.document();
-        int displayStep = currentStep;
-        if (!stepMode) {
+        const bool rackMode = engine.patternMode.load() == 3;
+        const int rackStep = rackMode && isPlaying ? engine.rackStep.load() : -1;
+        rackView.setPlayhead(rackStep);
+        int displayStep = rackMode ? rackStep : currentStep;
+        if (!stepMode && !rackMode) {
             const int position = engine.sessionTrackPositions[static_cast<std::size_t>(d.selectedTrack)].load();
             displayStep = position >= 0 ? position / 1000 : -1;
         }
-        topBar.setPosition(displayStep, isPlaying || displayStep >= 0, stepMode ? "Steps" : "Session");
+        topBar.setPosition(displayStep, isPlaying || displayStep >= 0, rackMode ? "Rack" : stepMode ? "Steps" : "Session");
         devicesView.midi().tick();
         mixerPanel.tick();
         int controllerAction = -1;
@@ -962,6 +971,7 @@ private:
     alien::DrumSamplerPanel drumPanel;
     alien::ArrangementPanel arrangementPanel;
     alien::AudioToolsPanel audioTools;
+    alien::ChannelRackView rackView{controller};
     bool projectBusy{}, closeAfterTake{};
     std::shared_ptr<alien::DiskRecording> activeCapture;
     int takeTrack{}, takeScene{};

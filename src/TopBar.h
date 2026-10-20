@@ -2,6 +2,7 @@
 #include "StudioWidgets.h"
 #include "Branding.h"
 #include "MidiRecording.h"
+#include "ViewModes.h"
 #include <array>
 #include <functional>
 
@@ -29,8 +30,8 @@ public:
         brandSubtitle.setJustificationType(juce::Justification::topLeft);
         brandSubtitle.setInterceptsMouseClicks(false, false);
 
-        const std::array<const char*, 4> viewNames{"Steps", "Piano Roll", "Session", "Mixer"};
-        for (int i = 0; i < 4; ++i) {
+        const std::array<const char*, 5> viewNames{"Steps", "Piano Roll", "Session", "Mixer", "Rack"};
+        for (int i = 0; i < 5; ++i) {
             auto& b = viewButtons[static_cast<std::size_t>(i)];
             const juce::String name(viewNames[static_cast<std::size_t>(i)]);
             addAndMakeVisible(b);
@@ -39,7 +40,7 @@ public:
             b.getProperties().set("style", "tab");
             b.setRadioGroupId(1001);
             b.setTooltip("Show the " + name + " view");
-            b.onClick = [this, i] { if (onViewSelected) onViewSelected(i); };
+            b.onClick = [this, i] { if (onViewSelected) onViewSelected(viewTabs[static_cast<std::size_t>(i)]); };
         }
 
         addAndMakeVisible(extraViews);
@@ -150,9 +151,9 @@ public:
     std::function<void(int)> onTempoChanged;
 
     void setActiveView(int index) {
-        extraViews.setSelectedId(index >= 4 ? index + 1 : 0, juce::dontSendNotification);
+        extraViews.setSelectedId(index >= 4 && index != viewTabs.back() ? index + 1 : 0, juce::dontSendNotification);
         for (std::size_t i = 0; i < viewButtons.size(); ++i)
-            viewButtons[i].setToggleState(static_cast<int>(i) == index, juce::dontSendNotification);
+            viewButtons[i].setToggleState(viewTabs[i] == index, juce::dontSendNotification);
     }
 
     void setPlaying(bool playing) {
@@ -218,8 +219,8 @@ public:
         brandSubtitle.setVisible(!compact);
         top.removeFromLeft(compact ? 4 : 10);
 
-        const std::array<int, 4> widths{62, 88, 74, 62};
-        const int total = widths[0] + widths[1] + widths[2] + widths[3] + 12;
+        const std::array<int, 5> widths{62, 88, 74, 62, 56};
+        const int total = widths[0] + widths[1] + widths[2] + widths[3] + widths[4] + 16;
         auto views = top.removeFromLeft(total).withSizeKeepingCentre(total, 32);
         viewSwitchBounds = views.expanded(4, 4);
         for (std::size_t i = 0; i < viewButtons.size(); ++i) {
@@ -313,7 +314,10 @@ private:
     juce::ComboBox extraViews;
     branding::LogoMark brandMark;
     juce::Label title, brandSubtitle;
-    std::array<ui::GlyphButton, 4> viewButtons;
+    // The tab each view button shows. The Channel Rack was added after the other
+    // tabs, so it keeps the last index and the numbers of the rest do not change.
+    static constexpr std::array<int, 5> viewTabs{0, 1, 2, 3, rackTabIndex};
+    std::array<ui::GlyphButton, 5> viewButtons;
     ui::GlyphButton play, record, metronome, recordOptions, newButton, openButton, saveButton, portableButton, undoButton, redoButton;
     RecordSettings recordSettings;
     int recordPhase{RecordControls::idle};

@@ -15,6 +15,7 @@ struct MissingMedia {
     int track{}, slot{}; // slot is the scene for a clip, the pad for a drum pad
     juce::String path;   // absolute path as the project last knew it
     juce::String reason; // why it could not be loaded
+    bool rackChannel{};  // true: a Channel Rack sample; track is then the channel index and slot is 0
 
     juce::String fileName() const { return fileNameOf(path); }
     static juce::String fileNameOf(const juce::String& path) {
