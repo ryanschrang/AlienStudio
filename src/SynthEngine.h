@@ -118,9 +118,24 @@ public:
     void noteOff(int note, int channel = 0) noexcept {
         for (auto& v : voices) if (v.note == note && v.channel == channel) v.envelope.stop();
     }
-    void allSoundOff() noexcept { voices = {}; age = 0; }
+    void setPitchWheel(int channel, int value) noexcept {
+        if (channel >= 0 && channel < static_cast<int>(pitchSemitones.size()))
+            pitchSemitones[static_cast<std::size_t>(channel)] =
+                2.0 * std::clamp(value - 8192, -8192, 8191) / 8192.0;
+    }
+    void setModulation(int channel, int value) noexcept {
+        if (channel >= 0 && channel < static_cast<int>(modulation.size()))
+            modulation[static_cast<std::size_t>(channel)] = std::clamp(value, 0, 127) / 127.0;
+    }
+    void allSoundOff() noexcept {
+        voices = {}; age = 0; pitchSemitones.fill(0.0); modulation.fill(0.0); modulationPhase=0.0;
+    }
     void allSoundOff(int channel) noexcept {
         for (auto& v : voices) if (v.channel == channel) v = {};
+        if(channel>=0&&channel<static_cast<int>(pitchSemitones.size())) {
+            pitchSemitones[static_cast<std::size_t>(channel)]=0.0;
+            modulation[static_cast<std::size_t>(channel)]=0.0;
+        }
     }
     std::size_t activeVoices() const noexcept {
         std::size_t n = 0; for (const auto& v : voices) if (v.active()) ++n; return n;
@@ -133,18 +148,24 @@ public:
         double sum = 0;
         for (auto& v : voices) {
             if (!v.active()) continue;
+            const auto index=static_cast<std::size_t>(std::clamp(v.channel,0,
+                static_cast<int>(pitchSemitones.size())-1));
+            const double vibrato=modulation[index]*0.25*std::sin(6.283185307179586*modulationPhase);
+            const double increment=std::min(0.45,v.increment*std::exp2((pitchSemitones[index]+vibrato)/12.0));
             double value = std::sin(6.283185307179586 * v.phase);
-            if (v.waveform == Waveform::saw) value = 2 * v.phase - 1 - blep(v.phase, v.increment);
+            if (v.waveform == Waveform::saw) value = 2 * v.phase - 1 - blep(v.phase, increment);
             if (v.waveform == Waveform::square) {
-                value = (v.phase < 0.5 ? 1.0 : -1.0) + blep(v.phase, v.increment)
-                    - blep(std::fmod(v.phase + 0.5, 1.0), v.increment);
+                value = (v.phase < 0.5 ? 1.0 : -1.0) + blep(v.phase, increment)
+                    - blep(std::fmod(v.phase + 0.5, 1.0), increment);
             }
-            v.phase += v.increment; if (v.phase >= 1) v.phase -= 1;
+            v.phase += increment; if (v.phase >= 1) v.phase -= 1;
             v.filtered += v.filterCoefficient * (value - v.filtered);
             // Avoid denormal tails without changing global floating point state.
             if (std::abs(v.filtered) < 1e-20) v.filtered = 0;
             sum += v.filtered * v.envelope.next() * v.velocity;
         }
+        modulationPhase += 5.0/sampleRate;
+        if(modulationPhase>=1.0) modulationPhase-=1.0;
         return static_cast<float>(sum * voiceMixScale);
     }
 private:
@@ -160,6 +181,7 @@ private:
         bool active() const noexcept { return envelope.state() != Envelope::Stage::idle; }
     };
     std::array<Voice, maxVoices> voices{};
-    double sampleRate{44100}; std::uint64_t age{}; Patch patch{presets[0]};
+    std::array<double,128> pitchSemitones{},modulation{};
+    double sampleRate{44100},modulationPhase{}; std::uint64_t age{}; Patch patch{presets[0]};
 };
 }

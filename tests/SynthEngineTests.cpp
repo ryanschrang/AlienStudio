@@ -127,6 +127,19 @@ int main() {
         }
         require(std::abs(crossings - 440) <= 1, "oscillator pitch/sample-rate handling");
     }
+    synth.prepare(48000); synth.setPatch({Waveform::sine,0,0,1,.01,20000});
+    synth.noteOn(69,1,9); synth.setPitchWheel(9,16383);
+    energy(synth,1000);
+    int bentCrossings=0; float bentPrevious=synth.nextSample();
+    for(int i=0;i<48000;++i) {
+        const float value=synth.nextSample();
+        if(bentPrevious<=0&&value>0) ++bentCrossings;
+        bentPrevious=value;
+    }
+    require(std::abs(bentCrossings-494)<=2,"14-bit pitch wheel bends the active voice by two semitones");
+    synth.setModulation(9,127);
+    require(energy(synth,4800)>0,"modulation keeps the active voice finite and audible");
+    synth.allSoundOff();
     synth.noteOn(60, 1); synth.prepare(96000);
     require(synth.activeVoices() == 0, "device restart clears notes");
     const auto before = allocations;

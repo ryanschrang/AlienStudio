@@ -263,9 +263,14 @@ private:
         }
         midi.process([this](int n, float v, int ch) { sendMidi(n, v, ch); },
             [this](int channel, int controller, int value) {
-                if (channel < 0) { controllerMappings.resetEdges(); stopMidiDrums(); return; }
-                const int action = controllerMappings.processCC(channel, controller, value);
-                if (action >= 0) controllerActions.push(action);
+                if (channel < 0) {
+                    controllerMappings.resetEdges(); stopMidiDrums(); resetMidiControllers(); return;
+                }
+                sendMidiControl(channel,controller,value);
+                if(controller<128) {
+                    const int action = controllerMappings.processCC(channel, controller, value);
+                    if (action >= 0) controllerActions.push(action);
+                }
             });
         for (std::size_t track = 0; track < sessionTracks; ++track) {
             auto& requestedClip = *launchScratch;
@@ -632,6 +637,35 @@ private:
         if (note < 0) synth.allSoundOff(source);
         else if (velocity > 0) synth.noteOn(note, velocity, source);
         else synth.noteOff(note, source);
+    }
+    void sendMidiControl(int channel,int controller,int value) noexcept {
+        const int midiChannel=channel+1;
+        auto apply=[&](std::size_t track) {
+            if(plugins->hasInstrument(track)) {
+                if(controller==128) plugins->pitchWheel(track,midiChannel,value);
+                else plugins->controller(track,midiChannel,controller,value);
+            } else if(instrumentModes[track]==0) {
+                if(controller==128) trackSynths[track].setPitchWheel(channel+9,value);
+                else if(controller==1) trackSynths[track].setModulation(channel+9,value);
+            }
+        };
+        if(monitorTrack>=0) {apply(static_cast<std::size_t>(monitorTrack));return;}
+        if(currentLiveDrumTrack>=0) {apply(static_cast<std::size_t>(currentLiveDrumTrack));return;}
+        if(controller==128) synth.setPitchWheel(channel+9,value);
+        else if(controller==1) synth.setModulation(channel+9,value);
+    }
+    void resetMidiControllers() noexcept {
+        for(int channel=0;channel<16;++channel) {
+            synth.setPitchWheel(channel+9,8192); synth.setModulation(channel+9,0);
+            for(std::size_t track=0;track<sessionTracks;++track) {
+                trackSynths[track].setPitchWheel(channel+9,8192);
+                trackSynths[track].setModulation(channel+9,0);
+                if(plugins->hasInstrument(track)) {
+                    plugins->pitchWheel(track,channel+1,8192);
+                    plugins->controller(track,channel+1,1,0);
+                }
+            }
+        }
     }
     void sendPattern(std::size_t track, int note, float velocity, bool on) noexcept {
         const int source = static_cast<int>(track) + 2;

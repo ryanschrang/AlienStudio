@@ -12,11 +12,13 @@ class MidiNoteState {
 public:
     static bool supported(int status, int a, int b) noexcept {
         if (status < 0x80 || status > 0xef || a < 0 || a > 127 || b < 0 || b > 127) return false;
-        return (status & 0xf0) == 0x80 || (status & 0xf0) == 0x90 || (status & 0xf0) == 0xb0;
+        return (status & 0xf0) == 0x80 || (status & 0xf0) == 0x90 || (status & 0xf0) == 0xb0
+            || (status & 0xf0) == 0xe0;
     }
     template<class Send> void handle(int status, int a, int b, Send&& send) noexcept {
         if (!supported(status, a, b)) return;
         const auto channel = static_cast<std::size_t>(status & 15);
+        if ((status & 0xf0) == 0xe0) return; // forwarded through the control callback
         auto& c = channels[channel];
         if ((status & 0xf0) == 0xb0) {
             if (a == 64) {
@@ -112,6 +114,8 @@ public:
                 && e.revision == revision.load(std::memory_order_acquire)) {
                 if ((e.status & 0xf0) == 0xb0)
                     control(e.status & 15, e.a, e.b);
+                else if ((e.status & 0xf0) == 0xe0)
+                    control(e.status & 15, 128, e.a | (e.b << 7));
                 state.handle(e.status, e.a, e.b, send);
             }
         }

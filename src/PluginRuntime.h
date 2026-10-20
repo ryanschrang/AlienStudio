@@ -73,6 +73,14 @@ public:
             for (int ch = 1; ch <= 16; ++ch) { m.addEvent(juce::MidiMessage::allSoundOff(ch),0); m.addEvent(juce::MidiMessage::allNotesOff(ch),0); }
     }
     bool hasInstrument(std::size_t track) const noexcept { return racks[track].instrumentAssigned; }
+    void controller(std::size_t track,int channel,int number,int value) noexcept {
+        if(track<tracks.size()&&channel>=1&&channel<=16&&number>=0&&number<128&&value>=0&&value<128)
+            midi[track].addEvent(juce::MidiMessage::controllerEvent(channel,number,value),sampleOffset);
+    }
+    void pitchWheel(std::size_t track,int channel,int value) noexcept {
+        if(track<tracks.size()&&channel>=1&&channel<=16)
+            midi[track].addEvent(juce::MidiMessage::pitchWheel(channel,std::clamp(value,0,16383)),sampleOffset);
+    }
     void note(std::size_t track, int note, float velocity, bool on, int channel = 1) noexcept {
         // Bound events to the preallocated MIDI storage. Reserve the final
         // portion for a panic instead of reallocating under an event flood.
