@@ -240,3 +240,13 @@ if(BUILD_TESTING)
     add_test(NAME StreamedSessionPlaybackTests COMMAND StreamedSessionPlaybackTests)
     set_tests_properties(StreamedSessionPlaybackTests PROPERTIES TIMEOUT 30)
 endif()
+
+
+if(BUILD_TESTING)
+    add_executable(WaveformCacheTests tests/WaveformCacheTests.cpp)
+    target_include_directories(WaveformCacheTests PRIVATE src)
+    target_compile_definitions(WaveformCacheTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(WaveformCacheTests PRIVATE juce::juce_audio_formats)
+    add_test(NAME WaveformCacheTests COMMAND WaveformCacheTests)
+    set_tests_properties(WaveformCacheTests PROPERTIES TIMEOUT 30)
+endif()
