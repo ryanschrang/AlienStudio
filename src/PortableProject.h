@@ -15,6 +15,10 @@ inline juce::File resolveProjectAudio(const juce::File& projectFile, const juce:
 // Worker-thread operation. Copy into a new, owned media directory before
 // atomically replacing the project JSON. Existing projects/media stay intact on
 // failure, and filenames never collide with one another or older project saves.
+// Largest project file this version will open. Saving refuses anything bigger,
+// so a successful save can always be reopened.
+inline constexpr juce::int64 maxProjectFileBytes = 128LL * 1024 * 1024;
+
 inline bool writeSessionProjectFile(const juce::File& target, SessionProjectData project,
     bool collectAudio, SessionProjectData& savedProject, juce::String& error) {
     if (!project.valid()) { error = "Session data is invalid."; return false; }
@@ -58,6 +62,8 @@ inline bool writeSessionProjectFile(const juce::File& target, SessionProjectData
     for (auto& kit : project.drumPaths) for (auto& path : kit)
         if (!collectPath(path)) return false;
     const auto json = serializeSessionProject(project);
+    if (json.isNotEmpty() && static_cast<juce::int64>(json.getNumBytesAsUTF8()) > maxProjectFileBytes)
+        return fail("The project is larger than the 128 MiB limit this version can reopen. Remove large plugin state or audio references.");
     juce::TemporaryFile temporary(target);
     if (json.isEmpty() || !temporary.getFile().replaceWithText(json)
         || !temporary.overwriteTargetFileWithTemporary())

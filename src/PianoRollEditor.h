@@ -504,7 +504,7 @@ public:
         g.drawRect(a.grid);
         g.setFont(juce::FontOptions(11.0f));
         g.setColour(juce::Colour(0xff9ea3ab));
-        juce::String status = juce::String(pattern.loopSteps / 16.0, 0) + "-bar loop (session only)  |  "
+        juce::String status = juce::String(pattern.loopSteps / 16.0, 0) + "-bar loop  |  "
             + noteName(lowestVisiblePitch) + " - " + noteName(topPitch()) + "  |  "
             + juce::String(static_cast<int>(pattern.count)) + "/" + juce::String(static_cast<int>(PianoRollPattern::maxNotes)) + " notes";
         status += "  |  " + juce::String(static_cast<int>(selection.count)) + " selected";

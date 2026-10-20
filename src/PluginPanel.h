@@ -36,7 +36,9 @@ public:
         const int s=slot.getSelectedId(); slot.clear(juce::dontSendNotification);
         if(destination()!=maxSessionTracks)slot.addItem("Instrument: "+name(rack.instrument),1);
         for(std::size_t i=0;i<rack.effects.size();++i)slot.addItem("FX "+juce::String(static_cast<int>(i+1))+": "+name(rack.effects[i]),static_cast<int>(i+2));
-        slot.setSelectedId(s>0&&s<=static_cast<int>(rack.effects.size()+1)?s:destination()==maxSessionTracks?(rack.effects.empty()?0:2):1,juce::dontSendNotification);
+        // Master FX has no instrument row, so its first effect is id 2; a kept id of 1 would match no item.
+        const bool master=destination()==maxSessionTracks;
+        slot.setSelectedId(s>=(master?2:1)&&s<=static_cast<int>(rack.effects.size()+1)?s:master?(rack.effects.empty()?0:2):1,juce::dontSendNotification);
         addInstrument.setEnabled(destination()!=maxSessionTracks);
     }
     void setStatus(const juce::String& text){status.setText(text,juce::dontSendNotification);status.setTooltip(text);}

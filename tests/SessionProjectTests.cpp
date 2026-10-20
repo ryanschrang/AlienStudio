@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
+#include <utility>
 
 static void require(bool condition, const char* message) {
     if (!condition) { std::cerr << message << '\n'; std::exit(1); }
@@ -58,7 +60,86 @@ static void portableProjectTests() {
     require(root.deleteRecursively(), "remove owned test directory");
 }
 
+// Sampler-style plugins can legitimately save many megabytes of state. Anything
+// that saves must reopen, so the per-plugin cap and the whole-file cap are
+// checked together.
+static void pluginStateLimitTests() {
+    const juce::String description = "<PLUGIN name=\"Big Sampler\" format=\"VST3\" uniqueId=\"1\"/>";
+    const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory)
+        .getNonexistentChildFile("AlienPluginLimitTest", "", false);
+    require(root.createDirectory().wasOk(), "create plugin limit directory");
+    const auto target = root.getChildFile("Song.alienstudio");
+    juce::String error;
+    alien::SessionProjectData saved;
+
+    // 8 Mi characters (6 MiB of state) exceeded the old 4 Mi limit and must now round-trip.
+    const auto big = juce::String::repeatedString("QUJD", 2 * 1024 * 1024);
+    alien::SessionProjectData source;
+    source.plugins[0].instrument = {description, big, false};
+    require(source.valid(), "multi-megabyte plugin state is accepted");
+    require(alien::writeSessionProjectFile(target, source, false, saved, error), "save multi-megabyte plugin state");
+    alien::SessionProjectData loaded;
+    require(alien::parseSessionProject(target.loadFileAsString(), loaded, error)
+        && loaded.plugins[0].instrument.stateBase64 == big, "multi-megabyte plugin state reopens intact");
+
+    // One character over the per-plugin cap is rejected and the culprit is named.
+    alien::PluginRackState rack;
+    rack.effects.push_back({description, juce::String::repeatedString("A", alien::maxPluginStateChars + 1), false});
+    require(!rack.valid() && alien::oversizedPluginName(rack) == "Big Sampler", "oversized plugin state is named");
+    require(alien::oversizedPluginName(source.plugins[0]).isEmpty(), "in-limit plugin is not blamed");
+    alien::SessionProjectData tooBig;
+    tooBig.plugins[0] = rack;
+    require(!tooBig.valid() && !alien::writeSessionProjectFile(target, tooBig, false, saved, error),
+        "plugin state over the cap is refused");
+
+    // Individually legal states can still add up to a file this version could not reopen.
+    // Saving must refuse rather than write an unopenable project, and keep the old file.
+    const auto before = target.loadFileAsString();
+    const auto chunk = juce::String::repeatedString("A", 22 * 1024 * 1024);
+    alien::SessionProjectData huge;
+    for (int i = 0; i < 6; ++i) huge.plugins[0].effects.push_back({description, chunk, false});
+    require(huge.valid(), "each state fits the per-plugin cap");
+    error.clear();
+    require(!alien::writeSessionProjectFile(target, huge, false, saved, error) && error.contains("128 MiB"),
+        "a save larger than the open limit is refused with an explanation");
+    require(target.loadFileAsString() == before, "refused save leaves the existing project untouched");
+    require(root.deleteRecursively(), "remove plugin limit directory");
+}
+
+// Master volume is optional in the file so older projects keep opening unchanged.
+static void masterVolumeFormatTests() {
+    alien::SessionProjectData source;
+    juce::String error;
+    require(source.masterGain == 1.0f, "default master volume is unity");
+    source.masterGain = 1.75f;
+    alien::SessionProjectData loaded;
+    require(alien::parseSessionProject(alien::serializeSessionProject(source), loaded, error) && loaded.masterGain == 1.75f,
+        "master volume round-trips");
+    source.masterGain = alien::maxMasterGain;
+    require(alien::parseSessionProject(alien::serializeSessionProject(source), loaded, error) && loaded.masterGain == alien::maxMasterGain,
+        "the +12 dB maximum round-trips");
+
+    auto withField = [&](const juce::var& value, bool remove) {
+        alien::SessionProjectData fresh;
+        auto json = juce::JSON::parse(alien::serializeSessionProject(fresh));
+        if (remove) json.getDynamicObject()->removeProperty("masterGain");
+        else json.getDynamicObject()->setProperty("masterGain", value);
+        alien::SessionProjectData parsed; juce::String message;
+        const bool ok = alien::parseSessionProject(juce::JSON::toString(json), parsed, message);
+        return std::make_pair(ok, parsed.masterGain);
+    };
+    require(withField({}, true) == std::make_pair(true, 1.0f), "a file without master volume opens at unity");
+    require(withField(2, false) == std::make_pair(true, 2.0f), "an integer master volume is accepted");
+    require(!withField(-0.5, false).first && !withField(4.5, false).first, "out-of-range master volume is rejected");
+    require(!withField("loud", false).first, "non-numeric master volume is rejected");
+    alien::SessionProjectData invalid;
+    invalid.masterGain = std::numeric_limits<float>::quiet_NaN();
+    require(!invalid.valid() && alien::serializeSessionProject(invalid).isEmpty(), "a non-finite master volume is never written");
+}
+
 int main() {
+    masterVolumeFormatTests();
+    pluginStateLimitTests();
     portableProjectTests();
     alien::SessionProjectData source;
     source.launchQuantizationSteps = 4;

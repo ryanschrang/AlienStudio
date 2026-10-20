@@ -32,6 +32,30 @@ struct TrackControls {
     }
 };
 
+// Whole-mix level, applied after the master FX chain. 0..4 is silence to +12 dB;
+// the headroom above the track faders (+6 dB) lets a quiet mix be brought up
+// without touching every track.
+inline constexpr float maxMasterGain = 4.0f;
+inline bool validMasterGain(float gain) noexcept { return std::isfinite(gain) && gain >= 0.0f && gain <= maxMasterGain; }
+inline float sanitizedMasterGain(float gain) noexcept { return std::isfinite(gain) ? std::clamp(gain, 0.0f, maxMasterGain) : 0.0f; }
+
+struct MasterControls {
+    std::atomic<float> gain{1.0f};
+    // Output level before the soft clipper, so values above 1.0 show that it is working.
+    std::atomic<float> peak{0.0f};
+};
+
+// Final output stage. Untouched below -2 dBFS (0.8); above that it bends smoothly
+// toward full scale instead of hard-clipping, so a hot mix distorts gently and
+// the output can never exceed +/-1. The curve is continuous with slope 1 at the knee.
+inline float softLimit(float x) noexcept {
+    constexpr float knee = 0.8f;
+    const float magnitude = std::abs(x);
+    if (magnitude <= knee) return x;
+    const float shaped = std::min(1.0f, knee + (1.0f - knee) * std::tanh((magnitude - knee) / (1.0f - knee)));
+    return x < 0.0f ? -shaped : shaped;
+}
+
 // Audio-thread-owned balance and gain ramp. Centre preserves the existing level.
 // Stereo clips use balance (no channel crossfeed); mono synths use the same law.
 class TrackMixer {

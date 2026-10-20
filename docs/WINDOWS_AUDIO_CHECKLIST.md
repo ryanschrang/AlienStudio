@@ -35,6 +35,23 @@ sample rate, buffer size, MIDI controller, display scale, and pass/fail notes.
    Tab/text entry must work without accidental notes; controls must remain usable.
 10. Listen for at least 15 minutes across representative sample rates/buffers,
     noting underruns, CPU use and audible defects. Log failures with exact steps.
+11. Missing audio: import a WAV into a Session clip and load a drum-pad sample,
+    Save, close, then rename the folder holding those files and reopen. The project
+    must open; the clip tile must be dark red with the file name, the status line must
+    say audio is offline, and the clip/pad must be silent (no crash, no noise).
+    Press Relink audio, choose the renamed folder, and confirm the clip and pad play
+    again. Undo once: both return to offline. Save while offline and reopen: the
+    original paths are still remembered. Try a folder with two same-named files in
+    different sub-folders and confirm the one in the matching folder layout wins.
+    Save portable while audio is offline: it must refuse and name the file.
+12. Master volume and gain staging: play a busy project and a project saved with
+    an earlier build; built-in sounds and audio clips should be about 6 dB louder
+    than before and not distorted at unity. Sweep the Master fader 0-400% while
+    playing (listen for clicks), double-click it to return to 0 dB, and confirm the
+    master meter's red clip light comes on when the mix is pushed hot and that
+    the output then sounds soft-clipped rather than harshly chopped. Save, reopen
+    and confirm the fader position is restored; Undo/Redo it; export a WAV and
+    confirm the file level matches what you heard with the fader at that position.
 
 ## Results
 

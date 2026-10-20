@@ -35,7 +35,13 @@ struct SessionClip {
 
     const PianoRollPattern& notes() const noexcept { return *pattern; }
     bool hasAudio() const noexcept { return audio != nullptr; }
-    bool isEmpty() const noexcept { return audio == nullptr && pattern->count == 0; }
+    // The project names an audio file that could not be loaded (moved, deleted, or
+    // unreadable). The reference is kept so saving does not lose it and the file
+    // can be relinked; the clip is silent until then.
+    bool audioOffline() const noexcept { return audio == nullptr && audioFilePath.isNotEmpty(); }
+    // An audio clip, loaded or offline, as opposed to a MIDI clip.
+    bool isAudioClip() const noexcept { return audio != nullptr || audioFilePath.isNotEmpty(); }
+    bool isEmpty() const noexcept { return audio == nullptr && audioFilePath.isEmpty() && pattern->count == 0; }
 };
 
 struct SessionTrack {
@@ -66,6 +72,7 @@ struct ProjectDocument {
     std::vector<std::vector<SessionClip>> clips; // [scene][track]
     int bpm{120};
     int launchQuantizationSteps{16};
+    float masterGain{1.0f}; // whole-mix level, 0..maxMasterGain
     int livePreset{};
     int selectedTrack{};
     int selectedScene{};
@@ -141,7 +148,7 @@ inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
     auto sameSettings = [](const TrackSettings& x, const TrackSettings& y) {
         return x.preset == y.preset && x.gain == y.gain && x.pan == y.pan && x.mute == y.mute && x.solo == y.solo && x.instrument == y.instrument;
     };
-    if (a.masterPlugins != b.masterPlugins) return false;
+    if (a.masterPlugins != b.masterPlugins || a.masterGain != b.masterGain) return false;
     if (a.arrangement.count != b.arrangement.count || a.arrangement.lengthBars != b.arrangement.lengthBars) return false;
     for (std::size_t i = 0; i < a.arrangement.count; ++i) {
         const auto& x = a.arrangement.regions[i]; const auto& y = b.arrangement.regions[i];
@@ -175,6 +182,7 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
     data.arrangement = doc.arrangement;
     data.masterPlugins = doc.masterPlugins;
     data.launchQuantizationSteps = doc.launchQuantizationSteps;
+    data.masterGain = doc.masterGain;
     data.selectedTrack = doc.selectedTrack;
     data.selectedScene = doc.selectedScene;
     data.bpm = doc.bpm;
@@ -206,6 +214,7 @@ inline ProjectDocument fromProjectData(const SessionProjectData& data) {
     doc.arrangement = data.arrangement;
     doc.masterPlugins = data.masterPlugins;
     doc.launchQuantizationSteps = data.launchQuantizationSteps;
+    doc.masterGain = data.masterGain;
     doc.selectedTrack = data.selectedTrack;
     doc.selectedScene = data.selectedScene;
     doc.bpm = data.bpm;

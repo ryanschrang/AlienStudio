@@ -136,6 +136,13 @@ public:
         importAudio.setName("Import audio file to selected Session clip");
         importAudio.setTooltip("Decode a WAV or MP3 off the audio thread and add it to the selected clip");
         importAudio.onClick = [this] { controller.chooseAudioFile(); };
+        addAndMakeVisible(relinkAudio);
+        relinkAudio.setButtonText("Relink audio");
+        relinkAudio.setGlyph(ui::Glyph::open);
+        relinkAudio.setName("Relink missing audio files");
+        relinkAudio.setTooltip("Search a folder for audio files this project can no longer find");
+        relinkAudio.onClick = [this] { if (onRelinkAudio) onRelinkAudio(); };
+        relinkAudio.setVisible(false);
         addAndMakeVisible(removeAudio);
         removeAudio.setButtonText("Remove audio");
         removeAudio.setGlyph(ui::Glyph::close);
@@ -169,6 +176,7 @@ public:
     std::function<void(int, int)> onEditClip;           // open a clip in its editor
     std::function<void()> onSelectionChanged;           // selected clip changed
     std::function<void()> onClearClip;                  // clear the selected clip
+    std::function<void()> onRelinkAudio;                // choose a folder to search for missing audio
     std::function<void()> onTitleChanged;               // header subtitle text changed
     std::function<void()> onStructureChanged;           // tracks/scenes added, removed, renamed or moved
     std::function<void(const juce::String&)> onEdited;  // a committed document edit, with an undo label
@@ -224,9 +232,14 @@ public:
         const auto& d = controller.document();
         const auto& clip = d.selectedClip();
         clearClip.setEnabled(!clip.isEmpty());
-        removeAudio.setEnabled(clip.hasAudio());
+        removeAudio.setEnabled(clip.isAudioClip());
         audioWaveform.setClip(clip.audio.get(), clip.audioFileName);
-        if (!clip.hasAudio() && audioImportStatus.getText().isEmpty())
+        // The button only takes up room while something in the project is offline.
+        const bool anyOffline = !controller.missingMedia().empty();
+        if (relinkAudio.isVisible() != anyOffline) { relinkAudio.setVisible(anyOffline); resized(); }
+        if (clip.audioOffline())
+            setImportStatus("Audio offline: " + clip.audioFileName + ". Use Relink audio to search for it.", clip.audioFilePath);
+        else if (!clip.hasAudio() && audioImportStatus.getText().isEmpty())
             audioImportStatus.setText("Selected clip: " + d.tracks[static_cast<std::size_t>(d.selectedTrack)].name
                 + ", " + d.scenes[static_cast<std::size_t>(d.selectedScene)].name, juce::dontSendNotification);
         repaint(clipDetailBounds);
@@ -330,6 +343,7 @@ public:
         actions.removeFromLeft(6);
         removeAudio.setBounds(actions.removeFromLeft(124));
         actions.removeFromLeft(6);
+        if (relinkAudio.isVisible()) { relinkAudio.setBounds(actions.removeFromLeft(124)); actions.removeFromLeft(6); }
         clearClip.setBounds(actions.removeFromLeft(104));
         actions.removeFromLeft(18);
         mappingBounds = actions;
@@ -400,6 +414,8 @@ public:
                 const auto& clip = d.clip(track, scene);
                 auto text = clip.hasAudio()
                     ? "Track " + juce::String(track + 1) + " | AUDIO\n" + clip.audioFileName.substring(0, 20)
+                    : clip.audioOffline()
+                    ? "Track " + juce::String(track + 1) + " | AUDIO OFFLINE\n" + clip.audioFileName.substring(0, 20)
                     : "Track " + juce::String(track + 1) + "\nScene " + juce::String(scene + 1);
                 if (scene == active) text += " | Playing";
                 else if (scene == requested) text += " | Queued";
@@ -409,9 +425,11 @@ public:
                 SessionClipButton::Visual visual;
                 const auto noteCount = static_cast<int>(clip.notes().count);
                 visual.kind = clip.hasAudio() ? SessionClipButton::Kind::audio
+                    : clip.audioOffline() ? SessionClipButton::Kind::offline
                     : noteCount > 0 ? SessionClipButton::Kind::midi : SessionClipButton::Kind::empty;
                 visual.colour = ui::trackColour(d.tracks[index].colour);
                 visual.label = clip.hasAudio() ? clip.audioFileName
+                    : clip.audioOffline() ? clip.audioFileName
                     : juce::String(noteCount) + (noteCount == 1 ? " note" : " notes");
                 visual.playing = scene == active;
                 visual.queued = scene != active && scene == requested;
@@ -636,7 +654,7 @@ private:
     juce::Component gridContent, sceneStrip;
     std::vector<std::unique_ptr<ContextGlyphButton>> sceneButtons;
     std::vector<std::unique_ptr<SessionClipButton>> clipButtons; // [scene * tracks + track]
-    ui::GlyphButton editSelectedClip, stopClip, importAudio, removeAudio, clearClip;
+    ui::GlyphButton editSelectedClip, stopClip, importAudio, removeAudio, clearClip, relinkAudio;
     AudioClipWaveform audioWaveform;
     juce::Rectangle<int> gridBounds, sceneHeaderBounds, mappingBounds, clipDetailBounds;
     int learningAction{-1};

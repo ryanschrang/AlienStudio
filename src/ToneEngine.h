@@ -41,12 +41,15 @@ class ToneEngine : public juce::AudioIODeviceCallback {
 public:
     // Pre-allocated capacity; activeTracks says how many the session uses.
     static constexpr std::size_t sessionTracks = static_cast<std::size_t>(alien::maxSessionTracks);
+    // Level of decoded audio clips before the track fader (it used to be 0.25, -12 dB).
+    static constexpr float audioClipLevel = 0.5f;
     std::array<std::atomic<bool>, 16> steps{};
     std::array<std::atomic<int>, 16> stepPitches{};
     std::array<std::atomic<int>, 16> stepVelocities{};
     std::atomic<bool> playing{false};
     std::atomic<int> bpm{120}, currentStep{-1}, preset{0};
     std::array<alien::TrackControls, sessionTracks> tracks;
+    alien::MasterControls masterControls;
     std::array<alien::DrumKitControls, sessionTracks> drumKits;
     std::array<NoteQueue, sessionTracks> drumAuditions;
     std::atomic<int> liveDrumTrack{-1};
@@ -93,6 +96,8 @@ public:
         for (auto& voice : trackSynths) voice.prepare(sampleRate);
         for (auto& sampler : drumSamplers) sampler.prepare(sampleRate);
         for (auto& mixer : trackMixers) mixer.prepare(sampleRate);
+        masterRampCoefficient = static_cast<float>(1.0 - std::exp(-1.0 / (sampleRate * 0.005)));
+        masterRamp = alien::sanitizedMasterGain(masterControls.gain.load()); // no fade-in on start
         midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
         discardPendingNotes();
         resetTransport();
@@ -123,12 +128,21 @@ private:
         const int modeNow = patternMode.load();
         plugins->begin(samples, bpm.load(), playNow, modeNow == 2 ? songStep / 4.0 : transportBeat);
         for (auto& b : clipBuffers) b.clear();
-        const bool songChanged = arrangementMailbox.consume(*song);
-        if (songChanged && modeNow == 2) {
-            allSoundOff(); resetTransport();
-            for (std::size_t t = 0; t < sessionTracks; ++t) {
-                rolls[t].stop([this,t](int n,float v,bool on) { sendPattern(t,n,v,on); });
-                audioPlayers[t].stop();
+        // A new snapshot is only a pointer swap. The song restarts only when the
+        // timeline itself changed (regions or length); a republish that carries
+        // the same layout (a mixer, tempo or note edit elsewhere in the project)
+        // keeps playing, and edited clip contents are picked up the next time a
+        // region starts.
+        if (const auto* fresh = arrangementMailbox.consume()) {
+            const bool layoutChanged = !fresh->arrangement.sameLayout(playingLayout);
+            song = fresh;
+            playingLayout = fresh->arrangement;
+            if (layoutChanged && modeNow == 2) {
+                allSoundOff(); resetTransport();
+                for (std::size_t t = 0; t < sessionTracks; ++t) {
+                    rolls[t].stop([this,t](int n,float v,bool on) { sendPattern(t,n,v,on); });
+                    audioPlayers[t].stop();
+                }
             }
         }
         if (synchronizedSceneLaunch.exchange(false)) {
@@ -303,8 +317,8 @@ private:
                 plugins->tracks[track].setSample(1,i,voice + drum[1]);
                 if (playNow && (modeNow == 1 || modeNow == 2)) {
                     const auto sample = audioPlayers[track].nextSample();
-                    clipBuffers[track].setSample(0,i,sample[0] * 0.25f);
-                    clipBuffers[track].setSample(1,i,sample[1] * 0.25f);
+                    clipBuffers[track].setSample(0,i,sample[0] * audioClipLevel);
+                    clipBuffers[track].setSample(1,i,sample[1] * audioClipLevel);
                 }
             }
         }
@@ -323,13 +337,19 @@ private:
             plugins->master.setSample(0,i,left); plugins->master.setSample(1,i,right);
         }
         plugins->processMaster(samples);
+        const float masterTarget = alien::sanitizedMasterGain(masterControls.gain.load(std::memory_order_relaxed));
+        float masterPeak = 0.0f;
         for (int i = 0; i < samples; ++i) {
-            const float left = plugins->master.getSample(0,i), right = plugins->master.getSample(1,i);
+            masterRamp += masterRampCoefficient * (masterTarget - masterRamp);
+            if (std::abs(masterRamp - masterTarget) < 1.0e-6f) masterRamp = masterTarget;
+            const float left = plugins->master.getSample(0,i) * masterRamp, right = plugins->master.getSample(1,i) * masterRamp;
+            if (std::isfinite(left) && std::isfinite(right)) masterPeak = std::max(masterPeak, std::max(std::abs(left), std::abs(right)));
             for (int c = 0; c < channels; ++c) if (outputs[c]) {
                 const float sample = c == 0 ? left : c == 1 ? right : (left + right) * 0.5f;
-                outputs[c][i + outputOffset] = std::isfinite(sample) ? std::clamp(sample, -1.0f, 1.0f) : 0.0f;
+                outputs[c][i + outputOffset] = std::isfinite(sample) ? alien::softLimit(sample) : 0.0f;
             }
         }
+        masterControls.peak.store(masterPeak, std::memory_order_relaxed);
         if (playNow) transportBeat += samples * bpm.load() / (sampleRate * 60.0);
         pianoRollPosition.store(static_cast<int>(rolls[0].positionStep() * 1000.0));
         for (std::size_t track = 0; track < sessionTracks; ++track) {
@@ -416,7 +436,9 @@ private:
             sessionTrackPositions[track].store(-1000);
         }
     }
-    std::unique_ptr<alien::ArrangementPlayback> song = std::make_unique<alien::ArrangementPlayback>();
+    // Immutable snapshot owned by arrangementMailbox; only the audio thread moves it.
+    const alien::ArrangementPlayback* song = arrangementMailbox.current();
+    alien::Arrangement playingLayout; // Layout of `song`, to tell a restart-worthy change from a refresh.
     double songStep{}, transportBeat{};
     std::array<juce::AudioBuffer<float>, sessionTracks> clipBuffers;
     int lastSongBar{-1};
@@ -424,6 +446,7 @@ private:
     alien::SynthEngine synth; // Live keyboard and legacy step sequencer.
     FixedHeapArray<alien::SynthEngine, sessionTracks> trackSynths;
     FixedHeapArray<alien::TrackMixer, sessionTracks> trackMixers;
+    float masterRamp{1.0f}, masterRampCoefficient{1.0f};
     FixedHeapArray<alien::DrumSampler, sessionTracks> drumSamplers;
     std::array<int, sessionTracks> instrumentModes{};
     int currentLiveDrumTrack{-1};

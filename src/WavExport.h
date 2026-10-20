@@ -19,6 +19,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     if (hasPlugins && !preparedEngine) { error="Prepare plugin instances on the message thread before export"; return false; }
     auto ownedEngine = preparedEngine ? std::unique_ptr<ToneEngine>{} : std::make_unique<ToneEngine>();
     auto* engine = preparedEngine ? preparedEngine : ownedEngine.get();
+    engine->masterControls.gain.store(project.masterGain); // before prepare(), so the export starts at this level
     engine->prepare(48000);
     for (auto& rack : engine->plugins->racks) {
         if (rack.instrument.processor) rack.instrument.processor->setNonRealtime(true);
