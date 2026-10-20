@@ -145,12 +145,12 @@ int main() {
     cancelled.store(false);
 
     const auto hours = alien::arrangementFrameCount(
-        alien::Arrangement::maxLengthBars, 40.0, 48000.0);
-    check(hours == 2359296000LL && hours > std::numeric_limits<std::int32_t>::max(),
+        alien::Arrangement::maxLengthBars, 60.0, 48000.0);
+    check(hours == 3145728000LL && hours > std::numeric_limits<std::int32_t>::max(),
           "multi-hour export duration uses 64-bit frame counts");
     alien::Arrangement longSong;
     longSong.lengthBars=alien::Arrangement::maxLengthBars;
-    check(longSong.valid(), "the arrangement model accepts a 13-hour timeline");
+    check(longSong.valid(), "the arrangement model accepts a 18-hour timeline");
 
     std::cout << "Deterministic streamed export tests passed\n";
 }
