@@ -12,11 +12,12 @@ struct ArrangementRegion {
 };
 struct Arrangement {
     static constexpr std::size_t capacity = 128;
+    static constexpr int maxLengthBars = 4096; // 6 h 49 min at the supported 40 BPM minimum.
     std::array<ArrangementRegion, capacity> regions{};
     std::size_t count{};
     int lengthBars{16};
     bool valid(int tracks = maxSessionTracks, int scenes = maxSessionScenes) const noexcept {
-        if (lengthBars < 1 || lengthBars > 128 || count > capacity) return false;
+        if (lengthBars < 1 || lengthBars > maxLengthBars || count > capacity) return false;
         for (std::size_t i = 0; i < count; ++i) {
             const auto& a = regions[i];
             if (a.track < 0 || a.track >= tracks || a.scene < 0 || a.scene >= scenes
