@@ -12,6 +12,7 @@
 #include "SessionProject.h"
 #include "DrumSampler.h"
 #include "Arrangement.h"
+#include "DeterministicStreamedExport.h"
 #include "AudioCapture.h"
 #include "PluginRuntime.h"
 #include "MidiRecording.h"
@@ -150,6 +151,8 @@ public:
     }
     std::atomic<alien::AudioCaptureSink*> capture{};
     std::unique_ptr<alien::PluginRuntime> plugins = std::make_unique<alien::PluginRuntime>();
+    // Set only on an isolated offline engine. Normal device playback never performs disk I/O here.
+    alien::OfflineTrackAudioSource* offlineTrackAudio{};
 
     void audioDeviceIOCallbackWithContext(const float* const* inputs, int inputChannels,
         float* const* outputs, int channels, int samples,
@@ -395,6 +398,7 @@ private:
         plugins->instruments(samples);
         for (std::size_t t = 0; t < sessionTracks; ++t)
             for (int c = 0; c < 2; ++c) plugins->tracks[t].addFrom(c,0,clipBuffers[t],c,0,samples);
+        if (offlineTrackAudio) offlineTrackAudio->addBlock(plugins->tracks, samples);
         renderRack(samples, playNow && modeNow == 3);
         plugins->effectsAndAlign(samples);
         for (int i = 0; i < samples; ++i) {
