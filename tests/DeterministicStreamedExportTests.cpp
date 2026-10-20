@@ -1,4 +1,4 @@
-#include "DeterministicStreamedExport.h"
+#include "WavExport.h"
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
@@ -70,6 +70,25 @@ int main() {
     for (int i = 0; i < 5; ++i)
         check(std::abs(tracks[0].getSample(0, i) - expected[i]) < 1.0e-6f,
               "sample-rate conversion uses deterministic interpolation");
+
+    auto project = std::make_unique<alien::SessionProjectData>();
+    project->arrangement = song.arrangement;
+    const auto output = juce::File::getSpecialLocation(juce::File::tempDirectory)
+        .getNonexistentChildFile("alien-streamed-export", ".wav");
+    alien::DrumSamplePointers noDrums{};
+    check(alien::exportArrangementWav(output, *project, song, noDrums, cancelled, error),
+          "streamed clip exports through the complete WAV path");
+    juce::AudioFormatManager formats; formats.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> exported(formats.createReaderFor(output));
+    check(exported && exported->lengthInSamples == 96000,
+          "streamed WAV has the exact arrangement duration");
+    juce::AudioBuffer<float> exportedStart(2, 8);
+    check(exported->read(&exportedStart, 0, 8, 0, true, true),
+          "read the streamed WAV result");
+    float energy = 0.0f;
+    for (int i=0;i<8;++i) energy += std::abs(exportedStart.getSample(0,i));
+    check(energy > 0.1f, "streamed WAV contains source audio");
+    exported.reset(); output.deleteFile();
 
     alien::ArrangementPlayback duplicates;
     duplicates.arrangement.lengthBars = 1;
