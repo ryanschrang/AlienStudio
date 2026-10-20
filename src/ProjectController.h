@@ -1159,10 +1159,12 @@ private:
     // The clip loops with everything recorded so far, so a take can be heard
     // layering up while it is made.
     void previewTake() {
-        const auto index = static_cast<std::size_t>(take.track);
+        if (!take.active || !doc.isValidCell(take.track, take.scene)) return;
+        if (take.track < 0 || take.track >= static_cast<int>(ToneEngine::sessionTracks)) return;
         if (take.assembler.notes().size() == take.previewedNotes) return;
+        const auto index = static_cast<std::size_t>(take.track);
         if (engine.activePianoRollClip[index].load() != take.scene) return;
-        if (!doc.isValidCell(take.track, take.scene) || doc.clip(take.track, take.scene).isAudioClip()) return;
+        if (doc.clip(take.track, take.scene).isAudioClip()) return;
         bool truncated = false;
         engine.pianoRollNotes[index].publish(take.assembler.mergeInto(doc.clip(take.track, take.scene).notes(), take.replace, truncated));
         take.previewedNotes = take.assembler.notes().size();
