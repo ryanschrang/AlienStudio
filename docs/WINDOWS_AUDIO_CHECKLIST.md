@@ -52,6 +52,35 @@ sample rate, buffer size, MIDI controller, display scale, and pass/fail notes.
     the output then sounds soft-clipped rather than harshly chopped. Save, reopen
     and confirm the fader position is restored; Undo/Redo it; export a WAV and
     confirm the file level matches what you heard with the fader at that position.
+13. Count-in and metronome: with playback stopped, press Record on an empty clip
+    with the default one-bar count-in. Four clicks should sound, the first one
+    higher; playback of a clip with a note on beat 1 must then start exactly on the
+    beat after the fourth click (no gap, no early start). Repeat with Off and 2
+    bars, at 60 and 200 BPM, and cancel with Play/Stop during the count-in. Switch
+    the metronome on while a clip plays: clicks follow the tempo, accent every bar,
+    ignore the Master fader, and are absent from an exported WAV and from an Audio
+    lab take. Try Low/Medium/High.
+14. Latency compensation (the one check that needs your ears): on an empty clip
+    with the metronome on, record about eight bars of steady quarter notes on the
+    click with a USB MIDI keyboard, once with the typing piano. Open the Piano Roll
+    and zoom in: notes should sit on the beat lines within roughly one audio block
+    (about 11 ms at 48 kHz). If every note is consistently early or late, use
+    Record options > Latency compensation (positive = earlier) and repeat; write
+    down the device, driver (WASAPI / ASIO), sample rate, buffer size and the
+    offset that was needed. A different device or buffer size needs a new value.
+15. Monitoring: while recording, the notes you play should sound through the
+    selected track's own instrument (try a synth preset, a drum-sampler track and a
+    VST3 instrument track), follow that track's volume/mute, and stop cleanly when
+    the take ends, even with a key still held. Outside a take the Device rack synth
+    should be used again.
+16. Overdub, replace and undo: record a second layer over a clip that has notes
+    (existing notes keep playing and stay in the clip), then record in Replace mode
+    (old notes silent during the take, gone afterwards) and Undo each: the clip
+    returns to exactly how it was in one step. Also: stop playback mid-take, start a
+    New project and Open another project mid-take, change tabs mid-take, unplug the
+    MIDI keyboard with a key held, record into a clip that is not playing (it should
+    launch on the next bar), and record more than 1024 notes (status bar should say
+    the clip is full). Nothing should hang, stick, or change the wrong clip.
 
 ## Results
 

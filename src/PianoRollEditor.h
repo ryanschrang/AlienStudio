@@ -320,6 +320,21 @@ public:
         repaint();
     }
 
+    // Read-only while a take is being recorded into the clip that is open, so an
+    // edit cannot collide with the notes being captured.
+    void setLocked(bool lock) {
+        if (locked == lock) return;
+        locked = lock;
+        if (lock) {
+            releaseAudition();
+            endEdit();
+            if (hasKeyboardFocus(true)) giveAwayKeyboardFocus();
+        }
+        setInterceptsMouseClicks(!lock, !lock);
+        setAlpha(lock ? 0.8f : 1.0f);
+    }
+    bool isLocked() const noexcept { return locked; }
+
     void releaseAudition() {
         releasePreviewNote();
         releaseChordPreview(true);
@@ -661,7 +676,7 @@ public:
     }
 
     bool keyPressed(const juce::KeyPress& key) override {
-        if (!hasKeyboardFocus(true)) return false;
+        if (locked || !hasKeyboardFocus(true)) return false;
         const auto code = key.getKeyCode();
         const auto letter = code >= 'a' && code <= 'z' ? code - 'a' + 'A' : code;
         auto* focused = juce::Component::getCurrentlyFocusedComponent();
@@ -1375,7 +1390,7 @@ private:
     std::vector<HistoryEntry> history;
     std::size_t historyPosition {};
     Snapshot editBefore;
-    bool editOpen {}, panelOpen {};
+    bool editOpen {}, panelOpen {}, locked {};
     juce::String statusMessage;
     StrumSettings strumSettings;
     ChopSettings chopSettings;

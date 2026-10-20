@@ -24,13 +24,14 @@ The long-term differentiator is **one shared project and audio engine** across a
 - [x] Independent 16-voice Session synths, per-track preset/volume/balance/mute/solo and output meters.
 - [x] Versioned project save/open and portable project copies with collected audio.
 - [x] Project-wide undo/redo, unsaved-changes prompts, one-minute autosave and crash recovery.
+- [x] MIDI recording into Session clips (computer keyboard or USB MIDI keyboard) with count-in, metronome, overdub/replace and latency compensation.
 - [x] GPL-3.0 license file. Dependency attribution/distribution review remains required before releases.
 
 ### Next implementation sequence
 1. Reliable long-file playback, waveforms and missing-media errors.
 2. Non-destructive audio arrangement editing.
 3. Multitrack recording, monitoring, punch and takes.
-4. MIDI recording, count-in and overdub.
+4. MIDI recording follow-ups: controller data, quantize-on-record, loop-record takes and punch in/out.
 5. Mixer routing and plugin reliability.
 6. Automation, tempo maps and interactive warp markers.
 7. Freeze, stems and final delivery.
@@ -571,6 +572,70 @@ mixer settings for the original four tracks. Versions 1 and 2 load with the old
 global preset copied to all four tracks, centred balance, unity volume, and
 mute/solo off. Older Alien Studio versions cannot open v6 projects. Both historical v4 variants and v5 arrangements migrate on load.
 
+
+### Recording MIDI: count-in, metronome, overdub and replace
+
+**To record,** select an empty or MIDI clip (a Session cell, or the clip open in the
+Piano Roll) and press the red **Record** button in the top bar. Play the notes on
+the computer keyboard piano or a USB MIDI keyboard. Press **Record** again, or
+**Stop**, to end the take. Record works from the Piano Roll and Session views; from
+any other view it switches to the Piano Roll first. A clip that holds audio cannot
+be recorded into, and the status bar says so.
+
+- **Count-in.** When playback is stopped, recording starts with a count-in (one bar
+  by default; Off, 1 or 2 bars in the options menu). The count-in always clicks, the
+  first beat of the bar higher and louder. Playback starts on the exact sample the
+  count-in ends, so the clip's first beat lines up with the first beat after the
+  count-in. Press **Play/Stop** during the count-in to cancel without recording.
+- **Already playing.** If the transport is running, recording starts straight away
+  with no count-in and without restarting the loop. If the chosen clip is not the
+  one playing on its track it launches at the next launch boundary (a bar by
+  default), and only notes played after it starts are recorded.
+- **Overdub or replace.** By default new notes are added to whatever the clip
+  already holds (overdub), and you hear the existing notes while you play. In the
+  options menu, **Replace** plays the clip without its old notes while you record and
+  keeps only the new ones. A replace take in which you play nothing leaves the old
+  notes alone. The loop length of the clip is kept; a clip is 64 steps (four bars)
+  unless you changed it in the Piano Roll.
+- **What you hear.** While a take is running, the keys you play sound through the
+  chosen track's own instrument and mixer strip (its synth sound, drum sampler or VST3
+  instrument, with that track's volume, balance and mute), not the Device rack synth.
+  Notes you have already recorded loop back on the next pass, so you can hear a take
+  build up. Outside a take nothing changes: live playing still uses the Device rack
+  synth.
+- **Metronome.** The metronome button next to Record clicks on every beat while the
+  transport runs (also when not recording). Its volume is Low, Medium or High in the
+  options menu. The click is added to the speaker output after the master fader, so it
+  is not changed by the master volume and is **not** part of WAV export or Audio lab
+  recordings.
+- **One undo step.** A finished take is a single **Record MIDI** step that undo
+  removes entirely (and redo restores). While a take runs, undo/redo and edits to
+  the clip being recorded wait until it ends. **New**, **Open**, and removing or
+  reordering tracks/scenes discard the take in progress. Stopping playback,
+  switching to a view that does not play clips, or losing the audio device ends
+  the take and keeps what was played so far.
+- **Recording settings** (count-in, metronome on/off and volume, overdub/replace,
+  latency offset) are saved in the project as an optional `recording` object (the
+  project format version is unchanged; projects without it open with the defaults).
+  Changing them is an undoable edit.
+
+**Timing and latency.** Notes are stamped when the audio engine picks up the key
+press, which happens once per audio block (at most 512 samples, about 10.7 ms at
+48 kHz). The engine moves each note earlier by the audio device's reported output
+latency plus your **Latency compensation** (-100 to +100 ms, in the options menu),
+because you play against sound that reaches you late. The compensation is a
+calculation, not a measurement: drivers report their latency differently, so
+check it by ear on your own interface (see the Windows checklist) and nudge the
+offset in 5 ms steps if recorded notes sit consistently early or late. Pressing a
+key for a very short time still records a short note (at least 1/10 of a 16th note), a
+key still held when the take ends is closed at that moment, and a note that
+runs past the end of the loop is cut there. There is no quantize-on-record yet.
+
+**Limits.** A clip holds at most 1024 notes; if a take fills it, the extra notes
+are left out and the status bar says so. Only notes and their velocity are recorded:
+pitch bend, mod wheel, sustain and other controllers are not stored. The take is
+kept in memory until it ends and is written to the project (and autosave) only then,
+so a crash in the middle of a take loses that take.
 
 ### Integrated workspaces and VST3 hosting
 

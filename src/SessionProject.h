@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PianoRollSequence.h"
+#include "MidiRecording.h"
 #include "TrackMixer.h"
 #include "SynthEngine.h"
 #include "DrumSampler.h"
@@ -39,6 +40,7 @@ struct SessionProjectData {
     PluginRackState masterPlugins;
     int launchQuantizationSteps{16};
     float masterGain{1.0f}; // Absent in older files: unity.
+    RecordSettings recording; // Absent in older files: defaults.
     int selectedTrack{};
     int selectedScene{};
     int bpm{120};
@@ -84,7 +86,8 @@ struct SessionProjectData {
         if ((launchQuantizationSteps != 4 && launchQuantizationSteps != 16)
             || selectedTrack < 0 || selectedTrack >= tracks
             || selectedScene < 0 || selectedScene >= scenes
-            || bpm < 60 || bpm > 200 || synthPreset < 0 || synthPreset >= presetCount || !validMasterGain(masterGain))
+            || bpm < 60 || bpm > 200 || synthPreset < 0 || synthPreset >= presetCount || !validMasterGain(masterGain)
+            || !recording.valid())
             return false;
         if (plugins.size() != trackSettings.size() || !masterPlugins.valid() || !masterPlugins.instrument.descriptionXml.isEmpty()) return false;
         for (const auto& rack : plugins) if (!rack.valid()) return false;
@@ -115,6 +118,16 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     rootObject->setProperty("bpm", project.bpm);
     rootObject->setProperty("synthPreset", project.synthPreset);
     rootObject->setProperty("masterGain", project.masterGain);
+    {
+        auto recordingVar = juce::var(new juce::DynamicObject());
+        auto* recordingObject = recordingVar.getDynamicObject();
+        recordingObject->setProperty("metronome", project.recording.metronome);
+        recordingObject->setProperty("metronomeVolume", project.recording.metronomeVolume);
+        recordingObject->setProperty("countInBars", project.recording.countInBars);
+        recordingObject->setProperty("latencyOffsetMs", project.recording.latencyOffsetMs);
+        recordingObject->setProperty("replace", project.recording.replace);
+        rootObject->setProperty("recording", recordingVar);
+    }
     juce::Array<juce::var> pluginRacks;
     for (const auto& rack : project.plugins) pluginRacks.add(rackToVar(rack));
     rootObject->setProperty("plugins", juce::var(pluginRacks));
@@ -251,6 +264,25 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         if (!validMasterGain(parsed.masterGain)) { error = "The project's master volume is out of range."; return false; }
     } else if (!masterGain.isVoid()) {
         error = "The project's master volume is invalid."; return false;
+    }
+    const auto recordingValue = rootObject->getProperty("recording");
+    if (!recordingValue.isVoid()) {
+        auto* recordingObject = recordingValue.getDynamicObject();
+        const auto metronome = recordingValue.getProperty("metronome", juce::var());
+        const auto volume = recordingValue.getProperty("metronomeVolume", juce::var());
+        const auto countIn = recordingValue.getProperty("countInBars", juce::var());
+        const auto offset = recordingValue.getProperty("latencyOffsetMs", juce::var());
+        const auto replace = recordingValue.getProperty("replace", juce::var());
+        if (recordingObject == nullptr || !metronome.isBool() || !(volume.isDouble() || volume.isInt()) || !countIn.isInt()
+            || !offset.isInt() || !replace.isBool()) {
+            error = "The project's recording settings are invalid."; return false;
+        }
+        parsed.recording.metronome = static_cast<bool>(metronome);
+        parsed.recording.metronomeVolume = static_cast<float>(static_cast<double>(volume));
+        parsed.recording.countInBars = static_cast<int>(countIn);
+        parsed.recording.latencyOffsetMs = static_cast<int>(offset);
+        parsed.recording.replace = static_cast<bool>(replace);
+        if (!parsed.recording.valid()) { error = "The project's recording settings are out of range."; return false; }
     }
     if (formatVersion < 3) {
         for (auto& track : parsed.trackSettings) track.preset = parsed.synthPreset;
