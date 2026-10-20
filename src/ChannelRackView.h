@@ -896,7 +896,7 @@ public:
         if (id == newPattern) controller.editRack("New pattern", [](rack::Project& p) { return p.addPattern(); });
         else if (id == clonePattern) controller.editRack("Clone pattern", [&](rack::Project& p) { return p.addPattern(current); });
         else if (id == clearPattern) controller.editRack("Clear pattern", [](rack::Project& p) { return p.clearPattern(p.selectedPattern); });
-        else if (id == deletePattern) controller.editRack("Delete pattern", [&](rack::Project& p) { return p.deletePattern(current); });
+        else if (id == deletePattern) controller.deleteRackPattern(current);
         else if (id == renamePattern) {
             const auto name = juce::String::fromUTF8(controller.channelRack().patternNames[static_cast<std::size_t>(current)].c_str());
             grid.askForName("Rename pattern", name, [this, current](const juce::String& text) {

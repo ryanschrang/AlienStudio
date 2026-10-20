@@ -267,7 +267,7 @@ public:
         const int route = engine.liveDrumTrack.load();
         if (route == track) engine.liveDrumTrack.store(-1);
         else if (route > track) engine.liveDrumTrack.store(route - 1);
-        remapRegions(track, true, true);
+        doc.timeline.trackDeleted(track);
         doc.channelRack.trackDeleted(track); // channels routed there fall back to the master bus
         doc.tracks.erase(doc.tracks.begin() + track);
         for (auto& scene : doc.clips) scene.erase(scene.begin() + track);
@@ -286,7 +286,7 @@ public:
         const int route = engine.liveDrumTrack.load();
         if (route == track) engine.liveDrumTrack.store(target);
         else if (route == target) engine.liveDrumTrack.store(track);
-        remapRegions(track, true, false, target);
+        doc.timeline.tracksSwapped(track, target);
         doc.channelRack.tracksSwapped(track, target); // channel routes follow their tracks
         std::swap(doc.tracks[static_cast<std::size_t>(track)], doc.tracks[static_cast<std::size_t>(target)]);
         for (auto& scene : doc.clips)
@@ -317,7 +317,7 @@ public:
         if (beforeStructureEdit) beforeStructureEdit();
         if (doc.sceneCount() <= 1 || scene < 0 || scene >= doc.sceneCount()) return false;
         stopEverySlot();
-        remapRegions(scene, false, true);
+        doc.timeline.sceneDeleted(scene);
         doc.scenes.erase(doc.scenes.begin() + scene);
         doc.clips.erase(doc.clips.begin() + scene);
         if (doc.selectedScene > scene) --doc.selectedScene;
@@ -331,7 +331,7 @@ public:
         const int target = scene + delta;
         if (scene < 0 || scene >= doc.sceneCount() || target < 0 || target >= doc.sceneCount()) return false;
         stopEverySlot();
-        remapRegions(scene, false, false, target);
+        doc.timeline.scenesSwapped(scene, target);
         std::swap(doc.scenes[static_cast<std::size_t>(scene)], doc.scenes[static_cast<std::size_t>(target)]);
         std::swap(doc.clips[static_cast<std::size_t>(scene)], doc.clips[static_cast<std::size_t>(target)]);
         if (doc.selectedScene == scene) doc.selectedScene = target;
@@ -708,7 +708,7 @@ public:
 
     std::shared_ptr<ArrangementPlayback> captureArrangement() const {
         auto song = std::make_shared<ArrangementPlayback>();
-        song->arrangement = doc.arrangement;
+        song->timeline = doc.timeline;
         for (int s = 0; s < doc.sceneCount(); ++s) for (int t = 0; t < doc.trackCount(); ++t) {
             // An offline audio clip stays silent; it must not fall back to playing stray notes.
             if (!doc.clip(t, s).audioOffline()) song->clips[s][t].pattern = doc.clip(t, s).notes();
@@ -722,14 +722,14 @@ public:
     // reused by a different clip while it is being compared.
     struct PublishedSong {
         bool known{};
-        Arrangement arrangement;
+        alien::timeline::Timeline timeline;
         int tracks{}, scenes{};
         std::vector<std::shared_ptr<const PianoRollPattern>> patterns;
         std::vector<std::shared_ptr<const SessionAudioClip>> audio;
     };
     bool songDiffersFromPublished() const {
         if (!published.known || published.tracks != doc.trackCount() || published.scenes != doc.sceneCount()
-            || !published.arrangement.sameLayout(doc.arrangement)) return true;
+            || !published.timeline.playbackEquals(doc.timeline)) return true;
         std::size_t index = 0;
         for (int s = 0; s < doc.sceneCount(); ++s)
             for (int t = 0; t < doc.trackCount(); ++t, ++index) {
@@ -740,7 +740,7 @@ public:
     }
     void rememberPublishedSong() {
         published.known = true;
-        published.arrangement = doc.arrangement;
+        published.timeline = doc.timeline;
         published.tracks = doc.trackCount();
         published.scenes = doc.sceneCount();
         published.patterns.clear(); published.audio.clear();
@@ -754,10 +754,59 @@ public:
         if (!songDiffersFromPublished()) return;
         if (engine.arrangementMailbox.publish(captureArrangement())) rememberPublishedSong();
     }
-    void setArrangement(const Arrangement& song) {
-        if (!song.valid(doc.trackCount(), doc.sceneCount())) return;
-        doc.arrangement = song;
-        commit("Edit arrangement");
+    // The Arrangement timeline ------------------------------------------------------
+    const alien::timeline::Timeline& timeline() const noexcept { return doc.timeline; }
+
+    // Applies `edit` to a copy of the timeline. When it changes something valid for
+    // this project the copy becomes the timeline and the change is one undo step
+    // (edits with the same coalesceKey made in quick succession merge). Playback
+    // follows without restarting. Returns whether anything changed.
+    bool editTimeline(const juce::String& label, const std::function<bool(alien::timeline::Timeline&)>& edit,
+                      const juce::String& coalesceKey = {}) {
+        if (busy) return false;
+        auto next = doc.timeline;
+        next.tempo = doc.bpm;
+        if (!edit(next) || !next.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount) || next == doc.timeline)
+            return false;
+        doc.timeline = std::move(next);
+        commit(label, -1, -1, coalesceKey);
+        return true;
+    }
+    // How long a clip or pattern naturally lasts on the timeline, in ticks: its loop
+    // for MIDI and rack patterns, its running time at the current tempo for audio
+    // (rounded up to a sixteenth so it ends on the grid).
+    std::int64_t naturalLength(int row, int source) const {
+        using namespace alien::timeline;
+        if (isPatternRow(row)) {
+            if (!doc.channelRack.validPattern(source)) return ticksPerBar;
+            return static_cast<std::int64_t>(doc.channelRack.pattern(source).length) * ticksPerStep;
+        }
+        if (!doc.isValidCell(row, source)) return ticksPerBar;
+        const auto& clip = doc.clip(row, source);
+        if (clip.audio != nullptr && clip.audio->sampleRate > 0.0) {
+            const double seconds = static_cast<double>(clip.audio->frames) / clip.audio->sampleRate;
+            const double ticks = seconds * doc.bpm * static_cast<double>(ticksPerBeat) / 60.0;
+            return std::clamp<std::int64_t>(static_cast<std::int64_t>(std::ceil(ticks / ticksPerStep)) * ticksPerStep, ticksPerStep, maxLength);
+        }
+        return static_cast<std::int64_t>(clip.notes().loopSteps) * ticksPerStep;
+    }
+    // Where the song starts and is shown when it is next played.
+    bool placeRegion(int row, int source, std::int64_t start, std::uint32_t* idOut = nullptr) {
+        const auto length = naturalLength(row, source);
+        return editTimeline(alien::timeline::isPatternRow(row) ? "Place pattern" : "Place clip", [&](alien::timeline::Timeline& t) {
+            alien::timeline::Region r; r.row = row; r.source = source; r.start = start; r.length = length;
+            return t.place(r, idOut);
+        });
+    }
+    // Deleting a pattern renumbers the ones after it, and the timeline must follow.
+    bool deleteRackPattern(int index) {
+        auto next = doc.channelRack;
+        if (!next.deletePattern(index)) return false;
+        doc.channelRack = std::move(next);
+        doc.timeline.patternDeleted(index);
+        pushRackToEngine();
+        commit("Delete pattern");
+        return true;
     }
     void clearDrum(int track, int pad) {
         if (track < 0 || track >= doc.trackCount() || pad < 0 || pad >= drumPadCount) return;
@@ -791,6 +840,21 @@ public:
     }
     // Channel Rack ------------------------------------------------------------
     const rack::Project& channelRack() const noexcept { return doc.channelRack; }
+    // The sound each rack channel plays, for a render on another thread (null where a channel is silent or its
+    // file is missing). Loaded files are added to `keepAlive`, which must outlive the render.
+    std::array<const SessionAudioClip*, rack::maxChannels> rackClipsForExport(std::vector<std::shared_ptr<const SessionAudioClip>>& keepAlive) const {
+        std::array<const SessionAudioClip*, rack::maxChannels> clips{};
+        for (int c = 0; c < doc.channelRack.channelCount; ++c) {
+            const auto& info = doc.channelRack.info[static_cast<std::size_t>(c)];
+            if (info.isFile()) {
+                const auto found = rackAudio.find(info.sample);
+                if (found == rackAudio.end()) continue;
+                keepAlive.push_back(found->second);
+                clips[static_cast<std::size_t>(c)] = found->second.get();
+            } else clips[static_cast<std::size_t>(c)] = rackClip(info);
+        }
+        return clips;
+    }
 
     // Applies `edit` to a copy of the rack. When it changes something valid the
     // copy becomes the rack, the engine plays it, and the change is one undo
@@ -802,7 +866,9 @@ public:
         auto next = doc.channelRack;
         if (!edit(next) || !next.valid() || next == doc.channelRack) return false;
         const bool content = !next.sameContent(doc.channelRack);
+        const bool fewerPatterns = next.patternCount < doc.channelRack.patternCount;
         doc.channelRack = std::move(next);
+        if (fewerPatterns) doc.timeline.prune(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount);
         pushRackToEngine();
         if (content) commit(label, -1, -1, coalesceKey);
         return true;
@@ -958,16 +1024,6 @@ private:
         const auto bytes = clip->frames * clip->channels * sizeof(float);
         if (bytes > maxSessionAudioBytes - retainedBytes) return false;
         retained.push_back(clip); retainedBytes += bytes; return true;
-    }
-    void remapRegions(int index, bool tracks, bool deleting, int target = -1) {
-        for (std::size_t i = 0; i < doc.arrangement.count;) {
-            auto& r = doc.arrangement.regions[i]; auto& value = tracks ? r.track : r.scene;
-            if (deleting && value == index) { doc.arrangement.erase(i); continue; }
-            if (deleting) { if (value > index) --value; }
-            else if (value == index) value = target;
-            else if (value == target) value = index;
-            ++i;
-        }
     }
     struct RelinkWant {
         MissingMedia item;
@@ -1383,8 +1439,7 @@ private:
                                                : std::vector<SessionClip>(static_cast<std::size_t>(doc.trackCount()));
         const auto name = copyFrom != nullptr ? doc.scenes[static_cast<std::size_t>(index - 1)].name + " copy"
                                               : doc.nextSceneName();
-        for (std::size_t r = 0; r < doc.arrangement.count; ++r)
-            if (doc.arrangement.regions[r].scene >= index) ++doc.arrangement.regions[r].scene;
+        doc.timeline.sceneInserted(index);
         doc.scenes.insert(doc.scenes.begin() + index, SessionScene{name});
         doc.clips.insert(doc.clips.begin() + index, clips);
         if (doc.selectedScene >= index && index < doc.sceneCount() - 1) ++doc.selectedScene;

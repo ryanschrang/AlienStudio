@@ -4,7 +4,7 @@
 
 Alien Studio is an **independent, original application**, not affiliated with or endorsed by any of those products. We aim to learn from broadly useful workflows without copying proprietary code, artwork, branding, or protected assets.
 
-> **Project status:** Integrated early DAW prototype with up to 16 tracks/32 scenes, 12 built-in sounds, drum sample kits/browser, arrangement playback and WAV export, disk-streamed audio recording and offline tempo matching, five built-in stock effects (EQ, compressor, reverb, delay, limiter), an FL Studio-style Channel Rack with a pattern bank, plus initial stereo VST3 instrument/FX hosting. Project v7 unifies these features with saving, portable media collection, undo/redo and recovery. Native Windows device, plugin and listening checks remain required; see [the checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
+> **Project status:** Integrated early DAW prototype with up to 16 tracks/32 scenes, 12 built-in sounds, drum sample kits/browser, an arrangement timeline (Session clips and Channel Rack patterns with snap, zoom, selection, loop ranges and markers) with WAV export, disk-streamed audio recording and offline tempo matching, five built-in stock effects (EQ, compressor, reverb, delay, limiter), an FL Studio-style Channel Rack with a pattern bank, plus initial stereo VST3 instrument/FX hosting. Project v8 unifies these features with saving, portable media collection, undo/redo and recovery. Native Windows device, plugin and listening checks remain required; see [the checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
 
 ## Product vision: three connected workspaces
 
@@ -27,6 +27,7 @@ The long-term differentiator is **one shared project and audio engine** across a
 - [x] MIDI recording into Session clips (computer keyboard or USB MIDI keyboard) with count-in, metronome, overdub/replace and latency compensation.
 - [x] Stock effects: EQ, compressor, reverb, tempo-synced delay and look-ahead limiter in every track and master FX rack, with custom panels.
 - [x] Channel Rack: FL-style drum step sequencer (16 channels, 16/32/64 steps, pattern bank, per-step velocity/pan/pitch/chance, swing) routed to the master or a Session track.
+- [x] Arrangement timeline: place MIDI clips, audio clips and Channel Rack patterns on a zoomable, scrollable timeline with snap, marquee selection, copy/paste/duplicate/group/split, loop range, named markers, playback from any position and WAV export of the whole song or the loop.
 - [x] GPL-3.0 license file. Dependency attribution/distribution review remains required before releases.
 
 ### Next implementation sequence
@@ -35,8 +36,7 @@ The long-term differentiator is **one shared project and audio engine** across a
 3. Waveform trimming/fades, take lanes and live warp-marker workflows.
 4. Plugin automation, sidechains/multi-output routing, freeze and crash isolation during playback.
 5. Recording follow-ups: controller data (pitch bend, mod wheel, sustain), quantize-on-record, loop-record takes and punch in/out.
-6. A mouse-driven arrangement timeline ("playlist") that places Channel Rack patterns, so patterns play in Song mode and WAV export (today the rack plays only on its own tab).
-7. Automation lanes (track volume/pan and the parameters of stock effects).
+6. Automation lanes on the timeline (track volume/pan and the parameters of stock effects), then clip fades/crossfades and tempo-warped audio clips.
 
 
 ## Build from source (Windows 11)
@@ -563,10 +563,10 @@ Preset changes affect newly triggered notes; held notes retain their original
 patch until release. Mixer settings also affect imported audio on that track.
 Live MIDI/typing/mouse input and the legacy step sequencer remain on their separate
 Device rack synth; Session mute/solo does not mute live monitoring. Project format
-v7 stores the Channel Rack and v6 added track/scene names, drum kits, arrangement and plugin state; v3 stores
+v8 stores the Arrangement timeline, v7 the Channel Rack and v6 added track/scene names, drum kits, the bar-based arrangement and plugin state; v3 stores
 mixer settings for the original four tracks. Versions 1 and 2 load with the old
 global preset copied to all four tracks, centred balance, unity volume, and
-mute/solo off. Older Alien Studio versions cannot open v7 projects, and a v7 project is refused (with a reason) if its Channel Rack is damaged. Both historical v4 variants and v5 arrangements migrate on load.
+mute/solo off. Older Alien Studio versions cannot open v8 projects, and a v8 project is refused (with a reason) if its timeline or Channel Rack is damaged. Both historical v4 variants and the older bar-based arrangements (v5 to v7) migrate on load: each old region becomes a clip on the timeline at the same bar.
 
 
 ### Recording MIDI: count-in, metronome, overdub and replace
@@ -709,9 +709,9 @@ saved by name; sample files by path, relative when they sit inside the project f
 red-labelled channel that **Relink audio** can repair, like a missing clip.
 
 **Limits (honest list).**
-- The rack plays **only while the Rack tab is shown**. Patterns are not yet placed on the
-  arrangement, so they do not play in Song mode and are not in **Export WAV**. A mouse-driven
-  arrangement timeline that places patterns is the next planned step.
+- The rack plays by itself **only while the Rack tab is shown**. To hear patterns in a song,
+  place them on the Arrangement timeline's four pattern lanes (see below): they then play in
+  Song mode and are in **Export WAV**.
 - Pitch is set per step (+-24 semitones, which also changes the sample's speed). There is no
   per-channel root note, sample envelope or start/end trim, no per-channel piano roll, and no
   per-step note length, flam or sample offset yet; every hit is a one-shot.
@@ -723,6 +723,76 @@ red-labelled channel that **Relink audio** can repair, like a missing clip.
   mouse gestures on the screen's components). Not yet verified on Windows hardware: see the
   checklist.
 
+### Arrangement timeline: clips, patterns, loop and markers
+
+Open it from **More... > Arrange**. The screen is a ruler of bars and beats above one lane per
+Session track and four **pattern lanes** for the Channel Rack. A strip above the ruler holds the
+**loop range**, and one above that the named **markers**.
+
+**What can be placed.** MIDI clips and audio clips from the Session grid (on their own track's lane)
+and Channel Rack patterns (on any of the four pattern lanes; patterns on different lanes play at
+the same time). A placement is a *reference*, not a copy: edit the notes in the Piano Roll or the
+steps in the Channel Rack and every place that clip or pattern sits on the timeline changes with
+it. A clip repeats for as long as it is stretched. Nothing overlaps on one lane: what you drop,
+paste, place or resize onto is replaced or shortened. The song is 1 to 512 bars long and grows when
+you place something past its end (the **Song length** box shortens it again, but never below the last clip).
+
+**Placing.** Double-click an empty spot in a track's lane to put that track's selected scene there
+(or its first scene that holds a clip); double-click in a pattern lane to put the Channel
+Rack's selected pattern there. Right-click an empty spot to choose which clip or pattern, or use the
+**Place...** button to put one at the play position on the selected row. Double-click a clip to open
+what it plays (Piano Roll, Session, or the Channel Rack for a pattern).
+
+**Selecting.** Click a clip; Shift- or Ctrl-click adds or removes; drag across empty space to draw a
+selection box (it takes every clip it touches; hold Shift to add to the selection); Ctrl+A selects
+everything; Esc clears. Grouped clips (Ctrl+G) select and move together.
+
+**Editing.** Drag a clip to move it (pattern clips can also change lane); drag its right edge to
+resize it; drag its left edge to hide or reveal the start of its music without moving the music. Ctrl-drag
+copies. Hold **Alt** while dragging to ignore the grid. Each drag is one undo step.
+
+| Key | Does |
+|---|---|
+| Space | play / stop from the play position |
+| Delete, Ctrl+X, Ctrl+C, Ctrl+V | delete, cut, copy, paste at the play position (pattern clips paste to the selected lane) |
+| Ctrl+D | duplicate: copies go just after the selection |
+| Ctrl+G, Ctrl+Shift+G | group, ungroup |
+| S or Ctrl+E | split the selected clips (or every clip under it) at the play position |
+| M | mute / unmute the selected clips |
+| Left / Right | nudge the selection by one grid step; Shift = one bar; with nothing selected, move the play position |
+| Up / Down | move a selected pattern to another lane; with nothing selected, move the selected row |
+| Home / End | play position to the start / end of the song |
+| Page Up / Page Down | scroll back / forward by almost a screen |
+| L, Shift+L | loop on/off; loop the selected clips (or the whole song) |
+| K | add a marker at the play position |
+| Ctrl+Left / Ctrl+Right | jump to the previous / next marker |
+| + / -, Ctrl+wheel, Ctrl+0 | zoom in / out around the pointer; zoom to fit |
+
+The wheel scrolls the lanes, Shift+wheel (or a trackpad) scrolls sideways, and the scroll bars
+work as usual. **Fit** zooms to show all your clips (at least four bars) and **Follow** keeps the moving playhead in view. **Snap** can be 1 bar, 1/2 bar, 1 beat,
+1/8, 1/16, **Auto** (follows the zoom) or **Off**. S is also a typing-piano key; on this screen it splits clips instead.
+
+**Playing from anywhere.** Click the ruler (or drag along it) to put the play position there;
+press Play and the song starts from it, or jumps to it at once if it is already playing. Clicking
+an empty spot in a lane does the same. **Loop range:** drag in the loop strip to set it (the ends
+and the middle can be dragged; double-click loops one bar); with the loop on, playback repeats it.
+Edits made while the song plays do not restart it.
+**Markers:** double-click the marker strip, press K, use the **+ Marker** button or right-click; click a marker to start from it,
+drag it to move, double-click to rename; the right-click menu changes its colour or deletes it. There
+can be 128 markers.
+
+**Export WAV** (button at the top right) renders the whole song, or only the loop range, to a
+stereo 48 kHz/24-bit WAV, including the Channel Rack patterns.
+
+**Limits (honest list).**
+- Clips have no fades or crossfades, and audio is not tempo-warped on the timeline: audio plays at
+  its original speed, so changing the project tempo changes where a placed audio clip ends but not
+  how fast it plays.
+- At most 1,024 clips, 128 markers, 512 bars and four pattern lanes. A Session clip lives on its
+  own track's lane; to move music to another track, copy it there from the Session grid.
+- There are no automation lanes yet; there is one loop range and no per-clip gain or pitch.
+- The timeline is controlled with the mouse and keyboard only: no MIDI-controller mapping.
+
 ### Integrated workspaces and VST3 hosting
 
 Use **More...** in the top bar for **Drums**, **Arrange**, **Audio lab** and
@@ -732,9 +802,7 @@ Use **More...** in the top bar for **Drums**, **Arrange**, **Audio lab** and
   notes 36–43. Select **Drum kit** in Mixer. The MIDI routing selector in Drums
   also routes external MIDI to a track's VST3 instrument; typing/mouse piano
   and the legacy step sequencer continue to use the live synth.
-- Arrange: place Session clips at whole-bar positions; move, resize, duplicate
-  and delete regions, then play or export a stereo 48 kHz/24-bit WAV. Track/scene
-  moves and deletions update region references. Regions do not overlap on one track.
+- Arrange: the Arrangement timeline, described in its own section below.
 - Audio lab: configure device inputs and record mono/stereo takes to a new WAV;
   recording streams 24-bit PCM directly to disk with **no 60-second duration cap**.
   A fixed 262,144-frame FIFO (1 MiB mono / 2 MiB stereo) feeds a dedicated writer.

@@ -78,7 +78,7 @@ struct ProjectDocument {
     int selectedTrack{};
     int selectedScene{};
     StepSequence steps;
-    Arrangement arrangement;
+    alien::timeline::Timeline timeline;   // the Arrangement view: where clips and rack patterns sit on the song
     PluginRackState masterPlugins;
     rack::Project channelRack = rack::Project::createDefault(); // the Channel Rack; decoded samples are held by the ProjectController
 
@@ -152,11 +152,7 @@ inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
     };
     if (a.masterPlugins != b.masterPlugins || a.masterGain != b.masterGain || !(a.recording == b.recording)) return false;
     if (!a.channelRack.sameContent(b.channelRack)) return false; // which pattern is selected is not an edit
-    if (a.arrangement.count != b.arrangement.count || a.arrangement.lengthBars != b.arrangement.lengthBars) return false;
-    for (std::size_t i = 0; i < a.arrangement.count; ++i) {
-        const auto& x = a.arrangement.regions[i]; const auto& y = b.arrangement.regions[i];
-        if (x.track != y.track || x.scene != y.scene || x.startBar != y.startBar || x.lengthBars != y.lengthBars) return false;
-    }
+    if (!(a.timeline == b.timeline)) return false;
     if (a.bpm != b.bpm || a.launchQuantizationSteps != b.launchQuantizationSteps || a.livePreset != b.livePreset
         || a.steps.on != b.steps.on || a.steps.pitch != b.steps.pitch || a.steps.velocity != b.steps.velocity
         || a.tracks.size() != b.tracks.size() || a.scenes.size() != b.scenes.size())
@@ -182,7 +178,7 @@ inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
 // strings; decoding is done separately by the loader.
 inline SessionProjectData toProjectData(const ProjectDocument& doc) {
     SessionProjectData data(doc.trackCount(), doc.sceneCount());
-    data.arrangement = doc.arrangement;
+    data.timeline = doc.timeline;
     data.masterPlugins = doc.masterPlugins;
     data.channelRack = doc.channelRack;
     data.launchQuantizationSteps = doc.launchQuantizationSteps;
@@ -216,7 +212,8 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
 
 inline ProjectDocument fromProjectData(const SessionProjectData& data) {
     auto doc = ProjectDocument::createDefault(data.trackCount(), data.sceneCount());
-    doc.arrangement = data.arrangement;
+    doc.timeline = data.timeline;
+    doc.timeline.tempo = data.bpm;
     doc.masterPlugins = data.masterPlugins;
     doc.channelRack = data.channelRack;
     doc.launchQuantizationSteps = data.launchQuantizationSteps;

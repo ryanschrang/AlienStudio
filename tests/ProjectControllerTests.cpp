@@ -229,14 +229,31 @@ static void recoveryAndPortableRegressionTests() {
     // Both historical v4 dialects and v5 load into the unified v6 format.
     auto legacy=juce::JSON::parse(alien::serializeSessionProject(alien::toProjectData(c.document())));
     auto* object=legacy.getDynamicObject();object->setProperty("version",4);
-    object->removeProperty("plugins");object->removeProperty("masterPlugins");object->removeProperty("drumPaths");object->removeProperty("arrangement");
+    object->removeProperty("plugins");object->removeProperty("masterPlugins");object->removeProperty("drumPaths");object->removeProperty("arrangement");object->removeProperty("timeline");
     for(auto& value:*object->getProperty("trackSettings").getArray()) value.getDynamicObject()->removeProperty("instrument");
     alien::SessionProjectData loaded;
     require(alien::parseSessionProject(juce::JSON::toString(legacy),loaded,error),"redesign v4 with no drum fields migrates");
     auto combined=alien::toProjectData(c.document());combined.drumPaths[0][2]=collected;combined.trackSettings[0].instrument=1;
-    require(combined.arrangement.add({3,3,0,4}),"add legacy region");
-    auto v5=juce::JSON::parse(alien::serializeSessionProject(combined));v5.getDynamicObject()->setProperty("version",5);
-    require(alien::parseSessionProject(juce::JSON::toString(v5),loaded,error) && loaded.drumPaths[0][2]==collected && loaded.arrangement.count==1,"drum/arrangement v5 migrates");
+    // Before version 8 the song was whole bars of Session clips, saved as "arrangement".
+    auto v5=juce::JSON::parse(alien::serializeSessionProject(combined));
+    {
+        auto* root5=v5.getDynamicObject();root5->setProperty("version",5);root5->removeProperty("timeline");
+        auto* region=new juce::DynamicObject();region->setProperty("track",3);region->setProperty("scene",3);region->setProperty("startBar",0);region->setProperty("lengthBars",4);
+        juce::Array<juce::var> regions;regions.add(juce::var(region));
+        auto* arrangement=new juce::DynamicObject();arrangement->setProperty("lengthBars",8);arrangement->setProperty("regions",regions);
+        root5->setProperty("arrangement",juce::var(arrangement));
+    }
+    require(alien::parseSessionProject(juce::JSON::toString(v5),loaded,error) && loaded.drumPaths[0][2]==collected && loaded.timeline.regions.size()==1,"drum/arrangement v5 migrates");
+    require(loaded.timeline.lengthBars==8 && loaded.timeline.regions[0].row==3 && loaded.timeline.regions[0].source==3
+        && loaded.timeline.regions[0].start==0 && loaded.timeline.regions[0].length==4*alien::timeline::ticksPerBar,"the old bars become the same place on the timeline");
+    // Damaged old arrangements are refused, not quietly repaired.
+    {
+        auto* root5=v5.getDynamicObject();auto* arr=root5->getProperty("arrangement").getDynamicObject();
+        auto* second=new juce::DynamicObject();second->setProperty("track",3);second->setProperty("scene",1);second->setProperty("startBar",2);second->setProperty("lengthBars",2);
+        auto* regionList=arr->getProperty("regions").getArray();regionList->add(juce::var(second));
+        alien::SessionProjectData refused;
+        require(!alien::parseSessionProject(juce::JSON::toString(v5),refused,error) && error.isNotEmpty(),"overlapping legacy regions are refused");
+    }
     c.discardRecovery();alien::ProjectController::recoveryDirectoryOverride()=juce::File{};root.deleteRecursively();
     std::cout<<"PASS: recovery fencing, portable undo/redo and both legacy schemas\n";
 }
@@ -265,8 +282,7 @@ static void arrangementPublishTests() {
     c.commit("No-op");
     require(published() == base + 1, "a commit with no change does not publish");
 
-    alien::Arrangement song; song.lengthBars = 8; song.add({0, 0, 0, 2});
-    c.setArrangement(song);
+    require(c.placeRegion(0, 0, 0), "place a clip on the timeline");
     require(published() == base + 2, "changing the timeline publishes once");
 
     require(c.undo() && published() == base + 3, "undoing the timeline change republishes");
@@ -412,11 +428,114 @@ static void missingAudioTests() {
     std::cout << "PASS: missing audio opens offline, keeps references, and relinks by name\n";
 }
 
+// The timeline inside the controller: refused while busy, checked against the real project, lengths
+// that follow the tempo, and clips that stay attached to the right track, scene and pattern.
+static void timelineIntegrationTests() {
+    using namespace alien::timeline;
+    const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("AlienStudioTimelineCtl", "", false);
+    require(root.createDirectory().wasOk(), "temp directory");
+    alien::ProjectController::recoveryDirectoryOverride() = root.getChildFile("Recovery");
+    std::atomic<bool> cancel{false}; juce::String error;
+    auto makeClip = [](int rate, std::size_t frames) {
+        auto clip = std::make_shared<alien::SessionAudioClip>();
+        clip->sampleRate = rate; clip->channels = 1; clip->frames = frames; clip->left.assign(frames, 0.25f); clip->buildWaveform();
+        return clip;
+    };
+    auto waitIdle = [](alien::ProjectController& c) { for (int i = 0; i < 400 && c.isBusy(); ++i) pump(10); require(!c.isBusy(), "controller finishes"); };
+    auto closeTo = [](double a, double b, const char* message) { require(std::abs(a - b) < 1.0e-9, message); };
+
+    {   // Nothing on the timeline changes while a file is loading.
+        const auto wav = root.getChildFile("busy.wav");
+        require(alien::writeClipWav(wav, *makeClip(8000, 80), cancel, error), "write a sample");
+        ToneEngine engine; alien::ProjectController c(engine); c.pushDocumentToEngine();
+        c.importAudio(wav, 0, 0);
+        require(c.isBusy(), "an import is under way");
+        require(!c.placeRegion(0, 0, 0) && c.timeline().regions.empty(), "the timeline cannot be edited while a file is loading");
+        waitIdle(c);
+        require(c.placeRegion(0, 0, 0) && c.timeline().regions.size() == 1, "and can be once it has finished");
+    }
+    {   // Only what the project has can be placed, and an edit that changes nothing is not an edit.
+        ToneEngine engine; alien::ProjectController c(engine); c.pushDocumentToEngine();
+        const auto label = c.undoLabel();
+        require(c.document().trackCount() == 4 && c.document().sceneCount() == 4 && c.channelRack().patternCount == 1, "a new project's size");
+        require(!c.placeRegion(5, 0, 0), "no clip on a track the project does not have");
+        require(!c.placeRegion(0, 9, 0), "no clip from a scene the project does not have");
+        require(!c.placeRegion(rackRowBase, 3, 0), "no pattern the rack does not have");
+        require(c.timeline().regions.empty() && c.undoLabel() == label, "and nothing was recorded");
+        require(!c.editTimeline("Nothing", [](Timeline&) { return true; }), "an edit that leaves the timeline as it was reports no change");
+    }
+    {   // Audio lasts as long as the project tempo says, rounded up to the next sixteenth, and trims by that tempo too.
+        const auto wav = root.getChildFile("tempo.wav");
+        require(alien::writeClipWav(wav, *makeClip(8000, 10400), cancel, error), "write a 1.3 second sample");
+        ToneEngine engine; alien::ProjectController c(engine); c.pushDocumentToEngine();
+        require(c.installAudio(wav, 1, 0, makeClip(8000, 10400)), "install the audio");
+        c.setBpm(100); c.commit("Tempo");
+        require(c.naturalLength(1, 0) == 9 * ticksPerStep, "1.3 seconds at 100 BPM is 2080 ticks, rounded up to 9 sixteenths");
+        std::uint32_t id = 0;
+        require(c.placeRegion(1, 0, 0, &id) && c.timeline().find(id) != nullptr && c.timeline().find(id)->length == 9 * ticksPerStep, "a placed audio clip has that length");
+        require(c.editTimeline("Trim", [&](Timeline& t) { return t.trimStart(id, 480); }), "trim the front");
+        closeTo(c.timeline().find(id)->audioOffset, 0.3, "480 ticks at 100 BPM is 0.3 seconds of the audio");
+        require(c.naturalLength(rackRowBase, 0) == 16 * ticksPerStep, "a rack pattern lasts its length in steps");
+    }
+    {   // Clips stay attached to their track, scene and pattern as those are moved, added and deleted.
+        ToneEngine engine; alien::ProjectController c(engine); c.pushDocumentToEngine();
+        std::uint32_t a = 0, b = 0, p0 = 0, p1 = 0, p2 = 0;
+        require(c.placeRegion(2, 1, 0, &a) && c.placeRegion(3, 2, ticksPerBar, &b), "two clips");
+        require(c.editRack("Two more patterns", [](alien::rack::Project& p) { return p.addPattern() && p.addPattern(); }), "three patterns");
+        require(c.placeRegion(rackRowBase, 0, 0, &p0) && c.placeRegion(rackRowBase + 1, 1, 0, &p1) && c.placeRegion(rackRowBase + 2, 2, 0, &p2), "three patterns on three lanes");
+        auto rowOf = [&](std::uint32_t id) { const auto* r = c.timeline().find(id); return r != nullptr ? r->row : -1; };
+        auto sourceOf = [&](std::uint32_t id) { const auto* r = c.timeline().find(id); return r != nullptr ? r->source : -1; };
+
+        require(c.moveTrack(2, 1) && rowOf(a) == 3 && rowOf(b) == 2, "clips follow their tracks when two tracks swap places");
+        require(c.duplicateScene(0) && sourceOf(a) == 2 && sourceOf(b) == 3, "a scene added in front pushes later clips along");
+        require(c.moveScene(3, -1) && sourceOf(a) == 3 && sourceOf(b) == 2, "clips follow their scenes when two scenes swap places");
+        require(c.deleteScene(2) && c.timeline().find(b) == nullptr && sourceOf(a) == 2, "deleting a scene removes its clips and renumbers the rest");
+        require(c.deleteTrack(0) && rowOf(a) == 2, "deleting a track renumbers the tracks after it");
+        require(c.deleteTrack(2) && c.timeline().find(a) == nullptr, "and removes the clips of the track that went");
+        require(c.deleteRackPattern(1) && c.timeline().find(p1) == nullptr && sourceOf(p2) == 1 && sourceOf(p0) == 0,
+                "deleting a pattern removes its clips and renumbers the patterns after it");
+        require(c.timeline().valid(c.document().trackCount(), c.document().sceneCount(), c.channelRack().patternCount), "the timeline is still valid for the project");
+        require(c.editRack("Remove a pattern", [](alien::rack::Project& p) { return p.deletePattern(1); }), "the rack loses another pattern");
+        require(c.timeline().find(p2) == nullptr && c.timeline().find(p0) != nullptr
+                && c.timeline().valid(c.document().trackCount(), c.document().sceneCount(), c.channelRack().patternCount),
+                "a clip of a pattern that no longer exists is dropped, not left pointing at nothing");
+    }
+    {   // A clip whose audio file is missing plays nothing, not the notes it also happens to hold.
+        const auto wav = root.getChildFile("offline.wav"), song = root.getChildFile("Offline.alienstudio");
+        require(alien::writeClipWav(wav, *makeClip(8000, 80), cancel, error), "write a sample");
+        {
+            ToneEngine engine; alien::ProjectController c(engine);
+            c.setClipPattern(0, 0, patternWith(65), false);
+            c.setClipPattern(1, 1, patternWith(67), false);
+            require(c.installAudio(wav, 0, 0, makeClip(8000, 80)), "install the audio on a clip that has notes");
+            c.commit("Edit");
+            bool done = false, ok = false;
+            c.writeProject(song, false, [&](bool r) { ok = r; done = true; });
+            for (int i = 0; i < 200 && !done; ++i) pump(10);
+            require(done && ok, "save");
+            const auto live = c.captureArrangement();
+            require(live->clips[0][0].audio != nullptr && live->clips[1][1].pattern.count == 1, "the live song has the audio and the MIDI clip");
+        }
+        require(wav.deleteFile(), "the audio goes missing");
+        ToneEngine engine; alien::ProjectController c(engine);
+        c.openProject(song); waitIdle(c);
+        require(c.document().clip(0, 0).audioOffline() && c.document().clip(0, 0).notes().count == 1, "the clip is offline and still holds its notes");
+        const auto captured = c.captureArrangement();
+        require(captured->clips[0][0].audio == nullptr && captured->clips[0][0].pattern.count == 0, "but the song plays nothing for it");
+        require(captured->clips[1][1].pattern.count == 1, "an ordinary MIDI clip keeps its notes");
+        c.discardRecovery();
+    }
+    alien::ProjectController::recoveryDirectoryOverride() = juce::File{};
+    root.deleteRecursively();
+    std::cout << "PASS: timeline in the controller\n";
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     masterVolumeTests();
     mediaIndexTests();
     missingAudioTests();
+    timelineIntegrationTests();
     arrangementPublishTests();
     structureTests();
     fileFormatTests();

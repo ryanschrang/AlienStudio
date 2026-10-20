@@ -6,14 +6,32 @@
 namespace alien {
 using DrumSamplePointers = std::array<std::array<const SessionAudioClip*, drumPadCount>, maxSessionTracks>;
 
+// What to render besides the Session clips: the Channel Rack's sounds, and which part of the song.
+struct WavExportOptions {
+    std::int64_t fromTick{0};   // timeline ticks (960 to a quarter note)
+    std::int64_t toTick{-1};    // -1: the end of the song
+    std::array<const SessionAudioClip*, rack::maxChannels> rackClips{};
+};
+
 // Worker-only render, with an isolated engine using exactly the live DSP path.
 // The caller retains all pointed-to sample assets until this function returns.
 inline bool exportArrangementWav(const juce::File& target, const SessionProjectData& project,
-    const ArrangementPlayback& song, const DrumSamplePointers& drums,
-    const std::atomic<bool>& cancelled, juce::String& error, ToneEngine* preparedEngine = nullptr) {
-    if (!project.valid() || !song.arrangement.valid() || song.arrangement.count == 0) {
-        error="Add at least one valid region before exporting."; return false;
+    const ArrangementPlayback& livesong, const DrumSamplePointers& drums,
+    const std::atomic<bool>& cancelled, juce::String& error, ToneEngine* preparedEngine = nullptr,
+    const WavExportOptions& options = {}) {
+    if (!project.valid() || !livesong.timeline.valid(project.trackCount(), project.sceneCount(), project.channelRack.patternCount)
+        || !livesong.timeline.hasRegions()) {
+        error="Add at least one clip or pattern to the Arrangement before exporting."; return false;
     }
+    // The export plays the song through once from the requested start, never looping.
+    // (A snapshot is megabytes: it lives on the heap, never on this thread's stack.)
+    auto song = std::make_shared<ArrangementPlayback>(livesong);
+    song->timeline.loopEnabled = false;
+    song->timeline.tempo = project.bpm;
+    const std::int64_t songEnd = song->timeline.length();
+    const std::int64_t from = std::clamp<std::int64_t>(options.fromTick, 0, songEnd);
+    const std::int64_t to = options.toTick < 0 ? songEnd : std::clamp<std::int64_t>(options.toTick, 0, songEnd);
+    if (to <= from) { error="Nothing to export in that range."; return false; }
     bool hasPlugins = !project.masterPlugins.effects.empty();
     for (const auto& rack : project.plugins) hasPlugins = hasPlugins || !rack.instrument.descriptionXml.isEmpty() || !rack.effects.empty();
     if (hasPlugins && !preparedEngine) { error="Prepare plugin instances on the message thread before export"; return false; }
@@ -31,7 +49,11 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         engine->tracks[t].set(project.trackSettings[t]);
         for (std::size_t p=0;p<drumPadCount;++p) engine->drumKits[t].samples[p].store(drums[t][p]);
     }
-    if(!engine->arrangementMailbox.publish(song)) { error="Invalid song data.";return false; }
+    if(!engine->arrangementMailbox.publish(std::shared_ptr<const ArrangementPlayback>(song))) { error="Invalid song data.";return false; }
+    for (std::size_t c = 0; c < options.rackClips.size(); ++c) engine->rackSamples[c].store(options.rackClips[c]);
+    engine->rackMailbox.publish(project.channelRack.snapshot());
+    engine->timelineSeek.store(from);
+    engine->timelineEnd.store(to < songEnd ? to : -1);
     engine->playing.store(true);
     juce::TemporaryFile temporary(target);
     std::unique_ptr<juce::OutputStream> stream=temporary.getFile().createOutputStream();
@@ -42,7 +64,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     juce::AudioBuffer<float> buffer(2,512);
     const auto latency = engine->plugins->latencySamples();
     const auto tail = static_cast<std::int64_t>(std::ceil(engine->plugins->tailSeconds() * 48000));
-    const auto frames=static_cast<std::int64_t>(std::ceil(song.arrangement.lengthBars * 4.0 * 60.0 * 48000.0 / project.bpm));
+    const auto frames=static_cast<std::int64_t>(std::ceil(static_cast<double>(to - from) * 60.0 * 48000.0 / (static_cast<double>(alien::timeline::ticksPerBeat) * project.bpm)));
     const auto total=frames+latency+tail;
     for(std::int64_t offset=0;offset<total;offset+=512) {
         if(cancelled.load()) { error="Export cancelled; existing file unchanged.";return false; }

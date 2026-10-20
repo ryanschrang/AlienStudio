@@ -114,13 +114,20 @@ public:
     bool pendingIsAudio() const noexcept { return pendingClip != nullptr; }
     int pendingQuantizationSteps() const noexcept { return pendingQuantization; }
 
-    bool launchPendingNow(double outputRate) noexcept {
+    // Starts the queued clip. A timeline region that begins part-way into its clip
+    // starts at `startFrame` (in the clip's own frames) and fades in over
+    // `fadeInSamples` output samples, so joining the middle of a waveform does not click.
+    // Starting at the very beginning never fades.
+    bool launchPendingNow(double outputRate, double startFrame = 0.0, int fadeInSamples = 0) noexcept {
         if (!pending) return false;
         activeClip = pendingClip;
         pendingClip = nullptr;
         pending = false;
-        cursor = 0.0;
+        cursor = std::isfinite(startFrame) && startFrame > 0.0 ? startFrame : 0.0;
         outputSampleRate = std::isfinite(outputRate) && outputRate > 0 ? outputRate : 44100.0;
+        fadeInTotal = cursor > 0.5 && fadeInSamples > 0 ? fadeInSamples : 0;
+        fadeInDone = 0; releaseTotal = releaseLeft = 0;
+        if (activeClip != nullptr && cursor >= static_cast<double>(activeClip->frames)) activeClip = nullptr;
         return true;
     }
 
@@ -137,15 +144,31 @@ public:
         const float left = interpolate(activeClip->left[first], activeClip->left[second], fraction);
         const float right = activeClip->channels == 2
             ? interpolate(activeClip->right[first], activeClip->right[second], fraction) : left;
+        float gain = 1.0f;
+        if (fadeInDone < fadeInTotal) gain = static_cast<float>(++fadeInDone) / static_cast<float>(fadeInTotal);
+        bool finished = false;
+        if (releaseTotal > 0) {
+            gain *= static_cast<float>(releaseLeft) / static_cast<float>(releaseTotal);
+            finished = --releaseLeft <= 0;
+        }
         cursor += activeClip->sampleRate / outputSampleRate;
-        if (cursor >= static_cast<double>(activeClip->frames)) activeClip = nullptr;
-        return {left, right};
+        if (finished || cursor >= static_cast<double>(activeClip->frames)) activeClip = nullptr;
+        return {left * gain, right * gain};
+    }
+
+    // Lets the playing clip finish with a short fade instead of cutting it off
+    // (a timeline region ending in the middle of a waveform).
+    void release(int fadeSamples) noexcept {
+        if (activeClip == nullptr) return;
+        if (fadeSamples <= 0) { stop(); return; }
+        if (releaseTotal == 0) releaseTotal = releaseLeft = fadeSamples;
     }
 
     void stop() noexcept {
         activeClip = pendingClip = nullptr;
         pending = false;
         cursor = 0.0;
+        fadeInTotal = fadeInDone = releaseTotal = releaseLeft = 0;
     }
     bool isPlaying() const noexcept { return activeClip != nullptr; }
 
@@ -155,6 +178,7 @@ private:
     const SessionAudioClip* pendingClip{};
     double cursor{}, outputSampleRate{44100.0};
     int pendingQuantization{16};
+    int fadeInTotal{}, fadeInDone{}, releaseTotal{}, releaseLeft{};
     bool pending{};
 };
 

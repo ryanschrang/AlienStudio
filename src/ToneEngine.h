@@ -62,7 +62,13 @@ public:
     std::array<NoteQueue, sessionTracks> drumAuditions;
     std::atomic<int> liveDrumTrack{-1};
     alien::ArrangementMailbox arrangementMailbox;
-    std::atomic<int> arrangementPosition{-1}; // thousandths of a bar
+    // The arrangement timeline. The GUI asks for a position with timelineSeek (the
+    // song starts there when playback starts, or jumps there if it is playing) and
+    // reads where the song is from timelinePosition. Both count ticks (960 to a
+    // quarter note); -1 means "no request" and "not playing".
+    std::atomic<std::int64_t> timelineSeek{-1}, timelinePosition{-1};
+    // Export only: a tick before the end of the song where playback stops (-1: the song's end).
+    std::atomic<std::int64_t> timelineEnd{-1};
     NoteQueue notes;
     alien::MidiInputPipe midi;
     alien::MidiControllerMappings controllerMappings;
@@ -153,24 +159,15 @@ private:
         handleRecording();
         bool playNow = playing.load();
         const int modeNow = patternMode.load();
-        plugins->begin(samples, bpm.load(), playNow, modeNow == 2 ? songStep / 4.0 : transportBeat);
+        plugins->begin(samples, bpm.load(), playNow, modeNow == 2 ? timelineTick / alien::timeline::ticksPerBeat : transportBeat);
         for (auto& b : clipBuffers) b.clear();
-        // A new snapshot is only a pointer swap. The song restarts only when the
-        // timeline itself changed (regions or length); a republish that carries
-        // the same layout (a mixer, tempo or note edit elsewhere in the project)
-        // keeps playing, and edited clip contents are picked up the next time a
-        // region starts.
+        // A new snapshot is only a pointer swap. While the song plays, an edit
+        // never restarts it: every lane re-checks what should be sounding at the
+        // playhead and changes only what differs (a moved, trimmed or deleted
+        // region, edited notes, a new loop range).
         if (const auto* fresh = arrangementMailbox.consume()) {
-            const bool layoutChanged = !fresh->arrangement.sameLayout(playingLayout);
             song = fresh;
-            playingLayout = fresh->arrangement;
-            if (layoutChanged && modeNow == 2) {
-                allSoundOff(); resetTransport();
-                for (std::size_t t = 0; t < sessionTracks; ++t) {
-                    rolls[t].stop([this,t](int n,float v,bool on) { sendPattern(t,n,v,on); });
-                    audioPlayers[t].stop();
-                }
-            }
+            if (modeNow == 2 && playNow && wasPlaying && wasMode == 2) resyncTimeline();
         }
         if (synchronizedSceneLaunch.exchange(false)) {
             synchronizedScenePending = true;
@@ -186,6 +183,18 @@ private:
             midi.requestReset();
         }
         if (const auto* fresh = rackMailbox.consume()) rackSnapshot = fresh;
+        if (modeNow == 2) {
+            // A requested position is where the song starts when it next plays, or
+            // where it jumps to if it already is.
+            const bool begins = playNow && (!wasPlaying || wasMode != modeNow);
+            const auto stopAt = timelineEnd.load(std::memory_order_relaxed);
+            timelineStopAt = stopAt >= 0 ? static_cast<double>(stopAt) : std::numeric_limits<double>::max();
+            const auto request = timelineSeek.exchange(-1);
+            if (request >= 0) timelineStart = static_cast<double>(std::min<std::int64_t>(request, alien::timeline::maxLength));
+            if (begins) seekTimeline(timelineStart, true);
+            else if (request >= 0 && playNow) seekTimeline(timelineStart, true);
+            else if (request >= 0) setTimelineTick(timelineStart);
+        }
         wasPlaying = playNow; wasMode = modeNow;
         synth.setPatch(alien::presets[static_cast<std::size_t>(juce::jlimit(0, alien::presetCount - 1, preset.load()))]);
         bool anySolo = false;
@@ -263,8 +272,7 @@ private:
                     synchronizedSceneTracksQueued |= (1u << track);
             }
             if (modeNow == 2)
-                rolls[track].beginBlock(playNow, sampleRate, bpm.load(),
-                    [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
+                rolls[track].setTiming(sampleRate, bpm.load());   // the timeline starts and stops each clip itself
             else
                 rolls[track].beginBlock(pianoRollNotes[track], playNow && modeNow == 1, sampleRate, bpm.load(),
                     [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
@@ -274,6 +282,9 @@ private:
         const bool clickEnabled = countingIn || recording.metronome.load(std::memory_order_relaxed);
         const float clickVolume = recording.metronomeVolume.load(std::memory_order_relaxed);
         const double beatsPerSample = bpm.load() / (sampleRate * 60.0);
+        const double ticksPerSample = beatsPerSample * static_cast<double>(alien::timeline::ticksPerBeat);
+        rackHitCount = 0;
+        if (timelineRate != ticksPerSample) { timelineRate = ticksPerSample; setTimelineTick(timelineTick); }   // a tempo change starts a new segment
         const double beatBase = countingIn ? countInBeats : transportBeat;
         if (!clockRunning) lastClickBeat = -1;
         for (int i = 0; i < samples; ++i) {
@@ -286,32 +297,8 @@ private:
                 }
             }
             clickBuffer[static_cast<std::size_t>(i)] = click.next();
-            if (playNow && modeNow == 2) {
-                const int bar = static_cast<int>((songStep + 1.0e-8) / 16.0);
-                if (bar >= song->arrangement.lengthBars) {
-                    allSoundOff(); playing.store(false); playNow = false;
-                } else {
-                    if (bar != lastSongBar) {
-                        for (std::size_t t = 0; t < sessionTracks; ++t) {
-                            int regionIndex = -1;
-                            for (std::size_t r = 0; r < song->arrangement.count; ++r) {
-                                const auto& region = song->arrangement.regions[r];
-                                if (region.track == static_cast<int>(t) && bar >= region.startBar
-                                    && bar < region.startBar + region.lengthBars) regionIndex = static_cast<int>(r);
-                            }
-                            if (regionIndex != activeSongRegions[t]) {
-                                startSongRegion(t, regionIndex);
-                                activeSongRegions[t] = regionIndex;
-                            }
-                        }
-                        lastSongBar = bar;
-                    }
-                    for (std::size_t t = 0; t < sessionTracks; ++t)
-                        if (activeSongRegions[t] >= 0) rolls[t].nextSample(
-                            [this,t](int n,float v,bool on) { sendPattern(t,n,v,on); });
-                    arrangementPosition.store(static_cast<int>(songStep * 1000.0 / 16.0));
-                    songStep += static_cast<double>(bpm.load()) * 4.0 / (sampleRate * 60.0);
-                }
+            if (playNow && modeNow == 2 && !timelineSample(i)) {
+                allSoundOff(); playing.store(false); playNow = false;   // the song reached its end
             }
             if (playNow && modeNow == 0) {
                 const auto tick = clock.next(sampleRate, bpm.load());
@@ -374,7 +361,7 @@ private:
         plugins->instruments(samples);
         for (std::size_t t = 0; t < sessionTracks; ++t)
             for (int c = 0; c < 2; ++c) plugins->tracks[t].addFrom(c,0,clipBuffers[t],c,0,samples);
-        renderRack(samples, playNow && modeNow == 3);
+        renderRack(samples, playNow && modeNow == 3, playNow && modeNow == 2);
         plugins->effectsAndAlign(samples);
         for (int i = 0; i < samples; ++i) {
             float left = plugins->live.getSample(0,i), right = plugins->live.getSample(1,i);
@@ -402,6 +389,15 @@ private:
         masterControls.peak.store(masterPeak, std::memory_order_relaxed);
         if (playNow) transportBeat += samples * bpm.load() / (sampleRate * 60.0);
         if (countingIn) countInBeats += samples * beatsPerSample;
+        {
+            // The playhead is shown where it will be: a loop wraps at the start of the next sample, so a block that
+            // ends exactly on the loop's end already reports the loop's start.
+            const auto& tl = song->timeline;
+            double shown = timelineTick;
+            if (tl.loopEnabled && loopArmed && shown + tickEpsilon >= static_cast<double>(tl.loopEnd))
+                shown = static_cast<double>(tl.loopStart) + std::max(0.0, shown - static_cast<double>(tl.loopEnd));
+            timelinePosition.store(playNow && modeNow == 2 ? static_cast<std::int64_t>(shown) : -1, std::memory_order_relaxed);
+        }
         pianoRollPosition.store(static_cast<int>(rolls[0].positionStep() * 1000.0));
         for (std::size_t track = 0; track < sessionTracks; ++track) {
             tracks[track].peak.store(peaks[track]);
@@ -415,7 +411,7 @@ private:
     // instruments, so a plug-in instrument on a track cannot replace it: buses
     // for Session tracks join that track (and so pass through its effects and
     // mixer strip), the master bus joins the live bus, aligned like the tracks.
-    void renderRack(int samples, bool running) noexcept {
+    void renderRack(int samples, bool running, bool timelineRunning) noexcept {
         auto& buses = *rackBuses;
         std::array<float*, alien::rack::RackPlayer::busCount> left{}, right{};
         for (std::size_t b = 0; b < left.size(); ++b) {
@@ -423,7 +419,11 @@ private:
             std::fill_n(buses.right[b].begin(), samples, 0.0f);
             left[b] = buses.left[b].data(); right[b] = buses.right[b].data();
         }
-        rackPlayer.process(*rackSnapshot, rackSamples, running, bpm.load(), activeTracks.load(), samples, left.data(), right.data());
+        if (timelineRunning)
+            rackPlayer.processTimeline(*rackSnapshot, rackSamples, true, rackHits.data(), rackHitCount, activeTracks.load(),
+                                       samples, left.data(), right.data());
+        else
+            rackPlayer.process(*rackSnapshot, rackSamples, running, bpm.load(), activeTracks.load(), samples, left.data(), right.data());
         rackStep.store(running ? rackPlayer.currentStep() : -1, std::memory_order_relaxed);
         for (std::size_t t = 0; t < sessionTracks; ++t) {
             plugins->tracks[t].addFrom(0, 0, left[t], samples);
@@ -432,19 +432,182 @@ private:
         plugins->live.addFrom(0, 0, left[alien::rack::RackPlayer::masterBus], samples);
         plugins->live.addFrom(1, 0, right[alien::rack::RackPlayer::masterBus], samples);
     }
-    void startSongRegion(std::size_t track, int regionIndex) noexcept {
-        auto send = [this,track](int n,float v,bool on) { sendPattern(track,n,v,on); };
-        rolls[track].stop(send); audioPlayers[track].stop();
-        trackSynths[track].allSoundOff(); drumSamplers[track].stop(0);
+    // --- Arrangement timeline --------------------------------------------------------
+    // Each Session track and each rack lane plays at most one region at a time.
+    // A lane remembers which region it started and the tick at which that changes
+    // (the region ends, or the next one begins), so the per-sample cost is one
+    // comparison per lane; looking regions up costs only at those moments.
+    static constexpr int timelineFadeSamples = 64;     // about 1.5 ms: joining or leaving the middle of a waveform
+    struct TimelineLane {
+        bool active{}, midi{};
+        int source{-1};
+        std::int64_t start{}, end{}, offset{};
+        double audioOffset{};
+        const alien::SessionAudioClip* audio{};
+        double boundary{-1.0};         // sync when the playhead reaches this tick
+        std::int64_t nextStep{};       // rack lanes: the next pattern step due, counted from the region's content start
+    };
+    // The region on `row` that covers the playhead, and the tick at which "what plays on this row" next changes.
+    const alien::timeline::Region* regionNow(int row, double& boundary) const noexcept {
+        const alien::timeline::Region* found = nullptr;
+        const double at = timelineTick + tickEpsilon;
+        boundary = std::numeric_limits<double>::infinity();
+        for (const auto& r : song->timeline.regions) {
+            if (r.row != row) continue;
+            if (at >= static_cast<double>(r.start) && at < static_cast<double>(r.end())) {
+                found = &r; boundary = std::min(boundary, static_cast<double>(r.end()));
+            } else if (static_cast<double>(r.start) > at) boundary = std::min(boundary, static_cast<double>(r.start));
+        }
+        return found;
+    }
+    // Stops everything a track is playing for the timeline. A hard cut also silences
+    // the voices' release tails, as when the playhead jumps somewhere else.
+    void clearTrack(std::size_t track, bool hard) noexcept {
+        auto send = [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); };
+        rolls[track].stop(send);
+        if (hard) { audioPlayers[track].stop(); trackSynths[track].allSoundOff(); drumSamplers[track].stop(0); }
+        else audioPlayers[track].release(timelineFadeSamples);
         audioClipMode[track] = false;
-        if (regionIndex < 0) return;
-        const auto& region = song->arrangement.regions[static_cast<std::size_t>(regionIndex)];
-        const auto& clip = song->clips[static_cast<std::size_t>(region.scene)][track];
-        rolls[track].queuePattern(clip.audio == nullptr ? clip.pattern : alien::PianoRollPattern{}, region.scene, true);
-        rolls[track].launchPendingNow(send);
-        rolls[track].beginBlock(true, sampleRate, bpm.load(), send);
-        audioPlayers[track].queue(clip.audio, 1); audioPlayers[track].launchPendingNow(sampleRate);
-        audioClipMode[track] = clip.audio != nullptr;
+        const double boundary = trackLanes[track].boundary;
+        trackLanes[track] = {};
+        trackLanes[track].boundary = boundary;
+    }
+    void startTrackRegion(std::size_t track, const alien::timeline::Region& region) noexcept {
+        auto send = [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); };
+        const auto& clip = song->clips[static_cast<std::size_t>(region.source)][track];
+        const double into = std::max(0.0, timelineTick - static_cast<double>(region.start));
+        auto& lane = trackLanes[track];
+        lane.active = true; lane.source = region.source; lane.start = region.start; lane.end = region.end();
+        lane.offset = region.offset; lane.audioOffset = region.audioOffset; lane.audio = clip.audio;
+        if (clip.audio != nullptr) {
+            const double seconds = region.audioOffset + alien::timeline::secondsForTicks(into, bpm.load());
+            audioPlayers[track].queue(clip.audio, 1);
+            audioPlayers[track].launchPendingNow(sampleRate, seconds * clip.audio->sampleRate, timelineFadeSamples);
+            audioClipMode[track] = true;
+        } else {
+            lane.midi = rolls[track].startAt(clip.pattern, region.source,
+                (static_cast<double>(region.offset) + into) / alien::timeline::ticksPerStep, send);
+        }
+    }
+    // Makes the track play what the timeline says belongs at the playhead, changing
+    // only what differs from what it is already playing.
+    void syncTrack(std::size_t track) noexcept {
+        auto& lane = trackLanes[track];
+        const auto* region = regionNow(static_cast<int>(track), lane.boundary);
+        if (region != nullptr && region->muted) region = nullptr;
+        if (region == nullptr) {
+            if (lane.active) clearTrack(track, false);
+            return;
+        }
+        const auto& clip = song->clips[static_cast<std::size_t>(region->source)][track];
+        // The same content keeps playing through any edit that does not move it: a region made longer or
+        // shorter, or trimmed at the front, is the same sound starting or stopping elsewhere.
+        const bool same = lane.active && lane.source == region->source && lane.audio == clip.audio
+            && sameOrigin(lane, *region, clip.audio != nullptr);
+        if (same) {
+            lane.start = region->start; lane.end = region->end(); lane.offset = region->offset; lane.audioOffset = region->audioOffset;
+            // Edited notes join the clip that is playing; a different loop length changes what the position means, so that restarts.
+            if (lane.midi) {
+                auto send = [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); };
+                if (clip.pattern.loopSteps == rolls[track].loopLengthSteps()) rolls[track].updatePattern(clip.pattern, send);
+                else { clearTrack(track, false); startTrackRegion(track, *region); }
+            }
+            return;
+        }
+        const bool replacesAudio = clip.audio != nullptr;
+        if (lane.active || audioPlayers[track].isPlaying()) {
+            // A new audio region replaces the old one at once; anything else lets it fade.
+            auto send = [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); };
+            rolls[track].stop(send);
+            if (!replacesAudio) audioPlayers[track].release(timelineFadeSamples);
+        }
+        const double boundary = lane.boundary;
+        lane = {}; lane.boundary = boundary;
+        audioClipMode[track] = false;
+        startTrackRegion(track, *region);
+    }
+    // Whether `region` places its content where the lane already has it: the same origin, however much of it is shown.
+    bool sameOrigin(const TimelineLane& lane, const alien::timeline::Region& region, bool audio) const noexcept {
+        if (!audio) return region.start - region.offset == lane.start - lane.offset;
+        const double ticksPerSecond = static_cast<double>(bpm.load()) * static_cast<double>(alien::timeline::ticksPerBeat) / 60.0;
+        return std::abs(static_cast<double>(region.start - lane.start) - (region.audioOffset - lane.audioOffset) * ticksPerSecond) < 0.5;
+    }
+    double rackStepTick(std::int64_t n) const noexcept {
+        const double swing = std::clamp(static_cast<double>(rackSnapshot->swing), 0.0, 1.0);
+        return static_cast<double>(n) * alien::timeline::ticksPerStep + ((n & 1) != 0 ? swing * 0.5 * alien::timeline::ticksPerStep : 0.0);
+    }
+    void syncRackLane(int index) noexcept {
+        auto& lane = rackLaneState[static_cast<std::size_t>(index)];
+        const auto* region = regionNow(alien::timeline::rackRowBase + index, lane.boundary);
+        if (region != nullptr && region->muted) region = nullptr;
+        if (region == nullptr) { const double boundary = lane.boundary; lane = {}; lane.boundary = boundary; return; }
+        if (lane.active && lane.source == region->source && region->start - region->offset == lane.start - lane.offset) {
+            lane.start = region->start; lane.end = region->end(); lane.offset = region->offset;   // trimmed or stretched, not moved
+            return;
+        }
+        const double boundary = lane.boundary;
+        lane = {}; lane.boundary = boundary;
+        lane.active = true; lane.source = region->source; lane.start = region->start; lane.end = region->end();
+        lane.offset = region->offset;
+        // The first step whose hit has not happened yet.
+        const double content = std::max(0.0, timelineTick - static_cast<double>(region->start)) + static_cast<double>(region->offset);
+        lane.nextStep = std::max<std::int64_t>(0, static_cast<std::int64_t>(std::floor(content / alien::timeline::ticksPerStep)) - 1);
+        while (rackStepTick(lane.nextStep) < content - 1.0e-6) ++lane.nextStep;
+    }
+    void fireRackSteps(int sample) noexcept {
+        for (auto& lane : rackLaneState) {
+            if (!lane.active) continue;
+            const double content = timelineTick - static_cast<double>(lane.start) + static_cast<double>(lane.offset);
+            for (int guard = 0; guard < 4 && content >= rackStepTick(lane.nextStep) - 1.0e-9; ++guard) {
+                const double hitTick = static_cast<double>(lane.start - lane.offset) + rackStepTick(lane.nextStep);
+                if (hitTick >= static_cast<double>(lane.end)) break;    // swing pushed it past the end of the region
+                const auto* pattern = rackSnapshot->pattern(lane.source);
+                if (pattern != nullptr && rackHitCount < static_cast<int>(rackHits.size()))
+                    rackHits[static_cast<std::size_t>(rackHitCount++)] = {sample, lane.source, static_cast<int>(lane.nextStep % pattern->length)};
+                ++lane.nextStep;
+            }
+        }
+    }
+    // Puts the playhead at `tick` and makes every lane catch up there on the next
+    // sample. `hard` (the user jumped) silences what was sounding; a loop wrap
+    // lets release tails ring.
+    void seekTimeline(double tick, bool hard) noexcept {
+        setTimelineTick(std::max(0.0, tick));
+        loopArmed = timelineTick < static_cast<double>(song->timeline.loopEnd);
+        for (std::size_t t = 0; t < sessionTracks; ++t) { clearTrack(t, hard); trackLanes[t].boundary = -1.0; }   // look again at the new place
+        for (auto& lane : rackLaneState) lane = {};
+        if (hard) rackPlayer.stop();
+    }
+    // The timeline changed while the song plays: every lane looks again.
+    void resyncTimeline() noexcept {
+        loopArmed = timelineTick < static_cast<double>(song->timeline.loopEnd);
+        for (auto& lane : trackLanes) lane.boundary = -1.0;
+        for (auto& lane : rackLaneState) lane.boundary = -1.0;
+    }
+    // One sample of the song: wraps at the loop, brings every lane up to date when
+    // the playhead reaches one of its boundaries, and advances. False at the end.
+    bool timelineSample(int sample) noexcept {
+        const auto& tl = song->timeline;
+        const double now = timelineTick + tickEpsilon;
+        if (tl.loopEnabled && loopArmed && now >= static_cast<double>(tl.loopEnd))
+            seekTimeline(static_cast<double>(tl.loopStart) + std::max(0.0, timelineTick - static_cast<double>(tl.loopEnd)), false);
+        if (timelineTick + tickEpsilon >= std::min(static_cast<double>(tl.length()), timelineStopAt)) return false;
+        const double at = timelineTick + tickEpsilon;
+        for (std::size_t t = 0; t < sessionTracks; ++t)
+            if (at >= trackLanes[t].boundary) syncTrack(t);
+        for (int l = 0; l < alien::timeline::rackLanes; ++l)
+            if (at >= rackLaneState[static_cast<std::size_t>(l)].boundary) syncRackLane(l);
+        for (std::size_t t = 0; t < sessionTracks; ++t)
+            if (trackLanes[t].midi) rolls[t].nextSample([this, t](int n, float v, bool on) { sendPattern(t, n, v, on); });
+        fireRackSteps(sample);
+        // The playhead is a base plus a whole number of samples at the current rate, not a running
+        // sum, so it stays exact however long the song plays.
+        timelineTick = timelineSegmentBase + static_cast<double>(++timelineSegmentSamples) * timelineRate;
+        return true;
+    }
+    void setTimelineTick(double tick) noexcept {
+        timelineTick = timelineSegmentBase = tick;
+        timelineSegmentSamples = 0;
     }
     void stopMidiDrums() noexcept {
         for (std::size_t t=0;t<sessionTracks;++t) if (plugins->hasInstrument(t)) plugins->silence(t,1);
@@ -615,7 +778,9 @@ private:
     }
     void resetTransport() noexcept {
         transportBeat = 0;
-        songStep = 0; lastSongBar = -1; activeSongRegions.fill(-2); arrangementPosition.store(-1);
+        setTimelineTick(timelineStart); loopArmed = false; timelinePosition.store(-1);
+        for (auto& lane : trackLanes) lane = {};
+        for (auto& lane : rackLaneState) lane = {};
         clock.reset(); wasPlaying = false; currentStep.store(-1); pianoRollPosition.store(-1000);
         activeStepPitch = -1;
         synchronizedScenePending = false;
@@ -627,11 +792,17 @@ private:
     }
     // Immutable snapshot owned by arrangementMailbox; only the audio thread moves it.
     const alien::ArrangementPlayback* song = arrangementMailbox.current();
-    alien::Arrangement playingLayout; // Layout of `song`, to tell a restart-worthy change from a refresh.
-    double songStep{}, transportBeat{};
+    static constexpr double tickEpsilon = 1.0e-7;   // slack for comparing the playhead with whole-tick boundaries
+    double timelineStopAt = std::numeric_limits<double>::max();
+    double timelineTick{}, timelineStart{}, transportBeat{};   // the playhead, and where the next play begins (ticks)
+    double timelineSegmentBase{}, timelineRate{};              // playhead = base + samples * rate since the last jump or tempo change
+    std::int64_t timelineSegmentSamples{};
+    bool loopArmed{};   // the playhead is before the loop's end, so reaching it wraps (starting past it plays on)
+    std::array<TimelineLane, sessionTracks> trackLanes{};
+    std::array<TimelineLane, alien::timeline::rackLanes> rackLaneState{};
+    std::array<alien::rack::RackPlayer::TimelineHit, 128> rackHits{};
+    int rackHitCount{};
     std::array<juce::AudioBuffer<float>, sessionTracks> clipBuffers;
-    int lastSongBar{-1};
-    std::array<int, sessionTracks> activeSongRegions{-2,-2,-2,-2};
     alien::SynthEngine synth; // Live keyboard and legacy step sequencer.
     FixedHeapArray<alien::SynthEngine, sessionTracks> trackSynths;
     FixedHeapArray<alien::TrackMixer, sessionTracks> trackMixers;

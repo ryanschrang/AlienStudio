@@ -10,8 +10,10 @@
 #include "PluginState.h"
 #include "RackProject.h"
 #include <juce_core/juce_core.h>
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <utility>
 #include <vector>
 
 namespace alien {
@@ -21,7 +23,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 7;
+inline constexpr int sessionProjectFormatVersion = 8;
 
 struct SessionProjectClip {
     PianoRollPattern pattern;
@@ -36,7 +38,7 @@ struct SessionProjectData {
     std::vector<int> trackColours;
     std::vector<juce::String> sceneNames;
     std::vector<std::array<juce::String, drumPadCount>> drumPaths;
-    Arrangement arrangement;
+    alien::timeline::Timeline timeline;   // Absent before version 8: the old bar-based arrangement, converted on load.
     std::vector<PluginRackState> plugins;
     PluginRackState masterPlugins;
     rack::Project channelRack = rack::Project::createDefault(); // Absent before version 7: the starting rack.
@@ -84,7 +86,7 @@ struct SessionProjectData {
             || static_cast<int>(trackNames.size()) != tracks || static_cast<int>(trackColours.size()) != tracks
             || static_cast<int>(sceneNames.size()) != scenes)
             return false;
-        if (!arrangement.valid(tracks, scenes) || drumPaths.size() != trackSettings.size()) return false;
+        if (!timeline.valid(tracks, scenes, channelRack.patternCount) || drumPaths.size() != trackSettings.size()) return false;
         if ((launchQuantizationSteps != 4 && launchQuantizationSteps != 16)
             || selectedTrack < 0 || selectedTrack >= tracks
             || selectedScene < 0 || selectedScene >= scenes
@@ -174,19 +176,44 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     rootObject->setProperty("stepPitches", juce::var(pitches));
     rootObject->setProperty("stepVelocities", juce::var(velocities));
 
-    auto songValue = juce::var(new juce::DynamicObject());
-    songValue.getDynamicObject()->setProperty("lengthBars", project.arrangement.lengthBars);
-    juce::Array<juce::var> regions;
-    for (std::size_t i = 0; i < project.arrangement.count; ++i) {
-        const auto& r = project.arrangement.regions[i];
-        auto value = juce::var(new juce::DynamicObject());
-        auto* object = value.getDynamicObject();
-        object->setProperty("track",r.track); object->setProperty("scene",r.scene);
-        object->setProperty("startBar",r.startBar); object->setProperty("lengthBars",r.lengthBars);
-        regions.add(value);
+    {
+        auto timelineValue = juce::var(new juce::DynamicObject());
+        auto* timelineObject = timelineValue.getDynamicObject();
+        timelineObject->setProperty("lengthBars", project.timeline.lengthBars);
+        timelineObject->setProperty("loopEnabled", project.timeline.loopEnabled);
+        timelineObject->setProperty("loopStart", static_cast<int>(project.timeline.loopStart));
+        timelineObject->setProperty("loopEnd", static_cast<int>(project.timeline.loopEnd));
+        // Groups are saved as small numbers (1, 2, ...), not the in-memory ids, which differ every run.
+        std::vector<std::uint32_t> groups;
+        juce::Array<juce::var> regions;
+        for (const auto& r : project.timeline.regions) {
+            auto value = juce::var(new juce::DynamicObject());
+            auto* object = value.getDynamicObject();
+            int group = 0;
+            if (r.group != 0) {
+                auto it = std::find(groups.begin(), groups.end(), r.group);
+                if (it == groups.end()) { groups.push_back(r.group); it = groups.end() - 1; }
+                group = static_cast<int>(it - groups.begin()) + 1;
+            }
+            object->setProperty("row", r.row); object->setProperty("source", r.source);
+            object->setProperty("start", static_cast<int>(r.start)); object->setProperty("length", static_cast<int>(r.length));
+            object->setProperty("offset", static_cast<int>(r.offset)); object->setProperty("audioOffset", r.audioOffset);
+            object->setProperty("muted", r.muted); object->setProperty("group", group);
+            regions.add(value);
+        }
+        timelineObject->setProperty("regions", juce::var(regions));
+        juce::Array<juce::var> markers;
+        for (const auto& m : project.timeline.markers) {
+            auto value = juce::var(new juce::DynamicObject());
+            auto* object = value.getDynamicObject();
+            object->setProperty("tick", static_cast<int>(m.tick));
+            object->setProperty("name", juce::String(juce::CharPointer_UTF8(m.name.c_str())));
+            object->setProperty("colour", static_cast<int>(m.colour));
+            markers.add(value);
+        }
+        timelineObject->setProperty("markers", juce::var(markers));
+        rootObject->setProperty("timeline", timelineValue);
     }
-    songValue.getDynamicObject()->setProperty("regions",juce::var(regions));
-    rootObject->setProperty("arrangement",songValue);
     juce::Array<juce::var> scenes;
     for (const auto& scene : project.clips) {
         juce::Array<juce::var> tracks;
@@ -215,6 +242,69 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     }
     rootObject->setProperty("scenes", juce::var(scenes));
     return juce::JSON::toString(root, juce::JSON::FormatOptions().withIndentLevel(2));
+}
+
+// Reads the "timeline" object of a version 8 project. Region and marker ids are made up
+// fresh (they only identify things while the program runs); saved group numbers become groups.
+inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce::String& error) {
+    const auto* object = value.getDynamicObject();
+    if (object == nullptr) { error = "The project's timeline is missing."; return false; }
+    const auto length = object->getProperty("lengthBars"), loopStart = object->getProperty("loopStart"),
+               loopEnd = object->getProperty("loopEnd"), loopEnabled = object->getProperty("loopEnabled");
+    if (!length.isInt() || !loopStart.isInt() || !loopEnd.isInt() || !loopEnabled.isBool()) {
+        error = "The project's timeline settings are invalid."; return false;
+    }
+    timeline::Timeline parsed;
+    parsed.lengthBars = static_cast<int>(length);
+    parsed.loopStart = static_cast<int>(loopStart); parsed.loopEnd = static_cast<int>(loopEnd);
+    parsed.loopEnabled = static_cast<bool>(loopEnabled);
+    const auto regionsValue = object->getProperty("regions"), markersValue = object->getProperty("markers");
+    const auto* regions = regionsValue.getArray();
+    const auto* markers = markersValue.getArray();
+    if (regions == nullptr || markers == nullptr || regions->size() > static_cast<int>(timeline::maxRegions)
+        || markers->size() > static_cast<int>(timeline::maxMarkers)) {
+        error = "The project's timeline has too many regions or markers."; return false;
+    }
+    std::vector<std::pair<int, std::uint32_t>> groups;
+    for (const auto& item : *regions) {
+        const auto* r = item.getDynamicObject();
+        if (r == nullptr) { error = "A timeline region is invalid."; return false; }
+        const auto row = r->getProperty("row"), source = r->getProperty("source"), start = r->getProperty("start"),
+                   regionLength = r->getProperty("length"), offset = r->getProperty("offset"),
+                   audioOffset = r->getProperty("audioOffset"), muted = r->getProperty("muted"), group = r->getProperty("group");
+        if (!row.isInt() || !source.isInt() || !start.isInt() || !regionLength.isInt() || !offset.isInt()
+            || !(audioOffset.isDouble() || audioOffset.isInt()) || !muted.isBool() || !group.isInt()) {
+            error = "A timeline region is missing values."; return false;
+        }
+        timeline::Region region;
+        region.id = timeline::newId();
+        region.row = static_cast<int>(row); region.source = static_cast<int>(source);
+        region.start = static_cast<int>(start); region.length = static_cast<int>(regionLength);
+        region.offset = static_cast<int>(offset); region.audioOffset = static_cast<double>(audioOffset);
+        region.muted = static_cast<bool>(muted);
+        if (const int g = static_cast<int>(group); g > 0) {
+            auto it = std::find_if(groups.begin(), groups.end(), [g](const auto& p) { return p.first == g; });
+            if (it == groups.end()) { groups.emplace_back(g, timeline::newId()); it = groups.end() - 1; }
+            region.group = it->second;
+        }
+        parsed.regions.push_back(region);
+    }
+    for (const auto& item : *markers) {
+        const auto* m = item.getDynamicObject();
+        if (m == nullptr || !m->getProperty("tick").isInt() || !m->getProperty("name").isString() || !m->getProperty("colour").isInt()) {
+            error = "A timeline marker is invalid."; return false;
+        }
+        timeline::Marker marker;
+        marker.id = timeline::newId();
+        marker.tick = static_cast<int>(m->getProperty("tick"));
+        marker.name = m->getProperty("name").toString().toStdString();
+        marker.colour = static_cast<std::uint8_t>(juce::jlimit(0, 255, static_cast<int>(m->getProperty("colour"))));
+        parsed.markers.push_back(marker);
+    }
+    // The file's own scene and pattern counts are checked with the rest of the project.
+    if (!parsed.valid()) { error = "The project's timeline is outside the supported range."; return false; }
+    out = std::move(parsed);
+    return true;
 }
 
 inline bool parseSessionProject(const juce::String& json, SessionProjectData& destination,
@@ -417,19 +507,31 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         }
     }
 
-    if (rootObject->hasProperty("arrangement")) {
+    if (formatVersion >= 8) {
+        if (!parseTimeline(rootObject->getProperty("timeline"), parsed.timeline, error)) return false;
+    } else if (rootObject->hasProperty("arrangement")) {
+        // Before version 8 the song was whole bars of Session clips. Each becomes a region at the same place.
         const auto songValue = rootObject->getProperty("arrangement");
         const auto* object = songValue.getDynamicObject();
         if (object == nullptr || !object->getProperty("lengthBars").isInt()) { error="Invalid arrangement."; return false; }
-        parsed.arrangement.lengthBars=static_cast<int>(object->getProperty("lengthBars"));
+        const int bars = static_cast<int>(object->getProperty("lengthBars"));
+        if (bars < 1 || bars > 128) { error = "Invalid arrangement length."; return false; }
+        parsed.timeline.setLengthBars(bars);
         const auto regionsValue=object->getProperty("regions"); const auto* regions=regionsValue.getArray();
-        if (regions==nullptr || regions->size()>Arrangement::capacity) { error="Invalid arrangement regions.";return false; }
+        if (regions==nullptr || regions->size()>128) { error="Invalid arrangement regions.";return false; }
         for (const auto& value : *regions) {
             const auto* r=value.getDynamicObject();
             if(r==nullptr || !r->getProperty("track").isInt() || !r->getProperty("scene").isInt()
                 || !r->getProperty("startBar").isInt() || !r->getProperty("lengthBars").isInt()) { error="Invalid region.";return false; }
-            if(!parsed.arrangement.add({static_cast<int>(r->getProperty("track")),static_cast<int>(r->getProperty("scene")),
-                static_cast<int>(r->getProperty("startBar")),static_cast<int>(r->getProperty("lengthBars"))})) {
+            const int track = static_cast<int>(r->getProperty("track")), scene = static_cast<int>(r->getProperty("scene"));
+            const int startBar = static_cast<int>(r->getProperty("startBar")), lengthBars = static_cast<int>(r->getProperty("lengthBars"));
+            // The old format kept every region inside the song and none overlapping; anything else is damage.
+            if (track < 0 || track >= trackCount || scene < 0 || scene >= sceneCount || startBar < 0 || lengthBars < 1
+                || startBar + lengthBars > bars
+                || std::any_of(parsed.timeline.regions.begin(), parsed.timeline.regions.end(), [&](const timeline::Region& other) {
+                       return other.row == track && other.start < static_cast<std::int64_t>(startBar + lengthBars) * timeline::ticksPerBar
+                           && other.end() > static_cast<std::int64_t>(startBar) * timeline::ticksPerBar; })
+                || !parsed.timeline.placeBars(track, scene, startBar, lengthBars)) {
                 error="Overlapping or out-of-range arrangement region.";return false;
             }
         }

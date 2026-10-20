@@ -585,8 +585,8 @@ static void drumTrackIntegrationTests() {
 
 static void arrangementCaptureRealtimeTests() {
     auto engine=std::make_unique<ToneEngine>();engine->prepare(48000);
-    auto song=std::make_unique<alien::ArrangementPlayback>();song->arrangement.lengthBars=1;
-    song->arrangement.add({0,0,0,1});song->clips[0][0].pattern=heldPattern();
+    auto song=std::make_unique<alien::ArrangementPlayback>();song->timeline.setLengthBars(1);
+    require(song->timeline.placeBars(0,0,0,1),"place the region");song->clips[0][0].pattern=heldPattern();
     engine->arrangementMailbox.publish(*song);engine->patternMode.store(2);engine->playing.store(true);
     alien::AudioCapture take(48000,2,1);engine->capture.store(&take);
     std::array<float,256> l{},r{},in{};in.fill(0.3f);float* outputs[]{l.data(),r.data()};const float* inputs[]{in.data(),in.data()};
@@ -600,16 +600,16 @@ static void arrangementCaptureRealtimeTests() {
 // Two one-bar regions on track 0: scene 0 (note 60) then scene 1 (silent unless sceneOneNote >= 0).
 static std::shared_ptr<alien::ArrangementPlayback> twoRegionSong(int lengthBars, int sceneOneNote) {
     auto song = std::make_shared<alien::ArrangementPlayback>();
-    song->arrangement.lengthBars = lengthBars;
-    require(song->arrangement.add({0, 0, 0, 1}) && song->arrangement.add({0, 1, 1, 1}), "test song regions");
+    song->timeline.setLengthBars(lengthBars);
+    require(song->timeline.placeBars(0, 0, 0, 1) && song->timeline.placeBars(0, 1, 1, 1), "test song regions");
     song->clips[0][0].pattern = heldPattern(60);
     if (sceneOneNote >= 0) song->clips[1][0].pattern = heldPattern(sceneOneNote);
     return song;
 }
 
-// Publishing a song snapshot that carries the same timeline (a note, mixer or
-// tempo edit elsewhere in the project) must not restart the song, while a real
-// change to the timeline must. Snapshot hand-over must not allocate.
+// Publishing a song snapshot (a note, mixer or tempo edit elsewhere in the
+// project, or an edit to the timeline itself) must not restart the song: it keeps
+// playing from where it is. Snapshot hand-over must not allocate.
 static void arrangementRepublishTests() {
     auto engine = std::make_unique<ToneEngine>(); engine->prepare(48000);
     engine->arrangementMailbox.publish(std::shared_ptr<const alien::ArrangementPlayback>(twoRegionSong(4, -1)));
@@ -624,7 +624,8 @@ static void arrangementRepublishTests() {
         }
         frame += 256;
     };
-    while (engine->arrangementPosition.load() < 500) render();
+    for (int guard = 0; engine->timelinePosition.load() < 1920 && guard < 1000; ++guard) render();
+    require(engine->timelinePosition.load() >= 1920, "the timeline playhead advances while the song plays");
     require(energy[0] > 1 && engine->playing.load(), "first region sounds");
 
     // Same timeline, different clip contents: playback continues without a jump.
@@ -632,11 +633,11 @@ static void arrangementRepublishTests() {
     const auto before = allocationCount;
     render();
     require(before == allocationCount, "taking a new song snapshot must not allocate");
-    int last = engine->arrangementPosition.load();
-    require(last > 500, "republishing an unchanged timeline keeps the playhead moving");
+    std::int64_t last = engine->timelinePosition.load();
+    require(last > 1920, "republishing an unchanged timeline keeps the playhead moving");
     while (frame < 96000 * 2 - 256 && engine->playing.load()) {
         render();
-        const int now = engine->arrangementPosition.load();
+        const auto now = engine->timelinePosition.load();
         require(now >= last, "playhead never jumps back after a same-layout republish");
         last = now;
     }
@@ -644,11 +645,12 @@ static void arrangementRepublishTests() {
     while (frame < 96000 * 2 - 256) render();
     require(energy[1] > 1, "edited clip is heard when its region starts");
 
-    // A real timeline change restarts from the top.
+    // An edit to the timeline does not restart the song either: playing carries on from the same place.
+    const auto beforeEdit = engine->timelinePosition.load();
     engine->arrangementMailbox.publish(std::shared_ptr<const alien::ArrangementPlayback>(twoRegionSong(3, 67)));
     render();
-    const int restarted = engine->arrangementPosition.load();
-    require(engine->playing.load() && restarted >= 0 && restarted < 50, "a changed timeline restarts the song");
+    const auto afterEdit = engine->timelinePosition.load();
+    require(engine->playing.load() && afterEdit > beforeEdit, "a changed timeline keeps playing from the same place");
 }
 
 // The final stage: master volume, the output meter and the soft clipper that
