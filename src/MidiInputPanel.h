@@ -1,7 +1,8 @@
 #pragma once
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_gui_basics/juce_gui_basics.h>
-#include "MidiInputDeviceManager.h"\n#include "MidiControllerProfile.h"
+#include "MidiInputDeviceManager.h"
+#include "MidiControllerProfile.h"
 
 namespace alien {
 class JuceMidiInputBackend final : public MidiInputBackend {
