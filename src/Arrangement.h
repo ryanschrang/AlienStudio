@@ -12,7 +12,7 @@ struct ArrangementRegion {
 };
 struct Arrangement {
     static constexpr std::size_t capacity = 128;
-    static constexpr int maxLengthBars = 4096; // 6 h 49 min at the supported 40 BPM minimum.
+    static constexpr int maxLengthBars = 8192; // 13 h 39 min at the supported 40 BPM minimum.
     std::array<ArrangementRegion, capacity> regions{};
     std::size_t count{};
     int lengthBars{16};
