@@ -1,13 +1,14 @@
 #pragma once
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_gui_basics/juce_gui_basics.h>
-#include "MidiInputDeviceManager.h"
+#include "MidiInputDeviceManager.h"\n#include "MidiControllerProfile.h"
 
 namespace alien {
 class JuceMidiInputBackend final : public MidiInputBackend {
     class Connection final : public MidiInputConnection, private juce::MidiInputCallback {
     public:
-        Connection(MidiInputPipe& p, MidiInputPipe::Token t) : pipe(p), token(t) {}
+        Connection(MidiInputPipe& p, MidiInputPipe::Token t, MidiControllerProfile& configured)
+            : pipe(p), token(t), profile(configured) {}
         bool open(const std::string& id) { input = juce::MidiInput::openDevice(juce::String(id), this); return input != nullptr; }
         ~Connection() override { stop(); }
         void start() override { if (input && !started) { started = true; input->start(); } }
@@ -16,14 +17,17 @@ class JuceMidiInputBackend final : public MidiInputBackend {
         void handleIncomingMidiMessage(juce::MidiInput*, const juce::MidiMessage& message) override {
             if (message.getRawDataSize() != 3) return;
             const auto* bytes = message.getRawData();
-            pipe.push(token, bytes[0], bytes[1], bytes[2]);
+            const int mapped=profile.translate(bytes[0],bytes[1],bytes[2]);
+            pipe.push(token,bytes[0],mapped,bytes[2]);
         }
         MidiInputPipe& pipe;
+        MidiControllerProfile& profile;
         MidiInputPipe::Token token;
         std::unique_ptr<juce::MidiInput> input;
         bool started{};
     };
 public:
+    explicit JuceMidiInputBackend(MidiControllerProfile& configured) : profile(configured) {}
     std::vector<MidiInputDevice> available() override {
         std::vector<MidiInputDevice> result;
         for (const auto& d : juce::MidiInput::getAvailableDevices())
@@ -31,10 +35,15 @@ public:
         return result;
     }
     std::unique_ptr<MidiInputConnection> open(const std::string& id, MidiInputPipe& pipe, MidiInputPipe::Token token) override {
-        auto connection = std::make_unique<Connection>(pipe, token);
+        std::string name=id;
+        for(const auto& device:available()) if(device.identifier==id) {name=device.name;break;}
+        profile.select(profile.requested(),name);
+        auto connection = std::make_unique<Connection>(pipe,token,profile);
         if (!connection->open(id)) return {};
         return connection;
     }
+private:
+    MidiControllerProfile& profile;
 };
 
 // Entire component and manager run on the message thread. MIDI callbacks only
@@ -42,7 +51,7 @@ public:
 class MidiInputPanel final : public juce::Component {
 public:
     explicit MidiInputPanel(MidiInputPipe& p, MidiInputBackend* fakeBackend = nullptr)
-        : pipe(p), manager(fakeBackend ? *fakeBackend : backend, pipe) {
+        : pipe(p), backend(profile), manager(fakeBackend ? *fakeBackend : backend, pipe) {
         setName("MIDI input and device management");
         addAndMakeVisible(label); label.setText("MIDI", juce::dontSendNotification);
         addAndMakeVisible(inputs); inputs.setName("MIDI input device");
@@ -54,6 +63,7 @@ public:
             else if (id == 2) manager.selectTest();
             else if (id >= 3 && static_cast<std::size_t>(id - 3) < listed.size())
                 manager.selectDevice(listed[static_cast<std::size_t>(id - 3)].identifier);
+            profile.select(profile.requested(),manager.selectedName());
             clearActivity();
             rebuild(); updateStatus();
         };
@@ -72,7 +82,31 @@ public:
         sustain.setTooltip("Test input CC64: enable, press/release Test C4, then disable to release the sustained note");
         sustain.onClick = [this] { manager.sendTest(0xb0, 64, sustain.getToggleState() ? 127 : 0); };
         addAndMakeVisible(status); status.setName("MIDI input status and activity");
-        rebuild(); updateStatus();
+        addAndMakeVisible(profileBox); profileBox.setName("MIDI controller profile");
+        profileBox.setTooltip("Automatic recognizes Akai MPK mini models by their Windows MIDI device name");
+        profileBox.addItem("Automatic",1); profileBox.addItem("Generic MIDI",2);
+        profileBox.addItem("Akai MPK mini",3); profileBox.addItem("MPK mini Plus",4); profileBox.addItem("MPK mini IV",5);
+        profileBox.setSelectedId(1,juce::dontSendNotification);
+        profileBox.onChange=[this] {
+            profile.select(static_cast<MidiControllerFamily>(profileBox.getSelectedId()-1),manager.selectedName());
+            updateStatus();
+        };
+        addAndMakeVisible(assignment); assignment.setName("MPK pad or knob assignment");
+        for(int i=0;i<MidiControllerProfile::padCount;++i) assignment.addItem("Pad "+juce::String(i+1),i+1);
+        for(int i=0;i<MidiControllerProfile::knobCount;++i) assignment.addItem("Knob "+juce::String(i+1),MidiControllerProfile::padCount+i+1);
+        assignment.setSelectedId(1,juce::dontSendNotification);
+        assignment.onChange=[this]{syncAssignment();};
+        addAndMakeVisible(mappingValue); mappingValue.setName("MPK assignment MIDI number");
+        mappingValue.setRange(0,127,1); mappingValue.setSliderStyle(juce::Slider::IncDecButtons);
+        mappingValue.setTextBoxStyle(juce::Slider::TextBoxLeft,false,92,26);
+        mappingValue.onValueChange=[this] {
+            const int item=assignment.getSelectedId()-1,value=static_cast<int>(mappingValue.getValue());
+            if(item>=0&&item<MidiControllerProfile::padCount) profile.setPadTarget(item,value);
+            else if(item>=MidiControllerProfile::padCount) profile.setKnobTarget(item-MidiControllerProfile::padCount,value);
+        };
+        addAndMakeVisible(resetMappings); resetMappings.setButtonText("Reset map");
+        resetMappings.onClick=[this]{profile.resetMappings();syncAssignment();};
+        rebuild(); syncAssignment(); updateStatus();
     }
     void resetTestButtons() {
         if (testDown) manager.sendTest(0x80, 60, 0);
@@ -95,13 +129,21 @@ public:
         updateStatus();
     }
     void resized() override {
-        label.setBounds(0, 2, 36, 28); inputs.setBounds(38, 2, 184, 28);
-        refresh.setBounds(228, 2, 65, 28); testNote.setBounds(300, 2, 64, 28);
-        sustain.setBounds(370, 2, 78, 28);
-        const int start = manager.getState() == MidiInputDeviceManager::State::test ? 454 : 300;
-        status.setBounds(start, 2, juce::jmax(1, getWidth() - start), 28);
+        label.setBounds(0,2,36,28); inputs.setBounds(38,2,184,28);
+        refresh.setBounds(228,2,65,28); testNote.setBounds(300,2,64,28);
+        sustain.setBounds(370,2,78,28);
+        const int start=manager.getState()==MidiInputDeviceManager::State::test?454:300;
+        status.setBounds(start,2,juce::jmax(1,getWidth()-start),28);
+        profileBox.setBounds(38,38,184,28); assignment.setBounds(228,38,112,28);
+        mappingValue.setBounds(346,38,126,28); resetMappings.setBounds(478,38,82,28);
     }
 private:
+    void syncAssignment() {
+        const int item=assignment.getSelectedId()-1;
+        const int value=item<MidiControllerProfile::padCount?profile.padTarget(item):
+            profile.knobTarget(item-MidiControllerProfile::padCount);
+        if(value>=0) mappingValue.setValue(value,juce::dontSendNotification);
+    }
     void clearActivity() {
         lastActivity = pipe.activity();
         lastOverflow = pipe.overflowCount();
@@ -138,7 +180,17 @@ private:
         if (state == State::off) message = "No MIDI selected";
         else if (state == State::error) message = "Open failed - Retry";
         else if (state == State::disconnected) message = "Disconnected - waiting";
-        else message = active ? "MIDI activity" : state == State::test ? "Test input ready" : "Connected";
+        else if(active) {
+            switch(profile.lastActivity()) {
+            case MidiActivityKind::pad: message="Pad "+juce::String(profile.lastControl()+1);break;
+            case MidiActivityKind::knob: message="Knob/CC "+juce::String(profile.lastControl()+1);break;
+            case MidiActivityKind::modulation: message="Modulation";break;
+            case MidiActivityKind::sustain: message="Sustain";break;
+            case MidiActivityKind::pitchBend: message="Pitch bend";break;
+            default: message="Key input";break;
+            }
+        } else if(state==State::test) message="Test input ready";
+        else message=juce::String(midiControllerFamilyName(profile.active()))+" connected";
         status.setText(message, juce::dontSendNotification);
         status.setColour(juce::Label::textColourId, active ? juce::Colour(0xff7ee8a2)
             : state == State::error || state == State::disconnected ? juce::Colour(0xffffc478) : juce::Colour(0xffc5d6df));
@@ -157,12 +209,14 @@ private:
         }
     }
     MidiInputPipe& pipe;
+    MidiControllerProfile profile;
     JuceMidiInputBackend backend;
     MidiInputDeviceManager manager;
     std::vector<MidiInputDevice> listed;
     juce::Label label, status;
-    juce::ComboBox inputs;
-    juce::TextButton refresh, testNote;
+    juce::ComboBox inputs,profileBox,assignment;
+    juce::Slider mappingValue;
+    juce::TextButton refresh,testNote,resetMappings;
     juce::ToggleButton sustain;
     bool testDown{}, testBlocked{};
     unsigned ticks{};
