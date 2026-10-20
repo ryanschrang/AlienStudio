@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <new>
 #include <thread>
 #include <vector>
@@ -776,8 +777,12 @@ void realTimeSafetyTests() {
 // --- The controller --------------------------------------------------------------
 
 struct ControllerRig {
-    ToneEngine engine;
-    alien::ProjectController controller{engine};
+    // ProjectController owns several complete project snapshots. Keep the two
+    // production-sized fixtures off the small default Windows test stack.
+    std::unique_ptr<ToneEngine> engineStorage{std::make_unique<ToneEngine>()};
+    ToneEngine& engine{*engineStorage};
+    std::unique_ptr<alien::ProjectController> controllerStorage{std::make_unique<alien::ProjectController>(engine)};
+    alien::ProjectController& controller{*controllerStorage};
     std::vector<alien::ProjectController::RecordingOutcome> outcomes;
     long long total = 0;
     ControllerRig() {
