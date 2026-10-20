@@ -14,6 +14,15 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     if (!project.valid() || !song.arrangement.valid() || song.arrangement.count == 0) {
         error="Add at least one valid region before exporting."; return false;
     }
+    for (std::size_t i = 0; i < song.arrangement.count; ++i) {
+        const auto& region = song.arrangement.regions[i];
+        const auto* clip = song.clips[static_cast<std::size_t>(region.scene)]
+            [static_cast<std::size_t>(region.track)].audio;
+        if (clip && clip->streamed()) {
+            error = "Streamed long-file export is not available yet. Render or trim the clip below 128 MiB first.";
+            return false;
+        }
+    }
     bool hasPlugins = !project.masterPlugins.effects.empty();
     for (const auto& rack : project.plugins) hasPlugins = hasPlugins || !rack.instrument.descriptionXml.isEmpty() || !rack.effects.empty();
     if (hasPlugins && !preparedEngine) { error="Prepare plugin instances on the message thread before export"; return false; }

@@ -1,6 +1,6 @@
 # Alien Studio feature checklist
 
-Snapshot: 2026-10-19. Baseline: main at 8fbc9f483fe7dd560fb9cb2a9a6798d7068f3165.
+Snapshot: 2026-10-20. Baseline: main at 5f90bad0134b1a77cae6b1cece9bc3efe5ad881c.
 Owner: maintainers. Update this file in each feature PR. Link the PR, exact tested
 commit, automated test result and Windows listening result before promoting a status.
 "Implemented" means code exists; it does not mean all hardware or plugin combinations pass.
@@ -19,22 +19,22 @@ Draft work below is not available in main until this PR is merged.
 | MIX-01 | Per-track volume, pan, mute/solo and meters | Implemented | TrackMixer tests; no general bus/send routing yet |
 | FILE-01 | Versioned projects, portable audio collection | Implemented | SessionProjectTests; project v6 |
 | FILE-02 | Undo/redo, save prompts, autosave and recovery | Implemented | ProjectControllerTests; recovery hardware checks pending |
-| AUDIO-01 | WAV/MP3 Session import and one-shot playback | Limited | 128 MiB decoded per clip; 512 MiB retained project budget |
+| AUDIO-01 | WAV/MP3 Session import and one-shot playback | Implemented in this PR | Clips above 128 MiB stream from disk; short clips retain the decoded path |
 | REC-01 | Mono/stereo disk recording and interrupted-take recovery | Implemented | LongRecordingTests; PR #38 merged; no multitrack arming yet |
 | WARP-01 | Offline fixed-tempo pitch-preserving WAV render | Implemented | LongTempoWarpTests; PR #39 merged via #38; 0.5-2x ratio |
 | WARP-02 | Rendered-clip playback workflow | User confirmed | Render, load within budget, launch in Session; not MP3 preview |
 | ARR-01 | Bar-based arrangement and WAV export | Limited | ArrangementTests; 128 bars / 128 regions; no sample-level editing |
 | PLUG-01 | Stereo VST3 instruments, track/master FX and editors | Partial / reported failures | PluginRuntimeTests; some scans absent; editor selection feedback gap |
-| QA-01 | Production and live starter sessions | Draft in this PR | Self-contained built-in MIDI sounds; native parser test added |
-| QA-02 | Four-track recording reference session | Draft in this PR | Original four-second WAVs; record/monitoring acceptance still pending |
-| STREAM-01 | Fixed-size SPSC stereo playback ring | Draft in this PR | New boundary/wrap/concurrency tests; not connected to Session |
-| STREAM-02 | Decoder worker, prebuffer and per-playback reader | Planned: next implementation | Independent cursors for duplicate clips; no callback file I/O |
-| STREAM-03 | Large-file import, project load and render auto-load | Planned | Stream above decoded budget; preserve drum sampler limits |
-| STREAM-04 | Long waveform cache, seek/relaunch and missing media UI | Planned | Background peaks; no blank or misleading waveform |
-| STREAM-05 | Streamed arrangement playback/export | Planned | Deterministic offline reads; no wall-clock underruns in export |
+| QA-01 | Production and live starter sessions | Implemented | Self-contained built-in MIDI sounds; native parser test added |
+| QA-02 | Four-track recording reference session | Implemented | Original four-second WAVs; record/monitoring acceptance still pending |
+| STREAM-01 | Fixed-size SPSC stereo playback ring | Implemented in this PR | Boundary, wrap and concurrency tests; connected to Session playback |
+| STREAM-02 | Decoder worker, prebuffer and per-playback reader | Implemented in this PR | Two endpoints per track; late launch waits at quantization; duplicate clips use independent readers |
+| STREAM-03 | Large-file import and project load | Implemented in this PR | Session clips stream above decoded budget; drum and Channel Rack sampler limits remain |
+| STREAM-04 | Long waveform cache, seek/relaunch and missing media UI | Partial | Relaunch and missing-media paths work; background peak cache remains  |
+| STREAM-05 | Streamed arrangement playback/export | Partial | Live arrangement playback uses the stream; export rejects long clips clearly until deterministic offline reads land |
 | EDIT-01 | Non-destructive audio trim, split, slip, fades/crossfades | Planned: milestone 2 | Source offsets and edit bounds persisted with undo |
 | REC-02 | Track arming, input routing, monitoring, punch and take lanes | Planned: milestone 3 | Simultaneous recording and latency compensation |
-| MIDI-02 | MIDI recording, count-in, overdub and controller editing | Planned: milestone 4 | Record timing and sustain with sample-based tests |
+| MIDI-02 | MIDI recording, count-in, overdub and controller editing | Implemented | Record timing and sustain with sample-based tests |
 | MIX-02 | Buses, sends/returns, sidechain, multi-output plugins | Planned: milestone 5 | Routing graph and delay compensation |
 | PLUG-02 | Actionable scan logs, editor failures and compatibility suite | Planned: milestone 5 reliability | Track current user scan failures immediately |
 | AUTO-01 | Mixer/plugin automation and tempo/time-signature maps | Planned: milestone 6 | Sample-accurate automation and project persistence |

@@ -1,7 +1,9 @@
 #pragma once
 
+#include "DiskAudioFile.h"
 #include "SessionAudioClip.h"
 #include <juce_audio_formats/juce_audio_formats.h>
+#include <limits>
 #include <memory>
 
 namespace alien {
@@ -11,9 +13,24 @@ struct AudioClipImportResult {
     juce::String error;
 };
 
-// Called only from an import worker. File reads, decoder setup, allocation,
-// sample validation and waveform analysis must never run in the audio callback.
-inline AudioClipImportResult decodeSessionAudioClip(const juce::File& file) {
+inline AudioClipImportResult inspectStreamedSessionAudio(const juce::File& file) {
+    juce::String error;
+    auto source = JuceDiskAudioFile::inspect(file, error);
+    if (!source) return {{}, error};
+    if (static_cast<std::uint64_t>(source->frames) > std::numeric_limits<std::size_t>::max())
+        return {{}, "This audio file is too long for this build."};
+    auto clip = std::make_shared<SessionAudioClip>();
+    clip->sampleRate = source->sampleRate;
+    clip->channels = source->channels;
+    clip->frames = static_cast<std::size_t>(source->frames);
+    clip->streamSource = std::move(source);
+    if (!clip->valid()) return {{}, "The streamed audio metadata is invalid."};
+    return {std::move(clip), {}};
+}
+
+// Called only from an import worker. With allowStreaming, files beyond the
+// decoded-memory threshold become metadata-backed Session clips.
+inline AudioClipImportResult decodeSessionAudioClip(const juce::File& file, bool allowStreaming = false) {
     const auto extension = file.getFileExtension().toLowerCase();
     if (extension != ".wav" && extension != ".mp3")
         return {{}, "Choose a WAV or MP3 audio file."};
@@ -33,9 +50,13 @@ inline AudioClipImportResult decodeSessionAudioClip(const juce::File& file) {
         return {{}, "Audio sample rates must be between 8 kHz and 192 kHz."};
     if (channels < 1 || channels > 2)
         return {{}, "Only mono and stereo audio files are supported."};
-    if (frames64 <= 0 || static_cast<std::uint64_t>(frames64)
-        > SessionAudioClip::maxDecodedBytes / (static_cast<std::size_t>(channels) * sizeof(float)))
-        return {{}, "The decoded audio clip exceeds the 128 MiB session limit or is empty."};
+    if (frames64 <= 0) return {{}, "The selected audio file is empty."};
+
+    const auto decodedLimit = SessionAudioClip::maxDecodedBytes
+        / (static_cast<std::size_t>(channels) * sizeof(float));
+    if (static_cast<std::uint64_t>(frames64) > decodedLimit)
+        return allowStreaming ? inspectStreamedSessionAudio(file)
+            : AudioClipImportResult{{}, "The decoded audio clip exceeds the 128 MiB sampler limit."};
 
     const auto frames = static_cast<std::size_t>(frames64);
     auto clip = std::make_shared<SessionAudioClip>();
@@ -54,6 +75,10 @@ inline AudioClipImportResult decodeSessionAudioClip(const juce::File& file) {
     clip->buildWaveform();
     if (!clip->valid()) return {{}, "The decoded audio data is invalid."};
     return {std::move(clip), {}};
+}
+
+inline AudioClipImportResult importSessionAudioClip(const juce::File& file) {
+    return decodeSessionAudioClip(file, true);
 }
 
 } // namespace alien

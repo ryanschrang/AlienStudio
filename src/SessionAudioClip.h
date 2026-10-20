@@ -1,14 +1,16 @@
 #pragma once
 
+#include "DiskAudioStream.h"
+#include "PianoRollSequence.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <type_traits>
 #include <vector>
-#include "PianoRollSequence.h"
 
 namespace alien {
 
@@ -16,8 +18,8 @@ struct AudioWaveformPeak {
     float leftMin{}, leftMax{}, rightMin{}, rightMax{};
 };
 
-// Fully decoded, immutable after publication. Construction and waveform
-// analysis happen on a worker thread; the audio callback only reads samples.
+// Immutable after publication. Short clips keep decoded samples; long Session
+// clips retain file metadata and are read by DiskAudioStreamService.
 struct SessionAudioClip {
     static constexpr std::size_t maxDecodedBytes = 128u * 1024u * 1024u;
     static constexpr std::size_t waveformPeakCount = 1024;
@@ -28,11 +30,21 @@ struct SessionAudioClip {
     std::vector<float> left, right;
     std::array<AudioWaveformPeak, waveformPeakCount> waveform{};
     std::size_t waveformCount{};
+    std::shared_ptr<const DiskAudioFile> streamSource;
 
+    bool streamed() const noexcept { return streamSource != nullptr; }
+    std::size_t decodedBytes() const noexcept {
+        return (left.size() + right.size()) * sizeof(float);
+    }
     bool valid() const noexcept {
         if (!std::isfinite(sampleRate) || sampleRate < 8000.0 || sampleRate > 192000.0
-            || channels < 1 || channels > 2 || frames == 0
-            || frames > maxDecodedBytes / (static_cast<std::size_t>(channels) * sizeof(float))
+            || channels < 1 || channels > 2 || frames == 0) return false;
+        if (streamed())
+            return streamSource->valid() && streamSource->sampleRate == sampleRate
+                && streamSource->channels == channels
+                && streamSource->frames == static_cast<std::int64_t>(frames)
+                && left.empty() && right.empty();
+        if (frames > maxDecodedBytes / (static_cast<std::size_t>(channels) * sizeof(float))
             || left.size() != frames || (channels == 2 && right.size() != frames)
             || (channels == 1 && !right.empty()) || waveformCount == 0
             || waveformCount > waveform.size()) return false;
@@ -61,21 +73,14 @@ struct SessionAudioClip {
 };
 
 struct SessionClipLaunch {
-    // A null audio pointer selects the MIDI pattern; a non-null pointer selects
-    // audio. The pointed-to clip must outlive playback and is never mutated.
     PianoRollPattern pattern{};
     const SessionAudioClip* audio{};
     int clipIndex{-1};
-
     SessionClipLaunch() = default;
-    // Compatibility for audio-engine tests and MIDI-only callers that publish
-    // a pattern while keeping the requested clip index in its existing atomic.
     SessionClipLaunch(const PianoRollPattern& midiPattern) : pattern(midiPattern), clipIndex(-2) {}
 };
 static_assert(std::is_trivially_copyable_v<SessionClipLaunch>);
 
-// One UI producer and one audio consumer. Audio clip pointers are immutable
-// and retained by the session owner for at least as long as the engine lives.
 class SessionClipMailbox {
 public:
     bool publish(const SessionClipLaunch& clip) noexcept {
@@ -90,7 +95,6 @@ public:
         destination = buffers[front];
         return true;
     }
-
 private:
     static constexpr unsigned dirty = 4, indexMask = 3;
     std::array<SessionClipLaunch, 3> buffers{};
@@ -98,61 +102,101 @@ private:
     unsigned front{}, back{2};
 };
 
-// Audio-thread-owned one-shot sample player. Launch state is changed only at a
-// caller-selected quantized boundary. It performs bounded linear interpolation
-// and never allocates, locks, decodes or accesses the file system.
+// Audio-thread-owned player with separate active and prebuffer voices. A late
+// stream waits for the next quantized boundary while the current clip continues.
 class SessionAudioPlayer {
 public:
+    void bind(DiskAudioStreamService::Voice* first, DiskAudioStreamService::Voice* second) noexcept {
+        activeVoice = first; pendingVoice = second;
+    }
     bool queue(const SessionAudioClip* clip, int quantizationSteps) noexcept {
         pendingClip = clip;
+        failure.store(false, std::memory_order_relaxed);
         pendingQuantization = quantizationSteps > 0 ? quantizationSteps : 16;
+        pendingGeneration = 0;
+        if (clip && clip->streamed()) {
+            if (!pendingVoice) return false;
+            pendingGeneration = pendingVoice->request(clip->streamSource.get());
+        }
         pending = true;
         return true;
     }
-
     bool hasPending() const noexcept { return pending; }
     bool pendingIsAudio() const noexcept { return pendingClip != nullptr; }
     int pendingQuantizationSteps() const noexcept { return pendingQuantization; }
+    bool pendingReady() const noexcept {
+        return pending && (!pendingClip || !pendingClip->streamed()
+            || (pendingVoice && pendingVoice->ready(pendingGeneration)));
+    }
+    bool pendingFailed() const noexcept {
+        return pending && pendingClip && pendingClip->streamed()
+            && (!pendingVoice || pendingVoice->failed(pendingGeneration));
+    }
 
     bool launchPendingNow(double outputRate) noexcept {
         if (!pending) return false;
+        if (pendingFailed()) { failure.store(true, std::memory_order_relaxed); pendingClip = nullptr; pending = false; pendingGeneration = 0; return false; }
+        if (!pendingReady()) return false;
         activeClip = pendingClip;
         pendingClip = nullptr;
         pending = false;
         cursor = 0.0;
         outputSampleRate = std::isfinite(outputRate) && outputRate > 0 ? outputRate : 44100.0;
+        if (activeClip && activeClip->streamed()) {
+            std::swap(activeVoice, pendingVoice);
+            activeGeneration = pendingGeneration;
+        } else {
+            activeGeneration = 0;
+        }
+        pendingGeneration = 0;
         return true;
     }
 
     std::array<float, 2> nextSample() noexcept {
-        if (activeClip == nullptr) return {};
-        if (cursor >= static_cast<double>(activeClip->frames)) {
-            activeClip = nullptr;
-            cursor = 0.0;
-            return {};
-        }
-        const auto first = static_cast<std::size_t>(cursor);
-        const auto second = std::min(first + 1, activeClip->frames - 1);
+        if (!activeClip) return {};
+        if (cursor >= static_cast<double>(activeClip->frames)) { clearActive(); return {}; }
+        const auto first = static_cast<std::int64_t>(cursor);
+        const auto second = std::min(first + 1, static_cast<std::int64_t>(activeClip->frames - 1));
         const float fraction = static_cast<float>(cursor - static_cast<double>(first));
-        const float left = interpolate(activeClip->left[first], activeClip->left[second], fraction);
-        const float right = activeClip->channels == 2
-            ? interpolate(activeClip->right[first], activeClip->right[second], fraction) : left;
+        float left{}, right{};
+        if (activeClip->streamed()) {
+            if (!activeVoice || !activeVoice->sample(activeGeneration, first, second, fraction, left, right)) {
+                underruns.fetch_add(1, std::memory_order_relaxed);
+                return {};
+            }
+            activeVoice->releaseBefore(activeGeneration, first);
+        } else {
+            left = interpolate(activeClip->left[static_cast<std::size_t>(first)],
+                activeClip->left[static_cast<std::size_t>(second)], fraction);
+            right = activeClip->channels == 2
+                ? interpolate(activeClip->right[static_cast<std::size_t>(first)],
+                    activeClip->right[static_cast<std::size_t>(second)], fraction) : left;
+        }
         cursor += activeClip->sampleRate / outputSampleRate;
-        if (cursor >= static_cast<double>(activeClip->frames)) activeClip = nullptr;
+        if (cursor >= static_cast<double>(activeClip->frames)) clearActive();
         return {left, right};
     }
 
     void stop() noexcept {
+        if (activeVoice) activeVoice->request(nullptr);
+        if (pendingVoice) pendingVoice->request(nullptr);
         activeClip = pendingClip = nullptr;
-        pending = false;
-        cursor = 0.0;
+        pending = false; cursor = 0.0; activeGeneration = pendingGeneration = 0;
     }
     bool isPlaying() const noexcept { return activeClip != nullptr; }
+    std::uint64_t underrunCount() const noexcept { return underruns.load(std::memory_order_relaxed); }
+    bool streamFailed() const noexcept { return failure.load(std::memory_order_relaxed); }
 
 private:
+    void clearActive() noexcept { activeClip = nullptr; cursor = 0.0; activeGeneration = 0; }
     static float interpolate(float a, float b, float amount) noexcept { return a + (b - a) * amount; }
     const SessionAudioClip* activeClip{};
     const SessionAudioClip* pendingClip{};
+    DiskAudioStreamService::Voice* activeVoice{};
+    DiskAudioStreamService::Voice* pendingVoice{};
+    std::uint64_t activeGeneration{}, pendingGeneration{};
+    std::atomic<std::uint64_t> underruns{};
+    std::atomic<bool> failure{};
     double cursor{}, outputSampleRate{44100.0};
     int pendingQuantization{16};
     bool pending{};
