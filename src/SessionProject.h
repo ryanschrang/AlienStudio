@@ -249,7 +249,8 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
 
 // Reads the "timeline" object of a version 8 project. Region and marker ids are made up
 // fresh (they only identify things while the program runs); saved group numbers become groups.
-inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce::String& error) {
+inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce::String& error,
+                          bool requireAudioEdits = true) {
     const auto* object = value.getDynamicObject();
     if (object == nullptr) { error = "The project's timeline is missing."; return false; }
     const auto length = object->getProperty("lengthBars"), loopStart = object->getProperty("loopStart"),
@@ -286,7 +287,7 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
         region.offset = static_cast<int>(offset); region.audioOffset = static_cast<double>(audioOffset);
         const auto gain = r->getProperty("gain"), fadeIn = r->getProperty("fadeIn"), fadeOut = r->getProperty("fadeOut"),
                    loopSource = r->getProperty("loopSource"), reversed = r->getProperty("reversed");
-        if (!gain.isVoid()) {
+        if (requireAudioEdits || !gain.isVoid() || !fadeIn.isVoid() || !fadeOut.isVoid() || !loopSource.isVoid() || !reversed.isVoid()) {
             if (!(gain.isDouble() || gain.isInt()) || !fadeIn.isInt() || !fadeOut.isInt() || !loopSource.isBool() || !reversed.isBool()) {
                 error = "A timeline region has invalid audio edits."; return false;
             }
@@ -520,7 +521,7 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
     }
 
     if (formatVersion >= 8) {
-        if (!parseTimeline(rootObject->getProperty("timeline"), parsed.timeline, error)) return false;
+        if (!parseTimeline(rootObject->getProperty("timeline"), parsed.timeline, error, formatVersion >= 9)) return false;
     } else if (rootObject->hasProperty("arrangement")) {
         // Before version 8 the song was whole bars of Session clips. Each becomes a region at the same place.
         const auto songValue = rootObject->getProperty("arrangement");

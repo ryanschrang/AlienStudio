@@ -62,6 +62,13 @@ static void playerTests() {
         "stereo playback preserves channels and linearly resamples to the device rate");
     player.stop();
     require(!player.isPlaying() && player.nextSample()[0] == 0.0f, "stop clears active playback immediately");
+
+    player.queue(&clip, 1);
+    require(player.launchPendingNow(16000, 2.5, 0, true), "decoded clip launches in reverse");
+    const auto reverseHalf = player.nextSample();
+    const auto reverseWhole = player.nextSample();
+    require(std::abs(reverseHalf[0] + 0.5f) < 1.0e-6f && std::abs(reverseWhole[0]) < 1.0e-6f,
+        "reverse resampling interpolates the same source positions while moving backward");
 }
 
 static void mailboxTests() {

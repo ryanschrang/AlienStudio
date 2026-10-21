@@ -537,15 +537,21 @@ private:
         lane.offset = region.offset; lane.audioOffset = region.audioOffset; lane.gain = region.gain;
         lane.fadeIn = region.fadeIn; lane.fadeOut = region.fadeOut; lane.loopSource = region.loopSource; lane.reversed = region.reversed; lane.audio = clip.audio;
         if (clip.audio != nullptr) {
+            // DiskAudioStream currently reads forward. Older or externally edited projects may
+            // nevertheless contain these flags, so keep their audio audible as a forward one-shot
+            // until reverse/loop-aware streaming is available.
+            const bool reverse = region.reversed && !clip.audio->streamed();
+            const bool loopSource = region.loopSource && !clip.audio->streamed();
+            lane.reversed = reverse; lane.loopSource = loopSource;
             const double seconds = region.audioOffset + alien::timeline::secondsForTicks(into, bpm.load());
             const double forwardFrame = seconds * clip.audio->sampleRate;
-            const double startFrame = region.reversed ? static_cast<double>(clip.audio->frames - 1) - forwardFrame : forwardFrame;
+            const double startFrame = reverse ? static_cast<double>(clip.audio->frames - 1) - forwardFrame : forwardFrame;
             if (startFrame >= 0.0 && startFrame < static_cast<double>(clip.audio->frames)) {
                 auto& player = audioPlayers[track];
                 // A streamed clip asked for ahead of time is ready now; one that is not waits, and
                 // starts where the song has got to by then, so it stays in time.
                 if (!player.pendingMatches(clip.audio, startFrame, timelineLaunchWindow)) player.queue(clip.audio, 1, startFrame);
-                if (!player.launchPendingNow(sampleRate, startFrame, timelineFadeSamples, region.reversed, region.loopSource,
+                if (!player.launchPendingNow(sampleRate, startFrame, timelineFadeSamples, reverse, loopSource,
                                              region.audioOffset * clip.audio->sampleRate) && player.hasPending()) lane.audioWaiting = true;
             }
             audioClipMode[track] = true;

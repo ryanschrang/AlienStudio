@@ -286,6 +286,7 @@ struct Timeline {
         newStart = std::clamp(newStart, lowest, r->end() - 1);
         if (newStart == r->start) return false;
         next.trimLeftBy(*r, newStart - r->start);
+        clampFades(*r);
         return adopt(std::move(next));
     }
     // Moves the right edge of one region. It cannot pass the next region on its row.
@@ -299,6 +300,7 @@ struct Timeline {
         newEnd = std::clamp(newEnd, r->start + 1, highest);
         if (newEnd == r->end()) return false;
         r->length = newEnd - r->start;
+        clampFades(*r);
         next.ensureLength(newEnd);
         return adopt(std::move(next));
     }
@@ -313,6 +315,10 @@ struct Timeline {
             right.id = newId();
             next.trimLeftBy(right, tick - r.start);
             r.length = tick - r.start;
+            // A split creates clean internal edges. The original outer-edge fades
+            // remain with the halves that still own those boundaries.
+            r.fadeOut = 0; right.fadeIn = 0;
+            clampFades(r); clampFades(right);
             rights.push_back(right);
         }
         if (rights.empty()) return false;
@@ -559,6 +565,10 @@ struct Timeline {
     }
 
 private:
+    static void clampFades(Region& r) noexcept {
+        r.fadeIn = std::clamp<std::int64_t>(r.fadeIn, 0, r.length);
+        r.fadeOut = std::clamp<std::int64_t>(r.fadeOut, 0, r.length);
+    }
     template <typename Edit>
     bool editAudio(const Ids& ids, Edit&& edit) {
         Timeline next = *this; bool changed = false;

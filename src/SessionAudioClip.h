@@ -185,8 +185,10 @@ public:
         if (!activeClip) return {};
         if (cursor >= static_cast<double>(activeClip->frames) || cursor < 0.0) { clearActive(); return {}; }
         const auto first = static_cast<std::int64_t>(cursor);
-        const auto second = reversed ? std::max<std::int64_t>(0, first - 1)
-                                     : std::min(first + 1, static_cast<std::int64_t>(activeClip->frames - 1));
+        // Interpolation depends on the fractional source position, not travel direction.
+        // Reverse playback still interpolates floor(cursor) toward ceil(cursor); only
+        // cursor advancement runs backwards.
+        const auto second = std::min(first + 1, static_cast<std::int64_t>(activeClip->frames - 1));
         const float fraction = static_cast<float>(cursor - static_cast<double>(first));
         float left{}, right{};
         if (activeClip->streamed()) {
