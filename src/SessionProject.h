@@ -23,7 +23,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 9;
+inline constexpr int sessionProjectFormatVersion = 10;
 
 struct SessionProjectClip {
     PianoRollPattern pattern;
@@ -205,6 +205,21 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
             regions.add(value);
         }
         timelineObject->setProperty("regions", juce::var(regions));
+        juce::Array<juce::var> automationValues;
+        for (const auto& lane : project.timeline.automationLanes) {
+            auto value = juce::var(new juce::DynamicObject()); auto* object = value.getDynamicObject();
+            object->setProperty("track", lane.track); object->setProperty("parameter", static_cast<int>(lane.parameter));
+            object->setProperty("enabled", lane.enabled);
+            juce::Array<juce::var> points;
+            for (const auto& point : lane.points) {
+                auto p = juce::var(new juce::DynamicObject()); auto* o = p.getDynamicObject();
+                o->setProperty("tick", static_cast<int>(point.tick)); o->setProperty("value", point.value);
+                o->setProperty("curve", static_cast<int>(point.curve)); points.add(p);
+            }
+            object->setProperty("points", juce::var(points)); automationValues.add(value);
+        }
+        timelineObject->setProperty("automation", juce::var(automationValues));
+
         juce::Array<juce::var> markers;
         for (const auto& m : project.timeline.markers) {
             auto value = juce::var(new juce::DynamicObject());
@@ -250,7 +265,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
 // Reads the "timeline" object of a version 8 project. Region and marker ids are made up
 // fresh (they only identify things while the program runs); saved group numbers become groups.
 inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce::String& error,
-                          bool requireAudioEdits = true) {
+                          bool requireAudioEdits = true, bool requireAutomation = false) {
     const auto* object = value.getDynamicObject();
     if (object == nullptr) { error = "The project's timeline is missing."; return false; }
     const auto length = object->getProperty("lengthBars"), loopStart = object->getProperty("loopStart"),
@@ -313,6 +328,33 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
         marker.name = m->getProperty("name").toString().toStdString();
         marker.colour = static_cast<std::uint8_t>(juce::jlimit(0, 255, static_cast<int>(m->getProperty("colour"))));
         parsed.markers.push_back(marker);
+    }
+    const auto automationValue = object->getProperty("automation");
+    if (requireAutomation || !automationValue.isVoid()) {
+        const auto* lanes = automationValue.getArray();
+        if (lanes == nullptr || lanes->size() > maxSessionTracks * 2) { error = "Invalid automation lanes."; return false; }
+        for (const auto& value : *lanes) {
+            const auto* o = value.getDynamicObject();
+            if (o == nullptr || !o->getProperty("track").isInt() || !o->getProperty("parameter").isInt()
+                || !o->getProperty("enabled").isBool()) { error = "Invalid automation lane."; return false; }
+            automation::Lane lane;
+            lane.track = static_cast<int>(o->getProperty("track"));
+            lane.parameter = static_cast<automation::Parameter>(static_cast<int>(o->getProperty("parameter")));
+            lane.enabled = static_cast<bool>(o->getProperty("enabled"));
+            const auto pointsValue = o->getProperty("points"); const auto* points = pointsValue.getArray();
+            if (points == nullptr || points->size() > static_cast<int>(automation::maxPoints)) { error = "Invalid automation points."; return false; }
+            for (const auto& p : *points) {
+                const auto* point = p.getDynamicObject();
+                if (point == nullptr || !point->getProperty("tick").isInt() || !point->getProperty("curve").isInt()
+                    || !(point->getProperty("value").isInt() || point->getProperty("value").isDouble())) {
+                    error = "Invalid automation point."; return false;
+                }
+                lane.points.push_back({static_cast<int>(point->getProperty("tick")),
+                    static_cast<float>(static_cast<double>(point->getProperty("value"))),
+                    static_cast<automation::Curve>(static_cast<int>(point->getProperty("curve")))});
+            }
+            parsed.automationLanes.push_back(std::move(lane));
+        }
     }
     // The file's own scene and pattern counts are checked with the rest of the project.
     if (!parsed.valid()) { error = "The project's timeline is outside the supported range."; return false; }
@@ -521,7 +563,7 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
     }
 
     if (formatVersion >= 8) {
-        if (!parseTimeline(rootObject->getProperty("timeline"), parsed.timeline, error, formatVersion >= 9)) return false;
+        if (!parseTimeline(rootObject->getProperty("timeline"), parsed.timeline, error, formatVersion >= 9, formatVersion >= 10)) return false;
     } else if (rootObject->hasProperty("arrangement")) {
         // Before version 8 the song was whole bars of Session clips. Each becomes a region at the same place.
         const auto songValue = rootObject->getProperty("arrangement");
