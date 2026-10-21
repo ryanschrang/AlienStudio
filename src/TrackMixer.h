@@ -71,6 +71,13 @@ public:
         targetLeft = level * (pan > 0 ? 1.0f - pan : 1.0f);
         targetRight = level * (pan < 0 ? 1.0f + pan : 1.0f);
     }
+    // Automation already supplies the sample's exact interpolated value. Do not
+    // pass it through the manual fader's 5 ms smoothing ramp.
+    void processAutomated(float& l, float& r, const TrackSettings& settings, bool anySolo) noexcept {
+        setTarget(settings, anySolo);
+        left = targetLeft; right = targetRight;
+        l *= left; r *= right;
+    }
     void process(float& l, float& r) noexcept {
         left += coefficient * (targetLeft - left);
         right += coefficient * (targetRight - right);
