@@ -131,6 +131,16 @@ static void classifyTests() {
     check(av.status == Status::crashed && av.detail.contains("0xC0000005") && av.detail.contains("access violation") && av.detail.contains("loading the plugin"), "a Windows access violation is named: " + av.detail);
     check(classify(result(0xC00000FDu, "load"), 0, 60000).detail.contains("stack overflow") && classify(result(0xC0000409u, "load"), 0, 60000).detail.contains("fatal error") && classify(result(0xC0000374u, "load"), 0, 60000).detail.contains("heap corruption"), "stack overflow, fail-fast and heap corruption are named");
     check(classify(result(0xC0000135u, "start"), 0, 60000).detail.contains("DLL was not found"), "a missing dependency DLL is named");
+   #if JUCE_WINDOWS
+    const auto aborted = classify(result(3, "load"), 0, 60000);
+    check(aborted.status == Status::crashed && aborted.detail.contains("CRT exit code 3")
+        && aborted.detail.contains("loading"), "a Windows CRT abort during loading is a probable crash");
+    check(classify(result(3, "diagnose"), 0, 60000).status == Status::crashed,
+        "a Windows CRT abort during diagnostic library loading is a probable crash");
+   #endif
+    check(classify(result(ChildExit::exitBadArguments, ""), 0, 60000).status == Status::failed
+        && classify(result(ChildExit::exitBadArguments, "start"), 0, 60000).status == Status::failed,
+        "argument errors before plugin loading remain ordinary scanner failures");
     ChildResult hung = result(0, "load"); hung.outcome = ChildResult::Outcome::timedOut;
     const auto timed = classify(hung, 0, 60000);
     check(timed.status == Status::timedOut && timed.detail.contains("60 s") && timed.detail.contains("dialog"), "a hang says how long it was given and what it may be waiting for: " + timed.detail);
