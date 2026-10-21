@@ -25,7 +25,7 @@ static int failures = 0;
 static void check(bool ok, const std::string& message) {
     if (!ok) { ++failures; std::fprintf(stderr, "FAIL: %s\n", message.c_str()); }
 }
-static void near(double actual, double expected, double tolerance, const std::string& message) {
+static void checkNear(double actual, double expected, double tolerance, const std::string& message) {
     if (!(std::abs(actual - expected) <= tolerance)) {
         ++failures;
         std::fprintf(stderr, "FAIL: %s (got %.6f, expected %.6f +/- %.6f)\n", message.c_str(), actual, expected, tolerance);
@@ -118,23 +118,23 @@ static void parameterTests() {
     // Typed values.
     auto eq = stock::create("eq");
     auto* freq = eq->parameters.getParameter(stock::eq::lowFreq);
-    near(freq->convertFrom0to1(freq->getValueForText("250")), 250, 0.5, "typed Hz");
+    checkNear(freq->convertFrom0to1(freq->getValueForText("250")), 250, 0.5, "typed Hz");
     auto* high = eq->parameters.getParameter(stock::eq::highFreq);
-    near(high->convertFrom0to1(high->getValueForText("12k")), 12000, 1, "typed kHz");
-    near(high->convertFrom0to1(high->getValueForText("1.5 kHz")), 1500, 1, "typed kHz with unit");
+    checkNear(high->convertFrom0to1(high->getValueForText("12k")), 12000, 1, "typed kHz");
+    checkNear(high->convertFrom0to1(high->getValueForText("1.5 kHz")), 1500, 1, "typed kHz with unit");
     auto comp = stock::create("compressor");
     auto* release = comp->parameters.getParameter(stock::comp::release);
-    near(release->convertFrom0to1(release->getValueForText("1.5 s")), 1500, 1, "typed seconds");
-    near(release->convertFrom0to1(release->getValueForText("250 ms")), 250, 0.5, "typed milliseconds");
+    checkNear(release->convertFrom0to1(release->getValueForText("1.5 s")), 1500, 1, "typed seconds");
+    checkNear(release->convertFrom0to1(release->getValueForText("250 ms")), 250, 0.5, "typed milliseconds");
     auto* mix = comp->parameters.getParameter(stock::comp::mix);
-    near(mix->convertFrom0to1(mix->getValueForText("40%")), 0.4, 0.001, "typed percent");
+    checkNear(mix->convertFrom0to1(mix->getValueForText("40%")), 0.4, 0.001, "typed percent");
     check(mix->getText(mix->convertTo0to1(0.4f), 32) == "40 %", "percent text");
     auto* threshold = comp->parameters.getParameter(stock::comp::threshold);
     check(threshold->getText(threshold->convertTo0to1(-18.0f), 32) == "-18.0 dB", "dB text");
     auto dly = stock::create("delay");
     auto* tone = dly->parameters.getParameter(stock::delay::tone);
     check(tone->getText(1.0f, 32) == "Open", "open tone");
-    near(tone->convertFrom0to1(tone->getValueForText("open")), 20000, 1, "typed Open");
+    checkNear(tone->convertFrom0to1(tone->getValueForText("open")), 20000, 1, "typed Open");
     // Out-of-range typed values clamp rather than escape the range.
     check(threshold->getValueForText("-500") == 0.0f && threshold->getValueForText("50") == 1.0f, "typed values are clamped to the range");
 }
@@ -162,7 +162,7 @@ static void processingTests() {
     {
         auto e = make("eq"); setParam(*e, stock::eq::m1Freq, 1000); setParam(*e, stock::eq::m1Gain, 12);
         auto l = sine(1000, 0.1, 24000), r = l; process(*e, l, r);
-        near(20 * std::log10(peak(l, 12000, 24000) / 0.1), 12.0, 0.1, "EQ band gain through the processor");
+        checkNear(20 * std::log10(peak(l, 12000, 24000) / 0.1), 12.0, 0.1, "EQ band gain through the processor");
     }
     // Compressor: the same static curve as the kernel, and the meter moves.
     {
@@ -170,7 +170,7 @@ static void processingTests() {
         setParam(*e, stock::comp::threshold, -18); setParam(*e, stock::comp::ratio, 4); setParam(*e, stock::comp::knee, 0);
         setParam(*e, stock::comp::attack, 5); setParam(*e, stock::comp::release, 50);
         auto l = sine(1000, dsp::dbToGain(-6), 48000 * 2), r = l; process(*e, l, r);
-        near(dsp::gainToDb(peak(l, 48000 * 2 - 9600, 48000 * 2)), -18 + 12.0 / 4.0, 0.35, "compressor steady-state level");
+        checkNear(dsp::gainToDb(peak(l, 48000 * 2 - 9600, 48000 * 2)), -18 + 12.0 / 4.0, 0.35, "compressor steady-state level");
         check(dynamic_cast<stock::CompressorEffect&>(*e).gainReductionDb() > 5.0f, "compressor reports gain reduction");
     }
     // Compressor: the attack knob sets the attack and the release knob the release (not the other way round).
@@ -183,7 +183,7 @@ static void processingTests() {
         std::vector<float> l(static_cast<std::size_t>(loud + quiet), 0.001f), r;
         for (int i = 0; i < loud; ++i) l[static_cast<std::size_t>(i)] = 0.5f;
         r = l; process(*e, l, r, 128);
-        near(-dsp::gainToDb(l[960] / 0.5) / target, 1.0, 0.08, "a 1 ms attack has almost fully clamped down after 20 ms");
+        checkNear(-dsp::gainToDb(l[960] / 0.5) / target, 1.0, 0.08, "a 1 ms attack has almost fully clamped down after 20 ms");
         const double remaining = -dsp::gainToDb(l[static_cast<std::size_t>(loud + 4800)] / 0.001) / target;
         check(remaining > 0.7 && remaining < 0.95, "a 1000 ms release is still mostly clamped 100 ms after the signal stops (" + std::to_string(remaining) + " of the reduction left)");
         auto f = make("compressor");
@@ -200,19 +200,19 @@ static void processingTests() {
         auto e = make("delay"); setParam(*e, stock::delay::time, 10); setParam(*e, stock::delay::feedback, 0);
         setParam(*e, stock::delay::mix, 1); setParam(*e, stock::delay::tone, 20000);
         std::vector<float> l(4000, 0.0f), r(4000, 0.0f); l[0] = 1.0f; process(*e, l, r, 333);
-        near(l[480], 1.0, 1e-5, "delay echo at the set time, whatever the block size");
+        checkNear(l[480], 1.0, 1e-5, "delay echo at the set time, whatever the block size");
     }
     {
         auto e = make("delay"); FixedTempo tempo; tempo.bpm = 120; e->setPlayHead(&tempo);
         setParam(*e, stock::delay::sync, 1); setParam(*e, stock::delay::division, 2); // 1/8 note
         setParam(*e, stock::delay::feedback, 0); setParam(*e, stock::delay::mix, 1); setParam(*e, stock::delay::tone, 20000);
         std::vector<float> l(20000, 0.0f), r(20000, 0.0f); l[0] = 1.0f; process(*e, l, r);
-        near(l[12000], 1.0, 1e-5, "1/8 note at 120 BPM is 250 ms (12000 samples)");
+        checkNear(l[12000], 1.0, 1e-5, "1/8 note at 120 BPM is 250 ms (12000 samples)");
         auto f = make("delay"); tempo.bpm = 60; f->setPlayHead(&tempo);
         setParam(*f, stock::delay::sync, 1); setParam(*f, stock::delay::division, 4);
         setParam(*f, stock::delay::feedback, 0); setParam(*f, stock::delay::mix, 1); setParam(*f, stock::delay::tone, 20000);
         std::vector<float> a(60000, 0.0f), b(60000, 0.0f); a[0] = 1.0f; process(*f, a, b);
-        near(a[48000], 1.0, 1e-5, "a quarter note at 60 BPM is one second");
+        checkNear(a[48000], 1.0, 1e-5, "a quarter note at 60 BPM is one second");
         check(e->getTailLengthSeconds() >= 0.25, "delay tail covers at least one repeat");
         check(f->getTailLengthSeconds() >= 1.0, "delay tail follows the tempo-synced time (a quarter note at 60 BPM is 1 s)");
     }
@@ -221,7 +221,7 @@ static void processingTests() {
         setParam(*e, stock::delay::sync, 1); setParam(*e, stock::delay::division, 4);
         setParam(*e, stock::delay::feedback, 0); setParam(*e, stock::delay::mix, 1); setParam(*e, stock::delay::tone, 20000);
         std::vector<float> l(30000, 0.0f), r(30000, 0.0f); l[0] = 1.0f; process(*e, l, r);
-        near(l[24000], 1.0, 1e-5, "default tempo is 120 BPM");
+        checkNear(l[24000], 1.0, 1e-5, "default tempo is 120 BPM");
     }
     // Limiter: ceiling holds, latency is reported and applied.
     {
@@ -260,7 +260,7 @@ static void reverbLevelAndTailTests() {
         auto e = make("reverb"); setParam(*e, stock::reverb::mix, 1); setParam(*e, stock::reverb::preDelay, 0);
         auto l = noise(96000, 0.3, 21), r = noise(96000, 0.3, 22); const auto l0 = l, r0 = r; process(*e, l, r);
         double in = 0, out = 0; for (int i = 48000; i < 96000; ++i) { in += l0[static_cast<std::size_t>(i)] * l0[static_cast<std::size_t>(i)] + r0[static_cast<std::size_t>(i)] * r0[static_cast<std::size_t>(i)]; out += l[static_cast<std::size_t>(i)] * l[static_cast<std::size_t>(i)] + r[static_cast<std::size_t>(i)] * r[static_cast<std::size_t>(i)]; }
-        near(10 * std::log10(out / in), 0.0, 4.0, "wet reverb level is comparable to the input level");
+        checkNear(10 * std::log10(out / in), 0.0, 4.0, "wet reverb level is comparable to the input level");
     }
     // The reported tail covers the real decay (to -60 dB) without being absurdly long.
     for (double size : {0.0, 0.5, 1.0}) for (double damping : {0.0, 0.5}) {
@@ -281,7 +281,7 @@ static void reverbLevelAndTailTests() {
 static void reverbPreDelayTailTest() {
     auto a = make("reverb"), b = make("reverb");
     setParam(*a, stock::reverb::preDelay, 0); setParam(*b, stock::reverb::preDelay, 100);
-    near(b->getTailLengthSeconds() - a->getTailLengthSeconds(), 0.1, 1e-4, "the reported reverb tail grows by the pre-delay");
+    checkNear(b->getTailLengthSeconds() - a->getTailLengthSeconds(), 0.1, 1e-4, "the reported reverb tail grows by the pre-delay");
     // ...and that is real: with 100 ms pre-delay the sound really does last 100 ms longer, and the claim still covers it.
     auto e = make("reverb"); setParam(*e, stock::reverb::mix, 1); setParam(*e, stock::reverb::size, 0.5); setParam(*e, stock::reverb::damping, 0.5); setParam(*e, stock::reverb::preDelay, 100);
     const int total = 48000 * 12;
@@ -403,7 +403,7 @@ static void stateTests() {
         auto* p = root.createNewChildElement("PARAM"); p->setAttribute("id", stock::comp::threshold); p->setAttribute("value", -30.0);
         juce::MemoryBlock block; juce::AudioProcessor::copyXmlToBinary(root, block);
         e->setStateInformation(block.getData(), static_cast<int>(block.getSize()));
-        near(getParam(*e, stock::comp::threshold), -30.0, 1e-4, "partial state sets the parameters it names");
+        checkNear(getParam(*e, stock::comp::threshold), -30.0, 1e-4, "partial state sets the parameters it names");
         check(getParam(*e, stock::comp::ratio) >= 1.0 && getParam(*e, stock::comp::ratio) <= 20.0, "...and leaves the others in range");
     }
     // Values outside the range in a saved file are clamped.
@@ -455,7 +455,7 @@ static void hostTests() {
         runtime->begin(512, 120, true, 0);
         for (int i = 0; i < 512; ++i) { runtime->tracks[0].setSample(0, i, 0.25f); runtime->tracks[0].setSample(1, i, 0.25f); }
         runtime->effectsAndAlign(512); // the limiter after the placeholder delays the track by its 95 samples
-        near(runtime->tracks[0].getSample(0, 400), 0.25, 1e-6, "audio passes through a placeholder slot");
+        checkNear(runtime->tracks[0].getSample(0, 400), 0.25, 1e-6, "audio passes through a placeholder slot");
     }
     // A rack with stock effects restores, edits are noticed, and state survives snapshot and restore.
     {
@@ -476,7 +476,7 @@ static void hostTests() {
         check(racks[0].effects[1].stateBase64.isNotEmpty() && racks[0].effects[1].descriptionXml == stockState("compressor").descriptionXml, "snapshot keeps the identity and stores parameters");
         PluginHost second(*runtime);
         check(second.restore(racks, master, 48000).isEmpty(), "restoring from the snapshot works");
-        near(getParam(dynamic_cast<stock::Effect&>(*runtime->racks[0].effects[1].processor), stock::comp::threshold), -33.0, 1e-3, "parameter values survive snapshot and restore");
+        checkNear(getParam(dynamic_cast<stock::Effect&>(*runtime->racks[0].effects[1].processor), stock::comp::threshold), -33.0, 1e-3, "parameter values survive snapshot and restore");
         // Project file round trip, including bypass.
         SessionProjectData project; project.plugins[0] = racks[0]; project.plugins[0].effects[0].bypass = true; project.masterPlugins = master;
         juce::String error; SessionProjectData parsed;
@@ -495,7 +495,7 @@ static void hostTests() {
         runtime->begin(64, 120, true, 0);
         for (int i = 0; i < 64; ++i) { runtime->tracks[0].setSample(0, i, 0.5f); runtime->tracks[0].setSample(1, i, 0.5f); }
         runtime->effectsAndAlign(64);
-        near(runtime->tracks[0].getSample(0, 63), 0.25, 2e-3, "an EQ in a track rack processes that track");
+        checkNear(runtime->tracks[0].getSample(0, 63), 0.25, 2e-3, "an EQ in a track rack processes that track");
         runtime->racks[0].effects[0].bypass = true;
         runtime->begin(64, 120, true, 0);
         for (int i = 0; i < 64; ++i) { runtime->tracks[0].setSample(0, i, 0.5f); runtime->tracks[0].setSample(1, i, 0.5f); }
@@ -513,9 +513,9 @@ static void hostTests() {
         runtime->begin(512, 120, true, 0);
         for (int t = 0; t < 2; ++t) { runtime->tracks[static_cast<std::size_t>(t)].setSample(0, 0, 0.5f); runtime->tracks[static_cast<std::size_t>(t)].setSample(1, 0, 0.5f); }
         runtime->effectsAndAlign(512);
-        near(runtime->tracks[0].getSample(0, 95), 0.5, 1e-6, "the limited track arrives 95 samples late...");
-        near(runtime->tracks[1].getSample(0, 95), 0.5, 1e-6, "...and the other track is delayed to match");
-        near(runtime->tracks[1].getSample(0, 0), 0.0, 1e-9, "nothing arrives early");
+        checkNear(runtime->tracks[0].getSample(0, 95), 0.5, 1e-6, "the limited track arrives 95 samples late...");
+        checkNear(runtime->tracks[1].getSample(0, 95), 0.5, 1e-6, "...and the other track is delayed to match");
+        checkNear(runtime->tracks[1].getSample(0, 0), 0.0, 1e-9, "nothing arrives early");
     }
 }
 
@@ -569,25 +569,25 @@ static void editorTests() {
         auto* base = dynamic_cast<stock::EffectEditor*>(editor.get());
         auto& threshold = base->knob(0).slider;
         threshold.setValue(-40.0, juce::sendNotificationSync);
-        near(getParam(*e, stock::comp::threshold), -40.0, 0.05, "turning the threshold knob sets the parameter");
+        checkNear(getParam(*e, stock::comp::threshold), -40.0, 0.05, "turning the threshold knob sets the parameter");
         setParam(*e, stock::comp::threshold, -12.0);
-        near(threshold.getValue(), -12.0, 0.05, "changing the parameter (automation, undo) moves the knob");
-        near(threshold.getDoubleClickReturnValue(), -18.0, 0.01, "double-clicking a knob returns it to the default");
+        checkNear(threshold.getValue(), -12.0, 0.05, "changing the parameter (automation, undo) moves the knob");
+        checkNear(threshold.getDoubleClickReturnValue(), -18.0, 0.01, "double-clicking a knob returns it to the default");
     }
     // EQ curve: coordinates invert, the curve matches the filters, and moving a handle edits the bands.
     {
-        for (double hz : {20.0, 100.0, 1000.0, 20000.0}) near(stock::eqmap::xToFrequency(stock::eqmap::frequencyToX(hz, 600.0f), 600.0f), hz, hz * 1e-4, "frequency to x and back");
-        for (double db : {-18.0, -5.0, 0.0, 7.5, 18.0}) near(stock::eqmap::yToGain(stock::eqmap::gainToY(db, 200.0f), 200.0f), db, 1e-4, "gain to y and back");
+        for (double hz : {20.0, 100.0, 1000.0, 20000.0}) checkNear(stock::eqmap::xToFrequency(stock::eqmap::frequencyToX(hz, 600.0f), 600.0f), hz, hz * 1e-4, "frequency to x and back");
+        for (double db : {-18.0, -5.0, 0.0, 7.5, 18.0}) checkNear(stock::eqmap::yToGain(stock::eqmap::gainToY(db, 200.0f), 200.0f), db, 1e-4, "gain to y and back");
         auto e = make("eq");
         std::unique_ptr<juce::AudioProcessorEditor> editor(e->createEditorIfNeeded());
         auto* eqEditor = dynamic_cast<stock::EqEditor*>(editor.get());
         check(eqEditor != nullptr, "EQ editor type");
         auto& curve = eqEditor->response();
-        near(curve.responseDb(1000.0), 0.0, 1e-9, "a flat EQ draws a flat curve");
+        checkNear(curve.responseDb(1000.0), 0.0, 1e-9, "a flat EQ draws a flat curve");
         curve.moveBand(1, 2000.0, 9.0);
-        near(getParam(*e, stock::eq::m1Freq), 2000.0, 1.0, "dragging a handle sets the band frequency");
-        near(getParam(*e, stock::eq::m1Gain), 9.0, 0.01, "...and its gain");
-        near(curve.responseDb(2000.0), 9.0, 0.3, "the curve follows the band");
+        checkNear(getParam(*e, stock::eq::m1Freq), 2000.0, 1.0, "dragging a handle sets the band frequency");
+        checkNear(getParam(*e, stock::eq::m1Gain), 9.0, 0.01, "...and its gain");
+        checkNear(curve.responseDb(2000.0), 9.0, 0.3, "the curve follows the band");
         curve.moveBand(0, 10.0, 99.0); // beyond the limits: clamped
         check(getParam(*e, stock::eq::lowFreq) >= 20.0 && getParam(*e, stock::eq::lowGain) <= 18.0, "dragging beyond the edge is clamped");
     }
