@@ -17,7 +17,7 @@ static void checkMidiInputPanel() {
     alien::MidiInputPipe pipe;
     alien::MidiInputPanel panel(pipe, &backend);
     juce::Component host;
-    host.setBounds(0, 0, 680, 100); host.addAndMakeVisible(panel); panel.setBounds(10, 10, 660, 32);
+    host.setBounds(0, 0, 680, 120); host.addAndMakeVisible(panel); panel.setBounds(10, 10, 660, 72);
     host.addToDesktop(0); host.setVisible(true); host.getPeer()->handleFocusGain(); pump();
     auto control = [&](const juce::String& name) -> juce::Component* {
         for (auto* c : panel.getChildren()) if (c->getName() == name) return c;
@@ -39,7 +39,7 @@ static void checkMidiInputPanel() {
     test->triggerClick();
     for (int i = 0; i < 12; ++i) pump(); // JUCE's simulated button press includes a timed down/up flash.
     pipe.process(send); panel.tick();
-    require(ons == 1 && offs == 0 && pipe.isNoteOn(60) && status->getText().containsIgnoreCase("activity"),
+    require(ons == 1 && offs == 0 && pipe.isNoteOn(60) && status->getText().containsIgnoreCase("Key input"),
         "test button uses real MIDI note/CC64 path and activity indicator");
     sustain->triggerClick(); pump(); pipe.process(send);
     require(offs == 1 && !pipe.isNoteOn(60), "test sustain off releases the note");

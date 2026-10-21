@@ -1,0 +1,1758 @@
+{
+  "format": "AlienStudioSession",
+  "version": 6,
+  "launchQuantizationSteps": 4,
+  "selectedTrack": 0,
+  "selectedScene": 0,
+  "bpm": 128,
+  "synthPreset": 0,
+  "plugins": [
+    {
+      "instrument": {
+        "description": "",
+        "state": "",
+        "bypass": false
+      },
+      "effects": []
+    },
+    {
+      "instrument": {
+        "description": "",
+        "state": "",
+        "bypass": false
+      },
+      "effects": []
+    },
+    {
+      "instrument": {
+        "description": "",
+        "state": "",
+        "bypass": false
+      },
+      "effects": []
+    },
+    {
+      "instrument": {
+        "description": "",
+        "state": "",
+        "bypass": false
+      },
+      "effects": []
+    }
+  ],
+  "masterPlugins": {
+    "instrument": {
+      "description": "",
+      "state": "",
+      "bypass": false
+    },
+    "effects": []
+  },
+  "trackSettings": [
+    {
+      "name": "Bass",
+      "colour": 0,
+      "preset": 0,
+      "instrument": 0,
+      "gain": 0.7,
+      "pan": 0,
+      "mute": false,
+      "solo": false
+    },
+    {
+      "name": "Chords",
+      "colour": 1,
+      "preset": 1,
+      "instrument": 0,
+      "gain": 0.7,
+      "pan": 0,
+      "mute": false,
+      "solo": false
+    },
+    {
+      "name": "Lead",
+      "colour": 2,
+      "preset": 2,
+      "instrument": 0,
+      "gain": 0.7,
+      "pan": 0,
+      "mute": false,
+      "solo": false
+    },
+    {
+      "name": "Pulse",
+      "colour": 3,
+      "preset": 0,
+      "instrument": 0,
+      "gain": 0.7,
+      "pan": 0,
+      "mute": false,
+      "solo": false
+    }
+  ],
+  "sceneNames": [
+    "Build",
+    "Full",
+    "Break",
+    "Finish"
+  ],
+  "drumPaths": [
+    [
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    [
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ]
+  ],
+  "stepPattern": [
+    true,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+  ],
+  "stepPitches": [
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57,
+    57
+  ],
+  "stepVelocities": [
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90
+  ],
+  "arrangement": {
+    "lengthBars": 16,
+    "regions": []
+  },
+  "scenes": [
+    [
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": [
+          {
+            "pitch": 36,
+            "startTicks": 0,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 960,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 43,
+            "startTicks": 1920,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 2880,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 36,
+            "startTicks": 3840,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 4800,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 43,
+            "startTicks": 5760,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 6720,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 36,
+            "startTicks": 7680,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 8640,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 43,
+            "startTicks": 9600,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 10560,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 36,
+            "startTicks": 11520,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 12480,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 43,
+            "startTicks": 13440,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 14400,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          }
+        ]
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": [
+          {
+            "pitch": 60,
+            "startTicks": 0,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 960,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 67,
+            "startTicks": 1920,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 2880,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 60,
+            "startTicks": 3840,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 4800,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 67,
+            "startTicks": 5760,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 6720,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 60,
+            "startTicks": 7680,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 8640,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 67,
+            "startTicks": 9600,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 10560,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 60,
+            "startTicks": 11520,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 12480,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 67,
+            "startTicks": 13440,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 14400,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          }
+        ]
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": []
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": [
+          {
+            "pitch": 48,
+            "startTicks": 0,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 960,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 55,
+            "startTicks": 1920,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 2880,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 48,
+            "startTicks": 3840,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 4800,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 55,
+            "startTicks": 5760,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 6720,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 48,
+            "startTicks": 7680,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 8640,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 55,
+            "startTicks": 9600,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 10560,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 48,
+            "startTicks": 11520,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 12480,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 55,
+            "startTicks": 13440,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 14400,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          }
+        ]
+      }
+    ],
+    [
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": [
+          {
+            "pitch": 36,
+            "startTicks": 0,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 960,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 43,
+            "startTicks": 1920,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 2880,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 36,
+            "startTicks": 3840,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 4800,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 43,
+            "startTicks": 5760,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 6720,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 36,
+            "startTicks": 7680,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 8640,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 43,
+            "startTicks": 9600,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 10560,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 36,
+            "startTicks": 11520,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 12480,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 43,
+            "startTicks": 13440,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 14400,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          }
+        ]
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": [
+          {
+            "pitch": 60,
+            "startTicks": 0,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 960,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 67,
+            "startTicks": 1920,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 2880,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 60,
+            "startTicks": 3840,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 4800,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 67,
+            "startTicks": 5760,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 6720,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 60,
+            "startTicks": 7680,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 8640,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 67,
+            "startTicks": 9600,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 10560,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 60,
+            "startTicks": 11520,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 12480,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 67,
+            "startTicks": 13440,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 14400,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          }
+        ]
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": [
+          {
+            "pitch": 72,
+            "startTicks": 0,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 960,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 79,
+            "startTicks": 1920,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 2880,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 72,
+            "startTicks": 3840,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 4800,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 79,
+            "startTicks": 5760,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 6720,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 72,
+            "startTicks": 7680,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 8640,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 79,
+            "startTicks": 9600,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 10560,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 72,
+            "startTicks": 11520,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 12480,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 79,
+            "startTicks": 13440,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 14400,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          }
+        ]
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": [
+          {
+            "pitch": 48,
+            "startTicks": 0,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 960,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 55,
+            "startTicks": 1920,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 2880,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 48,
+            "startTicks": 3840,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 4800,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 55,
+            "startTicks": 5760,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 6720,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 48,
+            "startTicks": 7680,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 8640,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 55,
+            "startTicks": 9600,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 10560,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 48,
+            "startTicks": 11520,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 12480,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 55,
+            "startTicks": 13440,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 14400,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          }
+        ]
+      }
+    ],
+    [
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": []
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": [
+          {
+            "pitch": 60,
+            "startTicks": 0,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 960,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 67,
+            "startTicks": 1920,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 2880,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 60,
+            "startTicks": 3840,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 4800,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 67,
+            "startTicks": 5760,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 6720,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 60,
+            "startTicks": 7680,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 8640,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 67,
+            "startTicks": 9600,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 10560,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 60,
+            "startTicks": 11520,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 12480,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 67,
+            "startTicks": 13440,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 14400,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          }
+        ]
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": [
+          {
+            "pitch": 72,
+            "startTicks": 0,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 960,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 79,
+            "startTicks": 1920,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 2880,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 72,
+            "startTicks": 3840,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 4800,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 79,
+            "startTicks": 5760,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 6720,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 72,
+            "startTicks": 7680,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 8640,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 79,
+            "startTicks": 9600,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 10560,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 72,
+            "startTicks": 11520,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 12480,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 79,
+            "startTicks": 13440,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 14400,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          }
+        ]
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": []
+      }
+    ],
+    [
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": [
+          {
+            "pitch": 36,
+            "startTicks": 0,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 960,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 43,
+            "startTicks": 1920,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 2880,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 36,
+            "startTicks": 3840,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 4800,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 43,
+            "startTicks": 5760,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 6720,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 36,
+            "startTicks": 7680,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 8640,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 43,
+            "startTicks": 9600,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 10560,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 36,
+            "startTicks": 11520,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 12480,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 43,
+            "startTicks": 13440,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 39,
+            "startTicks": 14400,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          }
+        ]
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": [
+          {
+            "pitch": 60,
+            "startTicks": 0,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 960,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 67,
+            "startTicks": 1920,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 2880,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 60,
+            "startTicks": 3840,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 4800,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 67,
+            "startTicks": 5760,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 6720,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 60,
+            "startTicks": 7680,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 8640,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 67,
+            "startTicks": 9600,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 10560,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 60,
+            "startTicks": 11520,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 12480,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 67,
+            "startTicks": 13440,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 63,
+            "startTicks": 14400,
+            "lengthTicks": 720,
+            "velocity": 0.55,
+            "probability": 1
+          }
+        ]
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": [
+          {
+            "pitch": 72,
+            "startTicks": 0,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 960,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 79,
+            "startTicks": 1920,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 2880,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 72,
+            "startTicks": 3840,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 4800,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 79,
+            "startTicks": 5760,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 6720,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 72,
+            "startTicks": 7680,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 8640,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 79,
+            "startTicks": 9600,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 10560,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 72,
+            "startTicks": 11520,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 12480,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 79,
+            "startTicks": 13440,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 75,
+            "startTicks": 14400,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          }
+        ]
+      },
+      {
+        "loopSteps": 64,
+        "audioFilePath": "",
+        "notes": [
+          {
+            "pitch": 48,
+            "startTicks": 0,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 960,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 55,
+            "startTicks": 1920,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 2880,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 48,
+            "startTicks": 3840,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 4800,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 55,
+            "startTicks": 5760,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 6720,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 48,
+            "startTicks": 7680,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 8640,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 55,
+            "startTicks": 9600,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 10560,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 48,
+            "startTicks": 11520,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 12480,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 55,
+            "startTicks": 13440,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          },
+          {
+            "pitch": 51,
+            "startTicks": 14400,
+            "lengthTicks": 240,
+            "velocity": 0.55,
+            "probability": 1
+          }
+        ]
+      }
+    ]
+  ]
+}

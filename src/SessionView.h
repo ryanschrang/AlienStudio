@@ -233,7 +233,8 @@ public:
         const auto& clip = d.selectedClip();
         clearClip.setEnabled(!clip.isEmpty());
         removeAudio.setEnabled(clip.isAudioClip());
-        audioWaveform.setClip(clip.audio.get(), clip.audioFileName);
+        audioWaveform.setClip(clip.audio.get(), clip.audioFileName, clip.audioFilePath,
+            controller.currentFile(), clip.audioOffline());
         // The button only takes up room while something in the project is offline.
         const bool anyOffline = !controller.missingMedia().empty();
         if (relinkAudio.isVisible() != anyOffline) { relinkAudio.setVisible(anyOffline); resized(); }

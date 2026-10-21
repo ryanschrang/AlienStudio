@@ -31,13 +31,19 @@ The long-term differentiator is **one shared project and audio engine** across a
 - [x] GPL-3.0 license file. Dependency attribution/distribution review remains required before releases.
 
 ### Next implementation sequence
-1. Verify integrated VST3 instruments/FX and Windows audio/MIDI hardware behavior.
-2. Stream long takes during Session playback and extend editing beyond current memory/input bounds.
-3. Waveform trimming/fades, take lanes and live warp-marker workflows.
-4. Plugin automation, sidechains/multi-output routing, freeze and crash isolation during playback.
-5. Recording follow-ups: controller data (pitch bend, mod wheel, sustain), quantize-on-record, loop-record takes and punch in/out.
-6. Automation lanes on the timeline (track volume/pan and the parameters of stock effects), then clip fades/crossfades and tempo-warped audio clips.
+1. Non-destructive clip fades, crossfades and tempo-warped audio on the timeline.
+2. Multitrack recording, monitoring, punch and take lanes.
+3. Quantize-on-record, loop-record takes and punch in/out for MIDI.
+4. Mixer routing and plugin reliability, including sidechains and multi-output routing.
+5. Automation lanes for track, stock-effect and plugin parameters, plus tempo maps.
+6. Freeze, stems and final delivery.
 
+Track implementation and verification in [the feature checklist](docs/FEATURE_CHECKLIST.md).
+Use [the representative projects](examples/README.md) for production, live and recording checks.
+The [feature summary PDF](docs/Alien_Studio_Feature_Summary.pdf) is a dated snapshot;
+the checklist is the maintained source of status. Long Session clips now stream from disk,
+waveforms use a background cache, and offline WAV export reads deterministically from source files.
+See [the milestone acceptance plan](docs/LONG_PLAYBACK_PLAN.md).
 
 ## Build from source (Windows 11)
 

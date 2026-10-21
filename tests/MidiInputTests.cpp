@@ -74,7 +74,13 @@ static void queueTests() {
     });
     require(mappedChannel == 2 && mappedCC == 20 && mappedValue == 96,
         "general MIDI CCs pass through the bounded audio-thread control callback");
-    require(pipe.isNoteOn(60), "unmapped MIDI CC does not alter active note gates");
+    pipe.push(token,0xe2,0,127);
+    pipe.process(r,[&](int channel,int control,int value) {
+        mappedChannel=channel;mappedCC=control;mappedValue=value;
+    });
+    require(mappedChannel==2&&mappedCC==128&&mappedValue==16256,
+        "14-bit pitch bend passes through without becoming a note");
+    require(pipe.isNoteOn(60), "unmapped MIDI controls do not alter active note gates");
     pipe.push(token, 0xb0, 64, 127); pipe.push(token, 0x80, 60, 0); pipe.process(r);
     require(pipe.isNoteOn(60), "highlight remains during sustain");
     pipe.requestReset(); pipe.process(r);

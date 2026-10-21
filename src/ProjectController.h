@@ -697,7 +697,7 @@ public:
         importStatus(ui8("Loading audio\xe2\x80\xa6"), file.getFullPathName());
         std::weak_ptr<int> token = alive;
         std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, file, track, scene] {
-            auto result = std::make_shared<AudioClipImportResult>(decodeSessionAudioClip(file));
+            auto result = std::make_shared<AudioClipImportResult>(importSessionAudioClip(file));
             juce::MessageManager::callAsync([this, token, file, track, scene, result] {
                 if (token.lock() != nullptr) { setBusy(false); finishImport(file, track, scene, *result); }
             });
@@ -930,7 +930,7 @@ public:
 
     bool installAudio(const juce::File& file, int track, int scene, std::shared_ptr<SessionAudioClip> clip) {
         if (!doc.isValidCell(track, scene) || !clip) return false;
-        const auto bytes = clip->frames * clip->channels * sizeof(float);
+        const auto bytes = clip->decodedBytes();
         if (bytes > maxSessionAudioBytes - retainedBytes) return false;
         finishImport(file, track, scene, {clip, {}});
         return true;
@@ -1021,9 +1021,13 @@ private:
         rackPublished.known = true; rackPublished.clips = clips; rackPublished.project = doc.channelRack;
     }
     bool retain(const std::shared_ptr<SessionAudioClip>& clip) {
-        const auto bytes = clip->frames * clip->channels * sizeof(float);
+        const auto bytes = clip->decodedBytes();
         if (bytes > maxSessionAudioBytes - retainedBytes) return false;
+        if (clip->streamed() && !engine.retainDiskAudioSource(clip->streamSource)) return false;
         retained.push_back(clip); retainedBytes += bytes; return true;
+    }
+    void registerStream(const std::shared_ptr<SessionAudioClip>& clip) {
+        if (clip && clip->streamed()) engine.retainDiskAudioSource(clip->streamSource);
     }
     struct RelinkWant {
         MissingMedia item;
@@ -1163,13 +1167,13 @@ private:
                 if (clip.audioFilePath.isEmpty()) continue;
                 const auto location = resolveProjectAudio(file, clip.audioFilePath);
                 const auto decoded = location == juce::File{} ? AudioClipImportResult{{}, "The saved audio location is not valid."}
-                                                              : decodeSessionAudioClip(location);
+                                                              : importSessionAudioClip(location);
                 if (!decoded.clip) {
                     // A moved or deleted file must not make the whole project unopenable.
                     result.missing.push_back({false, t, s, location == juce::File{} ? clip.audioFilePath : location.getFullPathName(), decoded.error});
                     continue;
                 }
-                const auto bytes = decoded.clip->frames * static_cast<std::size_t>(decoded.clip->channels) * sizeof(float);
+                const auto bytes = decoded.clip->decodedBytes();
                 if (bytes > maxSessionAudioBytes - result.decodedBytes) {
                     result.error = "Project audio exceeds the 512 MiB session limit.";
                     return result;
@@ -1188,7 +1192,7 @@ private:
                 result.missing.push_back({true, t, p, location == juce::File{} ? path : location.getFullPathName(), decoded.error});
                 continue;
             }
-            const auto bytes = decoded.clip->frames * decoded.clip->channels * sizeof(float);
+            const auto bytes = decoded.clip->decodedBytes();
             if (bytes > maxSessionAudioBytes - result.decodedBytes) { result.error = "Drum audio exceeds memory limit"; return result; }
             result.decodedBytes += bytes; result.drums[t][p] = decoded.clip;
         }
@@ -1203,7 +1207,7 @@ private:
             const auto decoded = location == juce::File{} ? AudioClipImportResult{{}, "The saved audio location is not valid."}
                                                           : decodeSessionAudioClip(location);
             if (!decoded.clip) { result.missing.push_back({false, c, 0, key, decoded.error, true}); continue; }
-            const auto bytes = decoded.clip->frames * static_cast<std::size_t>(decoded.clip->channels) * sizeof(float);
+            const auto bytes = decoded.clip->decodedBytes();
             if (bytes > maxSessionAudioBytes - result.decodedBytes) { result.error = "Channel Rack audio exceeds memory limit"; return result; }
             result.decodedBytes += bytes; result.rackClips.emplace_back(key.toStdString(), decoded.clip);
         }
@@ -1238,7 +1242,7 @@ private:
                 }
                 const auto& asset = result.audio[static_cast<std::size_t>(s * loaded.trackCount() + t)];
                 clip.audio = asset;
-                if (asset != nullptr) retained.push_back(asset);
+                if (asset != nullptr) { registerStream(asset); retained.push_back(asset); }
             }
         for (int t = 0; t < loaded.trackCount(); ++t) for (int p = 0; p < drumPadCount; ++p) {
             auto& track = loaded.tracks[t];
@@ -1280,14 +1284,11 @@ private:
 
     void finishImport(const juce::File& file, int track, int scene, const AudioClipImportResult& result) {
         if (!result.clip) { importStatus(result.error, result.error); return; }
-        const auto bytes = result.clip->frames * static_cast<std::size_t>(result.clip->channels) * sizeof(float);
-        if (bytes > maxSessionAudioBytes - retainedBytes) {
+        if (!doc.isValidCell(track, scene)) return;
+        if (!retain(result.clip)) {
             importStatus("Session audio storage is full (512 MiB limit)", "Session audio storage is full (512 MiB limit)");
             return;
         }
-        if (!doc.isValidCell(track, scene)) return;
-        retainedBytes += bytes;
-        retained.push_back(result.clip);
         auto& clip = doc.clip(track, scene);
         clip.audio = result.clip;
         clip.audioFileName = file.getFileName();
@@ -1378,10 +1379,12 @@ private:
     // The clip loops with everything recorded so far, so a take can be heard
     // layering up while it is made.
     void previewTake() {
-        const auto index = static_cast<std::size_t>(take.track);
+        if (!take.active || !doc.isValidCell(take.track, take.scene)) return;
+        if (take.track < 0 || take.track >= static_cast<int>(ToneEngine::sessionTracks)) return;
         if (take.assembler.notes().size() == take.previewedNotes) return;
+        const auto index = static_cast<std::size_t>(take.track);
         if (engine.activePianoRollClip[index].load() != take.scene) return;
-        if (!doc.isValidCell(take.track, take.scene) || doc.clip(take.track, take.scene).isAudioClip()) return;
+        if (doc.clip(take.track, take.scene).isAudioClip()) return;
         bool truncated = false;
         engine.pianoRollNotes[index].publish(take.assembler.mergeInto(doc.clip(take.track, take.scene).notes(), take.replace, truncated));
         take.previewedNotes = take.assembler.notes().size();

@@ -37,7 +37,7 @@ static void constantsAndDefaults() {
     check(rackRowBase == alien::maxSessionTracks && rowCount == rackRowBase + rackLanes, "rack lanes follow the Session tracks");
     check(isTrackRow(0) && isTrackRow(rackRowBase - 1) && !isTrackRow(rackRowBase) && !isTrackRow(-1), "track rows");
     check(isPatternRow(rackRowBase) && isPatternRow(rowCount - 1) && !isPatternRow(rowCount) && !isPatternRow(rackRowBase - 1), "pattern rows");
-    check(maxLength == 512 * bar, "the timeline is at most 512 bars");
+    check(maxLength == static_cast<std::int64_t>(maxBars) * bar, "the timeline uses the configured maximum length");
     Timeline t;
     check(t.valid() && t.regions.empty() && t.markers.empty() && t.lengthBars == 16 && t.length() == 16 * bar, "an empty timeline is 16 bars");
     check(!t.loopEnabled && t.loopStart == 0 && t.loopEnd == 4 * bar, "the loop starts as the first four bars, switched off");
@@ -442,7 +442,7 @@ static void lengthLoopMarkerTests() {
     check(t.setLengthBars(32) && t.lengthBars == 32 && !t.setLengthBars(32), "setting the song length");
     put(t, 0, 0, 20 * bar, 2 * bar);
     check(t.setLengthBars(1) && t.lengthBars == 22, "the song cannot be shorter than its last region");
-    check(t.setLengthBars(1000) && t.lengthBars == maxBars, "...or longer than 512 bars");
+    check(t.setLengthBars(maxBars + 1) && t.lengthBars == maxBars, "...or longer than the configured maximum");
     Timeline partial;
     put(partial, 0, 0, 5 * bar, 1);
     check(partial.contentEnd() == 5 * bar + 1 && partial.minLengthBars() == 6, "a region that ends part-way into a bar needs that whole bar");

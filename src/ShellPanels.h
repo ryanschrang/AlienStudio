@@ -176,7 +176,7 @@ public:
         const int cardWidth = juce::jmin(560, r.getWidth());
         synthCard = r.removeFromTop(112).withWidth(cardWidth);
         r.removeFromTop(14);
-        midiCard = r.removeFromTop(112).withWidth(cardWidth);
+        midiCard = r.removeFromTop(168).withWidth(cardWidth);
         auto synth = synthCard.reduced(18, 14).withTrimmedLeft(4);
         presetLabel.setBounds(synth.removeFromTop(16));
         synth.removeFromTop(10);
@@ -184,7 +184,7 @@ public:
         auto midi = midiCard.reduced(18, 14).withTrimmedLeft(4);
         midiLabel.setBounds(midi.removeFromTop(16));
         midi.removeFromTop(10);
-        midiInput.setBounds(midi.removeFromTop(32));
+        midiInput.setBounds(midi.removeFromTop(72));
     }
 
     void paint(juce::Graphics& g) override {
@@ -200,7 +200,7 @@ public:
         g.setFont(ui::font(12.0f));
         g.drawText("Plays from the computer keyboard, the on-screen keyboard, MIDI input and the step sequencer.",
                    synthCard.reduced(22, 14).removeFromBottom(18), juce::Justification::centredLeft, true);
-        g.drawText("All 16 MIDI channels play the live synth. Hot-plugged controllers reconnect automatically.",
+        g.drawText("MPK mini profiles map pads and knobs; pitch, modulation and sustain route to the active instrument.",
                    midiCard.reduced(22, 14).removeFromBottom(18), juce::Justification::centredLeft, true);
     }
 

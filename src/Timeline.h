@@ -27,7 +27,7 @@ namespace alien::timeline {
 
 inline constexpr std::int64_t ticksPerStep = 240, ticksPerBeat = 960, ticksPerBar = 3840;
 static_assert(ticksPerStep == PianoRollPattern::ticksPerStep, "the timeline and the piano roll share one tick");
-inline constexpr int maxBars = 512, defaultBars = 16;
+inline constexpr int maxBars = 16384, defaultBars = 16;
 inline constexpr std::int64_t maxLength = maxBars * ticksPerBar;
 inline constexpr int rackLanes = 4;
 inline constexpr int rackRowBase = maxSessionTracks;      // rows 0..15 are Session tracks, then the rack lanes
