@@ -1406,14 +1406,149 @@ private:
 };
 
 // The whole screen: the toolbar, the timeline, its scroll bars and a line of help.
+
+// One editable automation lane at a time. Edits stay in a local preview during a
+// gesture and commit once on mouse-up, so a drag is one undo transaction.
+class TrackAutomationEditor final : public juce::Component {
+public:
+    explicit TrackAutomationEditor(ProjectController& owner) : controller(owner) {
+        setName("Track automation");
+        addAndMakeVisible(trackBox); addAndMakeVisible(parameterBox); addAndMakeVisible(curveBox);
+        addAndMakeVisible(enableButton); addAndMakeVisible(hint);
+        trackBox.setName("Automation track"); parameterBox.setName("Automation parameter");
+        parameterBox.addItem("Volume", 1); parameterBox.addItem("Pan", 2); parameterBox.setSelectedId(1);
+        curveBox.setName("Automation interpolation");
+        curveBox.addItem("Linear", 1); curveBox.addItem("Hold", 2); curveBox.setSelectedId(1);
+        enableButton.setButtonText("Read"); enableButton.setClickingTogglesState(true);
+        enableButton.setTooltip("Enable playback of this automation lane");
+        hint.setText("Click to add; drag to move; right-click a point to delete. Values are absolute.", juce::dontSendNotification);
+        hint.setColour(juce::Label::textColourId, ui::colours::textDim); hint.setFont(ui::font(11.0f));
+        trackBox.onChange = parameterBox.onChange = [this] { preview.reset(); base.reset(); refresh(); };
+        enableButton.onClick = [this] {
+            const int track = selectedTrack(); const auto parameter = selectedParameter();
+            controller.editTimeline("Toggle automation read", [=](timeline::Timeline& t) {
+                for (auto& lane : t.automationLanes) if (lane.track == track && lane.parameter == parameter) {
+                    lane.enabled = !lane.enabled; return true;
+                }
+                return false;
+            });
+            refresh();
+        };
+        refresh();
+    }
+    void refresh() {
+        const auto& d = controller.document();
+        const int previous = trackBox.getSelectedId();
+        trackBox.clear(juce::dontSendNotification);
+        for (int t = 0; t < d.trackCount(); ++t) trackBox.addItem("Track " + juce::String(t + 1), t + 1);
+        trackBox.setSelectedId(juce::jlimit(1, d.trackCount(), previous > 0 ? previous : 1), juce::dontSendNotification);
+        const auto* lane = find(controller.timeline());
+        enableButton.setToggleState(lane != nullptr && lane->enabled, juce::dontSendNotification);
+        enableButton.setEnabled(lane != nullptr && !controller.isBusy());
+        repaint();
+    }
+    void resized() override {
+        auto bar = getLocalBounds().removeFromTop(30).reduced(6, 3);
+        trackBox.setBounds(bar.removeFromLeft(110)); bar.removeFromLeft(6);
+        parameterBox.setBounds(bar.removeFromLeft(110)); bar.removeFromLeft(6);
+        curveBox.setBounds(bar.removeFromLeft(95)); bar.removeFromLeft(6);
+        enableButton.setBounds(bar.removeFromLeft(60)); hint.setBounds(bar);
+    }
+    void paint(juce::Graphics& g) override {
+        g.fillAll(ui::colours::raised);
+        const auto area = plot(); if (area.isEmpty()) return;
+        g.setColour(ui::colours::window); g.fillRect(area);
+        const auto& t = preview ? *preview : controller.timeline();
+        const auto* lane = find(t);
+        const bool volume = selectedParameter() == automation::Parameter::volume;
+        const float baseline = volume ? 1.0f : 0.0f;
+        const float baselineY = yFor(baseline);
+        g.setColour(ui::colours::line); g.drawHorizontalLine(juce::roundToInt(baselineY), area.getX(), area.getRight());
+        if (lane == nullptr || lane->points.empty()) return;
+        g.setColour(lane->enabled ? ui::colours::accent : ui::colours::textDim);
+        juce::Path path; path.startNewSubPath(area.getX(), yFor(lane->points.front().value));
+        for (std::size_t i = 0; i < lane->points.size(); ++i) {
+            const auto& p = lane->points[i]; const float x = xFor(p.tick), y = yFor(p.value);
+            if (i > 0 && lane->points[i - 1].curve == automation::Curve::hold) path.lineTo(x, yFor(lane->points[i - 1].value));
+            path.lineTo(x, y);
+        }
+        path.lineTo(area.getRight(), yFor(lane->points.back().value));
+        g.strokePath(path, juce::PathStrokeType(1.5f));
+        for (const auto& p : lane->points) g.fillEllipse(xFor(p.tick) - 4.0f, yFor(p.value) - 4.0f, 8.0f, 8.0f);
+    }
+    void mouseDown(const juce::MouseEvent& e) override {
+        if (controller.isBusy() || !plot().contains(e.position)) return;
+        base = controller.timeline(); preview = *base;
+        auto* lane = editable(*preview);
+        int nearest = -1; float distance = 100.0f;
+        for (std::size_t i = 0; i < lane->points.size(); ++i) {
+            const float dx = xFor(lane->points[i].tick) - e.position.x, dy = yFor(lane->points[i].value) - e.position.y;
+            const float d = dx * dx + dy * dy;
+            if (d < distance) { distance = d; nearest = static_cast<int>(i); }
+        }
+        if (e.mods.isPopupMenu()) {
+            if (nearest >= 0) lane->points.erase(lane->points.begin() + nearest);
+            finish("Delete automation point"); return;
+        }
+        activeTick = nearest >= 0 ? lane->points[static_cast<std::size_t>(nearest)].tick : -1;
+        updatePoint(e.position); repaint();
+    }
+    void mouseDrag(const juce::MouseEvent& e) override { if (preview && !e.mods.isPopupMenu()) { updatePoint(e.position); repaint(); } }
+    void mouseUp(const juce::MouseEvent&) override { if (preview) finish("Edit automation point"); }
+private:
+    int selectedTrack() const { return std::max(0, trackBox.getSelectedId() - 1); }
+    automation::Parameter selectedParameter() const { return parameterBox.getSelectedId() == 2 ? automation::Parameter::pan : automation::Parameter::volume; }
+    const automation::Lane* find(const timeline::Timeline& t) const {
+        for (const auto& lane : t.automationLanes) if (lane.track == selectedTrack() && lane.parameter == selectedParameter()) return &lane;
+        return nullptr;
+    }
+    automation::Lane* editable(timeline::Timeline& t) {
+        for (auto& lane : t.automationLanes) if (lane.track == selectedTrack() && lane.parameter == selectedParameter()) return &lane;
+        t.automationLanes.push_back({selectedTrack(), selectedParameter(), true, {}});
+        return &t.automationLanes.back();
+    }
+    juce::Rectangle<float> plot() const { return getLocalBounds().withTrimmedTop(34).reduced(12, 8).toFloat(); }
+    float xFor(std::int64_t tick) const { const auto a = plot(); return a.getX() + a.getWidth() * static_cast<float>(static_cast<double>(tick) / controller.timeline().length()); }
+    float yFor(float value) const { const auto a = plot(); const float low = selectedParameter() == automation::Parameter::volume ? 0.0f : -1.0f; return a.getBottom() - (value - low) * 0.5f * a.getHeight(); }
+    void updatePoint(juce::Point<float> position) {
+        auto* lane = editable(*preview); const auto a = plot();
+        if (a.getWidth() <= 0 || a.getHeight() <= 0) return;
+        if (activeTick >= 0) std::erase_if(lane->points, [&](const automation::Point& p) { return p.tick == activeTick; });
+        const double fraction = std::clamp(static_cast<double>((position.x - a.getX()) / a.getWidth()), 0.0, 1.0);
+        activeTick = std::clamp<std::int64_t>(static_cast<std::int64_t>(std::llround(fraction * preview->length() / timeline::ticksPerStep)) * timeline::ticksPerStep, 0, preview->length());
+        const float low = selectedParameter() == automation::Parameter::volume ? 0.0f : -1.0f;
+        const float value = low + 2.0f * std::clamp((a.getBottom() - position.y) / a.getHeight(), 0.0f, 1.0f);
+        lane->put({activeTick, value, curveBox.getSelectedId() == 2 ? automation::Curve::hold : automation::Curve::linear});
+    }
+    void finish(const juce::String& label) {
+        // A load, undo or edit elsewhere during the gesture must not be overwritten.
+        if (base && preview && controller.timeline() == *base) {
+            const auto result = *preview;
+            controller.editTimeline(label, [result](timeline::Timeline& t) { t = result; return true; });
+        }
+        preview.reset(); base.reset(); activeTick = -1; refresh();
+    }
+    ProjectController& controller;
+    juce::ComboBox trackBox, parameterBox, curveBox;
+    juce::TextButton enableButton;
+    juce::Label hint;
+    std::optional<timeline::Timeline> preview, base;
+    std::int64_t activeTick{-1};
+};
+
 class TimelineView final : public juce::Component, private juce::ScrollBar::Listener {
 public:
     static constexpr int toolbarHeight = 46, scrollBarSize = 12, helpHeight = 22;
 
     explicit TimelineView(ProjectController& projectController)
-        : controller(projectController), canvas(projectController), hBar(false), vBar(true) {
+        : controller(projectController), canvas(projectController), hBar(false), vBar(true), automationEditor(projectController) {
         namespace col = ui::colours;
         setName("Arrangement");
+        addChildComponent(automationEditor);
+        addAndMakeVisible(automationButton);
+        automationButton.setButtonText("Automation"); automationButton.setClickingTogglesState(true);
+        automationButton.setName("Show automation lanes");
+        automationButton.onClick = [this] { automationEditor.setVisible(automationButton.getToggleState()); resized(); };
         addAndMakeVisible(canvas); addAndMakeVisible(hBar); addAndMakeVisible(vBar);
         hBar.addListener(this); vBar.addListener(this);
         hBar.setAutoHide(false); vBar.setAutoHide(true);
@@ -1498,6 +1633,7 @@ public:
         lengthSlider.setValue(t.lengthBars, juce::dontSendNotification);
         updating = false;
         canvas.refresh();
+        automationEditor.refresh();
         updateControls();
         layoutScroll();
     }
@@ -1523,7 +1659,9 @@ public:
         lengthSlider.setBounds(column(lengthLabel, 120));
         exportButton.setBounds(bar.removeFromRight(110).withTrimmedTop(14)); bar.removeFromRight(10);
         readout.setBounds(bar.withTrimmedTop(14));
-        help.setBounds(r.removeFromBottom(helpHeight).reduced(14, 0));
+        auto helpRow = r.removeFromBottom(helpHeight).reduced(14, 0);
+        automationButton.setBounds(helpRow.removeFromLeft(110)); helpRow.removeFromLeft(8); help.setBounds(helpRow);
+        if (automationEditor.isVisible()) automationEditor.setBounds(r.removeFromBottom(std::min(180, std::max(80, r.getHeight() / 3))));
         auto bottom = r.removeFromBottom(scrollBarSize);
         hBar.setBounds(bottom.withTrimmedLeft(TimelineCanvas::headerWidth).withTrimmedRight(scrollBarSize));
         vBar.setBounds(r.removeFromRight(scrollBarSize).withTrimmedTop(TimelineCanvas::topHeight));
@@ -1581,6 +1719,8 @@ private:
     ProjectController& controller;
     TimelineCanvas canvas;
     juce::ScrollBar hBar, vBar;
+    TrackAutomationEditor automationEditor;
+    juce::TextButton automationButton;
     juce::Label snapLabel, lengthLabel, readout, help;
     juce::ComboBox snapBox;
     juce::TextButton zoomOutButton, zoomInButton, fitButton, loopButton, markerButton, placeButton, exportButton;
