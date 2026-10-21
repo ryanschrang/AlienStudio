@@ -320,6 +320,7 @@ private:
                 }
             }
             clickBuffer[static_cast<std::size_t>(i)] = click.next();
+            automationTicks[static_cast<std::size_t>(i)] = -1.0;
             if (playNow && modeNow == 2 && !timelineSample(i)) {
                 allSoundOff(); playing.store(false); playNow = false;   // the song reached its end
             }
@@ -403,7 +404,19 @@ private:
             float left = plugins->live.getSample(0,i), right = plugins->live.getSample(1,i);
             for (std::size_t t = 0; t < sessionTracks; ++t) {
                 float l = plugins->tracks[t].getSample(0,i), r = plugins->tracks[t].getSample(1,i);
-                trackMixers[t].process(l,r);
+                auto settings = tracks[t].snapshot();
+                bool automated = false;
+                const double automationTick = automationTicks[static_cast<std::size_t>(i)];
+                if (modeNow == 2 && automationTick >= 0.0) {
+                    for (const auto& lane : song->timeline.automationLanes) {
+                        if (lane.track != static_cast<int>(t) || !lane.enabled || lane.points.empty()) continue;
+                        automated = true;
+                        if (lane.parameter == alien::automation::Parameter::volume) settings.gain = lane.valueAt(automationTick, settings.gain);
+                        else settings.pan = lane.valueAt(automationTick, settings.pan);
+                    }
+                }
+                if (automated) trackMixers[t].processAutomated(l, r, settings, anySolo);
+                else trackMixers[t].process(l,r);
                 peaks[t] = std::max(peaks[t], std::max(std::abs(l), std::abs(r)));
                 left += l; right += r;
             }
@@ -716,6 +729,7 @@ private:
         if (tl.loopEnabled && loopArmed && now >= static_cast<double>(tl.loopEnd))
             seekTimeline(static_cast<double>(tl.loopStart) + std::max(0.0, timelineTick - static_cast<double>(tl.loopEnd)), false);
         if (timelineTick + tickEpsilon >= std::min(static_cast<double>(tl.length()), timelineStopAt)) return false;
+        automationTicks[static_cast<std::size_t>(sample)] = timelineTick;
         const double at = timelineTick + tickEpsilon;
         for (std::size_t t = 0; t < sessionTracks; ++t)
             if (at >= trackLanes[t].boundary) syncTrack(t);
@@ -994,6 +1008,7 @@ private:
     int currentLiveDrumTrack{-1};
     alien::MetronomeClick click;
     std::array<float, alien::PluginRuntime::blockSize> clickBuffer{};
+    std::array<double, alien::PluginRuntime::blockSize> automationTicks{};
     std::int64_t lastClickBeat{-1};
     double countInBeats{}, countInTotalBeats{};
     int monitorTrack{-1}; // track whose instrument plays live input during a take, or -1
