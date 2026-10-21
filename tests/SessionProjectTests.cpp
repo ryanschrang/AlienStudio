@@ -211,6 +211,11 @@ int main() {
     auto& audio = source.clips[3][1];
     audio.pattern.add(48, 0.0, 4.0);
     audio.audioFilePath = "C:\\Music\\Ambient \"take\".mp3";
+    alien::timeline::Region edited;
+    edited.row = 1; edited.source = 3; edited.start = 0; edited.length = alien::timeline::ticksPerBar;
+    edited.audioOffset = 0.25; edited.gain = 1.5; edited.fadeIn = 120; edited.fadeOut = 240;
+    edited.loopSource = true; edited.reversed = true;
+    require(source.timeline.place(edited), "test project contains a non-destructively edited audio region");
 
     const auto json = alien::serializeSessionProject(source);
     require(json.isNotEmpty(), "valid project serializes to JSON");
@@ -218,6 +223,20 @@ int main() {
     juce::String error;
     require(alien::parseSessionProject(json, restored, error), "serialized project parses");
     require(error.isEmpty() && restored.valid(), "loaded project passes model validation");
+    const auto& restoredEdit = restored.timeline.regions.front();
+    require(restoredEdit.audioOffset == 0.25 && restoredEdit.gain == 1.5 && restoredEdit.fadeIn == 120
+        && restoredEdit.fadeOut == 240 && restoredEdit.loopSource && restoredEdit.reversed,
+        "non-destructive audio edits round-trip in the current project format");
+    auto missingEdit = juce::JSON::parse(json);
+    auto* missingRegion = missingEdit.getDynamicObject()->getProperty("timeline").getDynamicObject()
+        ->getProperty("regions").getArray()->getReference(0).getDynamicObject();
+    missingRegion->removeProperty("fadeOut");
+    require(!alien::parseSessionProject(juce::JSON::toString(missingEdit), restored, error),
+        "a current project missing audio edit metadata is rejected");
+    missingEdit.getDynamicObject()->setProperty("version", 8);
+    require(alien::parseSessionProject(juce::JSON::toString(missingEdit), restored, error)
+        && restored.timeline.regions.front().gain == 1.0 && restored.timeline.regions.front().fadeOut == 0,
+        "version 8 regions without audio edit metadata migrate to safe defaults");
     require(restored.launchQuantizationSteps == 4 && restored.selectedTrack == 2
         && restored.selectedScene == 3 && restored.bpm == 137 && restored.synthPreset == 2
         && restored.stepPattern == source.stepPattern
