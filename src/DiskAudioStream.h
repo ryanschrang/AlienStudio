@@ -54,6 +54,7 @@ public:
             const auto generation = nextGeneration;
             const auto available = ring.available();
             ring.consume(available); // Consumer ownership; slots remain safe to reuse.
+            if (deterministic.load(std::memory_order_acquire)) { serveHere({source, generation, startFrame}); return generation; }
             buffers[back] = {source, generation, startFrame};
             latest.store(generation, std::memory_order_release);
             back = middle.exchange(back | dirty, std::memory_order_acq_rel) & 3;
@@ -72,6 +73,7 @@ public:
                     float fraction, float& left, float& right) noexcept {
             if (!ready(generation) || failed(generation) || first < 0 || second < first
                 || !std::isfinite(fraction) || fraction < 0 || fraction > 1) return false;
+            if (deterministic.load(std::memory_order_acquire) && !readAhead(generation, first, second)) return false;
             Frame a, b;
             // One bounded drain discards stale generations or frames before first.
             // Producer never overwrites unread frames, including while peeking.
@@ -102,6 +104,67 @@ public:
     private:
         friend class DiskAudioStreamService;
         struct Request { const DiskAudioFile* source{}; std::uint64_t generation{}; std::int64_t startFrame{}; };
+        // Deterministic mode (offline rendering): the thread that plays the voice also reads for it. The ring
+        // already holds everything a sample needs when sample() looks, so the result cannot depend on timing.
+        void serveHere(const Request& request) noexcept {
+            current = request;
+            latest.store(request.generation, std::memory_order_release);
+            readyGeneration.store(0, std::memory_order_release);
+            reader.reset();
+            position = request.startFrame;
+            buffered = 0;
+            if (!request.source) return;
+            if (request.startFrame < 0 || request.startFrame >= request.source->frames) {
+                failedGeneration.store(request.generation, std::memory_order_release);
+                return;
+            }
+            try { reader = request.source->open(); } catch (...) { reader.reset(); }
+            if (!reader || !fillHere(static_cast<std::int64_t>(prebufferFrames))) {
+                failedGeneration.store(request.generation, std::memory_order_release);
+                reader.reset();
+                return;
+            }
+            readyGeneration.store(request.generation, std::memory_order_release);
+        }
+        // Reads until `wanted` frames lie ahead of the read position or the file ends. False if a read failed.
+        bool fillHere(std::int64_t wanted) noexcept {
+            const auto* source = current.source;
+            const std::int64_t stop = std::min(source->frames, position + wanted);
+            while (position < stop) {
+                const auto room = ring.writable();
+                if (room == 0) return true;
+                const int count = static_cast<int>(std::min<std::uint64_t>(
+                    {room, 1024, static_cast<std::uint64_t>(stop - position)}));
+                std::array<float, 1024> left{}, right{};
+                try {
+                    if (!reader->read(position, left.data(), source->channels == 2 ? right.data() : nullptr, count)) return false;
+                } catch (...) { return false; }
+                std::array<Frame, 1024> block{};
+                for (int i = 0; i < count; ++i) {
+                    const float l = std::isfinite(left[static_cast<std::size_t>(i)]) ? left[static_cast<std::size_t>(i)] : 0.0f;
+                    const float r = source->channels == 2
+                        ? (std::isfinite(right[static_cast<std::size_t>(i)]) ? right[static_cast<std::size_t>(i)] : 0.0f) : l;
+                    block[static_cast<std::size_t>(i)] = {l, r, current.generation, position + i};
+                }
+                const auto published = ring.write(std::span<const Frame>(block.data(), static_cast<std::size_t>(count)));
+                position += static_cast<std::int64_t>(published);
+                buffered += published;
+                if (published == 0) return true;
+            }
+            return true;
+        }
+        bool readAhead(std::uint64_t generation, std::int64_t first, std::int64_t second) noexcept {
+            if (current.generation != generation || !current.source || !reader) return false;
+            releaseBefore(generation, first);
+            if (position <= second || static_cast<std::int64_t>(ring.available()) < static_cast<std::int64_t>(prebufferFrames)) {
+                if (!fillHere(second + 1 - position + static_cast<std::int64_t>(prebufferFrames))) {
+                    failedGeneration.store(generation, std::memory_order_release);
+                    reader.reset();
+                    return false;
+                }
+            }
+            return true;
+        }
         bool consumeRequest(Request& request) noexcept {
             if ((middle.load(std::memory_order_acquire) & dirty) == 0) return false;
             front = middle.exchange(front, std::memory_order_acq_rel) & 3;
@@ -119,6 +182,7 @@ public:
         std::unique_ptr<DiskAudioReader> reader;
         std::int64_t position{};
         std::size_t buffered{};
+        std::atomic<bool> deterministic{};   // see DiskAudioStreamService::setDeterministic
     };
 
     DiskAudioStreamService() : voices(std::make_unique<std::array<Voice, voiceCount>>()),
@@ -141,9 +205,16 @@ public:
     Voice* voice(std::size_t index) noexcept {
         return index < voiceCount ? &(*voices)[index] : nullptr;
     }
+    // Offline rendering: serve every voice on the thread that plays it, so a render is the same
+    // however the machine happens to schedule threads. For a service that has not played anything
+    // yet (a render's own engine); the worker then leaves these voices alone for good.
+    void setDeterministic() noexcept {
+        for (auto& voice : *voices) voice.deterministic.store(true, std::memory_order_release);
+    }
     static constexpr std::size_t totalSampleStorageBytes = voiceCount * Voice::sampleStorageBytes;
 private:
     bool step(Voice& voice) {
+        if (voice.deterministic.load(std::memory_order_acquire)) return false;   // served by the thread that plays it
         Voice::Request request;
         if (voice.consumeRequest(request)) {
             voice.current = request;

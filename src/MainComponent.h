@@ -8,13 +8,13 @@
 #include "ProjectController.h"
 #include "StepSequencerView.h"
 #include "ChannelRackView.h"
+#include "TimelineView.h"
 #include "SessionView.h"
 #include "TopBar.h"
 #include "ViewModes.h"
 #include "ShellPanels.h"
 #include "StudioWidgets.h"
 #include "DrumSamplerPanel.h"
-#include "ArrangementPanel.h"
 #include "AudioToolsPanel.h"
 #include "AudioFileWrite.h"
 #include "DiskRecording.h"
@@ -51,14 +51,13 @@ public:
         tabs.addTab("Session", alien::ui::colours::surface, &sessionView, false);
         tabs.addTab("Mixer", alien::ui::colours::surface, &mixerPanel, false);
         tabs.addTab("Drums", alien::ui::colours::surface, &drumPanel, false);
-        tabs.addTab("Arrangement", alien::ui::colours::surface, &arrangementPanel, false);
+        tabs.addTab("Arrangement", alien::ui::colours::surface, &timelineView, false);
         tabs.addTab("Audio lab", alien::ui::colours::surface, &audioTools, false);
         drumPanel.onLoad = [this](int t, int p, const juce::File& f) { controller.loadDrum(f, t, p); };
         drumPanel.onClear = [this](int t, int p) { controller.clearDrum(t, p); refreshExtraViews(); };
         drumPanel.onHit = [this](int t, int p) { engine.drumAuditions[t].push(alien::drumBaseNote + p, 0.8f); };
         drumPanel.onRoute = [this](int t) { engine.liveDrumTrack.store(t); };
-        arrangementPanel.onChange = [this] { controller.setArrangement(arrangementPanel.getArrangement()); };
-        arrangementPanel.onExport = [this] { chooseWavExport(); };
+        wireTimeline();
         audioTools.onRecord = [this] { chooseRecording(); };
         audioTools.onSettings = [this] { showAudioSettings(); };
         audioTools.onWarp = [this] { chooseTempoWarp(); };
@@ -188,12 +187,7 @@ private:
     // Wiring ------------------------------------------------------------------
     void wireTopBar() {
         topBar.onViewSelected = [this](int index) { showView(index); };
-        topBar.onPlayToggled = [this] {
-            // During a count-in the transport has not started, so Play/Stop cancels the take instead.
-            if (engine.recording.phase.load() == alien::RecordControls::countIn) { controller.stopRecording(); return; }
-            releaseNotes();
-            engine.playing.store(!engine.playing.load());
-        };
+        topBar.onPlayToggled = [this] { togglePlay(); };
         topBar.onRecordToggled = [this] { toggleRecording(); };
         topBar.onMetronomeToggled = [this](bool on) {
             auto settings = controller.document().recording;
@@ -214,6 +208,39 @@ private:
         topBar.onSavePortable = [this] { controller.chooseSavePath(true); };
         topBar.onUndo = [this] { undo(); };
         topBar.onRedo = [this] { redo(); };
+    }
+
+    void togglePlay() {
+        // During a count-in the transport has not started, so Play/Stop cancels the take instead.
+        if (engine.recording.phase.load() == alien::RecordControls::countIn) { controller.stopRecording(); return; }
+        releaseNotes();
+        engine.playing.store(!engine.playing.load());
+    }
+
+    // The Arrangement screen: a click on the ruler (or a marker) picks where playback starts or jumps to, Space is
+    // the transport, and double-clicking a clip opens what it plays.
+    void wireTimeline() {
+        timelineView.onExport = [this](std::int64_t from, std::int64_t to) { chooseWavExport(from, to); };
+        timelineView.onTitleChanged = [this] { if (tabs.getCurrentTabIndex() == 5) updateEditorTitle(); };
+        auto& canvas = timelineView.timelineCanvas();
+        canvas.onSeek = [this](std::int64_t tick) { engine.timelineSeek.store(tick); };
+        canvas.onPlayToggle = [this] { togglePlay(); };
+        canvas.onOpenSource = [this](int row, int source) { openTimelineSource(row, source); };
+    }
+
+    // Double-click on a clip: edit what it plays (the piano roll or Session for a clip, the Channel Rack for a pattern).
+    void openTimelineSource(int row, int source) {
+        if (alien::timeline::isPatternRow(row)) {
+            controller.selectRackPattern(source);
+            rackView.refresh();
+            showView(alien::rackTabIndex);
+            return;
+        }
+        controller.selectClip(row, source);
+        loadSelectedClip();
+        sessionView.refreshFromDocument();
+        if (controller.document().selectedClip().isAudioClip()) showView(2);
+        else { showView(1); pianoRoll.grabKeyboardFocus(); }
     }
 
     void wireController() {
@@ -416,7 +443,7 @@ private:
         case 2: workspace.setEditorTitle("Session", sessionView.subtitle()); break;
         case 3: workspace.setEditorTitle("Mixer", juce::String(d.trackCount()) + " channels"); break;
         case 4: workspace.setEditorTitle("Drum Sampler", "Eight sample pads per track"); break;
-        case 5: workspace.setEditorTitle("Arrangement", "Session clips on a shared timeline"); break;
+        case 5: workspace.setEditorTitle("Arrangement", timelineView.subtitle()); break;
         case 6: workspace.setEditorTitle("Audio Lab", "Record a take or render a tempo match"); break;
         case 7: workspace.setEditorTitle("Plugin Rack", "VST3 instruments and ordered track / master FX"); break;
         case 8: workspace.setEditorTitle("Channel Rack", rackView.subtitle()); break;
@@ -570,7 +597,7 @@ private:
         int controllerAction = -1;
         while (engine.controllerActions.pop(controllerAction)) sessionView.handleControllerAction(controllerAction);
         sessionView.tick();
-        arrangementPanel.setPlayhead(engine.arrangementPosition.load());
+        timelineView.setPlayhead(engine.patternMode.load() == 2 && isPlaying ? engine.timelinePosition.load() : -1);
         audioTools.setDestination(d.selectedTrack, d.selectedScene);
         if (activeCapture) {
             audioTools.setMeter(activeCapture->level.load());
@@ -752,7 +779,7 @@ private:
         projectBusy = busy;
         controller.setExternalBusy(busy);
         topBar.setBusy(busy); sessionView.setBusy(busy); drumPanel.setBusy(busy);
-        mixerPanel.setEnabled(!busy); arrangementPanel.setEnabled(!busy);
+        mixerPanel.setEnabled(!busy);   // the Arrangement stays usable (playing, scrolling); the controller refuses edits while busy
     }
     void finishAudioImport(const juce::File& file, int track, int scene, const alien::AudioClipImportResult& result) {
         if (!controller.installAudio(file, track, scene, result.clip)) audioTools.setStatus("Audio could not be installed: session memory limit reached.");
@@ -760,45 +787,47 @@ private:
     void refreshExtraViews() {
         const auto& d = controller.document();
         audioTools.setDestination(d.selectedTrack, d.selectedScene);
-        juce::StringArray names, scenes;
-        std::vector<juce::Colour> colours;
+        juce::StringArray names;
         std::array<std::array<juce::String, alien::drumPadCount>, alien::maxSessionTracks> paths{};
-        for (int t = 0; t < d.trackCount(); ++t) {
-            names.add(d.tracks[t].name); paths[t] = d.tracks[t].drumPaths;
-            colours.push_back(alien::ui::trackColour(d.tracks[t].colour));
-        }
-        for (const auto& scene : d.scenes) scenes.add(scene.name);
+        for (int t = 0; t < d.trackCount(); ++t) { names.add(d.tracks[t].name); paths[t] = d.tracks[t].drumPaths; }
         drumPanel.setTrackNames(names); drumPanel.setPaths(paths);
         refreshPlugins();
-        arrangementPanel.setGridNames(names, scenes, colours); arrangementPanel.setArrangement(d.arrangement);
+        timelineView.refresh();
+        // Where the song will start playing is the view's play position; tell the engine unless it is playing (a jump is not wanted here).
+        if (!engine.playing.load()) engine.timelineSeek.store(timelineView.timelineCanvas().cursorTick());
     }
-    void chooseWavExport() {
+    // `from` and `to` are timeline ticks; to == -1 renders through the end of the song. While a render runs, asking again cancels it.
+    void chooseWavExport(std::int64_t from = 0, std::int64_t to = -1) {
         if (exportCancellation) { exportCancellation->store(true); return; }
         if (projectBusy || controller.isBusy()) return;
         exportFileChooser = std::make_unique<juce::FileChooser>("Export arrangement WAV", juce::File{}, "*.wav");
         juce::Component::SafePointer<MainComponent> safe(this);
         exportFileChooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
-            [safe](const juce::FileChooser& chooser) { if (safe && chooser.getResult() != juce::File{}) safe->exportWav(chooser.getResult().withFileExtension("wav")); });
+            [safe, from, to](const juce::FileChooser& chooser) { if (safe && chooser.getResult() != juce::File{}) safe->exportWav(chooser.getResult().withFileExtension("wav"), from, to); });
     }
-    void exportWav(juce::File file) {
+    void exportWav(juce::File file, std::int64_t from = 0, std::int64_t to = -1) {
         if (projectBusy || controller.isBusy()) return;
         snapshotPlugins();
         auto song = controller.captureArrangement();
+        alien::WavExportOptions options;
+        options.fromTick = from; options.toTick = to;
+        auto keepAlive = std::make_shared<std::vector<std::shared_ptr<const alien::SessionAudioClip>>>();
+        options.rackClips = controller.rackClipsForExport(*keepAlive);
         auto project = std::make_shared<alien::SessionProjectData>(alien::toProjectData(controller.document()));
         auto renderEngine = std::make_shared<ToneEngine>();
         renderEngine->prepare(48000);
         { alien::PluginHost renderHost(*renderEngine->plugins);
           const auto errors=renderHost.restore(pluginStates(),controller.document().masterPlugins,48000);
-          if(errors.isNotEmpty()){ arrangementPanel.setStatus("Export stopped: " + errors);return; } }
+          if(errors.isNotEmpty()){ timelineView.setStatus("Export stopped: " + errors);return; } }
         auto assets = controller.document();
         alien::DrumSamplePointers drums{};
         for (int t = 0; t < assets.trackCount(); ++t) for (int p = 0; p < alien::drumPadCount; ++p) drums[t][p] = assets.tracks[t].drumAssets[p].get();
         exportCancellation = std::make_shared<std::atomic<bool>>(false); auto cancel = exportCancellation;
-        setProjectBusy(true); arrangementPanel.setEnabled(true); arrangementPanel.setStatus("Exporting WAV. Click Export WAV again to cancel.");
+        setProjectBusy(true); timelineView.setExporting(true); timelineView.setStatus("Exporting WAV. Click Cancel export to stop.");
         juce::Component::SafePointer<MainComponent> safe(this);
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [safe, file, song, project, assets, drums, cancel, renderEngine] {
-            juce::String error; const bool ok = alien::exportArrangementWav(file, *project, *song, drums, *cancel, error, renderEngine.get());
-            juce::MessageManager::callAsync([safe, file, ok, error] { if (!safe) return; safe->exportCancellation.reset(); safe->setProjectBusy(false); safe->arrangementPanel.setStatus(ok ? "Exported " + file.getFullPathName() : error); });
+        std::function<juce::ThreadPoolJob::JobStatus()> job = [safe, file, song, project, assets, drums, cancel, renderEngine, options, keepAlive] {
+            juce::String error; const bool ok = alien::exportArrangementWav(file, *project, *song, drums, *cancel, error, renderEngine.get(), options);
+            juce::MessageManager::callAsync([safe, file, ok, error] { if (!safe) return; safe->exportCancellation.reset(); safe->setProjectBusy(false); safe->timelineView.setExporting(false); safe->timelineView.setStatus(ok ? "Exported " + file.getFullPathName() : error); });
             return juce::ThreadPoolJob::jobHasFinished;
         };
         audioWorkPool.addJob(std::move(job));
@@ -969,7 +998,7 @@ private:
     bool loadingClip{}, suppressPianoRollCommit{}, wasDirty{};
     int statusTicks{};
     alien::DrumSamplerPanel drumPanel;
-    alien::ArrangementPanel arrangementPanel;
+    alien::TimelineView timelineView{controller};
     alien::AudioToolsPanel audioTools;
     alien::ChannelRackView rackView{controller};
     bool projectBusy{}, closeAfterTake{};

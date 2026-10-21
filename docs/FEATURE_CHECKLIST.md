@@ -23,7 +23,7 @@ Draft work below is not available in main until this PR is merged.
 | REC-01 | Mono/stereo disk recording and interrupted-take recovery | Implemented | LongRecordingTests; PR #38 merged; no multitrack arming yet |
 | WARP-01 | Offline fixed-tempo pitch-preserving WAV render | Implemented | LongTempoWarpTests; PR #39 merged via #38; 0.5-2x ratio |
 | WARP-02 | Rendered-clip playback workflow | User confirmed | Render, load within budget, launch in Session; not MP3 preview |
-| ARR-01 | Bar-based arrangement and WAV export | Limited | ArrangementTests; 128 bars / 128 regions; no sample-level editing |
+| ARR-01 | Arrangement timeline and WAV export | Implemented; Windows CI and listening pending | TimelineTests, TimelinePlaybackTests, TimelineViewTests, ArrangementTests; 16,384 bars / 1,024 clips; fades and sample-level edits are EDIT-01 |
 | PLUG-01 | Stereo VST3 instruments, track/master FX and editors | Partial / reported failures | PluginRuntimeTests; some scans absent; editor selection feedback gap |
 | QA-01 | Production and live starter sessions | Implemented | Self-contained built-in MIDI sounds; native parser test added |
 | QA-02 | Four-track recording reference session | Implemented | Original four-second WAVs; record/monitoring acceptance still pending |
@@ -31,7 +31,7 @@ Draft work below is not available in main until this PR is merged.
 | STREAM-02 | Decoder worker, prebuffer and per-playback reader | Implemented | Two endpoints per track; late launch waits at quantization; duplicate clips use independent readers |
 | STREAM-03 | Large-file import and project load | Implemented | Session clips stream above decoded budget; drum and Channel Rack sampler limits remain |
 | STREAM-04 | Long waveform cache, seek/relaunch and missing media UI | Implemented in this PR | 65,536-peak background cache, source-stamp invalidation, zoom/scroll and explicit UI states |
-| STREAM-05 | Streamed arrangement playback/export | Partial | Live arrangement playback uses the stream; export rejects long clips clearly until deterministic offline reads land |
+| STREAM-05 | Streamed arrangement playback/export | Implemented; Windows CI and listening pending | Timeline playback streams, prefetches a quarter-second ahead and catches up if a stream is late; export renders streamed clips on its own thread (DeterministicStreamedExportTests: streamed = decoded for trimmed, split, replaced and off-grid clips, any block size, 18-hour timeline) |
 | EDIT-01 | Non-destructive audio trim, split, slip, fades/crossfades | Planned: milestone 2 | Source offsets and edit bounds persisted with undo |
 | REC-02 | Track arming, input routing, monitoring, punch and take lanes | Planned: milestone 3 | Simultaneous recording and latency compensation |
 | MIDI-02 | MIDI recording, count-in, overdub and controller editing | Implemented | Record timing and sustain with sample-based tests |

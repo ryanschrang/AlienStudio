@@ -187,6 +187,48 @@ public:
             activeClip = loadedClip;
         }
     }
+    // Timeline playback. The owner sets the audio rate and tempo once per block.
+    void setTiming(double rate, double tempo) noexcept {
+        sampleRate = std::isfinite(rate) && rate > 0 ? rate : 44100.0;
+        bpm = std::isfinite(tempo) && tempo > 0 ? std::clamp(tempo, 1.0, 1000.0) : 120.0;
+    }
+    // Starts `replacement` playing at once, `startStep` sixteenths into its loop
+    // (past the loop length it wraps, and counts the passes so probabilistic notes
+    // come out the same however the timeline was entered). Notes that cover that
+    // point sound immediately; what was playing is released first.
+    template<class Send>
+    bool startAt(const PianoRollPattern& replacement, int clipIndex, double startStep, Send&& send) noexcept {
+        if (!replacement.valid() || clipIndex < -1 || !std::isfinite(startStep) || startStep < 0.0) return false;
+        stop(send);
+        pattern = replacement;
+        active.fill(false);
+        held.fill(0);
+        pending = false; synchronizedPending = false;
+        loadedClip = activeClip = clipIndex;
+        const double loop = static_cast<double>(pattern.loopSteps);
+        const double wrapped = std::fmod(startStep, loop);
+        cycle = static_cast<std::uint32_t>(startStep / loop);
+        const int whole = std::min(static_cast<int>(wrapped), pattern.loopSteps - 1);
+        intervalSamples = sampleRate * 60.0 / (bpm * 4.0);
+        running = true; step = -1; nextStep = whole;
+        untilStep = -(wrapped - whole) * intervalSamples;   // the first sample lands part-way into the sixteenth
+        quantizationPhase = whole % 16;
+        rebuildEvents();
+        const double ticks = wrapped * PianoRollPattern::ticksPerStep;
+        nextEvent = 0;
+        while (nextEvent < eventCount && events[nextEvent].ticks < ticks - tickTolerance) ++nextEvent;
+        reconcile = true;   // notes that began earlier but still cover this point sound now
+        return true;
+    }
+    // Swaps in an edited version of the pattern that is playing, keeping notes
+    // that did not change sounding. Same loop length only; a different length
+    // needs startAt, because the position inside the loop no longer means the same.
+    template<class Send>
+    bool updatePattern(const PianoRollPattern& replacement, Send&& send) noexcept {
+        if (!running || !replacement.valid() || replacement.loopSteps != pattern.loopSteps) return false;
+        replace(replacement, send);
+        return true;
+    }
     bool queuePattern(const PianoRollPattern& replacement, int clipIndex, bool waitForSynchronizedLaunch = false,
                       int launchQuantizationSteps = 64) noexcept {
         if (!replacement.valid() || clipIndex < -1) return false;

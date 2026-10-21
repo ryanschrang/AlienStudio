@@ -71,9 +71,9 @@ static void roundTripAndValidation() {
     auto missing = juce::JSON::parse(json);
     missing.getDynamicObject()->removeProperty("channelRack");
     require(!alien::parseSessionProject(juce::JSON::toString(missing), legacy, error) && error.isNotEmpty(),
-            "a version 7 project must carry its rack");
+            "a project of the current version must carry its rack");
     auto future = juce::JSON::parse(json);
-    future.getDynamicObject()->setProperty("version", 8);
+    future.getDynamicObject()->setProperty("version", 9);
     require(!alien::parseSessionProject(juce::JSON::toString(future), legacy, error), "newer versions are still refused");
 
     // Damaged racks are refused rather than opened as something else.
@@ -504,6 +504,47 @@ static void saveOpenAndRelink() {
     std::cout << "PASS: rack samples save, collect, reopen offline, and relink\n";
 }
 
+// What an arrangement export is handed: the sound for each channel, kept alive while it renders.
+static void exportHandOff() {
+    const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("AlienStudioRackExport", "", false);
+    require(root.createDirectory().wasOk(), "temp directory");
+    alien::ProjectController::recoveryDirectoryOverride() = root.getChildFile("Recovery");
+    ToneEngine engine; engine.prepare(48000);
+    alien::ProjectController c(engine);
+    c.pushDocumentToEngine();
+    const int count = c.channelRack().channelCount;
+    require(count == 4, "the default rack has four channels");
+
+    std::vector<std::shared_ptr<const alien::SessionAudioClip>> keep;
+    auto clips = c.rackClipsForExport(keep);
+    for (int i = 0; i < count; ++i)
+        require(clips[static_cast<std::size_t>(i)] != nullptr && clips[static_cast<std::size_t>(i)] == engine.rackSamples[static_cast<std::size_t>(i)].load(),
+                "an export plays each built-in channel's sound, the very one the engine plays");
+    for (int i = count; i < maxChannels; ++i) require(clips[static_cast<std::size_t>(i)] == nullptr, "channels the rack does not have are silent");
+    require(keep.empty(), "built-in sounds live for the whole program and need no keep-alive");
+
+    // A loaded file replaces the built-in sound of its channel, and is held for the length of the render.
+    std::atomic<bool> cancel{false}; juce::String error;
+    const auto file = root.getChildFile("export-tone.wav");
+    require(alien::writeClipWav(file, *toneClip(0.5f), cancel, error), "write a sample");
+    c.loadRackSample(file, 1); waitIdle(c);
+    keep.clear();
+    clips = c.rackClipsForExport(keep);
+    require(clips[1] != nullptr && clips[1] == engine.rackSamples[1].load() && clips[1]->frames == 6000, "a loaded file is what channel 2 exports");
+    require(keep.size() == 1 && keep[0].get() == clips[1], "and the export keeps that audio alive");
+    require(clips[0] == engine.rackSamples[0].load() && clips[2] == engine.rackSamples[2].load() && clips[3] == engine.rackSamples[3].load(), "the other channels are unchanged");
+
+    // A channel whose file is not loaded (missing) exports silence, and keeps nothing alive.
+    require(c.editRack("Add a missing sample", [](Project& p) { return p.addChannel("Ghost", "C:/Nowhere/ghost.wav"); }), "add a channel whose file does not exist");
+    keep.clear();
+    clips = c.rackClipsForExport(keep);
+    require(c.channelRack().channelCount == 5 && clips[4] == nullptr && keep.size() == 1, "a missing sample exports silence and is not kept");
+    require(clips[1] != nullptr, "a missing file elsewhere does not disturb the loaded one");
+    c.discardRecovery();
+    root.deleteRecursively();
+    std::cout << "PASS: the export is handed the same sounds the engine plays\n";
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     roundTripAndValidation();
@@ -512,5 +553,6 @@ int main() {
     trackStructureFollowsRoutes();
     saveOpenAndRelink();
     reloadAndRelinkEdgeCases();
+    exportHandOff();
     return 0;
 }

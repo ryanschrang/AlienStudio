@@ -51,7 +51,7 @@ references remain four seconds at 8 kHz. Do not import
 generated hours expecting baseline support: 128 MiB decoded-clip and 512 MiB
 retained-session limits still apply. Use these sources when STREAM-02/03 land,
 then test several tracks, duplicate-source launches, failures and memory use.
-The current arrangement is capped at 128 bars; long-duration checks use Session.
+The Arrangement timeline runs to 16,384 bars (18 hours at 60 BPM), so long sources can be placed and exported there as well as launched in Session.
 
 ## Automated validation
 

@@ -2,8 +2,8 @@
 
 Baseline: main 8fbc9f4. Current import still rejects audio above 128 MiB decoded;
 the session retains at most 512 MiB. Recording/rendering to disk does not remove
-these playback limits. Arrangement is limited to 128 bars, so hour-long acceptance
-currently belongs in Session; raising timeline duration is a separate model change.
+these playback limits. The Arrangement timeline runs to 16,384 bars (18 h 12 min at
+60 BPM), so hour-long clips can be placed and exported there as well as in Session.
 
 ## First increment in this PR
 

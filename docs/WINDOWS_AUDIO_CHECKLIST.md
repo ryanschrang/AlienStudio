@@ -126,7 +126,60 @@ sample rate, buffer size, MIDI controller, display scale, and pass/fail notes.
     change patterns and lengths while playing, edit steps while playing, and change the audio
     device and its sample rate. Nothing may stick, click badly, hang or play on after Stop;
     note any one-block glitch when moving channels or changing sounds during playback.
-    Confirm that the rack is silent in Song mode and in Export WAV (not yet supported).
+    Confirm that the rack is silent in Song mode and in Export WAV unless patterns have been
+    placed on the Arrangement timeline's pattern lanes (items 25 to 34).
+25. Arrangement timeline, placing: on the Arrange tab, double-click empty spots in several track
+    lanes and in a pattern lane; right-click an empty spot and pick a clip or pattern; use
+    Place... Confirm each lands where clicked, on the grid, with the right colour, name and
+    contents (notes, waveform or steps). Place past the end of the song: the song must grow.
+    Open the clip by double-click (Piano Roll, Session, Rack) and edit it: every placed copy
+    must change with it.
+26. Arrangement timeline, mouse editing: move, resize, trim the left edge, Ctrl-drag copy and
+    drag a pattern clip between lanes; Alt must ignore the grid. Draw selection boxes in empty
+    space (also with Shift held), Shift/Ctrl-click and Ctrl+A. Everything under the pointer must
+    follow it without lag at 100%/150%/200% scaling and the minimum window size, and every
+    drag must undo and redo as one step.
+27. Arrangement timeline, keyboard: Delete, Ctrl+X/C/V/D/A/G, Ctrl+Shift+G, S or Ctrl+E,
+    M, L, K, arrows (with and without Shift and Ctrl), Home/End, Space, +/-, Ctrl+0.
+    Confirm the typing piano does not sound while the timeline has focus for these keys, that
+    typing in a text box (e.g. renaming a marker) is not hijacked, and that Ctrl+Z/Y/S/O/N
+    still work.
+28. Arrangement timeline, zoom and scrolling: wheel, Shift+wheel, Ctrl+wheel (zoom keeps the
+    point under the pointer), +/-, Fit song, scroll bars and trackpad gestures with a 4-bar,
+    64-bar and 512-bar song (and one of several thousand bars) and 1 to 16+ tracks. The ruler, clips, markers, loop strip and
+    playhead must stay aligned and legible, with no flicker or runaway scrolling. Follow
+    must keep the playhead in view during playback and let go when you scroll yourself.
+29. Arrangement timeline, playback from anywhere: click the ruler at different positions while
+    stopped and while playing; press Play and Stop and Play again. Playback must begin at the
+    cursor (stopped) or jump there at once (playing) with no stuck notes, hung hats or
+    dropouts. Start in the middle of a held MIDI note, a long audio clip and a pattern clip
+    that begins before the cursor: audio and notes must be right (notes already started are
+    not expected to sound), and the rack must stay on the beat.
+30. Arrangement timeline, loop range: set the loop by dragging, move it, resize each end,
+    double-click for one bar, turn it on and off with L and the Loop button while playing.
+    The wrap point must be gapless and in time with the metronome at 60/120/200 BPM, with
+    notes, audio and rack patterns restarting correctly and nothing hanging over the wrap.
+31. Arrangement timeline, markers: add (K, double-click, menu), rename, move, recolour,
+    delete, jump with Ctrl+Left/Right and click-to-start. Names must be clipped, never
+    overlap the ruler, and survive save and reopen. Add well over 30 markers.
+32. Arrangement timeline, rack on the timeline: layer patterns on two and four pattern
+    lanes, change a pattern's steps while the song plays, send channels to Tracks, mute/solo
+    tracks, and compare live playback to Export WAV (whole song and loop range) at 60/120/200
+    BPM. Level, timing, swing, choke groups and tails after the last clip must agree.
+33. Arrangement timeline, edits while playing: move, delete, split, paste, nudge, mute, change
+    the song length, undo and redo during playback. Playback must continue without a restart
+    or a stuck note; note any one-block glitch.
+34. Arrangement timeline, projects: save and reopen (also Save portable) a song with every
+    kind of clip, a loop and markers. Open a project made with the earlier bar-based
+    arrangement (v5 to v7): each old region must appear as a clip at the same bar and sound
+    the same. Delete a track or scene that has clips on the timeline, then undo.
+35. Arrangement timeline, long streamed audio: place a clip too long to decode (over
+    128 MiB, e.g. a one-hour WAV) on the timeline, split it, trim its front and place it more than
+    once. Press Play at the start, from the middle of a region and just before one begins, and
+    jump around with the ruler. Audio must start on time and in sync with other tracks, with no
+    dropouts or stuck audio; stop and restart often. Then Export WAV (whole song and a loop range)
+    and compare it with live playback; cancel an export; rename the source file and export again
+    (it must stop with a message before writing anything).
 
 ## Results
 

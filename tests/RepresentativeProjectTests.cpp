@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
         alien::SessionProjectData reopened;
         require(alien::parseSessionProject(alien::serializeSessionProject(project), reopened, error), "fixture survives save/reopen");
         if (juce::String(relative).startsWith("recording")) {
-            require(project.arrangement.count == 4, "four reference tracks have arrangement regions");
+            require(project.timeline.regions.size() == 4, "four reference tracks have arrangement clips");
             for (int t = 0; t < 4; ++t) {
                 const auto source = alien::resolveProjectAudio(file, project.clips[0][t].audioFilePath);
                 require(source.existsAsFile(), "all recording reference media resolve");
