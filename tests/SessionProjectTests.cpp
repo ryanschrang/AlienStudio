@@ -233,6 +233,8 @@ int main() {
     missingRegion->removeProperty("fadeOut");
     require(!alien::parseSessionProject(juce::JSON::toString(missingEdit), restored, error),
         "a current project missing audio edit metadata is rejected");
+    missingRegion->removeProperty("gain"); missingRegion->removeProperty("fadeIn");
+    missingRegion->removeProperty("loopSource"); missingRegion->removeProperty("reversed");
     missingEdit.getDynamicObject()->setProperty("version", 8);
     require(alien::parseSessionProject(juce::JSON::toString(missingEdit), restored, error)
         && restored.timeline.regions.front().gain == 1.0 && restored.timeline.regions.front().fadeOut == 0,
