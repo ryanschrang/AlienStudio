@@ -530,8 +530,24 @@ static void timelineIntegrationTests() {
     std::cout << "PASS: timeline in the controller\n";
 }
 
+
+static void automationUndoTests() {
+    auto engine = std::make_unique<ToneEngine>(); alien::ProjectController controller(*engine);
+    controller.pushDocumentToEngine();
+    require(controller.editTimeline("Automation point", [](alien::timeline::Timeline& t) {
+        t.automationLanes.push_back({0, alien::automation::Parameter::volume, true, {{0, 0.25f}, {960, 1.0f}}});
+        return true;
+    }), "automation is an undoable timeline edit");
+    require(controller.captureArrangement()->timeline.automationLanes.size() == 1, "automation reaches playback snapshot");
+    require(controller.undo() && controller.timeline().automationLanes.empty(), "undo removes the automation lane");
+    require(controller.redo() && controller.timeline().automationLanes.size() == 1, "redo restores the automation lane");
+    require(controller.deleteTrack(0) && controller.timeline().automationLanes.empty(), "track deletion removes automation");
+    require(controller.undo() && controller.timeline().automationLanes.size() == 1, "undo track deletion restores automation");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    automationUndoTests();
     masterVolumeTests();
     mediaIndexTests();
     missingAudioTests();
