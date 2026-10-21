@@ -89,6 +89,8 @@ if(BUILD_TESTING)
     target_link_libraries(TimelinePlaybackTests PRIVATE juce::juce_audio_processors juce::juce_audio_devices juce::juce_audio_basics)
     add_test(NAME TimelinePlaybackTests COMMAND TimelinePlaybackTests)
     set_tests_properties(TimelinePlaybackTests PROPERTIES TIMEOUT 600)   # about 3 minutes in a Debug build
+    # A test function here holds many engines, patterns and projects, and a Debug build gives each its own stack space; Windows' default 1 MB is not enough (it crashed in CI).
+    target_link_options(TimelinePlaybackTests PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/STACK:8388608>")
 
     add_executable(RackIntegrationTests tests/RackIntegrationTests.cpp)
     target_include_directories(RackIntegrationTests PRIVATE src)

@@ -41,7 +41,10 @@ using namespace alien::timeline;
 static constexpr int barFrames = 96000, stepFrames = 6000, tickFrames = 25;
 
 struct Rig {
-    ToneEngine engine;
+    // The engine is large (about 80 KB, more in a Debug build) and a test function holds a dozen of them. A Debug build
+    // on Windows gives every local its own stack space and a thread starts with 1 MB, so on the heap it stays.
+    std::unique_ptr<ToneEngine> owned = std::make_unique<ToneEngine>();
+    ToneEngine& engine = *owned;
     std::vector<float> out;                  // everything rendered so far, left channel
     int block = 257;                         // an awkward size, so nothing lines up by luck
     Rig() { engine.prepare(48000); engine.patternMode.store(2); engine.bpm.store(120); engine.activeTracks.store(4); }
