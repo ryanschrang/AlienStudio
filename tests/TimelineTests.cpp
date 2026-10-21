@@ -561,6 +561,16 @@ static void nonDestructiveAudioEditTests() {
     check(!t.crossfade(left, right, 960) && t == before, "repeating the same edit is a no-op");
     check(!t.setGain({left}, -1.0) && !t.setFades({left}, -1, 0), "invalid audio edits are rejected");
     check(t.valid(), "edited timeline remains valid");
+
+    Timeline edges; const auto edge = put(edges, 0, 0, 0, bar);
+    check(edges.setFades({edge}, 3000, 3000), "long edge fades can be assigned");
+    check(edges.trimEnd(edge, 1200) && get(edges, edge).fadeIn == 1200 && get(edges, edge).fadeOut == 1200,
+          "trimming an edited clip clamps fades to its new boundary");
+    Ids made;
+    check(edges.split({edge}, 600, &made) && made.size() == 1, "an edited clip can still be split");
+    check(get(edges, edge).fadeOut == 0 && get(edges, made[0]).fadeIn == 0
+          && get(edges, edge).fadeIn == 600 && get(edges, made[0]).fadeOut == 600,
+          "split preserves outer fades and creates clean internal edges");
 }
 
 static void equalityTests() {
