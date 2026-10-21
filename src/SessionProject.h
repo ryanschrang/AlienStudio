@@ -23,7 +23,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 8;
+inline constexpr int sessionProjectFormatVersion = 9;
 
 struct SessionProjectClip {
     PianoRollPattern pattern;
@@ -198,6 +198,9 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
             object->setProperty("row", r.row); object->setProperty("source", r.source);
             object->setProperty("start", static_cast<int>(r.start)); object->setProperty("length", static_cast<int>(r.length));
             object->setProperty("offset", static_cast<int>(r.offset)); object->setProperty("audioOffset", r.audioOffset);
+            object->setProperty("gain", r.gain); object->setProperty("fadeIn", static_cast<int>(r.fadeIn));
+            object->setProperty("fadeOut", static_cast<int>(r.fadeOut)); object->setProperty("loopSource", r.loopSource);
+            object->setProperty("reversed", r.reversed);
             object->setProperty("muted", r.muted); object->setProperty("group", group);
             regions.add(value);
         }
@@ -281,6 +284,15 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
         region.row = static_cast<int>(row); region.source = static_cast<int>(source);
         region.start = static_cast<int>(start); region.length = static_cast<int>(regionLength);
         region.offset = static_cast<int>(offset); region.audioOffset = static_cast<double>(audioOffset);
+        const auto gain = r->getProperty("gain"), fadeIn = r->getProperty("fadeIn"), fadeOut = r->getProperty("fadeOut"),
+                   loopSource = r->getProperty("loopSource"), reversed = r->getProperty("reversed");
+        if (!gain.isVoid()) {
+            if (!(gain.isDouble() || gain.isInt()) || !fadeIn.isInt() || !fadeOut.isInt() || !loopSource.isBool() || !reversed.isBool()) {
+                error = "A timeline region has invalid audio edits."; return false;
+            }
+            region.gain = static_cast<double>(gain); region.fadeIn = static_cast<int>(fadeIn); region.fadeOut = static_cast<int>(fadeOut);
+            region.loopSource = static_cast<bool>(loopSource); region.reversed = static_cast<bool>(reversed);
+        }
         region.muted = static_cast<bool>(muted);
         if (const int g = static_cast<int>(group); g > 0) {
             auto it = std::find_if(groups.begin(), groups.end(), [g](const auto& p) { return p.first == g; });

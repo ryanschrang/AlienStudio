@@ -537,6 +537,32 @@ static void remapTests() {
     check(get(d, a).group == 0, "a group left with one member is dissolved");
 }
 
+
+static void nonDestructiveAudioEditTests() {
+    Timeline t; t.tempo = 120.0;
+    const auto left = put(t, 0, 0, 0, bar);
+    const auto right = put(t, 0, 1, bar, bar);
+    check(t.slip({left}, 240), "audio can slip later in its source");
+    check(get(t, left).start == 0 && get(t, left).length == bar && get(t, left).offset == 240,
+          "slip preserves both timeline edit boundaries");
+    check(std::abs(get(t, left).audioOffset - 0.125) < 1.0e-9, "slip stores the matching source offset");
+    check(t.slip({left}, -1000) && get(t, left).offset == 0 && get(t, left).audioOffset == 0.0,
+          "slip clamps at the beginning of the immutable source");
+
+    check(t.setLoopSource({left}, true) && t.setReversed({left}, true), "loop and reverse are non-destructive region flags");
+    check(t.setGain({left}, 2.0), "normalization gain is stored on the region");
+    check(t.setFades({left}, 480, 240), "fade boundaries are stored on the region");
+    check(get(t, left).loopSource && get(t, left).reversed && get(t, left).gain == 2.0
+          && get(t, left).fadeIn == 480 && get(t, left).fadeOut == 240, "audio edit state is retained");
+
+    check(t.crossfade(left, right, 960), "touching clips can be crossfaded");
+    check(get(t, left).fadeOut == 960 && get(t, right).fadeIn == 960, "crossfade applies complementary edge fades");
+    const auto before = t;
+    check(!t.crossfade(left, right, 960) && t == before, "repeating the same edit is a no-op");
+    check(!t.setGain({left}, -1.0) && !t.setFades({left}, -1, 0), "invalid audio edits are rejected");
+    check(t.valid(), "edited timeline remains valid");
+}
+
 static void equalityTests() {
     Timeline a;
     const auto id = put(a, 0, 0, 0, bar);
@@ -559,6 +585,10 @@ static void equalityTests() {
     b = a; b.setLengthBars(20); check(!a.playbackEquals(b), "the song length changes the sound");
     b = a; b.regions[0].audioOffset = 0.5; check(!a.playbackEquals(b), "the audio offset changes the sound");
     b = a; b.regions[0].source = 1; check(!a.playbackEquals(b), "the source changes the sound");
+    b = a; b.setGain({id}, 1.5); check(!a.playbackEquals(b), "region gain changes the sound");
+    b = a; b.setFades({id}, 120, 120); check(!a.playbackEquals(b), "region fades change the sound");
+    b = a; b.setReversed({id}, true); check(!a.playbackEquals(b), "reverse changes the sound");
+    b = a; b.setLoopSource({id}, true); check(!a.playbackEquals(b), "source looping changes the sound");
     b = a; put(b, 1, 0, 0, bar); check(!a.playbackEquals(b), "another region changes the sound");
 }
 
@@ -574,6 +604,7 @@ int main() {
     editStateTests();
     lengthLoopMarkerTests();
     remapTests();
+    nonDestructiveAudioEditTests();
     equalityTests();
     if (failures == 0) std::puts("TimelineTests passed");
     return failures == 0 ? 0 : 1;

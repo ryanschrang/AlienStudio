@@ -382,8 +382,15 @@ private:
                 plugins->tracks[track].setSample(1,i,voice + drum[1]);
                 if (playNow && (modeNow == 1 || modeNow == 2)) {
                     const auto sample = audioPlayers[track].nextSample();
-                    clipBuffers[track].setSample(0,i,sample[0] * audioClipLevel);
-                    clipBuffers[track].setSample(1,i,sample[1] * audioClipLevel);
+                    const auto& lane = trackLanes[track];
+                    const double into = std::max(0.0, timelineTick - static_cast<double>(lane.start));
+                    const double remaining = std::max(0.0, static_cast<double>(lane.end) - timelineTick);
+                    double editGain = lane.gain;
+                    if (lane.fadeIn > 0) editGain *= std::clamp(into / static_cast<double>(lane.fadeIn), 0.0, 1.0);
+                    if (lane.fadeOut > 0) editGain *= std::clamp(remaining / static_cast<double>(lane.fadeOut), 0.0, 1.0);
+                    const float level = static_cast<float>(editGain) * audioClipLevel;
+                    clipBuffers[track].setSample(0,i,sample[0] * level);
+                    clipBuffers[track].setSample(1,i,sample[1] * level);
                 }
             }
         }
@@ -471,7 +478,9 @@ private:
         bool active{}, midi{};
         int source{-1};
         std::int64_t start{}, end{}, offset{};
-        double audioOffset{};
+        double audioOffset{}, gain{1.0};
+        std::int64_t fadeIn{}, fadeOut{};
+        bool loopSource{}, reversed{};
         const alien::SessionAudioClip* audio{};
         double boundary{-1.0};         // sync when the playhead reaches this tick
         std::int64_t nextStep{};       // rack lanes: the next pattern step due, counted from the region's content start
@@ -525,16 +534,19 @@ private:
         const double into = std::max(0.0, timelineTick - static_cast<double>(region.start));
         auto& lane = trackLanes[track];
         lane.active = true; lane.source = region.source; lane.start = region.start; lane.end = region.end();
-        lane.offset = region.offset; lane.audioOffset = region.audioOffset; lane.audio = clip.audio;
+        lane.offset = region.offset; lane.audioOffset = region.audioOffset; lane.gain = region.gain;
+        lane.fadeIn = region.fadeIn; lane.fadeOut = region.fadeOut; lane.loopSource = region.loopSource; lane.reversed = region.reversed; lane.audio = clip.audio;
         if (clip.audio != nullptr) {
             const double seconds = region.audioOffset + alien::timeline::secondsForTicks(into, bpm.load());
-            const double startFrame = seconds * clip.audio->sampleRate;
-            if (startFrame < static_cast<double>(clip.audio->frames)) {
+            const double forwardFrame = seconds * clip.audio->sampleRate;
+            const double startFrame = region.reversed ? static_cast<double>(clip.audio->frames - 1) - forwardFrame : forwardFrame;
+            if (startFrame >= 0.0 && startFrame < static_cast<double>(clip.audio->frames)) {
                 auto& player = audioPlayers[track];
                 // A streamed clip asked for ahead of time is ready now; one that is not waits, and
                 // starts where the song has got to by then, so it stays in time.
                 if (!player.pendingMatches(clip.audio, startFrame, timelineLaunchWindow)) player.queue(clip.audio, 1, startFrame);
-                if (!player.launchPendingNow(sampleRate, startFrame, timelineFadeSamples) && player.hasPending()) lane.audioWaiting = true;
+                if (!player.launchPendingNow(sampleRate, startFrame, timelineFadeSamples, region.reversed, region.loopSource,
+                                             region.audioOffset * clip.audio->sampleRate) && player.hasPending()) lane.audioWaiting = true;
             }
             audioClipMode[track] = true;
         } else {
@@ -603,9 +615,12 @@ private:
         // The same content keeps playing through any edit that does not move it: a region made longer or
         // shorter, or trimmed at the front, is the same sound starting or stopping elsewhere.
         const bool same = lane.active && lane.source == region->source && lane.audio == clip.audio
+            && lane.reversed == region->reversed && lane.loopSource == region->loopSource
             && sameOrigin(lane, *region, clip.audio != nullptr);
         if (same) {
             lane.start = region->start; lane.end = region->end(); lane.offset = region->offset; lane.audioOffset = region->audioOffset;
+            lane.gain = region->gain; lane.fadeIn = region->fadeIn; lane.fadeOut = region->fadeOut;
+            lane.loopSource = region->loopSource; lane.reversed = region->reversed;
             // Edited notes join the clip that is playing; a different loop length changes what the position means, so that restarts.
             if (lane.midi) {
                 auto send = [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); };
