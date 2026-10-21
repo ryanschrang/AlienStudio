@@ -378,6 +378,14 @@ inline Verdict classify(const ChildResult& r, int pluginsInResult, int timeoutMs
         const auto name = exceptionName(r.exitCode);
         return {Status::crashed, "Crashed while " + describeStage(r.stage) + " (exit code " + hex32(r.exitCode) + (name.isNotEmpty() ? ", " + name : juce::String()) + ") after " + seconds(r.milliseconds) + "."};
     }
+   #if JUCE_WINDOWS
+    // MSVC abort() exits with 3 when CRT reporting is disabled. This overlaps
+    // exitBadArguments, but argument rejection occurs before loading begins.
+    // Only classify it as a probable abort when the stage proves plugin code ran.
+    if (r.exitCode == 3 && (r.stage == "load" || r.stage == "diagnose"))
+        return {Status::crashed, "The scanner most likely aborted while " + describeStage(r.stage)
+                + " (Windows CRT exit code 3) after " + seconds(r.milliseconds) + "."};
+   #endif
     if (r.exitCode == exitLibraryFailed) {
         const auto why = r.printed.isNotEmpty() ? r.printed.upToFirstOccurrenceOf("\n", false, false).trim() : juce::String("The operating system could not load it.");
         return {Status::incompatible, why};
