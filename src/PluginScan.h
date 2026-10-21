@@ -21,6 +21,9 @@
 #include <set>
 #include <vector>
 #if JUCE_WINDOWS
+ #ifndef NOMINMAX
+  #define NOMINMAX
+ #endif
  #include <windows.h>
 #endif
 
