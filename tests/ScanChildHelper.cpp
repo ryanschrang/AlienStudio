@@ -9,6 +9,11 @@
 static volatile std::uintptr_t zeroAddress = 0;
 
 int main(int argc, char** argv) {
+   #if defined(_MSC_VER)
+    // abort() is intentional in this helper. Disable the CRT report/fault UI so
+    // unattended Windows runs observe the child exit rather than a hidden dialog.
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+   #endif
     juce::ScopedJuceInitialiser_GUI juceInit;
     if (argc != 4 || juce::String(argv[1]) != "--scan-vst3") return alien::scan::exitBadArguments;
     const juce::String bundle = argv[2];
