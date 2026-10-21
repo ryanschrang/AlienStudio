@@ -184,7 +184,33 @@ static void recordingSettingsFormatTests() {
     require(!invalid.valid() && alien::serializeSessionProject(invalid).isEmpty(), "invalid recording settings are never written");
 }
 
+
+static void automationFormatTests() {
+    alien::SessionProjectData source;
+    source.timeline.automationLanes = {
+        {1, alien::automation::Parameter::volume, true, {{0, 0.25f}, {960, 1.0f}}},
+        {2, alien::automation::Parameter::pan, false, {{240, -0.5f, alien::automation::Curve::hold}}}
+    };
+    const auto json = alien::serializeSessionProject(source);
+    alien::SessionProjectData loaded; juce::String error;
+    require(alien::parseSessionProject(json, loaded, error)
+        && loaded.timeline.automationLanes == source.timeline.automationLanes, "automation lanes and curves round-trip");
+    auto legacy = juce::JSON::parse(json);
+    auto* timeline = legacy.getDynamicObject()->getProperty("timeline").getDynamicObject();
+    timeline->removeProperty("automation");
+    require(!alien::parseSessionProject(juce::JSON::toString(legacy), loaded, error),
+        "format 10 requires automation metadata");
+    legacy.getDynamicObject()->setProperty("version", 9);
+    require(alien::parseSessionProject(juce::JSON::toString(legacy), loaded, error)
+        && loaded.timeline.automationLanes.empty(), "format 9 migrates with no automation");
+    auto damaged = juce::JSON::parse(json);
+    auto* lanes = damaged.getDynamicObject()->getProperty("timeline").getDynamicObject()->getProperty("automation").getArray();
+    lanes->getReference(0).getDynamicObject()->setProperty("parameter", 99);
+    require(!alien::parseSessionProject(juce::JSON::toString(damaged), loaded, error), "unknown automation targets rejected");
+}
+
 int main() {
+    automationFormatTests();
     recordingSettingsFormatTests();
     masterVolumeFormatTests();
     pluginStateLimitTests();
