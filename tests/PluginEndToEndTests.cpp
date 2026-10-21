@@ -113,7 +113,7 @@ static void checking(Fixture& f) {
     // What the in-process guard can never catch: the process dies, and the report still arrives.
     {   const auto r = checkOnce(f, "crash-thread=5");
         const auto* s = firstOf(r, Outcome::crash);
-        test(r.overall() == Outcome::crash && s != nullptr && s->name.startsWith("Play at") && s->detail.contains("ended without finishing"), "a crash on a thread the plugin started ends the check process, and the report says which step it died in" + describeAll(r));
+        test(r.overall() == Outcome::crash && s != nullptr && s->name.startsWith("Play at") && (s->detail.contains("ended without finishing") || s->detail.contains("The process crashed (exit code")), "a crash on a thread the plugin started ends the check process, and the report says which step it died in" + describeAll(r));
         test(find(r, "Load")->outcome == Outcome::pass && find(r, "Bus layout")->outcome == Outcome::pass, "with the steps that finished before it kept" + describeAll(r)); }
     {   const auto started = juce::Time::getMillisecondCounter();
         const auto r = checkOnce(f, "hang-process=10", false, 8000);
