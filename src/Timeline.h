@@ -64,6 +64,11 @@ struct Region {
     std::int64_t offset{};
     double audioOffset{};
     bool muted{};
+    // Non-destructive audio edits. The source file is immutable; playback and export
+    // interpret these values when reading it.
+    double gain{1.0};
+    std::int64_t fadeIn{}, fadeOut{};
+    bool loopSource{}, reversed{};
     std::int64_t end() const noexcept { return start + length; }
     bool isPattern() const noexcept { return isPatternRow(row); }
     bool operator==(const Region&) const = default;
@@ -167,7 +172,8 @@ struct Timeline {
         order.reserve(regions.size());
         for (const auto& r : regions) {
             if (r.id == 0 || r.start < 0 || r.length < 1 || r.end() > length() || r.offset < 0
-                || !std::isfinite(r.audioOffset) || r.audioOffset < 0.0 || r.source < 0) return false;
+                || !std::isfinite(r.audioOffset) || r.audioOffset < 0.0 || !std::isfinite(r.gain) || r.gain < 0.0 || r.gain > 64.0
+                || r.fadeIn < 0 || r.fadeOut < 0 || r.fadeIn > r.length || r.fadeOut > r.length || r.source < 0) return false;
             if (r.isPattern()) { if (r.source >= patterns) return false; }
             else if (r.row < 0 || r.row >= tracks || r.source >= scenes) return false;
             order.push_back(&r);
@@ -206,7 +212,9 @@ struct Timeline {
         for (std::size_t i = 0; i < regions.size(); ++i) {
             const auto& a = regions[i]; const auto& b = o.regions[i];
             if (a.row != b.row || a.source != b.source || a.start != b.start || a.length != b.length
-                || a.offset != b.offset || a.audioOffset != b.audioOffset || a.muted != b.muted) return false;
+                || a.offset != b.offset || a.audioOffset != b.audioOffset || a.gain != b.gain
+                || a.fadeIn != b.fadeIn || a.fadeOut != b.fadeOut || a.loopSource != b.loopSource
+                || a.reversed != b.reversed || a.muted != b.muted) return false;
         }
         return true;
     }
@@ -371,6 +379,44 @@ struct Timeline {
         if (next.regions.size() == before) return false;
         return adopt(std::move(next));
     }
+    // Moves the source underneath the region without moving either edit boundary.
+    // Positive values move later into the source. Audio offsets follow the project tempo.
+    bool slip(const Ids& ids, std::int64_t deltaTicks) {
+        if (deltaTicks == 0) return false;
+        Timeline next = *this;
+        bool changed = false;
+        for (auto& r : next.regions) if (contains(ids, r.id)) {
+            const auto applied = std::max(deltaTicks, -r.offset);
+            if (applied == 0) continue;
+            r.offset += applied;
+            r.audioOffset = std::max(0.0, r.audioOffset + secondsForTicks(applied, tempo));
+            changed = true;
+        }
+        return changed && adopt(std::move(next));
+    }
+    bool setLoopSource(const Ids& ids, bool looped) { return editAudio(ids, [=](Region& r) { if (r.loopSource == looped) return false; r.loopSource = looped; return true; }); }
+    bool setReversed(const Ids& ids, bool reversed) { return editAudio(ids, [=](Region& r) { if (r.reversed == reversed) return false; r.reversed = reversed; return true; }); }
+    bool setGain(const Ids& ids, double gain) {
+        if (!std::isfinite(gain) || gain < 0.0 || gain > 64.0) return false;
+        return editAudio(ids, [=](Region& r) { if (std::abs(r.gain - gain) < 1.0e-12) return false; r.gain = gain; return true; });
+    }
+    bool setFades(const Ids& ids, std::int64_t fadeIn, std::int64_t fadeOut) {
+        if (fadeIn < 0 || fadeOut < 0) return false;
+        return editAudio(ids, [=](Region& r) { const auto in = std::min(fadeIn, r.length), out = std::min(fadeOut, r.length); if (r.fadeIn == in && r.fadeOut == out) return false; r.fadeIn = in; r.fadeOut = out; return true; });
+    }
+    // Applies complementary fades to two touching clips. Their boundaries stay fixed,
+    // which keeps the timeline deterministic and the operation fully reversible.
+    bool crossfade(std::uint32_t leftId, std::uint32_t rightId, std::int64_t ticks) {
+        if (ticks <= 0) return false;
+        Timeline next = *this;
+        auto* left = next.find(leftId); auto* right = next.find(rightId);
+        if (left == nullptr || right == nullptr || left->row != right->row || left->end() != right->start) return false;
+        ticks = std::min({ticks, left->length, right->length});
+        if (left->fadeOut == ticks && right->fadeIn == ticks) return false;
+        left->fadeOut = ticks; right->fadeIn = ticks;
+        return adopt(std::move(next));
+    }
+
     bool setMuted(const Ids& ids, bool muted) {
         Timeline next = *this;
         bool changed = false;
@@ -513,6 +559,12 @@ struct Timeline {
     }
 
 private:
+    template <typename Edit>
+    bool editAudio(const Ids& ids, Edit&& edit) {
+        Timeline next = *this; bool changed = false;
+        for (auto& r : next.regions) if (!r.isPattern() && contains(ids, r.id)) changed = edit(r) || changed;
+        return changed && adopt(std::move(next));
+    }
     static std::string cleanName(std::string text) {
         const auto first = text.find_first_not_of(" \t\r\n");
         if (first == std::string::npos) return {};

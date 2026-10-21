@@ -315,6 +315,44 @@ public:
         for (const auto id : ids) { const auto* r = committed().find(id); allMuted = allMuted && r != nullptr && r->muted; }
         return edit(allMuted ? "Unmute clips" : "Mute clips", [&](timeline::Timeline& t) { return t.setMuted(ids, !allMuted); });
     }
+    bool slipSelection(std::int64_t ticks) {
+        if (selected.empty()) return false;
+        const auto ids = selected;
+        return edit(ticks < 0 ? "Slip clips left" : "Slip clips right", [=](timeline::Timeline& t) { return t.slip(ids, ticks); }, "timeline-slip");
+    }
+    bool toggleSourceLoopSelection() {
+        if (selected.empty()) return false;
+        bool all = true; for (const auto id : selected) { const auto* r = committed().find(id); all = all && r != nullptr && r->loopSource; }
+        const auto ids = selected; return edit(all ? "Disable clip loop" : "Loop clip source", [=](timeline::Timeline& t) { return t.setLoopSource(ids, !all); });
+    }
+    bool toggleReverseSelection() {
+        if (selected.empty()) return false;
+        bool all = true; for (const auto id : selected) { const auto* r = committed().find(id); all = all && r != nullptr && r->reversed; }
+        const auto ids = selected; return edit(all ? "Forward clips" : "Reverse clips", [=](timeline::Timeline& t) { return t.setReversed(ids, !all); });
+    }
+    bool fadeSelection() {
+        if (selected.empty()) return false; const auto ids = selected;
+        return edit("Fade clips", [=](timeline::Timeline& t) { return t.setFades(ids, timeline::ticksPerBeat, timeline::ticksPerBeat); });
+    }
+    bool crossfadeSelection() {
+        if (selected.size() != 2) { say("Select two touching clips on the same track to crossfade."); return false; }
+        const auto* a = committed().find(selected[0]); const auto* b = committed().find(selected[1]);
+        if (a == nullptr || b == nullptr) return false; if (b->start < a->start) std::swap(a, b);
+        const bool done = edit("Crossfade clips", [=](timeline::Timeline& t) { return t.crossfade(a->id, b->id, timeline::ticksPerBeat); });
+        if (!done) say("Crossfade needs two touching clips on the same track."); return done;
+    }
+    bool normalizeSelection() {
+        if (selected.empty()) return false;
+        auto next = committed(); bool changed = false;
+        const auto& d = controller.document();
+        for (const auto id : selected) if (const auto* r = next.find(id); r != nullptr && !r->isPattern() && d.isValidCell(r->row, r->source)) {
+            const auto& clip = d.clip(r->row, r->source); if (clip.audio == nullptr || clip.audio->waveformCount == 0) continue;
+            float peak = 0.0f; for (std::size_t i = 0; i < clip.audio->waveformCount; ++i) { const auto& p = clip.audio->waveform[i]; peak = std::max({peak, std::abs(p.leftMin), std::abs(p.leftMax), std::abs(p.rightMin), std::abs(p.rightMax)}); }
+            if (peak > 1.0e-6f) changed = next.setGain({id}, std::min(64.0, 1.0 / static_cast<double>(peak))) || changed;
+        }
+        if (!changed) { say("Waveform peaks are still loading or the selected clips are silent."); return false; }
+        return edit("Normalize clips", [next = std::move(next)](timeline::Timeline& t) mutable { t = std::move(next); return true; });
+    }
     bool toggleLoop() {
         const bool on = !committed().loopEnabled;
         return edit(on ? "Loop on" : "Loop off", [on](timeline::Timeline& t) { return t.setLoopEnabled(on); });
@@ -401,6 +439,7 @@ public:
     enum MenuId { placeSceneBase = 1000, placePatternBase = 2000 };
     // The items of the right-click menus.
     enum Command { cmdSplit = 1, cmdMute, cmdDuplicate, cmdCopy, cmdCut, cmdDelete, cmdGroup, cmdUngroup, cmdOpen, cmdPaste, cmdSelectAll, cmdAddMarker,
+                   cmdSlipLeft, cmdSlipRight, cmdSourceLoop, cmdReverse, cmdNormalize, cmdFade, cmdCrossfade,
                    cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdColourBase = 100 };
     juce::PopupMenu placeMenu(int row) const {
         juce::PopupMenu menu;
@@ -943,6 +982,12 @@ private:
             juce::PopupMenu menu;
             menu.addItem(cmdSplit, "Split at play position", r != nullptr && cursor > r->start && cursor < r->end());
             menu.addItem(cmdMute, allMuted ? "Unmute" : "Mute");
+            if (r != nullptr && !r->isPattern()) {
+                menu.addSeparator();
+                menu.addItem(cmdSlipLeft, "Slip source left"); menu.addItem(cmdSlipRight, "Slip source right");
+                menu.addItem(cmdSourceLoop, "Loop source"); menu.addItem(cmdReverse, "Reverse"); menu.addItem(cmdNormalize, "Normalize");
+                menu.addItem(cmdFade, "Fade in and out"); menu.addItem(cmdCrossfade, "Crossfade", selected.size() == 2);
+            }
             menu.addSeparator();
             menu.addItem(cmdDuplicate, "Duplicate");
             menu.addItem(cmdCopy, "Copy"); menu.addItem(cmdCut, "Cut"); menu.addItem(cmdDelete, "Delete");
@@ -953,6 +998,9 @@ private:
             launch(std::move(menu), area, [this, region = hit.region](int id) {
                 switch (id) {
                 case cmdSplit: splitAtCursor(); break; case cmdMute: toggleMuteSelection(); break;
+                case cmdSlipLeft: slipSelection(-timeline::ticksPerStep); break; case cmdSlipRight: slipSelection(timeline::ticksPerStep); break;
+                case cmdSourceLoop: toggleSourceLoopSelection(); break; case cmdReverse: toggleReverseSelection(); break;
+                case cmdNormalize: normalizeSelection(); break; case cmdFade: fadeSelection(); break; case cmdCrossfade: crossfadeSelection(); break;
                 case cmdDuplicate: duplicateSelection(); break; case cmdCopy: copySelection(); break;
                 case cmdCut: cutSelection(); break; case cmdDelete: deleteSelection(); break;
                 case cmdGroup: groupSelection(); break; case cmdUngroup: ungroupSelection(); break;

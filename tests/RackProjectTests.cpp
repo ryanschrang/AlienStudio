@@ -73,7 +73,7 @@ static void roundTripAndValidation() {
     require(!alien::parseSessionProject(juce::JSON::toString(missing), legacy, error) && error.isNotEmpty(),
             "a project of the current version must carry its rack");
     auto future = juce::JSON::parse(json);
-    future.getDynamicObject()->setProperty("version", 9);
+    future.getDynamicObject()->setProperty("version", alien::sessionProjectFormatVersion + 1);
     require(!alien::parseSessionProject(juce::JSON::toString(future), legacy, error), "newer versions are still refused");
 
     // Damaged racks are refused rather than opened as something else.

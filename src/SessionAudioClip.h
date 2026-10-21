@@ -156,7 +156,8 @@ public:
     // `fadeInSamples` output samples, so joining the middle of a waveform does not click.
     // Starting at the very beginning never fades. A streamed clip that is not buffered yet
     // stays queued and false is returned; the caller tries again.
-    bool launchPendingNow(double outputRate, double startFrame = 0.0, int fadeInSamples = 0) noexcept {
+    bool launchPendingNow(double outputRate, double startFrame = 0.0, int fadeInSamples = 0,
+                          bool reverse = false, bool looping = false, double loopBoundary = 0.0) noexcept {
         if (!pending) return false;
         if (pendingFailed()) { failure.store(true, std::memory_order_relaxed); cancelPending(); return false; }
         if (!pendingReady()) return false;
@@ -168,6 +169,7 @@ public:
         outputSampleRate = std::isfinite(outputRate) && outputRate > 0 ? outputRate : 44100.0;
         fadeInTotal = cursor > 0.5 && fadeInSamples > 0 ? fadeInSamples : 0;
         fadeInDone = 0; releaseTotal = releaseLeft = 0;
+        reversed = reverse; looped = looping; loopFrame = std::max(0.0, loopBoundary);
         if (activeClip && activeClip->streamed()) {
             std::swap(activeVoice, pendingVoice);
             activeGeneration = pendingGeneration;
@@ -175,15 +177,16 @@ public:
             activeGeneration = 0;
         }
         pendingGeneration = 0;
-        if (activeClip != nullptr && cursor >= static_cast<double>(activeClip->frames)) clearActive();
+        if (activeClip != nullptr && (cursor >= static_cast<double>(activeClip->frames) || cursor < 0.0)) clearActive();
         return true;
     }
 
     std::array<float, 2> nextSample() noexcept {
         if (!activeClip) return {};
-        if (cursor >= static_cast<double>(activeClip->frames)) { clearActive(); return {}; }
+        if (cursor >= static_cast<double>(activeClip->frames) || cursor < 0.0) { clearActive(); return {}; }
         const auto first = static_cast<std::int64_t>(cursor);
-        const auto second = std::min(first + 1, static_cast<std::int64_t>(activeClip->frames - 1));
+        const auto second = reversed ? std::max<std::int64_t>(0, first - 1)
+                                     : std::min(first + 1, static_cast<std::int64_t>(activeClip->frames - 1));
         const float fraction = static_cast<float>(cursor - static_cast<double>(first));
         float left{}, right{};
         if (activeClip->streamed()) {
@@ -206,8 +209,13 @@ public:
             gain *= static_cast<float>(releaseLeft) / static_cast<float>(releaseTotal);
             finished = --releaseLeft <= 0;
         }
-        cursor += activeClip->sampleRate / outputSampleRate;
-        if (finished || cursor >= static_cast<double>(activeClip->frames)) clearActive();
+        const double advance = activeClip->sampleRate / outputSampleRate;
+        cursor += reversed ? -advance : advance;
+        if (!finished && looped) {
+            if (!reversed && cursor >= static_cast<double>(activeClip->frames)) cursor = loopFrame;
+            else if (reversed && cursor < loopFrame) cursor = static_cast<double>(activeClip->frames - 1);
+        }
+        if (finished || cursor >= static_cast<double>(activeClip->frames) || cursor < 0.0) clearActive();
         return {left * gain, right * gain};
     }
 
@@ -224,7 +232,7 @@ public:
         if (pendingVoice) pendingVoice->request(nullptr);
         activeClip = pendingClip = nullptr;
         pending = false; cursor = 0.0; activeGeneration = pendingGeneration = 0; pendingStart = 0.0;
-        fadeInTotal = fadeInDone = releaseTotal = releaseLeft = 0;
+        fadeInTotal = fadeInDone = releaseTotal = releaseLeft = 0; reversed = looped = false; loopFrame = 0.0;
     }
     bool isPlaying() const noexcept { return activeClip != nullptr; }
     std::uint64_t underrunCount() const noexcept { return underruns.load(std::memory_order_relaxed); }
@@ -243,10 +251,10 @@ private:
     std::uint64_t activeGeneration{}, pendingGeneration{};
     std::atomic<std::uint64_t> underruns{};
     std::atomic<bool> failure{};
-    double cursor{}, outputSampleRate{44100.0}, pendingStart{};
+    double cursor{}, outputSampleRate{44100.0}, pendingStart{}, loopFrame{};
     int pendingQuantization{16};
     int fadeInTotal{}, fadeInDone{}, releaseTotal{}, releaseLeft{};
-    bool pending{};
+    bool pending{}, reversed{}, looped{};
 };
 
 static_assert(std::atomic<unsigned>::is_always_lock_free);
