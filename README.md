@@ -828,11 +828,46 @@ Use **More...** in the top bar for **Drums**, **Arrange**, **Audio lab** and
   WSOLA processing. Sources too large for Session can be selected directly. Large
   results stay on disk when they exceed Session memory budgets; Cancel removes
   unpublished render output, and IO failures retain recoverable partial output.
-- Plugins: **Scan VST3...** selects one installed 64-bit `.vst3` bundle. Scanning
-  runs in a separate child process with a 60-second timeout. Successful identities
-  are cached in the application data folder; failures are logged and retried only
-  by explicitly scanning that bundle again. This first version does not recursively
-  discover an entire plugin folder.
+- Plugins: **Scan VST3...** opens a menu: scan the standard VST3 folders
+  (`C:\Program Files\Common Files\VST3` and `%LOCALAPPDATA%\Programs\Common\VST3`), scan any
+  folder, or add a single plugin file. Folders are searched recursively (to 12 levels;
+  `.vst3` bundles are not entered and symbolic-link loops are not followed). Every file is
+  loaded in a **separate process** with a 60-second limit, so a plugin that crashes or hangs
+  is recorded against that file, with the stage it reached, and the scan carries on. Results
+  are remembered per file (size and modification time): unchanged files are not loaded again,
+  **Retry plugins that failed** and **Rescan everything** override that, and **Cancel scan**
+  stops immediately, even in the middle of a stuck plugin. The list is saved after every file.
+  **Show the last scan log** lists every file and why each failure happened; the running
+  logs are `plugin-scan.log` and `plugin-host.log` in `%APPDATA%\Alien Studio\Logs`.
+  A scan that says OK means the plugin's description could be read. Plugins that ship a module
+  manifest are described without being created, so a scan cannot tell whether they can be
+  created; the safety check below does.
+
+Plugin crash containment, from the point of view of a user:
+
+- **Safety check.** The first time a plugin file is loaded into a project, a short
+  compatibility check runs in a separate process (load, bus layout, a short run, a state
+  round trip, unload). A plugin that crashes or hangs in it is **not loaded**: its slot stays
+  in the project with its saved settings and reads `NOT LOADED - blocked by the safety check`.
+  A plugin that passes is trusted until its file changes. **Scan VST3 > Re-check plugins that
+  were blocked** tries again; the same menu can switch the check off.
+- **Fault trapping.** Every call into a plugin made by Alien Studio (create, prepare, process,
+  save and restore state, open its editor) runs under a fault trap. A plugin that crashes,
+  throws or produces NaN/infinity while playing is switched off for the rest of the session and
+  never called again: an effect passes its unprocessed input through, an instrument goes silent,
+  the slot reads `FAILED - switched off`, and the failure is written to the problem log.
+  A plugin that fails during WAV export makes the export report **plugin failures** instead of
+  success. A plugin whose editor fails to open reads `editor crashed` and keeps playing.
+- **What this cannot catch.** A fault trap is not a sandbox. Heap corruption that surfaces
+  later, a crash on a thread the plugin started itself, a plugin that never returns while being
+  played or while its editor is open, and anything that happens in an editor window after it has
+  opened still take the application down; autosave is the backstop. Running plugins in a separate
+  process permanently is not part of this release.
+- **Checking a plugin on your own machine.** `AlienPluginCheck` (a console program built with
+  Alien Studio) scans for plugins and runs the full battery on each, one process per plugin, and
+  writes a report. See [docs/PLUGIN_COMPATIBILITY.md](docs/PLUGIN_COMPATIBILITY.md) for how to run it,
+  what it checks, and which plugins have actually been tested (no commercial plugin has been
+  verified yet).
 
 Each Session track has one instrument slot (replacing its built-in synth/kit)
 plus eight ordered FX slots. Master has eight FX slots. Select a target, choose
@@ -854,8 +889,8 @@ missing/unsupported plugins instead of silently omitting them.
 Initial scope is stereo-output VST3 instruments and stereo FX without sidechains.
 No VST2, AU, CLAP, multi-output routing, plugin automation lanes, MIDI output from
 plugins, freeze, or bridging of 32-bit plugins is provided. Running processors
-are in-process: scan isolation does not protect the DAW from a plugin crashing
-while loaded. Rack changes and project loads detach/restart the audio callback; native
+are in-process: the safety check and fault trapping described above contain the common
+failures, but not heap corruption, plugin-created threads or hangs. Rack changes and project loads detach/restart the audio callback; native
 parameter adjustments themselves remain live. Plugin state is only read back (which
 also detaches the callback) when it can matter: Save captures it whenever playback is
 stopped, or while playing only if a plugin was edited; undo, redo and track/scene edits

@@ -1,12 +1,23 @@
 #pragma once
+#include "PluginFault.h"
 #include "SessionCapacity.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <array>
+#include <atomic>
+#include <cstdint>
+#include <cstring>
 #include <memory>
+#include <mutex>
+#include <vector>
 
 namespace alien {
 // Only the audio thread uses buffers/MIDI/delay state. Slot changes, native
 // editors and state capture require the owner to detach the device callback.
+//
+// Every call into plugin code is contained (FaultGuard.h): a crash, a thrown exception or NaN
+// output disables that one slot, passes the audio on without it, and queues a report for the
+// message thread. A plugin that has failed is never called again - not even to be destroyed,
+// because its internal state (held locks, half-freed memory) is unknown. It is parked instead.
 class PluginRuntime {
 public:
     static constexpr int blockSize = 512, maxDelay = 96000, masterIndex = maxSessionTracks;
@@ -14,9 +25,20 @@ public:
         PositionInfo info;
         juce::Optional<PositionInfo> getPosition() const override { return info; }
     } playHead;
+    // An atomic flag that can still be copied, so a Slot can be moved into a Rack.
+    struct Flag {
+        std::atomic<bool> value{false};
+        Flag() = default;
+        Flag(const Flag& other) noexcept : value(other.value.load()) {}
+        Flag& operator=(const Flag& other) noexcept { value.store(other.value.load()); return *this; }
+        bool get() const noexcept { return value.load(std::memory_order_acquire); }
+        void set(bool state) noexcept { value.store(state, std::memory_order_release); }
+    };
     struct Slot {
         std::unique_ptr<juce::AudioProcessor> processor;
         bool bypass{}, prepared{};
+        Flag faulted;               // set by whichever thread saw the failure; cleared only by unloading the slot
+        juce::String name;          // for reports; the host fills it in when it loads the plugin
     };
     struct Rack {
         Slot instrument;
@@ -31,12 +53,56 @@ public:
     int sampleOffset{};
     std::array<int,maxSessionTracks> eventCounts{};
     std::atomic<bool> panic{};
+    FaultQueue faults;                          // read by the message thread (PluginHost::poll)
+    std::atomic<std::uint32_t> faultCount{0};   // every fault ever recorded here; an export compares before and after
 
     PluginRuntime() { prepare(44100); }
     ~PluginRuntime() {
-        for (auto& rack:racks) { release(rack.instrument); for(auto& slot:rack.effects)release(slot); }
+        for (int r=0;r<=masterIndex;++r) {
+            destroy(racks[static_cast<std::size_t>(r)].instrument,r,-1);
+            for (int i=0;i<static_cast<int>(racks[static_cast<std::size_t>(r)].effects.size());++i) destroy(racks[static_cast<std::size_t>(r)].effects[static_cast<std::size_t>(i)],r,i);
+        }
     }
-    static void release(Slot& slot) { if(slot.processor && slot.prepared){slot.processor->releaseResources();slot.prepared=false;} }
+    // Records that `slot` failed and disables it. Safe on the audio thread: no allocation, no lock.
+    void markFaulted(Slot& slot,int rack,int index,PluginPhase phase,const fault::Fault& fault,bool nonFinite=false) noexcept {
+        slot.faulted.set(true);
+        PluginFault report; report.rack=rack; report.slot=index; report.phase=phase; report.fault=fault; report.nonFiniteOutput=nonFinite;
+        report.samplePosition=renderedSamples;
+        faults.push(report);
+        faultCount.fetch_add(1,std::memory_order_acq_rel);
+    }
+    // Parks a failed processor. It is deliberately never destroyed: its destructor would run the
+    // same broken code, possibly waiting on a lock the crash left held. Memory is reclaimed at exit.
+    static void quarantine(std::unique_ptr<juce::AudioProcessor>& processor) {
+        if (!processor) return;
+        static std::mutex* const guard = new std::mutex;
+        static std::vector<juce::AudioProcessor*>* const parked = new std::vector<juce::AudioProcessor*>;
+        std::lock_guard<std::mutex> lock(*guard);
+        parked->push_back(processor.release());
+        quarantineTally().fetch_add(1);
+    }
+    static std::size_t quarantinedCount() { return quarantineTally().load(); }
+    // Message thread. Releases and destroys a slot's processor, or parks it if it ever failed.
+    void destroy(Slot& slot,int rack=-1,int index=-2) {
+        if (!slot.processor) { slot.prepared=false; return; }
+        if (!slot.faulted.get()) release(slot,rack,index);
+        if (slot.faulted.get()) { quarantine(slot.processor); slot.prepared=false; return; }
+        juce::AudioProcessor* raw=slot.processor.release();
+        fault::Fault fault;
+        if (!fault::guarded([&]{ delete raw; },fault)) {
+            PluginFault report; report.rack=rack; report.slot=index; report.phase=PluginPhase::release; report.fault=fault;
+            faults.push(report); faultCount.fetch_add(1,std::memory_order_acq_rel);
+        }
+        slot.prepared=false;
+    }
+    // Message thread (or the thread that owns an idle engine).
+    void release(Slot& slot,int rack=-1,int index=-2) {
+        if(!slot.processor || !slot.prepared) return;
+        slot.prepared=false;
+        if(slot.faulted.get()) return;
+        fault::Fault fault;
+        if (!fault::guarded([&]{ slot.processor->releaseResources(); },fault)) markFaulted(slot,rack,index,PluginPhase::release,fault);
+    }
     void prepare(double sampleRate) {
         rate = sampleRate; renderedSamples = 0;
         for (auto& b : tracks) b.setSize(2, blockSize);
@@ -44,9 +110,10 @@ public:
         for (auto& m : midi) m.ensureSize(65536);
         emptyMidi.ensureSize(65536);
         for (auto& delay : delays) delay.prepare();
-        for (auto& rack : racks) {
-            prepareSlot(rack.instrument);
-            for (auto& slot : rack.effects) prepareSlot(slot);
+        for (int r=0;r<=masterIndex;++r) {
+            auto& rack=racks[static_cast<std::size_t>(r)];
+            prepareSlot(rack.instrument,r,-1);
+            for (int i=0;i<static_cast<int>(rack.effects.size());++i) prepareSlot(rack.effects[static_cast<std::size_t>(i)],r,i);
         }
         panic.store(true);
     }
@@ -100,29 +167,34 @@ public:
             auto& slot = racks[t].instrument;
             if (!racks[t].instrumentAssigned) continue;
             tracks[t].clear();
-            if (slot.processor && !slot.bypass) process(slot, tracks[t], midi[t], samples);
+            if (slot.processor && !slot.bypass) process(slot, static_cast<int>(t), -1, tracks[t], midi[t], samples);
         }
     }
     void effectsAndAlign(int samples) {
         int maximum = 0;
         for (std::size_t t = 0; t < tracks.size(); ++t) {
             auto& rack = racks[t];
-            for (int i = 0; i < rack.effectCount; ++i) { emptyMidi.clear(); process(rack.effects[i],tracks[t],emptyMidi,samples); }
+            for (int i = 0; i < rack.effectCount; ++i) { emptyMidi.clear(); process(rack.effects[i],static_cast<int>(t),i,tracks[t],emptyMidi,samples); }
             maximum = std::max(maximum,rackLatency(rack));
         }
         for (std::size_t t = 0; t < tracks.size(); ++t) delays[t].process(tracks[t],samples,maximum-rackLatency(racks[t]));
         delays[maxSessionTracks].process(live,samples,maximum);
     }
     void processMaster(int samples) {
-        for (int i = 0; i < racks[masterIndex].effectCount; ++i) { emptyMidi.clear(); process(racks[masterIndex].effects[i], master, emptyMidi, samples); }
+        for (int i = 0; i < racks[masterIndex].effectCount; ++i) { emptyMidi.clear(); process(racks[masterIndex].effects[i], masterIndex, i, master, emptyMidi, samples); }
         renderedSamples += samples;
     }
-    void prepareSlot(Slot& slot) {
-        if (!slot.processor) return;
-        release(slot);
-        slot.processor->setPlayHead(&playHead);
-        slot.processor->setRateAndBufferSizeDetails(rate,blockSize);
-        slot.processor->prepareToPlay(rate,blockSize);
+    void prepareSlot(Slot& slot,int rack=-1,int index=-2) {
+        if (!slot.processor || slot.faulted.get()) return;
+        release(slot,rack,index);
+        if (slot.faulted.get()) return;
+        fault::Fault fault;
+        const bool ready=fault::guarded([&]{
+            slot.processor->setPlayHead(&playHead);
+            slot.processor->setRateAndBufferSizeDetails(rate,blockSize);
+            slot.processor->prepareToPlay(rate,blockSize);
+        },fault);
+        if (!ready) { markFaulted(slot,rack,index,PluginPhase::prepare,fault); return; }
         slot.prepared=true;
     }
     int latencySamples() const noexcept {
@@ -130,16 +202,22 @@ public:
         for (int t = 0; t < maxSessionTracks; ++t) maximum = std::max(maximum,rackLatency(racks[t]));
         return maximum + rackLatency(racks[masterIndex]);
     }
-    double tailSeconds() const {
-        auto rackTail = [](const Rack& rack) {
-            double tail = rack.instrument.processor && !rack.instrument.bypass ? rack.instrument.processor->getTailLengthSeconds() : 0;
-            for (int i=0;i<rack.effectCount;++i) if(rack.effects[i].processor && !rack.effects[i].bypass)
-                tail += rack.effects[i].processor->getTailLengthSeconds();
+    // Asks each plugin how long it rings on. A plugin that fails the question is disabled like any other.
+    double tailSeconds() {
+        auto slotTail = [this](Slot& slot,int rack,int index) {
+            if (!slot.processor || slot.bypass || slot.faulted.get()) return 0.0;
+            double value=0; fault::Fault fault;
+            if (!fault::guarded([&]{ value=slot.processor->getTailLengthSeconds(); },fault)) { markFaulted(slot,rack,index,PluginPhase::query,fault); return 0.0; }
+            return value;
+        };
+        auto rackTail = [&](Rack& rack,int rackIndex) {
+            double tail = slotTail(rack.instrument,rackIndex,-1);
+            for (int i=0;i<rack.effectCount;++i) tail += slotTail(rack.effects[static_cast<std::size_t>(i)],rackIndex,i);
             return std::isfinite(tail) ? std::clamp(tail,0.0,30.0) : 30.0;
         };
         double longest=0;
-        for(int t=0;t<maxSessionTracks;++t)longest=std::max(longest,rackTail(racks[t]));
-        return std::min(30.0,longest+rackTail(racks[masterIndex]));
+        for(int t=0;t<maxSessionTracks;++t)longest=std::max(longest,rackTail(racks[static_cast<std::size_t>(t)],t));
+        return std::min(30.0,longest+rackTail(racks[masterIndex],masterIndex));
     }
 private:
     struct Delay {
@@ -155,15 +233,31 @@ private:
             }
         }
     };
-    static int slotLatency(const Slot& slot) noexcept { return slot.processor && !slot.bypass ? std::clamp(slot.processor->getLatencySamples(),0,maxDelay) : 0; }
-    static void process(Slot& slot,juce::AudioBuffer<float>& buffer,juce::MidiBuffer& messages,int samples) {
-        if (!slot.processor || slot.bypass) return;
+    // A disabled plugin adds no delay, so the other tracks stop waiting for it.
+    static int slotLatency(const Slot& slot) noexcept { return slot.processor && !slot.bypass && !slot.faulted.get() ? std::clamp(slot.processor->getLatencySamples(),0,maxDelay) : 0; }
+    // index -1 is the instrument. An effect that fails hands back the signal it was given; an
+    // instrument that fails goes silent. Either way this block is clean and the slot is off.
+    void process(Slot& slot,int rack,int index,juce::AudioBuffer<float>& buffer,juce::MidiBuffer& messages,int samples) {
+        if (!slot.processor || slot.bypass || slot.faulted.get()) return;
         if (slot.processor->getTotalNumOutputChannels()!=2 || slot.processor->getTotalNumInputChannels()>2) return;
+        samples=std::min(samples,blockSize);
         // Stack view, no heap or channel-pointer allocation for stereo buffers.
         float* pointers[]{buffer.getWritePointer(0),buffer.getWritePointer(1)};
+        const bool effect=index>=0;
+        if (effect) for (int c=0;c<2;++c) std::memcpy(dry[static_cast<std::size_t>(c)].data(),pointers[c],sizeof(float)*static_cast<std::size_t>(samples));
         juce::AudioBuffer<float> view(pointers,2,samples);
-        slot.processor->processBlock(view,messages);
+        fault::Fault fault;
+        const bool completed=fault::guarded([&]{ slot.processor->processBlock(view,messages); },fault);
+        const bool producedGarbage=completed && !(alien::allFinite(pointers[0],samples) && alien::allFinite(pointers[1],samples));
+        if (completed && !producedGarbage) return;
+        markFaulted(slot,rack,index,PluginPhase::process,fault,producedGarbage);
+        for (int c=0;c<2;++c) {
+            if (effect) std::memcpy(pointers[c],dry[static_cast<std::size_t>(c)].data(),sizeof(float)*static_cast<std::size_t>(samples));
+            else std::memset(pointers[c],0,sizeof(float)*static_cast<std::size_t>(samples));
+        }
     }
+    static std::atomic<std::size_t>& quarantineTally() { static std::atomic<std::size_t> tally{0}; return tally; }
+    std::array<std::array<float,blockSize>,2> dry{};
     std::array<Delay,maxSessionTracks+1> delays;
     juce::MidiBuffer emptyMidi;
     double rate{44100};

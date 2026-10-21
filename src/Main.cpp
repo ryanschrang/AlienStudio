@@ -1,5 +1,6 @@
 #include <JuceHeader.h>
 #include "MainComponent.h"
+#include "PluginCheck.h"
 #include "Branding.h"
 
 // Application entry point: startup splash, main window and lifetime.
@@ -11,7 +12,13 @@ public:
         auto args = juce::StringArray::fromTokens(commandLine, true);
         args.removeEmptyStrings();
         if (args.size() == 3 && args[0] == "--scan-vst3") {
-            setApplicationReturnValue(alien::scanPluginBundle(args[1].unquoted(), juce::File(args[2].unquoted())));
+            setApplicationReturnValue(alien::scan::scanBundleInChild(args[1].unquoted(), juce::File(args[2].unquoted())));
+            quit(); return;
+        }
+        // The safety check that runs before a plugin is loaded into a project: a separate process, so a plugin
+        // that crashes or hangs while it is tried out cannot take the session down.
+        if (args.size() == 5 && args[0] == "--check-vst3") {
+            setApplicationReturnValue(alien::check::checkVst3InChild(juce::File(args[1].unquoted()), juce::File(args[2].unquoted()), args[3].unquoted() == "quick", args[4].unquoted() == "editor"));
             quit(); return;
         }
         splash = std::make_unique<alien::branding::SplashWindow>(getApplicationVersion());

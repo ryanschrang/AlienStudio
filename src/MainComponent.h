@@ -23,6 +23,7 @@
 #include "WavExport.h"
 #include "PluginHost.h"
 #include "PluginPanel.h"
+#include "PluginPreflight.h"
 
 // The application window's content. It owns the audio engine and device, the
 // project controller and every view, and wires them together. Views never talk
@@ -65,7 +66,21 @@ public:
         tabs.addTab("Plugins", alien::ui::colours::surface, &pluginPanel, false);
         tabs.addTab("Channel rack", alien::ui::colours::surface, &rackView, false);   // index 8: appended so earlier tab numbers never change
         rackView.onTitleChanged = [this] { updateEditorTitle(); };
-        pluginPanel.onScan = [this] { choosePluginScan(); };
+        pluginPanel.onScanCommand = [this](alien::ScanCommand command) { handleScanCommand(command); };
+        pluginPanel.onCancelScan = [this] { if (scanCancel) scanCancel->store(true); };
+        pluginPanel.health = [this](int destination, int slot) { return pluginHost.health(destination, slot); };
+        pluginHost.onProblem = [this](const juce::String& problem) {
+            pluginPanel.setStatus(problem);
+            statusBar.setProjectStatus("Plugin problem: " + problem.upToFirstOccurrenceOf("\n", false, false), problem);
+            refreshPlugins();
+        };
+        // The first time a plugin file is seen it is tried out in a separate process, so a plugin that
+        // crashes or hangs while loading cannot take the session (and unsaved work) with it.
+        preflight = std::make_unique<alien::Preflight>(alien::scan::ScanDatabase::defaultFile().getSiblingFile("PluginPreflight.xml"),
+            alien::isolatedPreflightChecker(juce::File::getSpecialLocation(juce::File::currentExecutableFile), 45000), alien::DiagnosticLog(hostLogFile()));
+        pluginPanel.setPreflightEnabled(preflight->enabled());
+        pluginHost.preflight = [this](const juce::PluginDescription& description) { return preflight->verify(description); };
+        scanDatabase.load(alien::scan::ScanDatabase::defaultFile());
         pluginPanel.onTarget = [this](int) { refreshPlugins(); };
         pluginPanel.onAdd = [this](bool instrument, int choice) { addPlugin(instrument,choice); };
         pluginPanel.onAction = [this](int op,int slot) { pluginAction(op,slot); };
@@ -111,6 +126,8 @@ public:
         keyboardState.removeListener(this);
         if (audioWorkCancellation) audioWorkCancellation->store(true);
         if (exportCancellation) exportCancellation->store(true);
+        if (scanCancel) scanCancel->store(true);
+        scanPool.removeAllJobs(true, 20000);
         audioWorkPool.removeAllJobs(true, -1);
         audio.removeAudioCallback(&engine);
         engine.capture.store(nullptr);
@@ -612,6 +629,7 @@ private:
             }
         }
         pianoRoll.setPlayheadStep(engine.sessionTrackPositions[static_cast<std::size_t>(d.selectedTrack)].load() / 1000.0);
+        pluginHost.poll();   // plugins that failed on the audio thread are reported here, never from it
         if (pluginHost.changed.exchange(false)) controller.runtimePluginEdited();
         if (++statusTicks % 10 == 0) updateEngineStatus();
         if (statusTicks % (20 * 60) == 0) controller.autosaveIfNeeded(); // Once a minute.
@@ -816,8 +834,9 @@ private:
         auto project = std::make_shared<alien::SessionProjectData>(alien::toProjectData(controller.document()));
         auto renderEngine = std::make_shared<ToneEngine>();
         renderEngine->prepare(48000);
-        { alien::PluginHost renderHost(*renderEngine->plugins);
-          const auto errors=renderHost.restore(pluginStates(),controller.document().masterPlugins,48000);
+        // Kept until the export ends: a plugin that fails during the render is reported through it.
+        auto renderHost = std::make_shared<alien::PluginHost>(*renderEngine->plugins, hostLogFile());
+        { const auto errors=renderHost->restore(pluginStates(),controller.document().masterPlugins,48000);
           if(errors.isNotEmpty()){ timelineView.setStatus("Export stopped: " + errors);return; } }
         auto assets = controller.document();
         alien::DrumSamplePointers drums{};
@@ -825,9 +844,19 @@ private:
         exportCancellation = std::make_shared<std::atomic<bool>>(false); auto cancel = exportCancellation;
         setProjectBusy(true); timelineView.setExporting(true); timelineView.setStatus("Exporting WAV. Click Cancel export to stop.");
         juce::Component::SafePointer<MainComponent> safe(this);
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [safe, file, song, project, assets, drums, cancel, renderEngine, options, keepAlive] {
+        // The engine and host are handed to the message thread when the render ends, so the plugins are destroyed there (plugins expect that).
+        std::function<juce::ThreadPoolJob::JobStatus()> job = [safe, file, song, project, assets, drums, cancel, renderEngine, renderHost, options, keepAlive]() mutable {
             juce::String error; const bool ok = alien::exportArrangementWav(file, *project, *song, drums, *cancel, error, renderEngine.get(), options);
-            juce::MessageManager::callAsync([safe, file, ok, error] { if (!safe) return; safe->exportCancellation.reset(); safe->setProjectBusy(false); safe->timelineView.setExporting(false); safe->timelineView.setStatus(ok ? "Exported " + file.getFullPathName() : error); });
+            juce::MessageManager::callAsync([safe, file, ok, error, engine = std::move(renderEngine), host = std::move(renderHost)] {
+                // Reports from plugins that failed while rendering are only collected here, on the message thread.
+                juce::String pluginFailures; host->onProblem = [&pluginFailures](const juce::String& text) { pluginFailures = text; };
+                host->poll();
+                if (!safe) return;
+                safe->exportCancellation.reset(); safe->setProjectBusy(false); safe->timelineView.setExporting(false);
+                safe->timelineView.setStatus(!ok ? error
+                    : pluginFailures.isEmpty() ? "Exported " + file.getFullPathName()
+                    : "Exported " + file.getFullPathName() + " WITH PLUGIN FAILURES. The file is missing the sound of the plugin(s) that failed, so do not use it as a final mix:\n" + pluginFailures);
+            });
             return juce::ThreadPoolJob::jobHasFinished;
         };
         audioWorkPool.addJob(std::move(job));
@@ -928,7 +957,7 @@ private:
     void pluginAction(int op,int slot) {
         if(projectBusy || controller.isBusy())return;
         const int t=pluginTarget();
-        if(op==0){pluginHost.openEditor(t,slot);return;}
+        if(op==0){const auto problem=pluginHost.openEditor(t,slot);if(problem.isNotEmpty()){pluginPanel.setStatus(problem);refreshPlugins();}return;}
         snapshotPlugins(SnapshotReason::always);auto states=pluginStates();auto master=controller.document().masterPlugins;
         auto& rack=t==alien::maxSessionTracks?master:states[t];
         if(slot<0){if(t==alien::maxSessionTracks)return;if(op==1)rack.instrument.bypass=!rack.instrument.bypass;else if(op==2)rack.instrument={};}
@@ -939,35 +968,134 @@ private:
         }
         controller.setPluginRacks(states,master);restorePlugins();
     }
+    // ---- plugin scanning -------------------------------------------------------------------------------
+    static juce::File hostLogFile() { return alien::DiagnosticLog::defaultFile("plugin-host.log"); }
+    static juce::File scanLogFile() { return alien::DiagnosticLog::defaultFile("plugin-scan.log"); }
+    static juce::File lastScanFile() { return alien::DiagnosticLog::defaultFile("plugin-scan-last.txt"); }
+
+    void handleScanCommand(alien::ScanCommand command) {
+        using C = alien::ScanCommand;
+        switch (command) {
+            case C::standardFolders: { alien::scan::ScanOptions o; o.folders = alien::scan::standardVst3Folders(); startScan(std::move(o)); break; }
+            case C::folder: chooseScanFolder(); break;
+            case C::singleFile: choosePluginScan(); break;
+            case C::retryFailed: {
+                alien::scan::ScanOptions o; o.retryFailed = true;
+                for (const auto& failed : scanDatabase.failures()) if (juce::File(failed.path).exists()) o.bundles.push_back(juce::File(failed.path));
+                if (o.bundles.empty()) { pluginPanel.setStatus("No plugin has failed to scan, so there is nothing to retry."); break; }
+                startScan(std::move(o)); break; }
+            case C::rescanAll: {
+                alien::scan::ScanOptions o; o.rescanUnchanged = true; o.retryFailed = true; o.folders = alien::scan::standardVst3Folders();
+                for (const auto& entry : scanDatabase.all()) if (juce::File(entry.path).exists()) o.bundles.push_back(juce::File(entry.path));
+                startScan(std::move(o)); break; }
+            case C::recheckBlocked: recheckBlockedPlugins(); break;
+            case C::togglePreflight:
+                if (preflight) {
+                    preflight->setEnabled(pluginPanel.preflightIsEnabled());
+                    pluginPanel.setStatus(preflight->enabled() ? "Plugins will be tried out in a separate process the first time they are loaded."
+                                                               : "Plugins will be loaded without a safety check. A plugin that crashes while loading will end the session.");
+                }
+                break;
+            case C::openScanLog: openDiagnosticFile(lastScanFile(), "No scan has been run yet."); break;
+            case C::openProblemLog: openDiagnosticFile(hostLogFile(), "No plugin problems have been logged."); break;
+        }
+    }
+    void openDiagnosticFile(const juce::File& file, const juce::String& missing) {
+        if (!file.existsAsFile()) { pluginPanel.setStatus(missing); return; }
+        if (!file.startAsProcess()) file.revealToUser();
+    }
+    void recheckBlockedPlugins() {
+        if (projectBusy || controller.isBusy() || !preflight) return;
+        const int n = preflight->forgetBlocked();
+        if (n == 0) { pluginPanel.setStatus("No plugin is blocked."); return; }
+        pluginPanel.setStatus("Checking " + juce::String(n) + " blocked plugin(s) again...");
+        snapshotPlugins(SnapshotReason::always);
+        restorePlugins(true);
+    }
+    void chooseScanFolder() {
+        if(projectBusy || controller.isBusy() || scanning)return;
+        pluginChooser=std::make_unique<juce::FileChooser>("Choose a folder to search for VST3 plugins (subfolders are included)",juce::File{});
+        juce::Component::SafePointer<MainComponent> safe(this);
+        pluginChooser->launchAsync(juce::FileBrowserComponent::openMode|juce::FileBrowserComponent::canSelectDirectories,
+            [safe](const juce::FileChooser& chooser){
+                if(!safe||chooser.getResult()==juce::File{})return;
+                alien::scan::ScanOptions o; o.folders.push_back(chooser.getResult()); safe->startScan(std::move(o));
+            });
+    }
     void choosePluginScan() {
-        if(projectBusy || controller.isBusy())return;
-        pluginChooser=std::make_unique<juce::FileChooser>("Select a 64-bit VST3 bundle",juce::File{},"*.vst3");
+        if(projectBusy || controller.isBusy() || scanning)return;
+        pluginChooser=std::make_unique<juce::FileChooser>("Select a 64-bit VST3 plugin",juce::File{},"*.vst3");
         juce::Component::SafePointer<MainComponent> safe(this);
         pluginChooser->launchAsync(juce::FileBrowserComponent::openMode|juce::FileBrowserComponent::canSelectFiles|juce::FileBrowserComponent::canSelectDirectories,
-            [safe](const juce::FileChooser& chooser){if(safe && chooser.getResult()!=juce::File{})safe->scanPlugin(chooser.getResult());});
+            [safe](const juce::FileChooser& chooser){
+                if(!safe||chooser.getResult()==juce::File{})return;
+                const auto bundle=chooser.getResult();
+                if(!bundle.hasFileExtension("vst3")){safe->pluginPanel.setStatus("Choose a .vst3 plugin, or use Scan a folder to search a folder.");return;}
+                // Asked for by name, so it is tried even if it failed before and has not changed.
+                alien::scan::ScanOptions o; o.bundles.push_back(bundle); o.retryFailed=true; o.rescanUnchanged=true; safe->startScan(std::move(o));
+            });
     }
-    void scanPlugin(juce::File bundle) {
-        if(projectBusy || controller.isBusy())return;
-        if(!bundle.hasFileExtension("vst3")){pluginPanel.setStatus("Choose a .vst3 bundle, not its parent folder.");return;}
-        setProjectBusy(true);pluginPanel.setStatus("Scanning in a separate process (60-second timeout)...");
+    // A scan runs on its own thread so the project stays usable. It works on copies of the plugin list and the
+    // scan database, saves both after every file (so a crash of the whole application loses nothing), and
+    // hands the result back here when it ends.
+    struct ScanSession {
+        alien::scan::ScanDatabase database;
+        juce::KnownPluginList known;
+        std::atomic<bool> refreshQueued{false};
+    };
+    void startScan(alien::scan::ScanOptions options) {
+        if (scanning) return;
+        options.executable = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+        if (auto* app = juce::JUCEApplication::getInstance()) options.appVersion = app->getApplicationVersion();
+        scanning = true; pluginPanel.setScanning(true);
+        pluginPanel.setStatus("Scanning for VST3 plugins. Each file is loaded in a separate process, so a plugin that crashes or hangs is recorded and skipped.");
+        scanCancel = std::make_shared<std::atomic<bool>>(false);
+        auto session = std::make_shared<ScanSession>();
+        session->database = scanDatabase;
+        if (auto xml = knownPlugins.createXml()) session->known.recreateFromXml(*xml);
+        auto cancel = scanCancel;
         juce::Component::SafePointer<MainComponent> safe(this);
-        const auto executable=juce::File::getSpecialLocation(juce::File::currentExecutableFile).getFullPathName();
-        std::function<juce::ThreadPoolJob::JobStatus()> job=[safe,bundle,executable]{
-            auto output=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("AlienPluginScan",".xml");
-            juce::ChildProcess child;juce::String error;
-            if(!child.start(juce::StringArray{executable,"--scan-vst3",bundle.getFullPathName(),output.getFullPathName()},0))error="Could not start scanner";
-            else if(!child.waitForProcessToFinish(60000)){child.kill();child.waitForProcessToFinish(1000);error="Scanner timed out";}
-            else if(child.getExitCode()!=0)error="Plugin scan failed or crashed";
-            auto xml=std::shared_ptr<juce::XmlElement>(juce::parseXML(output).release());output.deleteFile();
-            juce::MessageManager::callAsync([safe,bundle,xml,error]{if(!safe)return;safe->setProjectBusy(false);
-                if(error.isNotEmpty()||!xml){
-                    auto failures=pluginListFile().getSiblingFile("PluginScanFailures.txt");failures.getParentDirectory().createDirectory();failures.appendText(bundle.getFullPathName()+"\n");
-                    safe->pluginPanel.setStatus(error+". Failure recorded; select Scan VST3 to retry explicitly.");return;
-                }
-                juce::KnownPluginList found;found.recreateFromXml(*xml);for(const auto& type:found.getTypes())safe->knownPlugins.addType(type);
-                pluginListFile().getParentDirectory().createDirectory();safe->knownPlugins.createXml()->writeTo(pluginListFile());safe->refreshPlugins();safe->pluginPanel.setStatus("Scan complete. Choose an instrument or FX from the list.");
-            });return juce::ThreadPoolJob::jobHasFinished;
-        };audioWorkPool.addJob(std::move(job));
+        std::function<juce::ThreadPoolJob::JobStatus()> job = [safe, session, cancel, options] {
+            alien::DiagnosticLog log(scanLogFile(), 4 * 1024 * 1024);
+            alien::scan::ScanHooks hooks;
+            hooks.progress = [safe](int done, int total, const juce::String& current) {
+                if (current.isEmpty()) return;
+                const auto text = "Scanning " + juce::String(done + 1) + " of " + juce::String(total) + ": " + current + "\nCancel scan stops after the current file.";
+                juce::MessageManager::callAsync([safe, text] { if (safe) safe->pluginPanel.setStatus(text); });
+            };
+            hooks.checkpoint = [safe, session] {
+                session->database.save(alien::scan::ScanDatabase::defaultFile());
+                if (auto xml = session->known.createXml()) { pluginListFile().getParentDirectory().createDirectory(); xml->writeTo(pluginListFile()); }
+                if (!session->refreshQueued.exchange(true))
+                    juce::MessageManager::callAsync([safe, session] {
+                        session->refreshQueued = false;
+                        if (!safe) return;
+                        if (auto xml = session->known.createXml()) safe->knownPlugins.recreateFromXml(*xml);
+                        safe->refreshPlugins();
+                    });
+            };
+            auto report = std::make_shared<alien::scan::ScanReport>(alien::scan::runScan(options, session->database, session->known, &alien::scan::runChildProcess, log, *cancel, hooks));
+            lastScanFile().getParentDirectory().createDirectory();
+            lastScanFile().replaceWithText(report->fullText());
+            juce::MessageManager::callAsync([safe, session, report] { if (safe) safe->finishScan(*session, *report); });
+            return juce::ThreadPoolJob::jobHasFinished;
+        };
+        scanPool.addJob(std::move(job));
+    }
+    void finishScan(ScanSession& session, const alien::scan::ScanReport& report) {
+        scanning = false; scanCancel.reset(); pluginPanel.setScanning(false);
+        scanDatabase = session.database;
+        if (auto xml = session.known.createXml()) knownPlugins.recreateFromXml(*xml);
+        // Kept for continuity with earlier versions: a plain list of files that failed to scan.
+        auto failures = pluginListFile().getSiblingFile("PluginScanFailures.txt");
+        for (const auto& b : report.bundles)
+            if (b.action == alien::scan::BundleReport::Action::scanned && b.status != alien::scan::Status::ok && b.status != alien::scan::Status::couldNotStart) {
+                failures.getParentDirectory().createDirectory(); failures.appendText(b.bundle.getFullPathName() + "\n");
+            }
+        refreshPlugins();
+        auto text = report.summary();
+        if (report.failedCount() > 0) text += "\nScan VST3 > Show the last scan log lists each file that failed and why. Retry plugins that failed tries them again.";
+        pluginPanel.setStatus(text);
     }
 
     // Members (order matters: construction top to bottom) -------------------
@@ -977,9 +1105,13 @@ private:
     juce::AudioDeviceManager audio;
     juce::MidiKeyboardState keyboardState;
     alien::ProjectController controller{engine};
-    alien::PluginHost pluginHost{*engine.plugins};
+    alien::PluginHost pluginHost{*engine.plugins, alien::DiagnosticLog::defaultFile("plugin-host.log")};
     alien::PluginPanel pluginPanel;
     juce::KnownPluginList knownPlugins;
+    alien::scan::ScanDatabase scanDatabase;       // what has been scanned, and what happened to each file
+    std::unique_ptr<alien::Preflight> preflight;  // the safety check before a plugin is loaded into a project
+    bool scanning{};
+    std::shared_ptr<std::atomic<bool>> scanCancel;
     std::vector<alien::PluginRackState> loadedRacks; // Rack states the plugin host last loaded or captured.
     alien::PluginRackState loadedMaster;
     std::unique_ptr<juce::FileChooser> pluginChooser, relinkChooser;
@@ -1008,4 +1140,5 @@ private:
     juce::Component::SafePointer<juce::DialogWindow> audioSettingsWindow;
     std::shared_ptr<std::atomic<bool>> audioWorkCancellation, exportCancellation;
     juce::ThreadPool audioWorkPool{1};
+    juce::ThreadPool scanPool{1};   // plugin scans can take minutes; they must not queue behind audio-tool jobs
 };
