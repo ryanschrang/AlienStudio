@@ -68,4 +68,20 @@ current one continues, then swap at an accepted launch boundary. Register immuta
 file sources off-thread, load large clips without whole-file allocations, create
 background waveform caches and surface errors in the UI. Offline export must use
 an explicit deterministic read path rather than depending on real-time prebuffer
-speed. Current Session import and arrangement duration limits remain unchanged.
+speed. Current Session import limits remain unchanged.
+
+## Arrangement timeline and offline export
+
+The Arrangement timeline plays streamed clips through the same two endpoints per track. A region
+that begins part-way into its clip asks the stream for that position (`request(source, startFrame)`).
+The engine requests the next region's audio a quarter of a second before it is due, so it is buffered
+when the playhead arrives. If a stream is still not ready when its region begins, the track keeps
+trying and then starts where the song has got to by then, so what it plays stays in time with the
+rest of the song instead of starting late.
+
+Export does not use the worker. `DiskAudioStreamService::setDeterministic()` makes every voice read on the
+thread that plays it, and the voice is fully buffered when `request()` returns; the render engine then
+plays streamed clips through exactly the code that live playback uses (interpolation, fades, trims,
+replacement), with the same result whatever the block size or thread timing. A source that cannot be
+opened is reported before any file is written, and a read that fails mid-render stops the export with a
+message. The live engine never sets this mode and still never performs file I/O on the audio thread.

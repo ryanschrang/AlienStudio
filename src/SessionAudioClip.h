@@ -104,26 +104,44 @@ private:
 
 // Audio-thread-owned player with separate active and prebuffer voices. A late
 // stream waits for the next quantized boundary while the current clip continues.
+// A clip can start part-way in (a timeline region trimmed at the front), fade in
+// when it does, and be released with a short fade when its region ends.
 class SessionAudioPlayer {
 public:
     void bind(DiskAudioStreamService::Voice* first, DiskAudioStreamService::Voice* second) noexcept {
         activeVoice = first; pendingVoice = second;
     }
-    bool queue(const SessionAudioClip* clip, int quantizationSteps) noexcept {
+    // `startFrame` (in the clip's own frames) is where playback will begin. A streamed clip
+    // is asked for from there, so it can be prebuffered before the moment it is needed.
+    bool queue(const SessionAudioClip* clip, int quantizationSteps, double startFrame = 0.0) noexcept {
         pendingClip = clip;
         failure.store(false, std::memory_order_relaxed);
         pendingQuantization = quantizationSteps > 0 ? quantizationSteps : 16;
         pendingGeneration = 0;
+        pendingStart = std::isfinite(startFrame) && startFrame > 0.0 ? startFrame : 0.0;
         if (clip && clip->streamed()) {
-            if (!pendingVoice) return false;
-            pendingGeneration = pendingVoice->request(clip->streamSource.get());
+            if (!pendingVoice) { pendingClip = nullptr; return false; }
+            pendingGeneration = pendingVoice->request(clip->streamSource.get(), static_cast<std::int64_t>(pendingStart));
         }
         pending = true;
         return true;
     }
+    // Drops a queued clip that has not started (a timeline region that ended before its audio was ready).
+    void cancelPending() noexcept {
+        if (pendingClip && pendingClip->streamed() && pendingVoice) pendingVoice->request(nullptr);
+        pendingClip = nullptr; pending = false; pendingGeneration = 0; pendingStart = 0.0;
+    }
     bool hasPending() const noexcept { return pending; }
     bool pendingIsAudio() const noexcept { return pendingClip != nullptr; }
     int pendingQuantizationSteps() const noexcept { return pendingQuantization; }
+    // The frame the queued clip was asked to begin at.
+    double pendingStartFrame() const noexcept { return pendingStart; }
+    // True when `clip` is already queued to begin at (about) `startFrame`, so it need not be asked for again.
+    // `window` is how far past its own start the song may have moved while a stream was buffering.
+    bool pendingMatches(const SessionAudioClip* clip, double startFrame, double window = 64.0) const noexcept {
+        return pending && clip != nullptr && pendingClip == clip && startFrame >= pendingStart - 0.5
+            && startFrame - pendingStart < window;
+    }
     bool pendingReady() const noexcept {
         return pending && (!pendingClip || !pendingClip->streamed()
             || (pendingVoice && pendingVoice->ready(pendingGeneration)));
@@ -133,15 +151,23 @@ public:
             && (!pendingVoice || pendingVoice->failed(pendingGeneration));
     }
 
-    bool launchPendingNow(double outputRate) noexcept {
+    // Starts the queued clip. A timeline region that begins part-way into its clip
+    // starts at `startFrame` (never earlier than the frame it was queued for) and fades in over
+    // `fadeInSamples` output samples, so joining the middle of a waveform does not click.
+    // Starting at the very beginning never fades. A streamed clip that is not buffered yet
+    // stays queued and false is returned; the caller tries again.
+    bool launchPendingNow(double outputRate, double startFrame = 0.0, int fadeInSamples = 0) noexcept {
         if (!pending) return false;
-        if (pendingFailed()) { failure.store(true, std::memory_order_relaxed); pendingClip = nullptr; pending = false; pendingGeneration = 0; return false; }
+        if (pendingFailed()) { failure.store(true, std::memory_order_relaxed); cancelPending(); return false; }
         if (!pendingReady()) return false;
         activeClip = pendingClip;
         pendingClip = nullptr;
         pending = false;
-        cursor = 0.0;
+        cursor = std::max(std::isfinite(startFrame) && startFrame > 0.0 ? startFrame : 0.0, pendingStart);
+        pendingStart = 0.0;
         outputSampleRate = std::isfinite(outputRate) && outputRate > 0 ? outputRate : 44100.0;
+        fadeInTotal = cursor > 0.5 && fadeInSamples > 0 ? fadeInSamples : 0;
+        fadeInDone = 0; releaseTotal = releaseLeft = 0;
         if (activeClip && activeClip->streamed()) {
             std::swap(activeVoice, pendingVoice);
             activeGeneration = pendingGeneration;
@@ -149,6 +175,7 @@ public:
             activeGeneration = 0;
         }
         pendingGeneration = 0;
+        if (activeClip != nullptr && cursor >= static_cast<double>(activeClip->frames)) clearActive();
         return true;
     }
 
@@ -172,23 +199,42 @@ public:
                 ? interpolate(activeClip->right[static_cast<std::size_t>(first)],
                     activeClip->right[static_cast<std::size_t>(second)], fraction) : left;
         }
+        float gain = 1.0f;
+        if (fadeInDone < fadeInTotal) gain = static_cast<float>(++fadeInDone) / static_cast<float>(fadeInTotal);
+        bool finished = false;
+        if (releaseTotal > 0) {
+            gain *= static_cast<float>(releaseLeft) / static_cast<float>(releaseTotal);
+            finished = --releaseLeft <= 0;
+        }
         cursor += activeClip->sampleRate / outputSampleRate;
-        if (cursor >= static_cast<double>(activeClip->frames)) clearActive();
-        return {left, right};
+        if (finished || cursor >= static_cast<double>(activeClip->frames)) clearActive();
+        return {left * gain, right * gain};
+    }
+
+    // Lets the playing clip finish with a short fade instead of cutting it off
+    // (a timeline region ending in the middle of a waveform).
+    void release(int fadeSamples) noexcept {
+        if (activeClip == nullptr) return;
+        if (fadeSamples <= 0) { stop(); return; }
+        if (releaseTotal == 0) releaseTotal = releaseLeft = fadeSamples;
     }
 
     void stop() noexcept {
         if (activeVoice) activeVoice->request(nullptr);
         if (pendingVoice) pendingVoice->request(nullptr);
         activeClip = pendingClip = nullptr;
-        pending = false; cursor = 0.0; activeGeneration = pendingGeneration = 0;
+        pending = false; cursor = 0.0; activeGeneration = pendingGeneration = 0; pendingStart = 0.0;
+        fadeInTotal = fadeInDone = releaseTotal = releaseLeft = 0;
     }
     bool isPlaying() const noexcept { return activeClip != nullptr; }
     std::uint64_t underrunCount() const noexcept { return underruns.load(std::memory_order_relaxed); }
     bool streamFailed() const noexcept { return failure.load(std::memory_order_relaxed); }
 
 private:
-    void clearActive() noexcept { activeClip = nullptr; cursor = 0.0; activeGeneration = 0; }
+    void clearActive() noexcept {
+        activeClip = nullptr; cursor = 0.0; activeGeneration = 0;
+        fadeInTotal = fadeInDone = releaseTotal = releaseLeft = 0;
+    }
     static float interpolate(float a, float b, float amount) noexcept { return a + (b - a) * amount; }
     const SessionAudioClip* activeClip{};
     const SessionAudioClip* pendingClip{};
@@ -197,8 +243,9 @@ private:
     std::uint64_t activeGeneration{}, pendingGeneration{};
     std::atomic<std::uint64_t> underruns{};
     std::atomic<bool> failure{};
-    double cursor{}, outputSampleRate{44100.0};
+    double cursor{}, outputSampleRate{44100.0}, pendingStart{};
     int pendingQuantization{16};
+    int fadeInTotal{}, fadeInDone{}, releaseTotal{}, releaseLeft{};
     bool pending{};
 };
 

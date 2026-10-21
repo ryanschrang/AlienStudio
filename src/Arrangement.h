@@ -1,68 +1,17 @@
 #pragma once
 #include "SessionAudioClip.h"
 #include "SessionCapacity.h"
+#include "Timeline.h"
 #include <array>
 #include <atomic>
 #include <memory>
 #include <mutex>
 
 namespace alien {
-struct ArrangementRegion {
-    int track{}, scene{}, startBar{}, lengthBars{4};
-};
-struct Arrangement {
-    static constexpr std::size_t capacity = 128;
-    static constexpr int maxLengthBars = 16384; // 18 h 12 min at the supported 60 BPM minimum.
-    std::array<ArrangementRegion, capacity> regions{};
-    std::size_t count{};
-    int lengthBars{16};
-    bool valid(int tracks = maxSessionTracks, int scenes = maxSessionScenes) const noexcept {
-        if (lengthBars < 1 || lengthBars > maxLengthBars || count > capacity) return false;
-        for (std::size_t i = 0; i < count; ++i) {
-            const auto& a = regions[i];
-            if (a.track < 0 || a.track >= tracks || a.scene < 0 || a.scene >= scenes
-                || a.startBar < 0 || a.lengthBars < 1 || a.lengthBars > lengthBars
-                || a.startBar > lengthBars - a.lengthBars) return false;
-            for (std::size_t j = 0; j < i; ++j) {
-                const auto& b = regions[j];
-                if (a.track == b.track && a.startBar < b.startBar + b.lengthBars
-                    && b.startBar < a.startBar + a.lengthBars) return false;
-            }
-        }
-        return true;
-    }
-    bool add(ArrangementRegion region) noexcept {
-        if (count >= capacity) return false;
-        regions[count++] = region;
-        if (valid()) return true;
-        regions[--count] = {}; return false;
-    }
-    bool replace(std::size_t index, ArrangementRegion region) noexcept {
-        if (index >= count) return false;
-        const auto old = regions[index]; regions[index] = region;
-        if (valid()) return true;
-        regions[index] = old; return false;
-    }
-    bool erase(std::size_t index) noexcept {
-        if (index >= count) return false;
-        for (auto i = index; i + 1 < count; ++i) regions[i] = regions[i+1];
-        regions[--count] = {}; return true;
-    }
-    // True when both arrangements place the same regions in a song of the same
-    // length. Used to tell a re-publish of unchanged timing (clip contents or
-    // mixer edits elsewhere in the project) from a real change to the timeline.
-    bool sameLayout(const Arrangement& other) const noexcept {
-        if (count != other.count || lengthBars != other.lengthBars) return false;
-        for (std::size_t i = 0; i < count; ++i) {
-            const auto& a = regions[i]; const auto& b = other.regions[i];
-            if (a.track != b.track || a.scene != b.scene || a.startBar != b.startBar || a.lengthBars != b.lengthBars)
-                return false;
-        }
-        return true;
-    }
-};
+// What the audio thread plays in the Arrangement view: the timeline (where
+// everything sits) plus the content of every Session clip it can refer to.
 struct ArrangementPlayback {
-    Arrangement arrangement;
+    alien::timeline::Timeline timeline;
     std::array<std::array<SessionClipLaunch, maxSessionTracks>, maxSessionScenes> clips{};
 };
 
@@ -78,8 +27,8 @@ public:
         const auto empty = std::make_shared<const ArrangementPlayback>();
         for (auto& slot : slots) slot = empty;
     }
-    static bool validSnapshot(const ArrangementPlayback& value) noexcept {
-        if (!value.arrangement.valid()) return false;
+    static bool validSnapshot(const ArrangementPlayback& value) {
+        if (!value.timeline.valid()) return false;
         for (const auto& scene : value.clips) for (const auto& clip : scene)
             if (!clip.pattern.valid()) return false;
         return true;

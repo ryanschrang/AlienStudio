@@ -5,7 +5,9 @@ arrangement/WAV export, disk-streamed recording and offline tempo matching. Proj
 also stores initial VST3 instrument/FX racks. See README for the supported workflow
 and WINDOWS_AUDIO_CHECKLIST.md for unverified hardware/plugin checks.
 
-Remaining work: Windows plugin/device listening tests; long-file streaming Session playback; MIDI recording/count-in/overdub; waveform editing; live warp markers;
+The Arrange tab is now a full arrangement timeline (Session clips and Channel Rack patterns, snap/zoom/selection/loop/markers, WAV export of the song or loop; project v8).
+
+Remaining work: Windows plugin/device listening tests; automation lanes, clip fades and tempo-warped audio clips on the timeline; long-file streaming Session playback; waveform editing; live warp markers;
 plugin automation, sidechains/multi-output, freeze and runtime crash isolation.
 
 Historical milestone notes below describe the earlier stacked branches.
@@ -88,7 +90,7 @@ streaming, factory sample packs, and more elaborate pad modulation.
 ## October 2026 implementation update
 
 Implemented foundations now include per-track eight-pad sample kits/browser,
-bar-based arrangement with WAV export, disk-streamed mono/stereo input takes,
+arrangement timeline with WAV export, disk-streamed mono/stereo input takes,
 and offline fixed-tempo WSOLA rendering. Audio lab adds explicit input settings,
 record state/meter, destination display and a separate tempo-render workflow.
 Full recording/editing and warping milestones remain open: streaming playback,

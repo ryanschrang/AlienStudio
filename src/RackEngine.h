@@ -73,8 +73,48 @@ public:
     }
 
     // Renders `samples` samples and ADDS them to the per-bus output pointers.
+    // While `running`, the selected pattern loops on the built-in step clock.
     void process(const Snapshot& snap, const SampleTable& clips, bool running, double bpm, int activeTracks,
                  int samples, float* const* left, float* const* right) noexcept {
+        render(snap, running, activeTracks, samples, left, right, [&](int) {
+            const auto grid = clock.next(sampleRate, bpm, snap.swing);
+            if (grid >= 0) trigger(snap, clips, grid);
+        });
+    }
+
+    // One step of one pattern, due on a given sample of the block. The arrangement
+    // timeline decides when each step is due (it knows where every pattern region
+    // begins, ends and loops), so no clock runs here.
+    struct TimelineHit { int sample{}, pattern{}, step{}; };
+    // `hits` must be in ascending order of sample.
+    void processTimeline(const Snapshot& snap, const SampleTable& clips, bool running, const TimelineHit* hits, int hitCount,
+                         int activeTracks, int samples, float* const* left, float* const* right) noexcept {
+        int next = 0;
+        render(snap, running, activeTracks, samples, left, right, [&](int i) {
+            for (; next < hitCount && hits[next].sample <= i; ++next) {
+                const Pattern* p = snap.pattern(hits[next].pattern);
+                if (p != nullptr) triggerStep(snap, clips, *p, std::clamp(hits[next].step, 0, p->length - 1));
+            }
+        });
+    }
+
+    // The step (within the pattern) that started most recently, or -1 when stopped.
+    int currentStep() const noexcept { return lastStep; }
+    int activeVoices() const noexcept {
+        int n = 0; for (const auto& v : voices) n += v.active ? 1 : 0; return n;
+    }
+    bool busy() const noexcept { for (const auto& v : voices) if (v.active) return true; return false; }
+
+    static int busFor(int output, int activeTracks) noexcept {
+        return output >= 0 && output < activeTracks && output < maxSessionTracks ? output : masterBus;
+    }
+
+private:
+    // Shared block loop. `onSample(i)` runs before sample i while `running` and
+    // starts whatever is due then.
+    template <class OnSample>
+    void render(const Snapshot& snap, bool running, int activeTracks, int samples, float* const* left, float* const* right,
+                OnSample&& onSample) noexcept {
         tracksInUse = std::clamp(activeTracks, 1, maxSessionTracks);
         if (running && !wasRunning) { clock.reset(); random = seed; lastStep = -1; }
         if (!running && wasRunning) { releaseAll(); lastStep = -1; }
@@ -91,26 +131,11 @@ public:
         }
         for (int i = 0; i < samples; ++i) {
             if (controlCountdown-- <= 0) { controlCountdown = controlInterval - 1; updateControl(snap); }
-            if (running) {
-                const auto grid = clock.next(sampleRate, bpm, snap.swing);
-                if (grid >= 0) trigger(snap, clips, grid);
-            }
+            if (running) onSample(i);
             renderSample(i, left, right);
         }
     }
 
-    // The step (within the pattern) that started most recently, or -1 when stopped.
-    int currentStep() const noexcept { return lastStep; }
-    int activeVoices() const noexcept {
-        int n = 0; for (const auto& v : voices) n += v.active ? 1 : 0; return n;
-    }
-    bool busy() const noexcept { for (const auto& v : voices) if (v.active) return true; return false; }
-
-    static int busFor(int output, int activeTracks) noexcept {
-        return output >= 0 && output < activeTracks && output < maxSessionTracks ? output : masterBus;
-    }
-
-private:
     static constexpr int controlInterval = 16;
     static constexpr std::uint32_t seed = 0x9E3779B9u;
     struct Voice {
@@ -159,7 +184,11 @@ private:
     void trigger(const Snapshot& snap, const SampleTable& clips, std::int64_t grid) noexcept {
         const Pattern* p = snap.selected();
         if (p == nullptr) return;
-        const int step = static_cast<int>(grid % p->length);
+        triggerStep(snap, clips, *p, static_cast<int>(grid % p->length));
+    }
+
+    void triggerStep(const Snapshot& snap, const SampleTable& clips, const Pattern& pattern, int step) noexcept {
+        const Pattern* p = &pattern;
         lastStep = step;
         for (int c = 0; c < snap.channelCount; ++c) {
             const Step& s = p->steps[static_cast<std::size_t>(c)][static_cast<std::size_t>(step)];
