@@ -320,13 +320,24 @@ public:
         const auto ids = selected;
         return edit(ticks < 0 ? "Slip clips left" : "Slip clips right", [=](timeline::Timeline& t) { return t.slip(ids, ticks); }, "timeline-slip");
     }
+    bool selectedStreamedAudio() const {
+        const auto& d = controller.document();
+        for (const auto id : selected) if (const auto* r = committed().find(id); r != nullptr && !r->isPattern()
+            && d.isValidCell(r->row, r->source)) {
+            const auto& clip = d.clip(r->row, r->source);
+            if (clip.audio != nullptr && clip.audio->streamed()) return true;
+        }
+        return false;
+    }
     bool toggleSourceLoopSelection() {
         if (selected.empty()) return false;
+        if (selectedStreamedAudio()) { say("Source looping for streamed clips is not available yet."); return false; }
         bool all = true; for (const auto id : selected) { const auto* r = committed().find(id); all = all && r != nullptr && r->loopSource; }
         const auto ids = selected; return edit(all ? "Disable clip loop" : "Loop clip source", [=](timeline::Timeline& t) { return t.setLoopSource(ids, !all); });
     }
     bool toggleReverseSelection() {
         if (selected.empty()) return false;
+        if (selectedStreamedAudio()) { say("Reverse for streamed clips is not available yet."); return false; }
         bool all = true; for (const auto id : selected) { const auto* r = committed().find(id); all = all && r != nullptr && r->reversed; }
         const auto ids = selected; return edit(all ? "Forward clips" : "Reverse clips", [=](timeline::Timeline& t) { return t.setReversed(ids, !all); });
     }
