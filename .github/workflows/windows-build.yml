@@ -19,3 +19,17 @@ jobs:
           name: AlienStudio-Windows
           path: build/AlienStudio_artefacts/Release/*.exe
           if-no-files-found: error
+      - name: Upload plugin check tool
+        uses: actions/upload-artifact@v4
+        with:
+          name: AlienPluginCheck-Windows
+          path: build/AlienPluginCheck_artefacts/Release/*.exe
+          if-no-files-found: error
+      # A VST3 that misbehaves on purpose, for testing Alien Studio's plugin containment. It is not a real
+      # plugin and is never installed by the build; copy it into a VST3 folder only to try containment by hand.
+      - name: Upload test plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: AlienTestPlugin-Windows
+          path: build/AlienTestPlugin_artefacts/Release/VST3
+          if-no-files-found: error

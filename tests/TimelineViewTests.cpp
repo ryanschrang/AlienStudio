@@ -1224,7 +1224,7 @@ static void robustnessChecks() {
     // A very long song and extreme zoom paint without trouble and quickly.
     rig.controller.editTimeline("long", [](tl::Timeline& tlm) { return tlm.setLengthBars(tl::maxBars); });
     rig.view.refresh();
-    require(c.place(0, 0, static_cast<std::int64_t>(tl::maxBars - 100) * bar) && rig.valid(), "a clip near the end of an 18-hour song");
+    require(c.place(0, 0, static_cast<std::int64_t>(tl::maxBars - 100) * bar) && rig.valid(), "a clip targetColour the end of an 18-hour song");
     rig.controller.editTimeline("big", [](tl::Timeline& tlm) { tl::Region r; r.row = 1; r.source = 1; r.start = 0; r.length = 500 * bar; return tlm.place(r); });
     rig.view.refresh();
     const auto begin = std::chrono::steady_clock::now();
@@ -1254,12 +1254,12 @@ static bool hasDetail(const juce::Image& image) {
     for (int y = 0; y < image.getHeight(); y += 3) for (int x = 0; x < image.getWidth(); x += 3) colours.insert(image.getPixelAt(x, y).getARGB());
     return colours.size() > 12;
 }
-static int pixelsOfColour(const juce::Image& image, juce::Rectangle<int> area, juce::Colour near, int tolerance) {
+static int pixelsOfColour(const juce::Image& image, juce::Rectangle<int> area, juce::Colour targetColour, int tolerance) {
     int n = 0;
     for (int y = std::max(0, area.getY()); y < std::min(image.getHeight(), area.getBottom()); ++y)
         for (int x = std::max(0, area.getX()); x < std::min(image.getWidth(), area.getRight()); ++x) {
             const auto p = image.getPixelAt(x, y);
-            n += std::abs(p.getRed() - near.getRed()) + std::abs(p.getGreen() - near.getGreen()) + std::abs(p.getBlue() - near.getBlue()) <= tolerance ? 1 : 0;
+            n += std::abs(p.getRed() - targetColour.getRed()) + std::abs(p.getGreen() - targetColour.getGreen()) + std::abs(p.getBlue() - targetColour.getBlue()) <= tolerance ? 1 : 0;
         }
     return n;
 }

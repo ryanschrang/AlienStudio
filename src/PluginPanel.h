@@ -1,29 +1,39 @@
 #pragma once
 #include "PluginState.h"
+#include "SessionCapacity.h"
 #include "StockEffects.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <array>
 #include <functional>
 
 namespace alien {
+// What the Scan menu can ask for.
+enum class ScanCommand { standardFolders, folder, singleFile, retryFailed, rescanAll, openScanLog, openProblemLog, recheckBlocked, togglePreflight };
+
 class PluginPanel final : public juce::Component {
 public:
     // Choice ids: stock effects are stockBase + catalog index; scanned VST3 plugins are index + 1.
     static constexpr int stockBase = 1000;
     PluginPanel() {
-        for (auto* c:std::array<juce::Component*,12>{&target,&available,&slot,&scan,&addInstrument,&addEffect,&open,&bypass,&up,&down,&remove,&status}) addAndMakeVisible(c);
-        scan.setButtonText("Scan VST3..."); addInstrument.setButtonText("Use instrument"); addEffect.setButtonText("Add FX");
+        for (auto* c:std::array<juce::Component*,13>{&target,&available,&slot,&scan,&cancelScan,&addInstrument,&addEffect,&open,&bypass,&up,&down,&remove,&status}) addAndMakeVisible(c);
+        cancelScan.setVisible(false);
+        scan.setButtonText("Scan VST3..."); cancelScan.setButtonText("Cancel scan"); addInstrument.setButtonText("Use instrument"); addEffect.setButtonText("Add FX");
         open.setButtonText("Open editor"); bypass.setButtonText("Bypass / enable"); up.setButtonText("Move FX up"); down.setButtonText("Move FX down"); remove.setButtonText("Remove");
         available.setTextWhenNothingSelected("Choose a stock effect or a scanned VST3 plugin");
         target.setName("Plugin destination track or master"); available.setName("Stock effects and scanned VST3 plugins"); slot.setName("Instrument or FX slot");
         target.onChange=[this]{if(onTarget)onTarget(target.getSelectedId()-1);};
-        scan.onClick=[this]{if(onScan)onScan();};
+        scan.onClick=[this]{showScanMenu();}; cancelScan.onClick=[this]{if(onCancelScan)onCancelScan();};
         addInstrument.onClick=[this]{if(onAdd)onAdd(true,available.getSelectedId());};
         addEffect.onClick=[this]{if(onAdd)onAdd(false,available.getSelectedId());};
         open.onClick=[this]{action(0);}; bypass.onClick=[this]{action(1);}; remove.onClick=[this]{action(2);}; up.onClick=[this]{action(3);}; down.onClick=[this]{action(4);};
         setStatus("Pick a destination and add one of Alien Studio's stock effects (EQ, compressor, reverb, delay, limiter), or scan a 64-bit .vst3 bundle for an instrument or FX. MIDI routing is selected in Drums.");
     }
-    std::function<void()> onScan;
+    std::function<void(ScanCommand)> onScanCommand;
+    std::function<void()> onCancelScan;
+    // The text to show beside a slot that has a problem (for example "FAILED - switched off"); empty when it is fine.
+    // Arguments: destination (a track index, or maxSessionTracks for Master FX) and slot (-1 instrument, 0.. FX).
+    std::function<juce::String(int,int)> health;
     std::function<void(int)> onTarget;
     std::function<void(bool,int)> onAdd;
     std::function<void(int,int)> onAction;
@@ -39,17 +49,45 @@ public:
         for(int i=0;i<descriptions.size();++i)available.addItem(descriptions[i].name+(descriptions[i].isInstrument?" [instrument]":" [FX]"),i+1);
         available.setSelectedId(available.indexOfItemId(selectedPlugin)>=0?selectedPlugin:stockBase,juce::dontSendNotification);
         const int s=slot.getSelectedId(); slot.clear(juce::dontSendNotification);
-        if(destination()!=maxSessionTracks)slot.addItem("Instrument: "+name(rack.instrument),1);
-        for(std::size_t i=0;i<rack.effects.size();++i)slot.addItem("FX "+juce::String(static_cast<int>(i+1))+": "+name(rack.effects[i]),static_cast<int>(i+2));
+        const int where=destination();
+        if(where!=maxSessionTracks)slot.addItem("Instrument: "+name(rack.instrument)+problem(where,-1),1);
+        for(std::size_t i=0;i<rack.effects.size();++i)slot.addItem("FX "+juce::String(static_cast<int>(i+1))+": "+name(rack.effects[i])+problem(where,static_cast<int>(i)),static_cast<int>(i+2));
         // Master FX has no instrument row, so its first effect is id 2; a kept id of 1 would match no item.
         const bool master=destination()==maxSessionTracks;
         slot.setSelectedId(s>=(master?2:1)&&s<=static_cast<int>(rack.effects.size()+1)?s:master?(rack.effects.empty()?0:2):1,juce::dontSendNotification);
         addInstrument.setEnabled(destination()!=maxSessionTracks);
     }
+    // While a scan runs, Scan is disabled and Cancel is offered.
+    void setScanning(bool running){scanning=running;scan.setEnabled(!running);cancelScan.setVisible(running);resized();}
+    bool isScanning() const{return scanning;}
+    void setPreflightEnabled(bool on){preflightEnabled=on;}
+    bool preflightIsEnabled() const{return preflightEnabled;}
+    // Runs a Scan menu command (the menu items call this; tests do too).
+    void perform(ScanCommand command){
+        if(command==ScanCommand::togglePreflight)preflightEnabled=!preflightEnabled;
+        if(onScanCommand)onScanCommand(command);
+    }
+    void showScanMenu(){
+        juce::PopupMenu menu;
+        menu.addItem(1,"Scan the standard VST3 folders",!scanning);
+        menu.addItem(2,"Scan a folder (including subfolders)...",!scanning);
+        menu.addItem(3,"Add a single plugin file...",!scanning);
+        menu.addSeparator();
+        menu.addItem(4,"Retry plugins that failed",!scanning);
+        menu.addItem(5,"Rescan everything",!scanning);
+        menu.addItem(6,"Re-check plugins that were blocked",true);
+        menu.addSeparator();
+        menu.addItem(7,"Check plugins before loading them (recommended)",true,preflightEnabled);
+        menu.addItem(8,"Show the last scan log",true);
+        menu.addItem(9,"Show the plugin problem log",true);
+        static constexpr ScanCommand commands[]={ScanCommand::standardFolders,ScanCommand::folder,ScanCommand::singleFile,ScanCommand::retryFailed,ScanCommand::rescanAll,ScanCommand::recheckBlocked,ScanCommand::togglePreflight,ScanCommand::openScanLog,ScanCommand::openProblemLog};
+        juce::Component::SafePointer<PluginPanel> safe(this);
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&scan),[safe](int id){if(safe&&id>=1&&id<=9)safe->perform(commands[id-1]);});
+    }
     void setStatus(const juce::String& text){status.setText(text,juce::dontSendNotification);status.setTooltip(text);}
     void resized() override {
         auto r=getLocalBounds().reduced(20);auto row=r.removeFromTop(32);
-        target.setBounds(row.removeFromLeft(190)); row.removeFromLeft(12); scan.setBounds(row.removeFromLeft(140));
+        target.setBounds(row.removeFromLeft(190)); row.removeFromLeft(12); scan.setBounds(row.removeFromLeft(140)); row.removeFromLeft(8); cancelScan.setBounds(row.removeFromLeft(130));
         r.removeFromTop(12);available.setBounds(r.removeFromTop(30));r.removeFromTop(12);row=r.removeFromTop(32);
         addInstrument.setBounds(row.removeFromLeft(150));row.removeFromLeft(10);addEffect.setBounds(row.removeFromLeft(120));
         r.removeFromTop(20);slot.setBounds(r.removeFromTop(30));r.removeFromTop(12);row=r.removeFromTop(32);
@@ -57,10 +95,12 @@ public:
         r.removeFromTop(16);status.setBounds(r.removeFromTop(110));
     }
 private:
+    juce::String problem(int where,int index) const{if(!health)return {};const auto text=health(where,index);return text.isEmpty()?juce::String():"  ["+text+"]";}
     static juce::String name(const PluginState& p){auto xml=juce::parseXML(p.descriptionXml);return (xml?xml->getStringAttribute("name"):"Empty")+(p.bypass?" [bypassed]":"");}
     void action(int op){if(onAction && slot.getSelectedId()>0)onAction(op,slot.getSelectedId()-2);}
     juce::ComboBox target,available,slot;
-    juce::TextButton scan,addInstrument,addEffect,open,bypass,up,down,remove;
+    juce::TextButton scan,cancelScan,addInstrument,addEffect,open,bypass,up,down,remove;
     juce::Label status;
+    bool scanning{},preflightEnabled{true};
 };
 }

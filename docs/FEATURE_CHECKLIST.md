@@ -24,7 +24,7 @@ Draft work below is not available in main until this PR is merged.
 | WARP-01 | Offline fixed-tempo pitch-preserving WAV render | Implemented | LongTempoWarpTests; PR #39 merged via #38; 0.5-2x ratio |
 | WARP-02 | Rendered-clip playback workflow | User confirmed | Render, load within budget, launch in Session; not MP3 preview |
 | ARR-01 | Arrangement timeline and WAV export | Implemented; Windows CI and listening pending | TimelineTests, TimelinePlaybackTests, TimelineViewTests, ArrangementTests; 16,384 bars / 1,024 clips; fades and sample-level edits are EDIT-01 |
-| PLUG-01 | Stereo VST3 instruments, track/master FX and editors | Partial / reported failures | PluginRuntimeTests; some scans absent; editor selection feedback gap |
+| PLUG-01 | Stereo VST3 instruments, track/master FX and editors | Partial / reported failures | PluginRuntimeTests; some scans absent; editor selection feedback gap. Crash containment, safety check and editor failure reporting: see PLUG-02 |
 | QA-01 | Production and live starter sessions | Implemented | Self-contained built-in MIDI sounds; native parser test added |
 | QA-02 | Four-track recording reference session | Implemented | Original four-second WAVs; record/monitoring acceptance still pending |
 | STREAM-01 | Fixed-size SPSC stereo playback ring | Implemented | Boundary, wrap and concurrency tests; connected to Session playback |
@@ -36,7 +36,7 @@ Draft work below is not available in main until this PR is merged.
 | REC-02 | Track arming, input routing, monitoring, punch and take lanes | Planned: milestone 3 | Simultaneous recording and latency compensation |
 | MIDI-02 | MIDI recording, count-in, overdub and controller editing | Implemented | Record timing and sustain with sample-based tests |
 | MIX-02 | Buses, sends/returns, sidechain, multi-output plugins | Planned: milestone 5 | Routing graph and delay compensation |
-| PLUG-02 | Actionable scan logs, editor failures and compatibility suite | Planned: milestone 5 reliability | Track current user scan failures immediately |
+| PLUG-02 | Recursive VST3 scanning with scan logs, crash containment, editor failure reporting, compatibility check tool | Implemented in this PR; Windows CI, MSVC fault trapping and real plugins pending | FaultGuardTests, PluginFaultTests, PluginScanTests, PluginCheckTests, PluginPanelTests, PluginEndToEndTests (Linux, real VST3 test plugin). NOT RUN: Windows, Valhalla Supermassive and every commercial plugin (docs/PLUGIN_COMPATIBILITY.md). Not contained: heap corruption, plugin threads, hangs during playback |
 | AUTO-01 | Mixer/plugin automation and tempo/time-signature maps | Planned: milestone 6 | Sample-accurate automation and project persistence |
 | WARP-03 | Interactive warp markers and transient analysis | Planned: milestone 6 | Preserve pitch/stereo alignment |
 | FINISH-01 | Freeze, stems and reliable effect tails | Planned: milestone 7 | Offline/live equivalence and portable media |

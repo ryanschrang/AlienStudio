@@ -15,6 +15,14 @@ juce_add_binary_data(AlienStudioBranding HEADER_NAME BrandingData.h NAMESPACE Br
 target_link_libraries(AlienStudio PRIVATE AlienStudioBranding juce::juce_audio_processors juce::juce_audio_utils juce::juce_gui_extra)
 juce_generate_juce_header(AlienStudio)
 
+# AlienPluginCheck: a command-line tool that scans for VST3 plugins and tests whether Alien Studio can
+# host them, each in its own process. Built with the app so it can be run on a machine with real plugins.
+juce_add_console_app(AlienPluginCheck PRODUCT_NAME "AlienPluginCheck" COMPANY_NAME "Alien Studio")
+target_sources(AlienPluginCheck PRIVATE src/PluginCheckMain.cpp)
+target_include_directories(AlienPluginCheck PRIVATE src)
+target_compile_definitions(AlienPluginCheck PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_PLUGINHOST_VST3=1 JUCE_MODAL_LOOPS_PERMITTED=1 JUCE_APPLICATION_NAME_STRING="AlienPluginCheck" JUCE_APPLICATION_VERSION_STRING="0.1")
+target_link_libraries(AlienPluginCheck PRIVATE juce::juce_audio_processors juce::juce_audio_utils juce::juce_gui_extra Threads::Threads ${CMAKE_DL_LIBS})
+
 if(WIN32)
     enable_language(RC)
     set(ALIEN_STUDIO_WINDOWS_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/branding/AlienStudio_Icon_Corrected.ico")
@@ -184,6 +192,70 @@ if(BUILD_TESTING)
     target_compile_definitions(PluginRuntimeTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
     target_link_libraries(PluginRuntimeTests PRIVATE juce::juce_audio_processors juce::juce_audio_devices)
     add_test(NAME PluginRuntimeTests COMMAND PluginRuntimeTests)
+
+    # Containment of crashes inside plugin code. Plain C++ (no JUCE): it really faults on purpose.
+    add_executable(FaultGuardTests tests/FaultGuardTests.cpp)
+    target_include_directories(FaultGuardTests PRIVATE src)
+    target_link_libraries(FaultGuardTests PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+    add_test(NAME FaultGuardTests COMMAND FaultGuardTests)
+
+    # The host surviving plugins that crash, throw or emit NaN (test plugins that really do).
+    add_executable(PluginFaultTests tests/PluginFaultTests.cpp)
+    target_include_directories(PluginFaultTests PRIVATE src)
+    target_compile_definitions(PluginFaultTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(PluginFaultTests PRIVATE juce::juce_audio_processors juce::juce_audio_utils juce::juce_gui_basics juce::juce_gui_extra Threads::Threads ${CMAKE_DL_LIBS})
+    add_test(NAME PluginFaultTests COMMAND PluginFaultTests)
+
+    # Plugin discovery and scanning. ScanChildHelper behaves like "--scan-vst3" but crashes, hangs or
+    # floods its output on request, so the scanner's process handling is tested against real failures.
+    add_executable(ScanChildHelper tests/ScanChildHelper.cpp)
+    target_include_directories(ScanChildHelper PRIVATE src)
+    target_compile_definitions(ScanChildHelper PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(ScanChildHelper PRIVATE juce::juce_audio_processors juce::juce_gui_basics Threads::Threads ${CMAKE_DL_LIBS})
+    add_executable(PluginScanTests tests/PluginScanTests.cpp)
+    add_dependencies(PluginScanTests ScanChildHelper)
+    target_include_directories(PluginScanTests PRIVATE src)
+    target_compile_definitions(PluginScanTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(PluginScanTests PRIVATE juce::juce_audio_processors juce::juce_gui_basics Threads::Threads ${CMAKE_DL_LIBS})
+    add_test(NAME PluginScanTests COMMAND PluginScanTests)
+    set_tests_properties(PluginScanTests PROPERTIES TIMEOUT 300)
+
+    # The compatibility battery, run in-process against a plugin that misbehaves on request.
+    add_executable(PluginPanelTests tests/PluginPanelTests.cpp)
+    target_include_directories(PluginPanelTests PRIVATE src)
+    target_compile_definitions(PluginPanelTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(PluginPanelTests PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_gui_extra juce::juce_audio_devices juce::juce_audio_formats juce::juce_audio_basics)
+    add_test(NAME PluginPanelTests COMMAND PluginPanelTests)
+    set_tests_properties(PluginPanelTests PROPERTIES TIMEOUT 120)
+    add_executable(PluginCheckTests tests/PluginCheckTests.cpp)
+    target_include_directories(PluginCheckTests PRIVATE src tests)
+    target_compile_definitions(PluginCheckTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(PluginCheckTests PRIVATE juce::juce_audio_processors juce::juce_audio_utils juce::juce_gui_basics juce::juce_gui_extra Threads::Threads ${CMAKE_DL_LIBS})
+    add_test(NAME PluginCheckTests COMMAND PluginCheckTests)
+    set_tests_properties(PluginCheckTests PROPERTIES TIMEOUT 300)
+
+    # A real VST3 that misbehaves on request (behaviour comes from the ALIEN_TEST_PLUGIN environment variable).
+    # It is only ever built next to the tests: not installed, not copied into any plugin folder.
+    option(ALIEN_BUILD_TEST_PLUGIN "Build the misbehaving test VST3 and the end-to-end plugin tests" ON)
+    if(ALIEN_BUILD_TEST_PLUGIN)
+        juce_add_plugin(AlienTestPlugin
+            COMPANY_NAME "Alien Studio" PRODUCT_NAME "Alien Test Plugin"
+            PLUGIN_MANUFACTURER_CODE Alns PLUGIN_CODE Atpl
+            FORMATS VST3 IS_SYNTH FALSE NEEDS_MIDI_INPUT FALSE NEEDS_MIDI_OUTPUT FALSE
+            COPY_PLUGIN_AFTER_BUILD FALSE VST3_CATEGORIES Fx)
+        target_sources(AlienTestPlugin PRIVATE tests/TestPlugin/TestPluginEntry.cpp)
+        target_compile_definitions(AlienTestPlugin PUBLIC JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0)
+        target_link_libraries(AlienTestPlugin PRIVATE juce::juce_audio_utils juce::juce_audio_processors)
+        get_target_property(ALIEN_TEST_VST3_FILE AlienTestPlugin_VST3 JUCE_PLUGIN_ARTEFACT_FILE)
+
+        add_executable(PluginEndToEndTests tests/PluginEndToEndTests.cpp)
+        add_dependencies(PluginEndToEndTests AlienTestPlugin_VST3 AlienPluginCheck)
+        target_include_directories(PluginEndToEndTests PRIVATE src tests)
+        target_compile_definitions(PluginEndToEndTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_PLUGINHOST_VST3=1 JUCE_MODAL_LOOPS_PERMITTED=1)
+        target_link_libraries(PluginEndToEndTests PRIVATE juce::juce_audio_processors juce::juce_audio_utils juce::juce_gui_basics juce::juce_gui_extra Threads::Threads ${CMAKE_DL_LIBS})
+        add_test(NAME PluginEndToEndTests COMMAND PluginEndToEndTests "$<TARGET_FILE:AlienPluginCheck>" "${ALIEN_TEST_VST3_FILE}")
+        set_tests_properties(PluginEndToEndTests PROPERTIES TIMEOUT 900)
+    endif()
 endif()
 
 if(BUILD_TESTING)
