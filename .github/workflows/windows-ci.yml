@@ -20,7 +20,7 @@ jobs:
       - name: Build fault guard regression
         run: cmake --build build-fault --config ${{ matrix.config }}
       - name: Test fault guard regression
-        run: ctest --test-dir build-fault -C ${{ matrix.config }} --output-on-failure --no-tests=error
+        run: ctest --test-dir build-fault -C ${{ matrix.config }} --output-on-failure --no-tests=error --repeat until-fail:50
   build:
     runs-on: windows-2022
     strategy:
