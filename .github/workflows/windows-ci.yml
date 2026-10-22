@@ -16,11 +16,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure fault guard regression
-        run: cmake -S tests/fault-guard -B build-fault -G "Visual Studio 17 2022" -A x64
+        run: cmake -S . -B build-fault -G "Visual Studio 17 2022" -A x64
       - name: Build fault guard regression
-        run: cmake --build build-fault --config ${{ matrix.config }}
+        run: cmake --build build-fault --config ${{ matrix.config }} --target FaultGuardTests
       - name: Test fault guard regression
-        run: ctest --test-dir build-fault -C ${{ matrix.config }} --output-on-failure --no-tests=error --repeat until-fail:50
+        run: ctest --test-dir build-fault -R "^FaultGuardTests$" -C ${{ matrix.config }} --output-on-failure --no-tests=error --repeat until-fail:50
   build:
     runs-on: windows-2022
     strategy:
