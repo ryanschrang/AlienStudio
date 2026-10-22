@@ -1,8 +1,11 @@
 #pragma once
 // The Channel Rack screen: one row per sound, a grid of steps for the selected
 // pattern, and a graph editor for velocity, pan, pitch and probability. It is
-// modelled on FL Studio's rack: click or drag to paint steps, right-drag to
-// erase, click a name to hear it, a mute light and two knobs on every row.
+// modelled on FL Studio's rack, in layout and in look: a light, two small knobs
+// (pan, volume) and a raised name button with a grip on every row, a small
+// "selected" lamp, and raised step buttons in groups of four that light up in
+// the channel's colour. Click or drag to paint steps, right-drag to erase, click
+// a name to hear it.
 // All changes go through ProjectController::editRack, so undo, saving and the
 // audio engine need nothing from this file.
 #include "ProjectController.h"
@@ -14,7 +17,9 @@ namespace alien {
 
 class ChannelRackGrid final : public juce::Component, public juce::TooltipClient {
 public:
-    static constexpr int headerWidth = 308, rulerHeight = 20, minCell = 15, maxCell = 64, minRow = 28, maxRow = 38;
+    static constexpr int headerWidth = 308, rulerHeight = 20, minCell = 15, maxCell = 44, minRow = 28, maxRow = 38;
+    // Where the header's parts are centred (x) or start (nameLeft), in pixels from the left edge.
+    static constexpr int ledX = 17, panX = 48, volumeX = 82, nameLeft = 104, nameWidth = 118, soloX = 238, routeX = 266, lampX = 293;
 
     explicit ChannelRackGrid(ProjectController& projectController) : controller(projectController) {
         setName("Channel rack grid");
@@ -98,12 +103,15 @@ public:
     }
     // Where a step starts and how wide it is, in this component's coordinates.
     int stepLeft(int step) const { return headerWidth + step * cellWidth() - scrollX; }
-    juce::Rectangle<int> muteRect(int row) const { return juce::Rectangle<int>(0, 0, 16, 16).withCentre({18, rowBounds(row).getCentreY()}); }
-    juce::Rectangle<int> nameRect(int row) const { auto r = rowBounds(row); return {34, r.getY(), 122, r.getHeight()}; }
-    juce::Rectangle<int> panRect(int row) const { return knobRect(row, 172); }
-    juce::Rectangle<int> volumeRect(int row) const { return knobRect(row, 208); }
-    juce::Rectangle<int> soloRect(int row) const { auto r = rowBounds(row); return juce::Rectangle<int>(244, 0, 24, 18).withCentre({256, r.getCentreY()}); }
-    juce::Rectangle<int> routeRect(int row) const { auto r = rowBounds(row); return juce::Rectangle<int>(274, 0, 28, 18).withCentre({288, r.getCentreY()}); }
+    // The header, left to right as in FL Studio's rack: the light (mute), pan and volume knobs, the channel's name
+    // button, solo and output, and the lamp that shows which channel is selected.
+    juce::Rectangle<int> muteRect(int row) const { return juce::Rectangle<int>(0, 0, 16, 16).withCentre({ledX, rowBounds(row).getCentreY()}); }
+    juce::Rectangle<int> nameRect(int row) const { auto r = rowBounds(row); return {nameLeft, r.getY() + 3, nameWidth, r.getHeight() - 6}; }
+    juce::Rectangle<int> panRect(int row) const { return knobRect(row, panX); }
+    juce::Rectangle<int> volumeRect(int row) const { return knobRect(row, volumeX); }
+    juce::Rectangle<int> soloRect(int row) const { auto r = rowBounds(row); return juce::Rectangle<int>(0, 0, 24, 18).withCentre({soloX, r.getCentreY()}); }
+    juce::Rectangle<int> routeRect(int row) const { auto r = rowBounds(row); return juce::Rectangle<int>(0, 0, 28, 18).withCentre({routeX, r.getCentreY()}); }
+    juce::Rectangle<int> lampRect(int row) const { return juce::Rectangle<int>(0, 0, 8, 20).withCentre({lampX, rowBounds(row).getCentreY()}); }
     int rowAt(int y) const {
         if (y < rulerHeight) return -1;
         const int row = (y - rulerHeight + scrollY) / rowHeight();
@@ -325,11 +333,11 @@ public:
 
         // Persistent column labels make the compact channel controls discoverable.
         g.setColour(col::textDim); g.setFont(ui::font(9.0f, true));
-        g.drawText("CHANNEL", 34, 0, 122, rulerHeight, juce::Justification::centredLeft);
-        g.drawText("PAN", 158, 0, 28, rulerHeight, juce::Justification::centred);
-        g.drawText("VOL", 194, 0, 28, rulerHeight, juce::Justification::centred);
-        g.drawText("SOLO", 238, 0, 36, rulerHeight, juce::Justification::centred);
-        g.drawText("OUT", 274, 0, 28, rulerHeight, juce::Justification::centred);
+        g.drawText("CHANNEL", nameLeft, 0, nameWidth, rulerHeight, juce::Justification::centred);
+        g.drawText("PAN", panX - 14, 0, 28, rulerHeight, juce::Justification::centred);
+        g.drawText("VOL", volumeX - 14, 0, 28, rulerHeight, juce::Justification::centred);
+        g.drawText("SOLO", soloX - 18, 0, 36, rulerHeight, juce::Justification::centred);
+        g.drawText("OUT", routeX - 14, 0, 28, rulerHeight, juce::Justification::centred);
         // Ruler: a number at every beat, a stronger line at every bar.
         g.setColour(col::raised);
         g.fillRect(juce::Rectangle<int>(headerWidth, 0, getWidth() - headerWidth, rulerHeight));
@@ -411,7 +419,7 @@ public:
             }
             if (e.mods.isPopupMenu()) { showChannelMenu(row); return; }
             if (e.getNumberOfClicks() >= 2) { runChannelCommand(row, cmdRename); return; }
-            preview(row);
+            if (nameRect(row).contains(point)) preview(row);
             return;
         }
         const int step = stepAtX(point.x);
@@ -467,8 +475,9 @@ public:
         if (routeRect(row).contains(hover)) return "Output: click to send this channel to the master or to a Session track";
         if (panRect(row).contains(hover)) return "Channel pan: drag up or down, double-click to centre";
         if (volumeRect(row).contains(hover)) return "Channel volume: drag up or down, double-click to reset";
-        if (sampleOffline(row)) return "This sample file is missing. Use Relink audio on the Session tab, or right-click to load another.";
-        return "Click to hear this sound. Double-click to rename, right-click for more.";
+        if (lampRect(row).expanded(3).contains(hover)) return "The selected channel: the graph editor below edits its steps";
+        if (sampleOffline(row)) return "The sample file " + sampleFileName(row) + " is missing. Use Relink audio on the Session tab, or right-click to load another.";
+        return soundDescription(row) + ". Click to hear this sound. Double-click to rename, right-click for more.";
     }
 
 private:
@@ -502,18 +511,36 @@ private:
         repaint(r.getX(), 0, r.getWidth(), getHeight());
     }
 
+    // A raised, bevelled button face: light on top, dark at the bottom, a bright edge along the top and a dark outline.
+    static void paintRaised(juce::Graphics& g, juce::Rectangle<float> r, juce::Colour face, float radius, float lift = 0.22f, float sink = 0.30f) {
+        g.setGradientFill(juce::ColourGradient(face.brighter(lift), r.getX(), r.getY(), face.darker(sink), r.getX(), r.getBottom(), false));
+        g.fillRoundedRectangle(r, radius);
+        g.setColour(juce::Colours::white.withAlpha(0.13f));
+        g.drawLine(r.getX() + radius, r.getY() + 1.0f, r.getRight() - radius, r.getY() + 1.0f, 1.0f);
+        g.setColour(juce::Colours::black.withAlpha(0.22f));
+        g.drawLine(r.getX() + radius, r.getBottom() - 1.5f, r.getRight() - radius, r.getBottom() - 1.5f, 1.0f);
+        g.setColour(juce::Colours::black.withAlpha(0.65f));
+        g.drawRoundedRectangle(r, radius, 1.0f);
+    }
+
+    // One step button. Off: a raised dark button, the second and fourth group of four tinted warm as in FL. On: the
+    // channel's colour, dimmer for a softer hit, with a glow. The playhead brightens the button it is on.
     void paintCell(juce::Graphics& g, juce::Rectangle<float> r, const rack::Step& step, int index, juce::Colour colour,
                    bool audible, bool current) const {
         namespace col = ui::colours;
         const bool alternate = (index / 4) % 2 == 1;
-        juce::Colour base = step.on ? colour.interpolatedWith(juce::Colour(0xff101114), 0.62f * (1.0f - static_cast<float>(step.velocity) / 127.0f))
-                                    : juce::Colour(alternate ? 0xff24262c : 0xff30333a);
-        if (step.on && !audible) base = base.withMultipliedSaturation(0.2f).withMultipliedBrightness(0.7f);
-        if (current) base = base.brighter(step.on ? 0.3f : 0.18f);
-        g.setColour(base);
-        g.fillRoundedRectangle(r, 3.0f);
-        g.setColour(juce::Colours::black.withAlpha(0.45f));
-        g.drawRoundedRectangle(r, 3.0f, 1.0f);
+        constexpr float radius = 3.0f;
+        juce::Colour face = step.on ? colour.interpolatedWith(juce::Colour(0xff101114), 0.62f * (1.0f - static_cast<float>(step.velocity) / 127.0f))
+                                    : juce::Colour(alternate ? 0xff3e3230 : 0xff353940);
+        if (step.on && !audible) face = face.withMultipliedSaturation(0.2f).withMultipliedBrightness(0.7f);
+        if (current) face = face.brighter(step.on ? 0.3f : 0.18f);
+        if (step.on && audible) {
+            for (int i = 3; i >= 1; --i) {
+                g.setColour(face.withAlpha(0.07f));
+                g.fillRoundedRectangle(r.expanded(static_cast<float>(i) * 1.1f), radius + static_cast<float>(i));
+            }
+        }
+        paintRaised(g, r, face, radius, step.on ? 0.38f : 0.18f, step.on ? 0.22f : 0.34f);
         if (!step.on) return;
         // Marks for anything that is not the default, so a glance shows what was drawn.
         const auto ink = col::accentInk.withAlpha(0.85f);
@@ -526,67 +553,105 @@ private:
         }
     }
 
+    juce::String soundDescription(int row) const {
+        const auto& info = project().info[static_cast<std::size_t>(row)];
+        const auto name = juce::String::fromUTF8(info.name.c_str(), static_cast<int>(info.name.size()));
+        if (info.sample.empty()) return name + " (no sound)";
+        if (info.isBuiltin()) return name + " (built-in drum)";
+        return name + " (" + sampleFileName(row) + ")";
+    }
+
+    juce::String sampleFileName(int row) const {
+        const auto& info = project().info[static_cast<std::size_t>(row)];
+        return juce::File(juce::String::fromUTF8(info.sample.c_str(), static_cast<int>(info.sample.size()))).getFileName();
+    }
+
     void paintHeader(juce::Graphics& g, int row, const rack::Channel& channel, bool audible, juce::Colour colour) const {
         namespace col = ui::colours;
         const auto& info = project().info[static_cast<std::size_t>(row)];
-        const auto bounds = rowBounds(row);
-        // Mute light: lit when the channel will sound.
-        const auto led = muteRect(row).toFloat();
+        const bool isSelected = row == selected;
+        // The light: lit when the channel will sound, ringed when it is muted.
+        const auto led = muteRect(row).toFloat().withSizeKeepingCentre(10.0f, 10.0f);
         g.setColour(col::inset);
-        g.fillEllipse(led);
-        g.setColour(audible ? colour : col::lineStrong);
-        g.fillEllipse(led.reduced(3.0f));
-        if (channel.mute) { g.setColour(col::mute.withAlpha(0.9f)); g.drawEllipse(led.reduced(1.0f), 1.5f); }
-        // Name and what plays.
-        const auto name = nameRect(row);
-        const bool offline = sampleOffline(row);
-        g.setColour(audible ? col::text : col::textDim);
-        g.setFont(ui::font(13.0f, true));
-        g.drawText(juce::String::fromUTF8(info.name.c_str(), static_cast<int>(info.name.size())), name.withTrimmedBottom(name.getHeight() / 2 - 1),
-                   juce::Justification::bottomLeft, true);
-        g.setColour(offline ? col::danger : col::textFaint);
-        g.setFont(ui::font(10.5f));
-        juce::String what = info.sample.empty() ? juce::String("No sound")
-                          : info.isBuiltin() ? juce::String("Built-in drum")
-                          : (offline ? juce::String("Missing: ") : juce::String()) + juce::File(juce::String::fromUTF8(info.sample.c_str(), static_cast<int>(info.sample.size()))).getFileName();
-        g.drawText(what, name.withTrimmedTop(name.getHeight() / 2 + 1), juce::Justification::topLeft, true);
+        g.fillEllipse(led.expanded(1.5f));
+        g.setColour(juce::Colours::black.withAlpha(0.6f));
+        g.drawEllipse(led.expanded(1.5f), 1.0f);
+        if (audible) {
+            g.setColour(colour.withAlpha(0.13f)); g.fillEllipse(led.expanded(4.5f));
+            g.setColour(colour.withAlpha(0.20f)); g.fillEllipse(led.expanded(2.5f));
+            g.setGradientFill(juce::ColourGradient(colour.brighter(0.55f), led.getCentreX() - 2.0f, led.getY(), colour.darker(0.25f), led.getCentreX(), led.getBottom(), false));
+            g.fillEllipse(led);
+            g.setColour(juce::Colours::white.withAlpha(0.55f));
+            g.fillEllipse(led.getX() + 2.2f, led.getY() + 1.4f, 3.2f, 2.2f);
+        } else {
+            g.setColour(col::lineStrong.darker(0.4f));
+            g.fillEllipse(led);
+        }
+        if (channel.mute) { g.setColour(col::mute.withAlpha(0.9f)); g.drawEllipse(led.expanded(3.5f), 1.4f); }
         paintKnob(g, panRect(row).toFloat(), channel.pan, true, colour, audible);
         paintKnob(g, volumeRect(row).toFloat(), channel.volume, false, colour, audible);
-        // Solo and output chips.
-        const auto solo = soloRect(row).toFloat();
-        g.setColour(channel.solo ? col::solo : col::control);
-        g.fillRoundedRectangle(solo, 3.0f);
-        g.setColour(channel.solo ? col::accentInk : col::textDim);
-        g.setFont(ui::font(10.5f, true));
-        g.drawText("S", solo.toNearestInt(), juce::Justification::centred);
-        const auto route = routeRect(row).toFloat();
-        g.setColour(col::control);
-        g.fillRoundedRectangle(route, 3.0f);
-        g.setColour(channel.output == rack::masterOutput ? col::textDim : ui::trackColour(channel.output));
-        g.drawText(channel.output == rack::masterOutput ? juce::String("M") : "T" + juce::String(channel.output + 1), route.toNearestInt(), juce::Justification::centred);
-        (void)bounds;
+        // The channel's button: its name, with a grip at the right end. A sample that cannot be found shows in red.
+        const auto name = nameRect(row).toFloat();
+        const bool offline = sampleOffline(row);
+        paintRaised(g, name, isSelected ? juce::Colour(0xff4d535d) : juce::Colour(0xff3f444c), 3.0f);
+        for (int i = 0; i < 4; ++i) {
+            const float x = name.getRight() - 15.0f + static_cast<float>(i) * 3.0f;
+            g.setColour(juce::Colours::black.withAlpha(0.55f));
+            g.fillRect(x, name.getY() + 4.0f, 1.0f, name.getHeight() - 8.0f);
+            g.setColour(juce::Colours::white.withAlpha(0.10f));
+            g.fillRect(x + 1.0f, name.getY() + 4.0f, 1.0f, name.getHeight() - 8.0f);
+        }
+        g.setColour(offline ? col::danger : (audible ? col::text : col::textDim));
+        g.setFont(ui::font(13.0f, true));
+        g.drawText(juce::String::fromUTF8(info.name.c_str(), static_cast<int>(info.name.size())),
+                   name.toNearestInt().withTrimmedLeft(8).withTrimmedRight(20), juce::Justification::centred, true);
+        // Solo and output.
+        auto chip = [&](juce::Rectangle<float> r, juce::Colour face, juce::Colour ink, const juce::String& text) {
+            paintRaised(g, r, face, 3.0f);
+            g.setColour(ink);
+            g.setFont(ui::font(10.5f, true));
+            g.drawText(text, r.toNearestInt(), juce::Justification::centred);
+        };
+        chip(soloRect(row).toFloat(), channel.solo ? col::solo : juce::Colour(0xff353940), channel.solo ? col::accentInk : col::textDim, "S");
+        chip(routeRect(row).toFloat(), juce::Colour(0xff353940), channel.output == rack::masterOutput ? col::textDim : ui::trackColour(channel.output),
+             channel.output == rack::masterOutput ? juce::String("M") : "T" + juce::String(channel.output + 1));
+        // The lamp beside the steps: lit for the selected channel (the one the graph editor shows).
+        const auto lamp = lampRect(row).toFloat();
+        if (isSelected) { g.setColour(col::accent.withAlpha(0.16f)); g.fillRoundedRectangle(lamp.expanded(2.5f), 6.0f); }
+        g.setColour(col::inset);
+        g.fillRoundedRectangle(lamp, 3.5f);
+        g.setColour(isSelected ? col::accent : col::lineStrong);
+        g.drawRoundedRectangle(lamp.reduced(0.5f), 3.5f, 1.0f);
+        if (isSelected) {
+            g.setGradientFill(juce::ColourGradient(col::accent.brighter(0.3f), lamp.getX(), lamp.getY(), col::accent.darker(0.2f), lamp.getX(), lamp.getBottom(), false));
+            g.fillRoundedRectangle(lamp.reduced(2.5f), 1.8f);
+        }
     }
 
+    // A small round knob like FL's: shaded like a rounded cap, with a pointer. Same sweep and meaning as before
+    // (7 o'clock to 5 o'clock; pan is centred at 12 o'clock).
     static void paintKnob(juce::Graphics& g, juce::Rectangle<float> r, float value, bool bipolar, juce::Colour colour, bool audible) {
         namespace col = ui::colours;
         const float start = juce::MathConstants<float>::pi * 1.25f, range = juce::MathConstants<float>::pi * 1.5f;
-        const auto ring = r.reduced(3.0f);
+        const auto cap = r.withSizeKeepingCentre(20.0f, 20.0f);
+        const auto centre = cap.getCentre();
         const float amount = bipolar ? (value + 1.0f) * 0.5f : value;
-        juce::Path track, arc;
-        track.addCentredArc(ring.getCentreX(), ring.getCentreY(), ring.getWidth() * 0.5f, ring.getHeight() * 0.5f, 0.0f, start, start + range, true);
-        g.setColour(col::lineStrong);
-        g.strokePath(track, juce::PathStrokeType(2.5f));
-        const float from = bipolar ? 0.5f : 0.0f;
-        const float a = start + range * juce::jmin(from, amount), b = start + range * juce::jmax(from, amount);
-        if (b - a > 0.001f) {
-            arc.addCentredArc(ring.getCentreX(), ring.getCentreY(), ring.getWidth() * 0.5f, ring.getHeight() * 0.5f, 0.0f, a, b, true);
-            g.setColour(audible ? colour : col::textFaint);
-            g.strokePath(arc, juce::PathStrokeType(2.5f));
-        }
+        g.setColour(juce::Colours::black.withAlpha(0.35f));
+        g.fillEllipse(cap.translated(0.0f, 1.5f));
+        g.setGradientFill(juce::ColourGradient(juce::Colour(audible ? 0xff646b75 : 0xff4d525a), centre.x - 4.0f, centre.y - 6.0f,
+                                               juce::Colour(0xff22252a), centre.x + 5.0f, centre.y + 9.0f, true));
+        g.fillEllipse(cap);
+        g.setColour(juce::Colours::black.withAlpha(0.7f));
+        g.drawEllipse(cap, 1.0f);
+        g.setColour(juce::Colours::white.withAlpha(0.10f));
+        g.drawEllipse(cap.reduced(1.3f), 0.8f);
         const float angle = start + range * amount;
-        const auto centre = ring.getCentre();
-        g.setColour(col::text);
-        g.drawLine(centre.x, centre.y, centre.x + std::sin(angle) * ring.getWidth() * 0.34f, centre.y - std::cos(angle) * ring.getWidth() * 0.34f, 1.8f);
+        const float dx = std::sin(angle), dy = -std::cos(angle);
+        g.setColour(audible ? col::text : col::textFaint);
+        g.drawLine(centre.x + dx * 2.5f, centre.y + dy * 2.5f, centre.x + dx * 8.2f, centre.y + dy * 8.2f, 2.0f);
+        // A dot in the channel's colour where the pointer ends shows at a glance that a knob is off its default.
+        const bool movedFromDefault = bipolar ? std::abs(value) > 0.02f : std::abs(value - rack::defaultChannelVolume) > 0.01f;
+        if (movedFromDefault && audible) { g.setColour(colour); g.fillEllipse(centre.x + dx * 8.2f - 1.6f, centre.y + dy * 8.2f - 1.6f, 3.2f, 3.2f); }
     }
 
     // Knobs ----------------------------------------------------------------------

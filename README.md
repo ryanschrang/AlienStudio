@@ -677,23 +677,32 @@ positions). The old **Steps** tab, with its single 16-step pattern for the live 
 is unchanged. The rack is a separate, richer sequencer for drums and samples.
 
 **Channels.** One row per sound, up to 16. A new project starts with Kick, Clap, Hat and
-Snare, all built in (synthesized by Alien Studio, no sample files). Each row has:
+Snare, all built in (synthesized by Alien Studio, no sample files). Each row is laid out
+like FL Studio's channel rack, left to right:
 
-- a **light** that is lit when the channel will sound: click to mute, right-click to solo;
-- the **name**: click to hear the sound, double-click to rename, right-click for the channel
-  menu (rename, choose a built-in sound or **Load sample file...**, **Silent**, output,
-  choke group, mute, solo, clear this channel's steps, move up/down, delete);
+- a **light** that is lit when the channel will sound (ringed when muted): click to mute,
+  right-click to solo;
 - a **pan** knob and a **volume** knob (drag up/down, Shift for fine, mouse wheel, double-click
-  to reset; volume 80% is unity, the top is about +1.9 dB);
+  to reset; volume 80% is unity, the top is about +1.9 dB). The pointer shows the value, and a
+  small dot appears on a knob that is not at its default;
+- the **name** button: click to hear the sound, double-click to rename, right-click for the
+  channel menu (rename, choose a built-in sound or **Load sample file...**, **Silent**, output,
+  choke group, mute, solo, clear this channel's steps, move up/down, delete). Hover it to see
+  what the channel plays (a built-in drum, or the sample file);
 - **S** (solo) and an **output** chip: **M** sends the channel to the master, **T1** to **T16**
   into that Session track's mixer strip, so its volume/pan/mute/solo, effects and meter apply.
-  A channel routed to a track that is later deleted falls back to the master.
+  A channel routed to a track that is later deleted falls back to the master;
+- a small **selection lamp**, lit for the selected channel (the one the graph editor edits).
+  Clicking it selects the channel without playing its sound.
 
 **Steps.** Click or drag to paint steps; a drag across several channels paints each cell it
 crosses without gaps. A press on a lit step erases along the drag instead; right-drag always
 erases. Painting plays the sound. A whole stroke is one undo step. Ruler numbers mark each
-beat, and every group of four steps alternates in shade, as in FL Studio. A **choke group**
-cuts the other channels of the same group when one hits (closed and open hat).
+beat, and every group of four steps alternates in shade, as in FL Studio. Steps are raised
+buttons; a lit step takes the channel's colour and glows, and one in a channel that will not
+sound (muted, or silenced by another channel's solo) is greyed. In a very wide window the
+buttons stop growing. A **choke group** cuts the other channels of the same group when one hits
+(closed and open hat).
 
 **Graph editor.** Under the rack, the **Velocity / Pan / Pitch / Chance** buttons choose what
 the bars show for the selected channel. Click or drag across the bars to draw (a fast drag
