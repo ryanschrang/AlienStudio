@@ -8,15 +8,17 @@
 #include "ProjectController.h"
 #include "StudioWidgets.h"
 #include <functional>
+#include <optional>
 
 namespace alien {
 
 class ChannelRackGrid final : public juce::Component, public juce::TooltipClient {
 public:
-    static constexpr int headerWidth = 308, rulerHeight = 20, minCell = 15, maxCell = 64, minRow = 28, maxRow = 46;
+    static constexpr int headerWidth = 308, rulerHeight = 20, minCell = 15, maxCell = 64, minRow = 28, maxRow = 38;
 
     explicit ChannelRackGrid(ProjectController& projectController) : controller(projectController) {
         setName("Channel rack grid");
+        setWantsKeyboardFocus(true);
     }
 
     std::function<void()> onSelectionChanged;    // another channel was selected
@@ -164,6 +166,8 @@ public:
 
     // ---- menus ---------------------------------------------------------------
     enum MenuId { cmdRename = 1, cmdMute, cmdSolo, cmdClearSteps, cmdMoveUp, cmdMoveDown, cmdDelete, cmdSilent, cmdLoadSample,
+                  cmdDuplicate = 100, cmdCopyRow, cmdPasteRow, cmdFill2, cmdFill4, cmdFill8,
+                  cmdRotateLeft, cmdRotateRight, cmdReverseRow, cmdRepeat4, cmdRepeat8, cmdRepeat16,
                   builtinBase = 20, outputMaster = 40, outputBase = 41, chokeNone = 60, chokeBase = 61 };
 
     juce::PopupMenu channelMenu(int row) const {
@@ -193,6 +197,15 @@ public:
         menu.addSeparator();
         menu.addItem(cmdMute, "Mute", true, channel.mute);
         menu.addItem(cmdSolo, "Solo", true, channel.solo);
+        menu.addItem(cmdDuplicate, "Duplicate channel", project().channelCount < rack::maxChannels);
+        menu.addItem(cmdCopyRow, "Copy steps"); menu.addItem(cmdPasteRow, "Paste steps", rowClipboard.has_value());
+        juce::PopupMenu tools;
+        tools.addItem(cmdFill2, "Fill every 2 steps"); tools.addItem(cmdFill4, "Fill every 4 steps"); tools.addItem(cmdFill8, "Fill every 8 steps");
+        tools.addSeparator(); tools.addItem(cmdRotateLeft, "Rotate left"); tools.addItem(cmdRotateRight, "Rotate right");
+        tools.addItem(cmdReverseRow, "Reverse steps");
+        tools.addItem(cmdRepeat4, "Repeat first 4 steps"); tools.addItem(cmdRepeat8, "Repeat first 8 steps");
+        tools.addItem(cmdRepeat16, "Repeat first 16 steps", length() > 16);
+        menu.addSubMenu("Pattern tools", tools);
         menu.addItem(cmdClearSteps, "Clear this channel's steps");
         menu.addSeparator();
         menu.addItem(cmdMoveUp, "Move up", row > 0);
@@ -215,6 +228,23 @@ public:
     void showOutputMenu(int row) { launchMenu(outputMenu(row), routeRect(row), row); }
     void runChannelCommand(int row, int id) {
         if (!project().validChannel(row)) return;
+        if (id == cmdCopyRow) { rowClipboard = project().pattern(project().selectedPattern).steps[static_cast<std::size_t>(row)]; return; }
+        if (id == cmdPasteRow && rowClipboard) {
+            const auto copied = *rowClipboard;
+            controller.editRack("Paste steps", [=](rack::Project& p) { return p.pasteRow(p.selectedPattern, row, copied); }); changed(); return;
+        }
+        if (id == cmdDuplicate) {
+            if (controller.editRack("Duplicate channel", [=](rack::Project& p) { return p.duplicateChannel(row); })) selected = row + 1;
+            changed(); return;
+        }
+        if (id >= cmdFill2 && id <= cmdRepeat16) {
+            controller.editRack("Edit channel steps", [=](rack::Project& p) {
+                if (id == cmdFill2 || id == cmdFill4 || id == cmdFill8) return p.fillEvery(p.selectedPattern, row, id == cmdFill2 ? 2 : id == cmdFill4 ? 4 : 8);
+                if (id == cmdRotateLeft || id == cmdRotateRight) return p.rotateRow(p.selectedPattern, row, id == cmdRotateLeft ? -1 : 1);
+                if (id == cmdReverseRow) return p.reverseRow(p.selectedPattern, row);
+                return p.repeatRow(p.selectedPattern, row, id == cmdRepeat4 ? 4 : id == cmdRepeat8 ? 8 : 16);
+            }); changed(); return;
+        }
         if (id == cmdRename) { askForName("Rename channel", project().info[static_cast<std::size_t>(row)].name,
                                        [this, row](const juce::String& name) {
                                            controller.editRack("Rename channel", [&](rack::Project& p) { return p.renameChannel(row, name.toStdString()); });
@@ -293,6 +323,13 @@ public:
         const int cell = cellWidth(), rows = p.channelCount, rh = rowHeight();
         const int len = pattern.length;
 
+        // Persistent column labels make the compact channel controls discoverable.
+        g.setColour(col::textDim); g.setFont(ui::font(9.0f, true));
+        g.drawText("CHANNEL", 34, 0, 122, rulerHeight, juce::Justification::centredLeft);
+        g.drawText("PAN", 158, 0, 28, rulerHeight, juce::Justification::centred);
+        g.drawText("VOL", 194, 0, 28, rulerHeight, juce::Justification::centred);
+        g.drawText("SOLO", 238, 0, 36, rulerHeight, juce::Justification::centred);
+        g.drawText("OUT", 274, 0, 28, rulerHeight, juce::Justification::centred);
         // Ruler: a number at every beat, a stronger line at every bar.
         g.setColour(col::raised);
         g.fillRect(juce::Rectangle<int>(headerWidth, 0, getWidth() - headerWidth, rulerHeight));
@@ -319,7 +356,8 @@ public:
             const auto& channel = p.channels[static_cast<std::size_t>(row)];
             const bool audible = p.audible(row);
             const auto colour = ui::trackColour(row);
-            if (row == selected) { g.setColour(col::raised); g.fillRect(bounds); }
+            g.setColour(row == selected ? col::raised : (row % 2 == 0 ? col::surface : col::raised.withAlpha(0.35f))); g.fillRect(bounds);
+            if (row == selected) { g.setColour(colour); g.fillRect(0, bounds.getY(), 3, bounds.getHeight()); }
             g.setColour(col::line);
             g.drawHorizontalLine(bounds.getBottom() - 1, 0.0f, static_cast<float>(getWidth()));
             paintHeader(g, row, channel, audible, colour);
@@ -328,7 +366,7 @@ public:
             for (int s = 0; s < len; ++s) {
                 const auto r = cellBounds(row, s);
                 if (r.getRight() < headerWidth || r.getX() > getWidth()) continue;
-                paintCell(g, r.toFloat().reduced(1.5f, 2.5f), pattern.steps[static_cast<std::size_t>(row)][static_cast<std::size_t>(s)],
+                paintCell(g, r.toFloat().withTrimmedLeft(s % 4 == 0 ? 3.5f : 1.5f).withTrimmedRight(1.5f).reduced(0.0f, 3.5f), pattern.steps[static_cast<std::size_t>(row)][static_cast<std::size_t>(s)],
                           s, colour, audible, s == playhead);
             }
         }
@@ -343,7 +381,18 @@ public:
         if (drag == Drag::knob) paintKnobReadout(g);
     }
 
+    bool keyPressed(const juce::KeyPress& key) override {
+        const auto mods = key.getModifiers();
+        if (!mods.isCommandDown() || mods.isAltDown()) return false;
+        const auto code = key.getKeyCode();
+        if (code == 'C' || code == 'c') { runChannelCommand(selected, cmdCopyRow); return true; }
+        if (code == 'V' || code == 'v') { runChannelCommand(selected, cmdPasteRow); return true; }
+        if (code == 'D' || code == 'd') { runChannelCommand(selected, cmdDuplicate); return true; }
+        return false;
+    }
+
     void mouseDown(const juce::MouseEvent& e) override {
+        grabKeyboardFocus();
         const auto point = e.getPosition();
         drag = Drag::none;
         const int row = rowAt(point.y);
@@ -576,6 +625,7 @@ private:
         g.drawText(text, box, juce::Justification::centred);
     }
 
+    std::optional<rack::Project::StepRow> rowClipboard;
     ProjectController& controller;
     int selected{}, playhead{-1}, scrollX{}, scrollY{};
     Drag drag{Drag::none};
