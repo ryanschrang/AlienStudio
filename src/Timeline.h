@@ -13,6 +13,7 @@
 //
 // Message-thread value type. The audio thread only ever reads an immutable copy.
 #include "PianoRollSequence.h"
+#include "Automation.h"
 #include "RackModel.h"
 #include "SessionCapacity.h"
 #include <algorithm>
@@ -112,6 +113,7 @@ struct Timeline {
     std::int64_t loopStart{0}, loopEnd{4 * ticksPerBar};
     std::vector<Region> regions;
     std::vector<Marker> markers;   // ascending by tick
+    std::vector<automation::Lane> automationLanes;
     // Tempo used to turn a tick distance into audio seconds when an edit trims or
     // splits an audio region. The owner keeps it equal to the song tempo; it is
     // not part of the timeline's content.
@@ -157,6 +159,7 @@ struct Timeline {
         std::int64_t end = 0;
         for (const auto& r : regions) end = std::max(end, r.end());
         for (const auto& m : markers) end = std::max(end, m.tick);
+        for (const auto& lane : automationLanes) if (!lane.points.empty()) end = std::max(end, lane.points.back().tick);
         return end;
     }
     int minLengthBars() const noexcept {
@@ -167,6 +170,13 @@ struct Timeline {
     // ---- whole-timeline rules -----------------------------------------------------
     bool valid(int tracks = maxSessionTracks, int scenes = maxSessionScenes, int patterns = rack::maxPatterns) const {
         if (lengthBars < 1 || lengthBars > maxBars || regions.size() > maxRegions || markers.size() > maxMarkers) return false;
+        if (automationLanes.size() > static_cast<std::size_t>(tracks) * 2) return false;
+        for (std::size_t i = 0; i < automationLanes.size(); ++i) {
+            const auto& lane = automationLanes[i];
+            if (!lane.valid(tracks, length())) return false;
+            for (std::size_t j = 0; j < i; ++j)
+                if (automationLanes[j].track == lane.track && automationLanes[j].parameter == lane.parameter) return false;
+        }
         if (loopStart < 0 || loopEnd > length() || loopEnd - loopStart < ticksPerStep) return false;
         std::vector<const Region*> order;
         order.reserve(regions.size());
@@ -202,13 +212,13 @@ struct Timeline {
     // Same song, whatever the tempo bookkeeping.
     bool operator==(const Timeline& o) const noexcept {
         return lengthBars == o.lengthBars && loopEnabled == o.loopEnabled && loopStart == o.loopStart
-            && loopEnd == o.loopEnd && regions == o.regions && markers == o.markers;
+            && loopEnd == o.loopEnd && regions == o.regions && markers == o.markers && automationLanes == o.automationLanes;
     }
     // Would the audio engine play these two identically? Names, colours, ids and
     // groups do not change the sound, so editing them must not republish the song.
     bool playbackEquals(const Timeline& o) const noexcept {
         if (lengthBars != o.lengthBars || loopEnabled != o.loopEnabled || loopStart != o.loopStart
-            || loopEnd != o.loopEnd || regions.size() != o.regions.size()) return false;
+            || loopEnd != o.loopEnd || regions.size() != o.regions.size() || automationLanes != o.automationLanes) return false;
         for (std::size_t i = 0; i < regions.size(); ++i) {
             const auto& a = regions[i]; const auto& b = o.regions[i];
             if (a.row != b.row || a.source != b.source || a.start != b.start || a.length != b.length
@@ -522,11 +532,14 @@ struct Timeline {
 
     // ---- keeping references right when the project changes shape ----------------------------
     void trackDeleted(int track) {
+        std::erase_if(automationLanes, [=](const automation::Lane& lane) { return lane.track == track; });
+        for (auto& lane : automationLanes) if (lane.track > track) --lane.track;
         std::erase_if(regions, [&](const Region& r) { return !r.isPattern() && r.row == track; });
         for (auto& r : regions) if (!r.isPattern() && r.row > track) --r.row;
         tidyGroups();
     }
     void tracksSwapped(int a, int b) {
+        for (auto& lane : automationLanes) { if (lane.track == a) lane.track = b; else if (lane.track == b) lane.track = a; }
         for (auto& r : regions) if (!r.isPattern()) { if (r.row == a) r.row = b; else if (r.row == b) r.row = a; }
     }
     void sceneDeleted(int scene) {
@@ -547,6 +560,7 @@ struct Timeline {
     }
     // Drops regions that point at a track, scene or pattern that does not exist.
     void prune(int tracks, int scenes, int patterns) {
+        std::erase_if(automationLanes, [=](const automation::Lane& lane) { return lane.track < 0 || lane.track >= tracks; });
         std::erase_if(regions, [&](const Region& r) {
             return r.isPattern() ? r.source < 0 || r.source >= patterns
                                  : r.row < 0 || r.row >= tracks || r.source < 0 || r.source >= scenes;

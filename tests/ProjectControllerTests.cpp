@@ -530,8 +530,33 @@ static void timelineIntegrationTests() {
     std::cout << "PASS: timeline in the controller\n";
 }
 
+
+static void automationUndoTests() {
+    auto engine = std::make_unique<ToneEngine>(); alien::ProjectController controller(*engine);
+    controller.pushDocumentToEngine();
+    require(controller.editTimeline("Automation point", [](alien::timeline::Timeline& t) {
+        t.automationLanes.push_back({0, alien::automation::Parameter::volume, true, {{0, 0.25f}, {960, 1.0f}}});
+        return true;
+    }), "automation is an undoable timeline edit");
+    require(controller.captureArrangement()->timeline.automationLanes.size() == 1, "automation reaches playback snapshot");
+    require(controller.undo() && controller.timeline().automationLanes.empty(), "undo removes the automation lane");
+    require(controller.redo() && controller.timeline().automationLanes.size() == 1, "redo restores the automation lane");
+    const auto lanes = controller.timeline().automationLanes;
+    const int tracks = controller.document().trackCount();
+    require(controller.deleteTrack(0) && controller.timeline().automationLanes.empty(), "track deletion removes automation");
+    // Structural controller methods mutate the document; their caller commits
+    // the completed operation, unlike editTimeline which commits internally.
+    controller.commit("Delete track");
+    require(controller.undo() && controller.document().trackCount() == tracks
+        && controller.timeline().automationLanes == lanes, "undo track deletion restores exact automation");
+    require(controller.captureArrangement()->timeline.automationLanes == lanes, "restored automation reaches playback");
+    require(controller.redo() && controller.document().trackCount() == tracks - 1
+        && controller.timeline().automationLanes.empty(), "redo track deletion removes automation again");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    automationUndoTests();
     masterVolumeTests();
     mediaIndexTests();
     missingAudioTests();
