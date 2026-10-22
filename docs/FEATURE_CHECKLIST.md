@@ -59,3 +59,18 @@ result. Keep known defects visible. Passing CI alone never establishes DAW parit
 
 Plugin scanning failures and confusing launch/editor behavior remain active
 defects throughout; this ordering does not defer fixes needed to run the examples.
+
+## Automation and tempo work in progress
+
+| ID | Capability | Status | Evidence / remaining acceptance |
+| --- | --- | --- | --- |
+| AUTO-01 | Track volume/pan automation lanes, linear/hold points, read bypass, undo | Implemented on feature branch | AutomationTests, TimelinePlaybackTests, ProjectControllerTests; Windows listening and UI checks pending |
+| AUTO-02 | Sample-position evaluation shared by playback and WAV export | Implemented on feature branch | Exact-sample and block-size-independent playback regression; Windows CI pending |
+| AUTO-03 | Sends, stock-effect and plugin parameter automation | Planned | Requires routing/parameter addressing and plugin scheduling |
+| TEMPO-01 | Tempo and time-signature maps | Planned | Must update transport, MIDI, click, streaming and deterministic export together |
+| WARP-01 | Interactive warp markers and transient detection | Planned | Requires source-to-musical-time mapping and background analysis |
+
+Automation editor: Arrangement > Automation. Choose a track and Volume/Pan. Click to add,
+drag a point, right-click a point to delete. Linear and Hold control interpolation;
+Read bypass restores the manual fader. Points use absolute gain (0..2) and pan (-1..1).
+The editor shows the entire song. Format 10 saves automation; older projects open without lanes.

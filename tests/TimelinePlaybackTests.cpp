@@ -1053,7 +1053,34 @@ template <class Test> static void timed(const char* name, Test test) {
         std::cerr << name << ": " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin).count() << " ms\n";
 }
 
+
+static void automationPlaybackTests() {
+    auto clip = makeSine(2);
+    auto song = newSong(1); song->clips[0][0].audio = &clip;
+    place(*song, regionOf(0, 0, 0, ticksPerBar));
+    Rig reference; reference.publish(song); reference.play(); reference.render(4000);
+    auto automated = std::make_shared<alien::ArrangementPlayback>(*song);
+    automated->timeline.automationLanes = {
+        {0, alien::automation::Parameter::volume, true, {{0, 0.0f}, {100, 1.0f}}},
+        {0, alien::automation::Parameter::pan, true, {{0, 0.0f, alien::automation::Curve::hold},
+            {50, 1.0f, alien::automation::Curve::hold}, {100, 0.0f, alien::automation::Curve::hold}}}
+    };
+    Rig one; one.block = 1; one.publish(automated); one.play(); one.render(4000);
+    Rig awkward; awkward.block = 257; awkward.publish(automated); awkward.play(); awkward.render(4000);
+    require(one.out == awkward.out, "automation is identical across single-sample and awkward blocks");
+    for (std::size_t i = 0; i < one.out.size(); ++i) {
+        const double tick = static_cast<double>(i) / tickFrames;
+        const double gain = std::min(1.0, tick / 100.0);
+        const double balance = tick >= 50.0 && tick < 100.0 ? 0.0 : 1.0;
+        require(std::abs(one.out[i] - reference.out[i] * gain * balance) < 2.0e-6,
+            "volume and pan breakpoints affect the exact intended output sample");
+    }
+    Rig seek; seek.publish(automated); seek.seek(50); seek.play(); seek.render(800);
+    require(seek.energy(0, 800) == 0.0, "seek evaluates hold automation immediately");
+}
+
 int main() {
+    timed("automation", automationPlaybackTests);
     timed("start from anywhere", startFromAnywhereTests);
     timed("loops", loopTests);
     timed("rack lanes", rackLaneTests);
