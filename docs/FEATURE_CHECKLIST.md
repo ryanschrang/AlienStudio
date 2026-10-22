@@ -59,3 +59,14 @@ result. Keep known defects visible. Passing CI alone never establishes DAW parit
 
 Plugin scanning failures and confusing launch/editor behavior remain active
 defects throughout; this ordering does not defer fixes needed to run the examples.
+
+## Channel Rack expansion (feature branch)
+
+- Implemented: compact rows, four-step visual grouping, selected-row accent and labelled channel controls.
+- Implemented: duplicate channel including sound, routing and steps in every pattern; refuses a full rack.
+- Implemented: row copy/paste, fill every 2/4/8 steps, rotate left/right, reverse and repeat first 4/8/16 steps.
+- Row transformations affect the active pattern length and preserve hidden steps and per-step expression.
+- Commands use the existing undo path; Ctrl/Cmd+C/V copies/pastes the selected channel's steps, Ctrl/Cmd+D duplicates the channel when the grid has focus.
+- Existing project format and playback scheduling are unchanged.
+- Tests: RackModelTests and ChannelRackViewTests expanded; Windows Debug/Release CI and manual visual/listening checks pending.
+- Next: resizable name columns, multi-channel selection, richer graph gestures, instrument/piano-roll integration and advanced rhythm tools.
