@@ -3,6 +3,7 @@
 // pattern commands, scrolling, the top-bar button, what the painted pattern
 // sounds like, and screenshots. No audio device or window is needed: pop-up
 // menus and the rename box go through test seams.
+#include "AudioFileWrite.h"
 #include "ChannelRackView.h"
 #include "TopBar.h"
 #include "StudioTheme.h"
@@ -122,19 +123,24 @@ static void geometryChecks() {
     auto& g = rig.grid;
     const int channels = rig.rack().channelCount;
     require(channels == 4, "the starting rack has four channels");
-    const int cell = std::min(64, (1180 - ChannelRackGrid::headerWidth) / 16);
+    const int cell = std::min(ChannelRackGrid::maxCell, (1180 - ChannelRackGrid::headerWidth) / 16);
     require(g.getWidth() == 1180 && g.cellWidth() == cell && g.contentWidth() == cell * 16 && g.maxScroll() == 0 && g.maxScrollY() == 0,
             "16 steps and 4 channels fit without scrolling");
     // Rows tile the grid without overlap, and every header control sits inside the header.
     for (int row = 0; row < channels; ++row) {
         const auto bounds = g.rowBounds(row);
         require(row == 0 || bounds.getY() == g.rowBounds(row - 1).getBottom(), "rows are contiguous");
-        const std::array<juce::Rectangle<int>, 6> parts{g.muteRect(row), g.nameRect(row), g.panRect(row), g.volumeRect(row), g.soloRect(row), g.routeRect(row)};
+        const std::array<juce::Rectangle<int>, 7> parts{g.muteRect(row), g.nameRect(row), g.panRect(row), g.volumeRect(row), g.soloRect(row), g.routeRect(row), g.lampRect(row)};
         for (std::size_t i = 0; i < parts.size(); ++i) {
             require(juce::Rectangle<int>(0, bounds.getY(), ChannelRackGrid::headerWidth, bounds.getHeight()).contains(parts[i]),
                     "header controls stay inside the header and their row");
             for (std::size_t j = i + 1; j < parts.size(); ++j) require(!parts[i].intersects(parts[j]), "header controls never overlap");
         }
+        // Left to right as in FL Studio's rack: the light, pan, volume, the name button, solo, output, and the selection lamp.
+        require(g.muteRect(row).getRight() <= g.panRect(row).getX() && g.panRect(row).getRight() <= g.volumeRect(row).getX()
+                && g.volumeRect(row).getRight() <= g.nameRect(row).getX() && g.nameRect(row).getRight() <= g.soloRect(row).getX()
+                && g.soloRect(row).getRight() <= g.routeRect(row).getX() && g.routeRect(row).getRight() <= g.lampRect(row).getX()
+                && g.lampRect(row).getRight() < ChannelRackGrid::headerWidth, "the header reads like FL's rack, left to right");
         for (int s = 0; s < 16; ++s) {
             require(g.cellBounds(row, s).getX() >= ChannelRackGrid::headerWidth && g.stepAtX(g.cellBounds(row, s).getCentreX()) == s
                     && g.rowAt(g.cellBounds(row, s).getCentreY()) == row, "every cell maps back to itself");
@@ -145,6 +151,14 @@ static void geometryChecks() {
     require(g.stepAtX(10) == -1 && g.stepAtX(ChannelRackGrid::headerWidth - 1) == -1, "the header is not a step");
     require(g.stepAtX(ChannelRackGrid::headerWidth) == 0 && g.stepAtX(ChannelRackGrid::headerWidth + cell * 16 - 1) == 15
             && g.stepAtX(ChannelRackGrid::headerWidth + cell * 16) == -1, "the steps end where the pattern ends");
+
+    // A wide window does not stretch 16 steps into long bars: the buttons stop growing and the rest is empty rack.
+    {
+        Rig wide(1700, 640);
+        require(wide.grid.cellWidth() == ChannelRackGrid::maxCell && wide.grid.contentWidth() == 16 * ChannelRackGrid::maxCell
+                && wide.grid.stepAtX(ChannelRackGrid::headerWidth + 16 * ChannelRackGrid::maxCell) == -1 && wide.grid.cellWidth() <= 48,
+                "step buttons stop growing in a very wide window");
+    }
 
     // The graph lines up with the grid and sits below it.
     require(rig.graph.getX() == 0 && rig.graph.plot().getX() == ChannelRackGrid::headerWidth && rig.graph.getWidth() == g.getWidth(), "the graph editor spans the grid's columns");
@@ -396,6 +410,46 @@ static void headerControls() {
     while (rig.engine.rackAuditions.pop(event)) {}
     rig.click(centre(g.nameRect(2)));
     require(g.selectedChannel() == 2 && rig.engine.rackAuditions.pop(event) && event.note == 2 && event.velocity > 0.0f, "clicking a name selects it and plays it");
+    // The lamp beside the steps selects its channel but, unlike the name button, does not play it.
+    while (rig.engine.rackAuditions.pop(event)) {}
+    rig.click(centre(g.lampRect(3)));
+    require(g.selectedChannel() == 3 && !rig.engine.rackAuditions.pop(event), "clicking the selection lamp selects the channel without playing it");
+    rig.click(centre(g.nameRect(2)));
+    require(g.selectedChannel() == 2, "test setup: channel 2 selected again");
+
+    // What the tooltips say (the name button no longer has room to show what plays).
+    {
+        auto tip = [&](juce::Point<int> p) { g.mouseMove(mouse(g, p)); return g.getTooltip(); };
+        require(tip(centre(g.nameRect(0))).containsIgnoreCase("built-in drum") && tip(centre(g.nameRect(0))).containsIgnoreCase("click to hear"),
+                "the name button's tooltip says what plays and how to hear it");
+        {   // A channel that plays a sample file says which file.
+            const auto file = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("rack-look-sample", ".wav");
+            auto clip = std::make_shared<alien::SessionAudioClip>();
+            clip->sampleRate = 8000; clip->channels = 1; clip->frames = 800;
+            clip->left.assign(800, 0.3f); clip->buildWaveform();
+            const std::atomic<bool> cancel{false};
+            juce::String error;
+            require(alien::writeClipWav(file, *clip, cancel, error), "test setup: a sample file can be written");
+            rig.controller.loadRackSample(file, 1);
+            const auto path = file.getFullPathName().toStdString();
+            for (int i = 0; i < 600 && rig.controller.channelRack().info[1].sample != path; ++i)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+            require(rig.controller.channelRack().info[1].sample == path && !rig.controller.rackChannelOffline(1), "test setup: the sample loaded");
+            rig.view.refresh();
+            require(tip(centre(g.nameRect(1))).contains(file.getFileName()), "a sample channel's tooltip names the file");
+            file.deleteFile();
+        }
+        {   // A sample the project names but cannot find (the red name) says so, as the old second line did.
+            Rig lost;
+            lost.controller.editRack("Lost sample", [](Project& p) { return p.addChannel("Boom", "C:/missing/boom.wav"); });
+            lost.view.refresh();
+            lost.grid.mouseMove(mouse(lost.grid, centre(lost.grid.nameRect(4))));
+            const auto lostTip = lost.grid.getTooltip();
+            require(lostTip.containsIgnoreCase("missing") && lostTip.contains("boom.wav"), "a missing sample's tooltip says the file is missing");
+        }
+        require(tip(centre(g.lampRect(0))).containsIgnoreCase("selected channel"), "the lamp's tooltip says what it is");
+        require(tip(centre(g.panRect(0))).containsIgnoreCase("pan") && tip(centre(g.volumeRect(0))).containsIgnoreCase("volume"), "the knobs say what they are");
+    }
 
     // Volume knob: dragging up raises it; the whole drag is one undo step.
     const float start = rig.rack().channels[0].volume;
@@ -916,6 +970,81 @@ static void snapshots() {
 }
 
 
+// ---- what the rack looks like -----------------------------------------------------------
+// Pixel checks on a real snapshot: the properties that make it read as FL Studio's rack, with Alien's colours.
+static void lookChecks() {
+    ui::StudioLookAndFeel look;
+    juce::LookAndFeel::setDefaultLookAndFeel(&look);
+    {
+        Rig rig(1180, 640);
+        auto& g = rig.grid;
+        rig.controller.editRack("Empty", [](Project& p) { return p.clearPattern(p.selectedPattern); });
+        rig.view.refresh();
+        rig.click(rig.cellCentre(0, 0));                 // channel 0, first step: lit
+        rig.click(rig.cellCentre(2, 0));                 // channel 2, first step: lit ...
+        rig.click(g.muteRect(2).getCentre());            // ... and the channel muted (this also selects it)
+        rig.controller.editRack("Volumes", [](Project& p) {
+            auto quiet = p.channels[3]; quiet.volume = 0.0f; p.setChannel(3, quiet);
+            auto loud = p.channels[1]; loud.volume = 1.0f; p.setChannel(1, loud);
+            return true; });
+        rig.view.refresh();
+        g.selectChannel(1);
+        const auto image = rig.view.createComponentSnapshot(rig.view.getLocalBounds(), true, 1.0f);
+        const auto origin = g.getPosition();
+        auto at = [&](juce::Point<int> p) { return image.getPixelAt(origin.x + p.x, origin.y + p.y); };
+        // The same trimming the grid paints with.
+        auto button = [&](int row, int step) {
+            return g.cellBounds(row, step).toFloat().withTrimmedLeft(step % 4 == 0 ? 3.5f : 1.5f).withTrimmedRight(1.5f).reduced(0.0f, 3.5f);
+        };
+        const auto cool = at(button(3, 1).getCentre().toInt()), warm = at(button(3, 5).getCentre().toInt());
+        require(cool.getBlue() > cool.getRed() && warm.getRed() > warm.getBlue(), "steps are in groups of four, the second group tinted warm");
+        const auto warmAgain = at(button(3, 13).getCentre().toInt()), coolAgain = at(button(3, 9).getCentre().toInt());
+        require(warmAgain.getRed() > warmAgain.getBlue() && coolAgain.getBlue() > coolAgain.getRed(), "and so is every other group after it");
+        const auto lit = at(button(0, 0).getCentre().toInt());
+        require(lit.getGreen() > 150 && lit.getGreen() > lit.getRed() + 40 && lit.getBrightness() > cool.getBrightness() + 0.3f, "a lit step glows in the channel's own colour");
+        // A lit step glows (the gap above it is tinted, the gap above an unlit step is not); one in a channel that will not sound is greyed.
+        auto above = [&](juce::Rectangle<float> r) { return at({static_cast<int>(r.getCentreX()), static_cast<int>(r.getY()) - 2}); };
+        require(above(button(0, 0)).getGreen() > above(button(0, 2)).getGreen() + 10, "a lit step glows");
+        const auto litMuted = at(button(2, 0).getCentre().toInt());
+        require(lit.getSaturation() > 0.45f && litMuted.getSaturation() < 0.3f, "a lit step in a channel that will not sound is greyed");
+        // Raised: lighter along the top than along the bottom.
+        const auto rect = button(3, 1);
+        const auto top = at({static_cast<int>(rect.getCentreX()), static_cast<int>(rect.getY()) + 3});
+        const auto bottom = at({static_cast<int>(rect.getCentreX()), static_cast<int>(rect.getBottom()) - 4});
+        require(top.getBrightness() > bottom.getBrightness(), "step buttons are raised: lighter at the top than at the bottom");
+        // The selection lamp, the channel light and the grip on the name button.
+        require(at(g.lampRect(1).getCentre()).getGreen() > 150 && at(g.lampRect(3).getCentre()).getBrightness() < 0.2f, "the lamp is lit for the selected channel only");
+        require(at(g.muteRect(0).getCentre()).getGreen() > 150 && at(g.muteRect(2).getCentre()).getBrightness() < 0.3f, "a channel's light is lit when it sounds and dark when it is muted");
+        // A muted channel's light is ringed in the mute colour; the knobs have a pointer (pan at centre points straight up).
+        const auto ring = at({g.muteRect(2).getCentreX() + 8, g.muteRect(2).getCentreY()});
+        require(ring.getRed() > 200 && ring.getGreen() > 150 && ring.getBlue() < 130 && at({g.muteRect(0).getCentreX() + 8, g.muteRect(0).getCentreY()}).getBrightness() < 0.3f,
+                "a muted channel's light is ringed, an audible one is not");
+        // The pointer follows the value: volume at zero points to the lower left (7 o'clock), at full to the lower right (5 o'clock).
+        const auto low = g.volumeRect(3).getCentre(), high = g.volumeRect(1).getCentre();
+        require(at({low.x - 4, low.y + 3}).getBrightness() > 0.7f && at({low.x + 3, low.y + 3}).getBrightness() < 0.5f
+                && at({high.x + 3, high.y + 3}).getBrightness() > 0.7f && at({high.x - 4, high.y + 3}).getBrightness() < 0.5f, "a knob's pointer follows its value");
+        const auto panCentre = g.panRect(0).getCentre();
+        require(at({panCentre.x - 1, panCentre.y - 5}).getBrightness() > 0.8f && at({panCentre.x - 8, panCentre.y - 5}).getBrightness() < 0.5f, "a knob has a pointer: pan at centre points straight up");
+        const auto name = g.nameRect(0);
+        int stripes = 0;
+        bool inside = false;
+        for (int x = name.getRight() - 17; x < name.getRight() - 1; ++x) {
+            const bool dark = at({x, name.getCentreY()}).getBrightness() < 0.2f;
+            if (dark && !inside) ++stripes;
+            inside = dark;
+        }
+        require(stripes == 4, "the name button has its grip lines at the right end");
+        require(at({name.getX() + 20, name.getY() + 2}).getBrightness() > at({name.getX() + 20, name.getBottom() - 3}).getBrightness(), "and is raised like the steps");
+        // The playhead brightens the step it is on.
+        rig.view.setPlayhead(1);
+        const auto played = rig.view.createComponentSnapshot(rig.view.getLocalBounds(), true, 1.0f);
+        auto atPlayed = [&](juce::Point<int> p) { return played.getPixelAt(origin.x + p.x, origin.y + p.y); };
+        require(atPlayed(button(3, 1).getCentre().toInt()).getBrightness() > atPlayed(button(3, 2).getCentre().toInt()).getBrightness() + 0.02f, "the playhead brightens its step");
+    }
+    juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
+    std::cout << "PASS: the rack looks like FL Studio's\n";
+}
+
 static void rowToolCommands() {
     Rig rig;
     using Grid = ChannelRackGrid;
@@ -935,6 +1064,7 @@ static void rowToolCommands() {
 
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    lookChecks();
     rowToolCommands();
     geometryChecks();
     scrollBarFollowsGrid();

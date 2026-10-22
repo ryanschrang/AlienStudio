@@ -63,6 +63,7 @@ defects throughout; this ordering does not defer fixes needed to run the example
 ## Channel Rack expansion (feature branch)
 
 - Implemented: compact rows, four-step visual grouping, selected-row accent and labelled channel controls.
+- Implemented: FL Studio-style channel row (light, pan and volume knobs, raised name button, selection lamp) and raised, glowing step buttons in the channel's colour; geometry and look covered by ChannelRackViewTests (Linux); Windows look/DPI check pending.
 - Implemented: duplicate channel including sound, routing and steps in every pattern; refuses a full rack.
 - Implemented: row copy/paste, fill every 2/4/8 steps, rotate left/right, reverse and repeat first 4/8/16 steps.
 - Row transformations affect the active pattern length and preserve hidden steps and per-step expression.
