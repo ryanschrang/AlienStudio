@@ -85,6 +85,7 @@ int main() {
         require(WIFEXITED(status) && WEXITSTATUS(status) == 77, "an unguarded fault still reaches the handler installed before the guard");
     }
    #endif
+    std::cerr << "Testing normal completion and memory faults\n";
     // Normal completion: the callable runs, true comes back, nothing is recorded.
     {
         Fault fault; int ran = 0;
@@ -105,6 +106,7 @@ int main() {
         require(!guarded([&] { writeTo(lowAddress); }, fault) && fault.kind == Kind::accessViolation && fault.address == 0x10, "the faulting address is recorded");
         require(fault.instruction != 0, "the faulting instruction is recorded");
     }
+    std::cerr << "Testing C++ exceptions\n";
     // A C++ exception escaping the callable.
     {
         Fault fault;
@@ -112,6 +114,7 @@ int main() {
         require(!guarded([&] { throw 42; }, fault) && fault.kind == Kind::cppException, "so is a thrown int");
     }
    #if defined(__x86_64__) || defined(_M_X64)
+    std::cerr << "Testing illegal instructions and arithmetic faults\n";
     // An instruction the processor does not have.
     {
         Fault fault;
@@ -130,6 +133,7 @@ int main() {
         (void) result;
     }
    #endif
+    std::cerr << "Testing repeated faults\n";
     // Faults can be repeated thousands of times and the guard keeps working: no handler is left
     // armed, no state leaks between calls.
     {
@@ -141,6 +145,7 @@ int main() {
         }
         require(faulted == 13334 && completed == 6666, "every one of 20000 mixed calls was classified correctly");
     }
+    std::cerr << "Testing nested guards and reset\n";
     // Guards nest: the inner one absorbs its fault and the outer call carries on.
     {
         Fault outer, inner; bool innerReturned = false, afterInner = false;
@@ -157,6 +162,7 @@ int main() {
         require(fault.occurred(), "set by a faulting call");
         require(guarded([&] {}, fault) && !fault.occurred(), "cleared by the next call that completes");
     }
+    std::cerr << "Testing independent threads\n";
     // The audio thread and the message thread are different threads: every thread has its own guard.
     {
         std::atomic<int> faults{0}, bad{0};
@@ -172,6 +178,7 @@ int main() {
         for (auto& thread : threads) thread.join();
         require(faults.load() == 12000 && bad.load() == 0, "four threads fault independently and all are contained");
     }
+    std::cerr << "Testing fault descriptions\n";
     // Reports a person can read.
     {
         Fault fault;
@@ -187,6 +194,7 @@ int main() {
         require(alien::fault::moduleContaining(0).empty(), "address zero belongs to none");
     }
    #if defined(_WIN32)
+    std::cerr << "Testing repeated Windows stack overflow recovery\n";
     // Windows only: running out of stack inside a plugin is survivable, more than once.
     {
         struct Recurse { static int go(int depth) { volatile char pad[512]; pad[0] = static_cast<char>(depth); return go(depth + 1) + pad[0]; } };

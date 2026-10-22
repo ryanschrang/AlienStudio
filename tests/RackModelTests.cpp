@@ -406,7 +406,35 @@ static void displayNameTests() {
     }
 }
 
+
+static void rowToolTests() {
+    auto p = Project::createDefault();
+    Step special; special.on = true; special.velocity = 71; special.pan = -20; special.pitch = 7; special.probability = 45;
+    p.setStep(0, 0, 0, special); p.setStep(0, 0, 60, special);
+    const auto original = p; const auto shared = p.patterns[0];
+    check(p.fillEvery(0, 0, 4), "fill every fourth step");
+    for (int i = 0; i < 16; ++i) check(p.pattern(0).steps[0][static_cast<std::size_t>(i)].on == (i % 4 == 0), "fill positions");
+    check(p.pattern(0).steps[0][0] == special && p.pattern(0).steps[0][60] == special, "fill preserves expression and hidden steps");
+    check(original.patterns[0] == shared && original.pattern(0).steps[0][4].on == false, "row tools preserve immutable undo snapshot");
+    p = original; check(p.rotateRow(0, 0, -1) && p.pattern(0).steps[0][15] == special, "rotate wraps complete step left");
+    check(p.rotateRow(0, 0, 1) && p == original, "opposite rotation restores exact content");
+    check(p.reverseRow(0, 0) && p.pattern(0).steps[0][15] == special, "reverse includes expression");
+    check(p.reverseRow(0, 0) && p == original, "reverse twice restores content");
+    check(p.repeatRow(0, 0, 4) && p.pattern(0).steps[0][12] == special, "repeat first beat");
+    check(p.pasteRow(0, 1, p.pattern(0).steps[0]) && p.pattern(0).steps[1][12] == special, "copy/paste complete step expression");
+    check(!p.fillEvery(0, 0, 0) && !p.rotateRow(0, 0, 16) && !p.repeatRow(0, 0, 16), "invalid and no-op row tools rejected");
+    p = original; p.addPattern(0); const auto before = p;
+    check(p.duplicateChannel(0) && p.channelCount == 5 && p.info[1].sample == before.info[0].sample
+        && p.channels[1] == before.channels[0], "duplicate preserves sound and mixer routing");
+    for (int pat = 0; pat < 2; ++pat) check(p.pattern(pat).steps[1] == before.pattern(pat).steps[0]
+        && p.pattern(pat).steps[2] == before.pattern(pat).steps[1], "duplicate inserts notes in every pattern");
+    check(p.valid() && before.channelCount == 4, "duplicate leaves undo snapshot intact");
+    while (p.channelCount < maxChannels) p.addChannel("Extra", "builtin:hat");
+    const auto full = p; check(!p.duplicateChannel(0) && p == full, "full rack duplication is rejected without mutation");
+}
+
 int main() {
+    rowToolTests();
     defaultProjectTests();
     stepTests();
     copyOnWriteTests();

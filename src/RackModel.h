@@ -240,6 +240,61 @@ struct Project {
         return true;
     }
 
+
+    // Row tools affect only the audible pattern length. Hidden steps survive.
+    using StepRow = std::array<Step, maxSteps>;
+    bool pasteRow(int pat, int channel, const StepRow& source) {
+        if (!validPattern(pat) || !validChannel(channel)
+            || std::any_of(source.begin(), source.end(), [](const Step& s) { return !s.valid(); })) return false;
+        auto row = pattern(pat).steps[static_cast<std::size_t>(channel)];
+        std::copy_n(source.begin(), pattern(pat).length, row.begin());
+        if (row == pattern(pat).steps[static_cast<std::size_t>(channel)]) return false;
+        edit(pat, [&](Pattern& p) { p.steps[static_cast<std::size_t>(channel)] = row; }); return true;
+    }
+    bool fillEvery(int pat, int channel, int interval) {
+        if (!validPattern(pat) || !validChannel(channel) || (interval != 2 && interval != 4 && interval != 8)) return false;
+        auto row = pattern(pat).steps[static_cast<std::size_t>(channel)];
+        for (int s = 0; s < pattern(pat).length; ++s) row[static_cast<std::size_t>(s)].on = s % interval == 0;
+        return pasteRow(pat, channel, row);
+    }
+    bool rotateRow(int pat, int channel, int distance) {
+        if (!validPattern(pat) || !validChannel(channel)) return false;
+        const int len = pattern(pat).length, shift = ((distance % len) + len) % len;
+        if (shift == 0) return false;
+        auto row = pattern(pat).steps[static_cast<std::size_t>(channel)];
+        std::rotate(row.begin(), row.begin() + len - shift, row.begin() + len);
+        return pasteRow(pat, channel, row);
+    }
+    bool reverseRow(int pat, int channel) {
+        if (!validPattern(pat) || !validChannel(channel)) return false;
+        auto row = pattern(pat).steps[static_cast<std::size_t>(channel)];
+        std::reverse(row.begin(), row.begin() + pattern(pat).length);
+        return pasteRow(pat, channel, row);
+    }
+    bool repeatRow(int pat, int channel, int period) {
+        if (!validPattern(pat) || !validChannel(channel) || period < 1 || period >= pattern(pat).length) return false;
+        auto row = pattern(pat).steps[static_cast<std::size_t>(channel)];
+        for (int s = period; s < pattern(pat).length; ++s) row[static_cast<std::size_t>(s)] = row[static_cast<std::size_t>(s % period)];
+        return pasteRow(pat, channel, row);
+    }
+    // Insert a full channel clone directly below its source, in every pattern.
+    bool duplicateChannel(int index) {
+        if (!validChannel(index) || channelCount >= maxChannels) return false;
+        for (int i = channelCount; i > index + 1; --i) {
+            channels[static_cast<std::size_t>(i)] = channels[static_cast<std::size_t>(i - 1)];
+            info[static_cast<std::size_t>(i)] = info[static_cast<std::size_t>(i - 1)];
+        }
+        channels[static_cast<std::size_t>(index + 1)] = channels[static_cast<std::size_t>(index)];
+        info[static_cast<std::size_t>(index + 1)] = info[static_cast<std::size_t>(index)];
+        info[static_cast<std::size_t>(index + 1)].name = clean(info[static_cast<std::size_t>(index)].name + " copy");
+        ++channelCount;
+        forEachPattern([&](Pattern& p) {
+            for (int i = channelCount - 1; i > index + 1; --i) p.steps[static_cast<std::size_t>(i)] = p.steps[static_cast<std::size_t>(i - 1)];
+            p.steps[static_cast<std::size_t>(index + 1)] = p.steps[static_cast<std::size_t>(index)];
+        });
+        return true;
+    }
+
     // ---- step edits -----------------------------------------------------------
     bool setStep(int pat, int channel, int step, const Step& value) {
         if (!validStep(pat, channel, step) || !value.valid()) return false;

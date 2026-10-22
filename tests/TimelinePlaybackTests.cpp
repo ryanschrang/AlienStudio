@@ -951,16 +951,23 @@ static void streamedTests() {
     }
     // Starting the song in the middle of a streamed region: it is asked for from that point.
     {
-        StreamedRig s(true);
+        StreamedRig s(false);
         place(*s.song, regionOf(0, 0, 0, ticksPerBar));
         s.start(ticksPerBar / 2);   // a second in
         s.rig.render(10);
-        require(waitUntil([&] { return s.file->readCount() > 0; }) && s.file->firstRead() == 48000, "playing from the middle of a streamed region reads from the middle of the clip");
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        s.rig.render(20000);
+        require(s.rig.energy(0, 10) == 0, "the gated stream starts late");
+        s.file->gate.store(true);
+        // Each read supplies 1024 frames. Entering the third read means the worker has
+        // published the first two and marked the stream ready. A fixed sleep does not
+        // establish that. Stay below those 2048 frames: this is a launch-alignment test,
+        // not a race between an unpaced offline renderer and background disk refill.
+        require(waitUntil([&] { return s.file->readCount() >= 3; }) && s.file->firstRead() == 48000,
+                "playing from the middle prebuffers from the middle of the clip");
+        s.rig.render(1500);
         const auto reference = decodedReference(decoded, 0, ticksPerBar, 0.0, barFrames);
-        require(s.rig.energy(10, 20000) > 100, "and is heard");
-        require(worstDifference(s.rig.out, std::vector<float>(reference.begin() + 48000, reference.end()), 100, 19000) < 1.0e-5,
+        require(s.rig.energy(10, 1500) > 100, "and is heard");
+        require(s.rig.engine.sessionStreamUnderruns(0) == 0, "the launch comparison stays within prebuffered audio");
+        require(worstDifference(s.rig.out, std::vector<float>(reference.begin() + 48000, reference.end()), 100, 1500) < 1.0e-5,
                 "starting a moment late because the stream was not yet buffered keeps the audio in time");
     }
     // A stream that arrives late joins the song where it has got to, rather than starting late. While it is late the

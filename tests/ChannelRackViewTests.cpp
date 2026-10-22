@@ -915,8 +915,27 @@ static void snapshots() {
     std::cout << "PASS: rack screens render\n";
 }
 
+
+static void rowToolCommands() {
+    Rig rig;
+    using Grid = ChannelRackGrid;
+    rig.grid.runChannelCommand(0, Grid::cmdFill4);
+    require(rig.step(0, 0).on && rig.step(0, 4).on && !rig.step(0, 1).on, "fill menu edits selected pattern");
+    require(rig.controller.undo() && !rig.step(0, 0).on, "one fill command is one undo step");
+    require(rig.controller.redo() && rig.step(0, 4).on, "redo restores fill");
+    rig.grid.runChannelCommand(0, Grid::cmdCopyRow);
+    rig.grid.runChannelCommand(1, Grid::cmdPasteRow);
+    require(rig.step(1, 4).on && rig.controller.undo() && !rig.step(1, 4).on, "paste is undoable");
+    rig.grid.runChannelCommand(0, Grid::cmdRotateRight);
+    require(rig.step(0, 1).on && !rig.step(0, 0).on, "rotate command moves steps");
+    rig.grid.runChannelCommand(0, Grid::cmdDuplicate);
+    require(rig.rack().channelCount == 5 && rig.step(1, 1).on, "duplicate command copies row and adds channel");
+    require(rig.controller.undo() && rig.rack().channelCount == 4, "duplicate undoes as one edit");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    rowToolCommands();
     geometryChecks();
     scrollBarFollowsGrid();
     selectionFollowsChannelEdits();
