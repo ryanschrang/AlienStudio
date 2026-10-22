@@ -378,6 +378,11 @@ public:
         for (int track = 0; track < doc.trackCount(); ++track) publishStop(static_cast<std::size_t>(track));
     }
 
+    // Stops one Session track at the next launch boundary; the other tracks keep playing.
+    void stopTrack(int track) {
+        if (track >= 0 && track < doc.trackCount()) publishStop(static_cast<std::size_t>(track));
+    }
+
     void publishClip(int track, int scene) {
         if (!doc.isValidCell(track, scene)) return;
         const auto& clip = doc.clip(track, scene);

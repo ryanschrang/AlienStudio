@@ -141,6 +141,13 @@ if(BUILD_TESTING)
         juce::juce_audio_formats juce::juce_audio_basics)
     add_test(NAME MidiRecordingTests COMMAND MidiRecordingTests)
     set_tests_properties(MidiRecordingTests PROPERTIES TIMEOUT 120)
+    add_executable(SessionViewTests tests/SessionViewTests.cpp)
+    target_include_directories(SessionViewTests PRIVATE src)
+    target_compile_definitions(SessionViewTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(SessionViewTests PRIVATE AlienStudioBranding juce::juce_audio_processors juce::juce_gui_basics juce::juce_gui_extra
+        juce::juce_audio_devices juce::juce_audio_formats juce::juce_audio_basics)
+    add_test(NAME SessionViewTests COMMAND SessionViewTests)
+    set_tests_properties(SessionViewTests PROPERTIES TIMEOUT 120)
 endif()
 
 if(BUILD_TESTING)

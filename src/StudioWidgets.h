@@ -29,9 +29,7 @@ public:
     void setGlyphColour(juce::Colour c) { glyphColour = c; hasGlyphColour = true; repaint(); }
 
     void paintButton(juce::Graphics& g, bool over, bool down) override {
-        auto& lf = getLookAndFeel();
-        lf.drawButtonBackground(g, *this, findColour(getToggleState() ? buttonOnColourId : buttonColourId),
-                                over, down);
+        paintFace(g, findColour(getToggleState() ? buttonOnColourId : buttonColourId), over, down);
         const auto style = getProperties().getWithDefault("style", {}).toString();
         auto textColour = findColour(getToggleState() ? textColourOnId : textColourOffId);
         if (style == "tab" || style == "ghost")
@@ -58,6 +56,12 @@ public:
         g.setFont(f);
         g.drawText(getButtonText(), juce::Rectangle<float>(left, area.getY(), area.getRight() - left - 6.0f, area.getHeight()),
                    juce::Justification::centredLeft, true);
+    }
+
+protected:
+    // The button's background; a subclass can draw its own face (the glyph and text are drawn over it).
+    virtual void paintFace(juce::Graphics& g, juce::Colour colour, bool over, bool down) {
+        getLookAndFeel().drawButtonBackground(g, *this, colour, over, down);
     }
 
 private:

@@ -305,18 +305,34 @@ focus is inside the piano roll:
 | Alt+A | Arpeggiate | Sequences each selected simultaneous chord by pitch with rate, gate and direction controls. |
 | Shift+Tab | Editor / devices | Switches the central workspace between the pattern editor and compact Synth & MIDI device rack. |
 
-The **Session** tab provides a grid of independent MIDI or audio clips. It
-starts with four tracks and four scenes; use **+ Track** and **+ Scene** to add
-more (up to 16 tracks and 32 scenes), and right-click a track header or scene
-button to rename, move, duplicate or delete it. Double-click a track header to
-rename it. The grid scrolls when it is larger than the window; track headers and
-the scene column stay in place. Each clip holds up to 1,024 notes. Use **Launch at** to choose the next beat or bar boundary
-(bar is the default). Left-clicking a track cell queues that clip for the
-selected boundary; right-clicking opens it in the piano roll without changing
+The **Session** tab is a grid of independent MIDI or audio clips laid out like FL Studio's
+Performance mode, with a few touches from Ableton Live: tracks are rows down the left and
+scenes are columns across the top. It starts with four tracks and four scenes; use **+ Track**
+and **+ Scene** to add more (up to 16 tracks and 32 scenes), and right-click a track header or
+scene button to rename, move, duplicate or delete it. The grid scrolls when it is larger than
+the window; the track headers stay at the left and the scene buttons stay at the top. Clip
+columns stop growing at 220 px in a wide window.
+
+Each track header reads left to right: a round **light** (lit when the track will sound, ringed
+when it is muted; click to mute, right-click to solo), a **pan** and a **volume** knob, the
+track's **name button** (click to select the track, double-click to rename, right-click for the
+track menu; the track's synth preset is in its hover text), an **S** solo chip, and a square
+**stop** button that stops just that track at the selected launch timing (it is lit while the
+track is playing a clip). The light, knobs and S chip are the Mixer tab's own controls for the
+same track: moving one here moves it there, and a change is one undo step, like a Mixer edit.
+Drag a knob to change it (hold Shift for fine control); double-click it to return pan to centre
+or volume to unity; the mouse wheel nudges it.
+
+Clip tiles are raised buttons: an occupied tile takes its track's colour (brighter while it is
+playing) and has a darker launch button with a play triangle at its left; an empty slot is a
+dark tile with a dim triangle. Left-clicking a tile queues that clip for the selected boundary
+and the scene buttons launch a whole column; **Stop all** (top-left corner) stops every track.
+Each clip holds up to 1,024 notes. Use **Launch at** to choose the next beat or bar boundary
+(bar is the default). Right-clicking a tile opens it in the piano roll without changing
 playback. **Edit selected clip** provides the same editing path for keyboard
-and touch users. Launching a scene queues that row across all tracks for the
+and touch users. Launching a scene queues that column across all tracks for the
 same beat or bar. The grid shows each track's selected, queued, and playing
-clip. **Stop all tracks** follows the selected launch timing. Inside the piano
+clip. **Stop all** follows the selected launch timing. Inside the piano
 roll, left-click adds notes and right-click removes them. Active clips keep
 playing while the Session and Piano roll tabs are changed. Separate clip states
 are held for this session until saved to a project file.
