@@ -1,0 +1,12 @@
+cmake_minimum_required(VERSION 3.24)
+project(AlienFaultGuardRegression LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(Threads REQUIRED)
+enable_testing()
+# Exercise the platform fault boundary without downloading or compiling JUCE.
+add_executable(FaultGuardTests ../FaultGuardTests.cpp)
+target_include_directories(FaultGuardTests PRIVATE ../../src)
+target_link_libraries(FaultGuardTests PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+add_test(NAME FaultGuardTests COMMAND FaultGuardTests)
+set_tests_properties(FaultGuardTests PROPERTIES TIMEOUT 60)

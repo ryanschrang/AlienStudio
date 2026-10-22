@@ -7,6 +7,20 @@ on:
 permissions:
   contents: read
 jobs:
+  fault-guard:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure fault guard regression
+        run: cmake -S tests/fault-guard -B build-fault -G "Visual Studio 17 2022" -A x64
+      - name: Build fault guard regression
+        run: cmake --build build-fault --config ${{ matrix.config }}
+      - name: Test fault guard regression
+        run: ctest --test-dir build-fault -C ${{ matrix.config }} --output-on-failure --no-tests=error
   build:
     runs-on: windows-2022
     strategy:
