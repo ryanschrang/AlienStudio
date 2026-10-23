@@ -37,7 +37,7 @@ struct DiskAudioFile {
 // allocation-free audio-side operations. Registration and destruction are not.
 class DiskAudioStreamService {
 public:
-    static constexpr std::size_t voiceCount = 32;
+    static constexpr std::size_t voiceCount = 48;   // per Session track: two for its clips, two for a crossfade's outgoing clip
     static constexpr std::size_t ringFrames = 8192;
     static constexpr std::size_t prebufferFrames = 2048;
     struct Frame {

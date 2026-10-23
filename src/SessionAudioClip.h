@@ -229,6 +229,19 @@ public:
         if (releaseTotal == 0) releaseTotal = releaseLeft = fadeSamples;
     }
 
+    // Moves the playing clip, and the stream it reads, to `other`, which is stopped first. The clip
+    // then plays on there (a crossfade's outgoing side) while this player starts what it has queued.
+    bool handOffActive(SessionAudioPlayer& other) noexcept {
+        if (activeClip == nullptr || &other == this) return false;
+        other.stop();
+        std::swap(activeVoice, other.activeVoice);   // this player keeps the other's idle voice
+        other.activeClip = activeClip; other.activeGeneration = activeGeneration; other.cursor = cursor;
+        other.outputSampleRate = outputSampleRate; other.reversed = reversed; other.looped = looped; other.loopFrame = loopFrame;
+        other.fadeInTotal = fadeInTotal; other.fadeInDone = fadeInDone; other.releaseTotal = releaseTotal; other.releaseLeft = releaseLeft;
+        clearActive();
+        return true;
+    }
+
     void stop() noexcept {
         if (activeVoice) activeVoice->request(nullptr);
         if (pendingVoice) pendingVoice->request(nullptr);

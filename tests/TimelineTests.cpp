@@ -556,9 +556,21 @@ static void nonDestructiveAudioEditTests() {
           && get(t, left).fadeIn == 480 && get(t, left).fadeOut == 240, "audio edit state is retained");
 
     check(t.crossfade(left, right, 960), "touching clips can be crossfaded");
-    check(get(t, left).fadeOut == 960 && get(t, right).fadeIn == 960, "crossfade applies complementary edge fades");
+    check(get(t, right).crossfade == 960 && get(t, left).fadeOut == 0 && get(t, right).fadeIn == 0
+          && get(t, left).start == 0 && get(t, left).end() == bar && get(t, right).start == bar,
+          "a crossfade is stored on the right clip, replaces the edge fades it covers and moves no boundary");
+    check(t.crossfadePartner(right) != nullptr && t.crossfadePartner(right)->id == left && t.crossfadePartner(left) == nullptr,
+          "the clip ending where a crossfade starts is its partner");
     const auto before = t;
     check(!t.crossfade(left, right, 960) && t == before, "repeating the same edit is a no-op");
+    check(t.setFadeIn(right, 480) && get(t, right).crossfade == 480 && get(t, right).fadeIn == 0,
+          "dragging a crossfaded clip's fade-in handle changes the crossfade");
+    check(!t.setFadeIn(right, 0) && get(t, right).crossfade == 480, "dragging it to nothing does not silently remove it");
+    check(t.crossfade(left, right, 0) && get(t, right).crossfade == 0, "a crossfade of 0 removes it");
+    check(t.setFadeIn(right, 240) && get(t, right).fadeIn == 240 && t.setFadeOut(left, 120) && get(t, left).fadeOut == 120,
+          "each edge's fade can be set on its own");
+    check(t.crossfade(left, right, 5 * bar) && get(t, right).crossfade == bar, "a crossfade is no longer than the clip it starts");
+    check(!t.crossfade(right, left, 240), "only a clip ending where the other starts can cross into it");
     check(!t.setGain({left}, -1.0) && !t.setFades({left}, -1, 0), "invalid audio edits are rejected");
     check(t.valid(), "edited timeline remains valid");
 
@@ -571,6 +583,18 @@ static void nonDestructiveAudioEditTests() {
     check(get(edges, edge).fadeOut == 0 && get(edges, made[0]).fadeIn == 0
           && get(edges, edge).fadeIn == 600 && get(edges, made[0]).fadeOut == 600,
           "split preserves outer fades and creates clean internal edges");
+
+    Timeline crossing; crossing.tempo = 120.0;
+    const auto a = put(crossing, 0, 0, 0, bar), b = put(crossing, 0, 1, bar, bar);
+    check(crossing.crossfade(a, b, 960), "fixture: a crossfade");
+    made.clear();
+    check(crossing.split({b}, bar + 1200, &made) && get(crossing, b).crossfade == 960 && get(crossing, made[0]).crossfade == 0,
+          "splitting a crossfaded clip keeps the crossfade on its first half only");
+    check(crossing.trimEnd(b, bar + 600) && get(crossing, b).crossfade == 600, "trimming clamps a crossfade to the clip");
+    Timeline broken = crossing; broken.regions[1].crossfade = 2 * bar;
+    check(!broken.valid(), "a crossfade longer than its clip is invalid");
+    broken = crossing; broken.regions[1].crossfade = -1;
+    check(!broken.valid(), "a negative crossfade is invalid");
 }
 
 static void equalityTests() {
@@ -598,6 +622,7 @@ static void equalityTests() {
     b = a; b.setGain({id}, 1.5); check(!a.playbackEquals(b), "region gain changes the sound");
     b = a; b.setFades({id}, 120, 120); check(!a.playbackEquals(b), "region fades change the sound");
     b = a; b.setReversed({id}, true); check(!a.playbackEquals(b), "reverse changes the sound");
+    b = a; b.regions[0].crossfade = 240; check(!a.playbackEquals(b), "a crossfade changes the sound");
     b = a; b.setLoopSource({id}, true); check(!a.playbackEquals(b), "source looping changes the sound");
     b = a; put(b, 1, 0, 0, bar); check(!a.playbackEquals(b), "another region changes the sound");
 }

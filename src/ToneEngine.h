@@ -95,6 +95,8 @@ public:
     ToneEngine() noexcept {
         for (std::size_t t = 0; t < sessionTracks; ++t)
             audioPlayers[t].bind(diskStreams.voice(t * 2), diskStreams.voice(t * 2 + 1));
+        for (std::size_t t = 0; t < sessionTracks; ++t)
+            tailPlayers[t].bind(diskStreams.voice(sessionTracks * 2 + t * 2), diskStreams.voice(sessionTracks * 2 + t * 2 + 1));
         for (auto& pitch : stepPitches) pitch.store(57, std::memory_order_relaxed);
         for (auto& velocity : stepVelocities) velocity.store(102, std::memory_order_relaxed);
         for (std::size_t t = 0; t < sessionTracks; ++t) {
@@ -111,10 +113,10 @@ public:
     // rendering thread, so the same project always renders to the same samples.
     void renderStreamsDeterministically() noexcept { diskStreams.setDeterministic(); }
     std::uint64_t sessionStreamUnderruns(std::size_t track) const noexcept {
-        return track < sessionTracks ? audioPlayers[track].underrunCount() : 0;
+        return track < sessionTracks ? audioPlayers[track].underrunCount() + tailPlayers[track].underrunCount() : 0;
     }
     bool sessionStreamFailed(std::size_t track) const noexcept {
-        return track < sessionTracks && audioPlayers[track].streamFailed();
+        return track < sessionTracks && (audioPlayers[track].streamFailed() || tailPlayers[track].streamFailed());
     }
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
@@ -132,7 +134,7 @@ public:
         for (auto& buffer : clipBuffers) buffer.setSize(2, alien::PluginRuntime::blockSize);
         for (std::size_t track = 0; track < sessionTracks; ++track)
             rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
-        for (auto& player : audioPlayers) player.stop();
+        stopClipPlayers();
         audioClipMode.fill(false);
         synth.prepare(sampleRate);
         for (auto& voice : trackSynths) voice.prepare(sampleRate);
@@ -152,7 +154,7 @@ public:
         resetRecordingForDeviceChange();
         for (std::size_t track = 0; track < sessionTracks; ++track)
             rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
-        for (auto& player : audioPlayers) player.stop();
+        stopClipPlayers();
         audioClipMode.fill(false);
         allSoundOff(); discardPendingNotes(); resetTransport();
         midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
@@ -195,7 +197,7 @@ private:
         if ((wasPlaying && !playNow) || wasMode != modeNow) {
             for (std::size_t track = 0; track < sessionTracks; ++track)
                 rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
-            for (auto& player : audioPlayers) player.stop();
+            stopClipPlayers();
             audioClipMode.fill(false);
             allSoundOff(); resetTransport();
             midi.requestReset();
@@ -255,7 +257,7 @@ private:
         if (panic) {
             for (std::size_t track = 0; track < sessionTracks; ++track)
                 rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
-            for (auto& player : audioPlayers) player.stop();
+            stopClipPlayers();
             audioClipMode.fill(false);
             synchronizedScenePending = false;
             synchronizedSceneTracksQueued = 0;
@@ -389,9 +391,17 @@ private:
                     double editGain = lane.gain;
                     if (lane.fadeIn > 0) editGain *= std::clamp(into / static_cast<double>(lane.fadeIn), 0.0, 1.0);
                     if (lane.fadeOut > 0) editGain *= std::clamp(remaining / static_cast<double>(lane.fadeOut), 0.0, 1.0);
+                    if (lane.crossfade > 0) editGain *= equalPowerIn(into / static_cast<double>(lane.crossfade));
                     const float level = static_cast<float>(editGain) * audioClipLevel;
-                    clipBuffers[track].setSample(0,i,sample[0] * level);
-                    clipBuffers[track].setSample(1,i,sample[1] * level);
+                    float clipLeft = sample[0] * level, clipRight = sample[1] * level;
+                    if (const auto& tail = tails[track]; tail.active) {
+                        const auto out = tailPlayers[track].nextSample();
+                        const float tailLevel = static_cast<float>(tail.gain
+                            * equalPowerOut((timelineTick - tail.start) / (tail.end - tail.start))) * audioClipLevel;
+                        clipLeft += out[0] * tailLevel; clipRight += out[1] * tailLevel;
+                    }
+                    clipBuffers[track].setSample(0,i,clipLeft);
+                    clipBuffers[track].setSample(1,i,clipRight);
                 }
             }
         }
@@ -492,7 +502,7 @@ private:
         int source{-1};
         std::int64_t start{}, end{}, offset{};
         double audioOffset{}, gain{1.0};
-        std::int64_t fadeIn{}, fadeOut{};
+        std::int64_t fadeIn{}, fadeOut{}, crossfade{};
         bool loopSource{}, reversed{};
         const alien::SessionAudioClip* audio{};
         double boundary{-1.0};         // sync when the playhead reaches this tick
@@ -504,6 +514,71 @@ private:
         bool prefetched{};
         double lead{};                 // while waiting: how far ahead of the song (seconds) the stream was last asked to start
     };
+    // The clip a crossfade leaves: it plays on past its region's end on the track's tail player,
+    // fading out over [start, end) while the region that starts at `start` fades in.
+    struct CrossfadeTail {
+        bool active{}, waiting{};      // waiting: its stream was asked for and is not buffered yet
+        double start{}, end{};
+        double gain{1.0};
+        const alien::SessionAudioClip* audio{};
+        std::int64_t origin{};         // tick at which the clip's audioOffset plays
+        double audioOffset{};
+    };
+    static double equalPowerIn(double x) noexcept { return std::sin(std::clamp(x, 0.0, 1.0) * 1.5707963267948966); }
+    static double equalPowerOut(double x) noexcept { return std::cos(std::clamp(x, 0.0, 1.0) * 1.5707963267948966); }
+    void stopClipPlayers() noexcept {
+        for (auto& player : audioPlayers) player.stop();
+        for (auto& player : tailPlayers) player.stop();
+        for (auto& tail : tails) tail = {};
+    }
+    void endTail(std::size_t track, bool hard) noexcept {
+        if (!tails[track].active) return;
+        if (hard) tailPlayers[track].stop();
+        else { tailPlayers[track].release(timelineFadeSamples); tailPlayers[track].cancelPending(); }
+        tails[track] = {};
+    }
+    // The audio region that ends where `region` starts on its track, if a crossfade can continue it.
+    const alien::timeline::Region* crossfadePartner(std::size_t track, const alien::timeline::Region& region) const noexcept {
+        for (const auto& r : song->timeline.regions)
+            if (r.row == region.row && r.end() == region.start && !r.muted && r.fadeOut == 0
+                && song->clips[static_cast<std::size_t>(r.source)][track].audio != nullptr) return &r;
+        return nullptr;
+    }
+    // Starts a crossfade's outgoing clip part-way through (the song started or jumped inside the crossfade).
+    void startTail(std::size_t track, const alien::timeline::Region& region) noexcept {
+        const auto* left = crossfadePartner(track, region);
+        if (left == nullptr) return;
+        const auto* audio = song->clips[static_cast<std::size_t>(left->source)][track].audio;
+        if (audio->streamed() && (left->reversed || left->loopSource)) return;   // as startTrackRegion: no reverse/loop streaming
+        auto& tail = tails[track];
+        tail = {}; tail.active = true; tail.start = static_cast<double>(region.start);
+        tail.end = static_cast<double>(region.start + region.crossfade); tail.gain = left->gain;
+        tail.audio = audio; tail.origin = left->start; tail.audioOffset = left->audioOffset;
+        const double frame = tailFrame(tail, left->reversed);
+        if (frame < 0.0 || frame >= static_cast<double>(audio->frames)) { tail = {}; return; }
+        auto& player = tailPlayers[track];
+        player.queue(audio, 1, frame);
+        if (!player.launchPendingNow(sampleRate, frame, timelineFadeSamples, left->reversed, left->loopSource,
+                                     left->audioOffset * audio->sampleRate) && player.hasPending()) tail.waiting = true;
+    }
+    double tailFrame(const CrossfadeTail& tail, bool reversed) const noexcept {
+        const double seconds = tail.audioOffset + alien::timeline::secondsForTicks(timelineTick - static_cast<double>(tail.origin), bpm.load());
+        const double forward = seconds * tail.audio->sampleRate;
+        return reversed ? static_cast<double>(tail.audio->frames - 1) - forward : forward;
+    }
+    // A crossfade ends where its outgoing side is silent; a streamed one that was not ready starts once it is.
+    void advanceTail(std::size_t track, double at) noexcept {
+        auto& tail = tails[track];
+        if (!tail.active) return;
+        if (at >= tail.end) { tailPlayers[track].stop(); tail = {}; return; }
+        if (!tail.waiting) return;
+        auto& player = tailPlayers[track];
+        if (!player.hasPending()) { tail.waiting = false; return; }
+        if (player.pendingReady() || player.pendingFailed()) {
+            player.launchPendingNow(sampleRate, tailFrame(tail, false), timelineFadeSamples);
+            if (!player.hasPending()) tail.waiting = false;
+        }
+    }
     static constexpr double timelinePrefetchSeconds = 0.25;   // how long before a streamed region starts its audio is requested
     static constexpr double timelineLaunchWindow = 1024.0;    // a buffered stream may start this many frames after the point it was asked for
     static constexpr double timelineCatchUpSeconds = 0.1, timelineMaxCatchUpSeconds = 1.6;
@@ -531,6 +606,7 @@ private:
     void clearTrack(std::size_t track, bool hard) noexcept {
         auto send = [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); };
         rolls[track].stop(send);
+        endTail(track, hard);
         if (hard) { audioPlayers[track].stop(); trackSynths[track].allSoundOff(); drumSamplers[track].stop(0); }
         else {
             audioPlayers[track].release(timelineFadeSamples);
@@ -549,6 +625,9 @@ private:
         lane.active = true; lane.source = region.source; lane.start = region.start; lane.end = region.end();
         lane.offset = region.offset; lane.audioOffset = region.audioOffset; lane.gain = region.gain;
         lane.fadeIn = region.fadeIn; lane.fadeOut = region.fadeOut; lane.loopSource = region.loopSource; lane.reversed = region.reversed; lane.audio = clip.audio;
+        lane.crossfade = clip.audio != nullptr ? region.crossfade : 0;
+        if (clip.audio != nullptr && region.crossfade > 0 && !tails[track].active && into < static_cast<double>(region.crossfade))
+            startTail(track, region);
         if (clip.audio != nullptr) {
             // DiskAudioStream currently reads forward. Older or externally edited projects may
             // nevertheless contain these flags, so keep their audio audible as a forward one-shot
@@ -640,6 +719,11 @@ private:
             lane.start = region->start; lane.end = region->end(); lane.offset = region->offset; lane.audioOffset = region->audioOffset;
             lane.gain = region->gain; lane.fadeIn = region->fadeIn; lane.fadeOut = region->fadeOut;
             lane.loopSource = region->loopSource; lane.reversed = region->reversed;
+            lane.crossfade = clip.audio != nullptr ? region->crossfade : 0;
+            if (tails[track].active) {
+                if (lane.crossfade == 0 || static_cast<double>(region->start) != tails[track].start) endTail(track, false);
+                else tails[track].end = static_cast<double>(region->start + lane.crossfade);
+            }
             // Edited notes join the clip that is playing; a different loop length changes what the position means, so that restarts.
             if (lane.midi) {
                 auto send = [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); };
@@ -649,6 +733,16 @@ private:
             return;
         }
         const bool replacesAudio = clip.audio != nullptr;
+        // Reaching a crossfade: the clip that is ending plays on, on the tail player, while this one comes in.
+        const bool crossing = replacesAudio && region->crossfade > 0 && lane.active && lane.audio != nullptr && !lane.audioWaiting
+            && lane.end == region->start && lane.fadeOut == 0 && timelineTick < static_cast<double>(region->start + region->crossfade);
+        endTail(track, false);
+        if (crossing && audioPlayers[track].handOffActive(tailPlayers[track])) {
+            auto& tail = tails[track];
+            tail.active = true; tail.start = static_cast<double>(region->start);
+            tail.end = static_cast<double>(region->start + region->crossfade); tail.gain = lane.gain;
+            tail.audio = lane.audio; tail.origin = lane.start; tail.audioOffset = lane.audioOffset;
+        }
         if (lane.active || audioPlayers[track].isPlaying()) {
             // A new audio region replaces the old one at once; anything else lets it fade.
             auto send = [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); };
@@ -738,6 +832,7 @@ private:
         for (std::size_t t = 0; t < sessionTracks; ++t) {
             auto& lane = trackLanes[t];
             if (lane.audioWaiting) launchWaiting(t);
+            advanceTail(t, at);
             if (lane.nextAudio != nullptr && !lane.prefetched && at >= lane.prefetchAt) prefetchNext(t);
         }
         for (std::size_t t = 0; t < sessionTracks; ++t)
@@ -977,6 +1072,8 @@ private:
         setTimelineTick(timelineStart); loopArmed = false; timelinePosition.store(-1);
         for (auto& lane : trackLanes) lane = {};
         for (auto& lane : rackLaneState) lane = {};
+        for (auto& player : tailPlayers) player.stop();
+        for (auto& tail : tails) tail = {};
         clock.reset(); wasPlaying = false; currentStep.store(-1); pianoRollPosition.store(-1000);
         activeStepPitch = -1;
         synchronizedScenePending = false;
@@ -1022,6 +1119,8 @@ private:
     alien::DiskAudioStreamService diskStreams;
     FixedHeapArray<alien::PianoRollScheduler, sessionTracks> rolls;
     FixedHeapArray<alien::SessionAudioPlayer, sessionTracks> audioPlayers;
+    FixedHeapArray<alien::SessionAudioPlayer, sessionTracks> tailPlayers;   // a crossfade's outgoing clip
+    FixedHeapArray<CrossfadeTail, sessionTracks> tails;   // on the heap: tests keep whole engines on the stack
     std::unique_ptr<alien::SessionClipLaunch> launchScratch = std::make_unique<alien::SessionClipLaunch>();
     std::array<bool, sessionTracks> audioClipMode{};
     double sampleRate{44100.0};
