@@ -86,3 +86,8 @@ Automation editor: Arrangement > Automation. Choose a track and Volume/Pan. Clic
 drag a point, right-click a point to delete. Linear and Hold control interpolation;
 Read bypass restores the manual fader. Points use absolute gain (0..2) and pan (-1..1).
 The editor shows the entire song. Format 10 saves automation; older projects open without lanes.
+
+## Session view layout (feature branch)
+
+- LIVE-01 look and layout: tracks are rows and scenes are columns (FL Studio Performance-mode style). A track header holds a light (mute/solo), pan and volume knobs, the name button, a solo chip and a per-track stop button; the knobs, mute and solo are the Mixer's own controls. Clip tiles are raised and coloured with a launch triangle.
+- Tests: SessionViewTests (layout, launching, per-track stop through the offline engine, header controls, look, mouse wheel). Windows Debug/Release CI and manual visual/feel checks pending.

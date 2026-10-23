@@ -1,4 +1,5 @@
 #pragma once
+#include "FlLook.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <cmath>
 #include <functional>
@@ -42,24 +43,33 @@ public:
         juce::TextButton::mouseUp(event);
     }
 
+    // Where the launch triangle sits: a small dark button at the left end of the tile, as in Ableton's clip slots.
+    static constexpr float launchWidth = 24.0f;
+
     void paintButton(juce::Graphics& g, bool over, bool down) override {
         auto r = getLocalBounds().toFloat().reduced(0.5f);
-        const float radius = 4.0f;
+        const float radius = 3.0f;
         const auto& v = visual;
         const auto ink = juce::Colour(0xff0d0e10);
+        const auto launch = r.withWidth(launchWidth);
+        auto triangle = [&](juce::Colour colour) {
+            const auto tri = juce::Rectangle<float>(10.0f, 10.0f).withCentre(launch.getCentre());
+            juce::Path p;
+            p.addTriangle(tri.getX() + 1.0f, tri.getY(), tri.getX() + 1.0f, tri.getBottom(), tri.getRight(), tri.getCentreY());
+            g.setColour(colour);
+            g.fillPath(p);
+        };
 
         if (v.kind == Kind::empty) {
-            g.setColour(juce::Colour(over ? 0xff22242a : 0xff1b1c20));
-            g.fillRoundedRectangle(r, radius);
-            g.setColour(juce::Colour(0xff2a2c32));
-            g.drawRoundedRectangle(r, radius, 1.0f);
-            const auto stopBox = juce::Rectangle<float>(8.0f, 8.0f).withCentre({r.getX() + 15.0f, r.getCentreY()});
-            g.setColour(juce::Colour(v.playing ? 0xff9ea3ab : 0xff3a3d44));
-            g.fillRect(stopBox);
+            // An empty slot is a dark raised tile; the launch triangle is lit while the track sits on it.
+            auto face = juce::Colour(over ? 0xff353840 : 0xff2d3036);
+            if (down) face = face.brighter(0.1f);
+            ui::fl::paintRaised(g, r, face, radius, 0.18f, 0.34f);
+            triangle(juce::Colour(v.playing ? 0xff9ea3ab : over ? 0xff6f747c : 0xff4a4e56));
             if (over) {
-                g.setColour(juce::Colour(0xff686d75));
+                g.setColour(juce::Colour(0xff9096a0));
                 g.setFont(juce::FontOptions(11.5f));
-                g.drawText("Empty", r.withTrimmedLeft(28.0f), juce::Justification::centredLeft, true);
+                g.drawText("Empty", r.withTrimmedLeft(launchWidth + 6.0f), juce::Justification::centredLeft, true);
             }
         } else {
             // Offline audio (file not found) is drawn in a muted red that cannot be mistaken for a playable clip.
@@ -67,19 +77,16 @@ public:
                 : v.playing ? v.colour : v.colour.withMultipliedSaturation(0.75f).withMultipliedBrightness(0.62f);
             if (down) fill = fill.brighter(0.12f);
             else if (over) fill = fill.brighter(0.06f);
-            g.setColour(fill);
-            g.fillRoundedRectangle(r, radius);
+            ui::fl::paintRaised(g, r, fill, radius, v.playing ? 0.30f : 0.38f, v.playing ? 0.20f : 0.24f);
             const auto textColour = v.kind == Kind::offline ? juce::Colour(0xffe8b4b8)
                 : v.playing ? ink : juce::Colour(0xfff1f2f4);
 
-            // Launch triangle.
-            const auto tri = juce::Rectangle<float>(10.0f, 10.0f).withCentre({r.getX() + 15.0f, r.getCentreY()});
-            juce::Path p;
-            p.addTriangle(tri.getX() + 1.0f, tri.getY(), tri.getX() + 1.0f, tri.getBottom(), tri.getRight(), tri.getCentreY());
-            g.setColour(v.playing ? ink : textColour.withAlpha(0.85f));
-            g.fillPath(p);
+            // The launch button: a darker inset square with the triangle on it.
+            g.setColour(juce::Colours::black.withAlpha(v.playing ? 0.16f : 0.26f));
+            g.fillRoundedRectangle(launch.reduced(3.0f, 4.0f), 2.5f);
+            triangle(v.playing ? ink : textColour.withAlpha(0.9f));
 
-            auto textArea = r.withTrimmedLeft(28.0f).withTrimmedRight(6.0f);
+            auto textArea = r.withTrimmedLeft(launchWidth + 6.0f).withTrimmedRight(6.0f);
             if (v.kind == Kind::audio) {
                 // Tiny waveform badge marks audio clips.
                 auto badge = textArea.removeFromRight(14.0f).withSizeKeepingCentre(12.0f, 12.0f);
