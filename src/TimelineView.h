@@ -6,6 +6,7 @@
 // ProjectController::editTimeline, so undo, saving and the audio engine need
 // nothing from this file; a drag is previewed on a copy and committed once, so
 // each gesture is one undo step.
+#include "ClipBin.h"
 #include "ProjectController.h"
 #include "StudioWidgets.h"
 #include "Timeline.h"
@@ -37,7 +38,7 @@ inline std::int64_t snapSize(Snap s) {
 }
 } // namespace tlui
 
-class TimelineCanvas final : public juce::Component {
+class TimelineCanvas final : public juce::Component, public juce::DragAndDropTarget {
 public:
     static constexpr int headerWidth = 156, markerStripHeight = 20, loopStripHeight = 16, rulerHeight = 24;
     static constexpr int topHeight = markerStripHeight + loopStripHeight + rulerHeight;
@@ -64,6 +65,7 @@ public:
     std::function<void(std::int64_t)> onSeek;                  // the play position was set (a click on the ruler, a marker...)
     std::function<void()> onPlayToggle;                        // Space
     std::function<void(int row, int source)> onOpenSource;     // double-click on a region: edit what it plays
+    std::function<void(int track, int scene, bool sceneAdded)> onClipCreated;   // a new empty clip was made for a track (a scene is added when none was free)
     std::function<void(const juce::String&)> onMessage;
     std::function<void()> onViewChanged;                       // zoom or scroll changed
     std::function<void()> onStateChanged;                      // selection, cursor, loop or length changed
@@ -443,11 +445,96 @@ public:
         if (timeline::isPatternRow(row)) source = controller.channelRack().selectedPattern;
         else if (d.isValidCell(row, d.selectedScene) && !d.clip(row, d.selectedScene).isEmpty()) source = d.selectedScene;
         else for (int s = 0; s < d.sceneCount() && source < 0; ++s) if (!d.clip(row, s).isEmpty()) source = s;
-        if (source < 0) { say("This track has no clips yet. Make one in the Session view, then place it here."); return false; }
+        // A track with nothing in it yet: start a new, empty clip right here, ready to be opened and filled with notes.
+        if (source < 0) return timeline::isPatternRow(row) ? false : newClipHere(row, tick);
         return place(row, source, tick);
     }
+    // Makes a new, empty MIDI clip for a track and puts it at `tick`, as one undo step. Double-click it to write notes.
+    bool newClipHere(int row, std::int64_t tick) {
+        if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return false; }
+        std::uint32_t id = 0; int scene = -1; bool sceneAdded = false;
+        if (!controller.placeNewClip(row, tick, &id, &scene, &sceneAdded)) { say("A new clip does not fit there: the Session has no room for another scene."); return false; }
+        selected = {id}; selectedMarker = 0; focus = row;
+        afterEdit();
+        if (onClipCreated) onClipCreated(row, scene, sceneAdded);
+        const auto& d = controller.document();
+        say("New empty clip on " + (row >= 0 && row < d.trackCount() ? d.tracks[static_cast<std::size_t>(row)].name : juce::String("the track"))
+            + ". Double-click it to write notes in the Piano Roll.");
+        return true;
+    }
+    // Where a row of the clip list would land: a clip always goes on its own track's lane; a pattern goes on the pattern lane under
+    // the pointer (the first lane when the pointer is over a track lane or the ruler). `pointer` is in this component's coordinates.
+    struct DropPlan {
+        bool valid{false};
+        int row{-1}, source{-1};
+        std::int64_t tick{0}, length{0};
+        juce::String message;   // what to tell the person while dragging
+    };
+    DropPlan planDrop(const clipbin::Item& item, juce::Point<int> pointer) const {
+        DropPlan plan;
+        const auto& d = controller.document();
+        if (!item.valid()) return plan;
+        if (pointer.x < headerWidth) { plan.message = "Drop it on a lane, to the right of the track names."; return plan; }
+        plan.tick = snapTick(tickAtX(static_cast<double>(pointer.x)));
+        if (item.kind == clipbin::Item::Kind::pattern) {
+            const int displayRow = displayRowAt(pointer.y);
+            plan.row = displayRow >= 0 && timeline::isPatternRow(timelineRow(displayRow)) ? timelineRow(displayRow) : timeline::rackRowBase;
+            plan.source = item.a;
+            if (!controller.channelRack().validPattern(plan.source)) { plan.row = -1; plan.message = "That pattern no longer exists."; return plan; }
+        } else {
+            plan.row = item.a; plan.source = item.b;
+            if (!d.isValidCell(plan.row, plan.source)) { plan.row = -1; plan.message = "That clip no longer exists."; return plan; }
+        }
+        plan.length = controller.naturalLength(plan.row, plan.source);
+        plan.valid = plan.length > 0;
+        if (plan.valid) {
+            timeline::Region named; named.row = plan.row; named.source = plan.source;
+            plan.message = "Drop to put " + regionName(named) + " on " + laneName(plan.row) + " at bar " + juce::String(plan.tick / timeline::ticksPerBar + 1)
+                         + ", beat " + juce::String((plan.tick % timeline::ticksPerBar) / timeline::ticksPerBeat + 1) + ".";
+        }
+        return plan;
+    }
+    juce::String laneName(int row) const {
+        const auto& d = controller.document();
+        if (timeline::isPatternRow(row)) return "Pattern lane " + juce::String(row - timeline::rackRowBase + 1);
+        return row >= 0 && row < d.trackCount() ? d.tracks[static_cast<std::size_t>(row)].name : juce::String("the track");
+    }
+    // The clip list's double-click: the item at the play position, on the focused pattern lane or the clip's own track.
+    bool placeItemAtCursor(const clipbin::Item& item) {
+        const int lane = timeline::isPatternRow(focus) ? focus : timeline::rackRowBase;
+        const auto pointer = juce::Point<int>(juce::roundToInt(xForTick(static_cast<double>(cursor))), rowTop(displayRowOf(lane)) + rowHeight / 2);
+        auto plan = planDrop(item, {std::max(pointer.x, headerWidth), pointer.y});
+        if (!plan.valid) { say(plan.message); return false; }
+        plan.tick = cursor;   // exactly where the play position is, not the grid point nearest to a pixel
+        if (item.kind == clipbin::Item::Kind::pattern) plan.row = lane;
+        const bool done = place(plan.row, plan.source, plan.tick);
+        if (done) { scrollRowIntoView(plan.row); say("Placed on " + laneName(plan.row) + " at the play position."); }
+        return done;
+    }
+
+    // ---- dropping from the clip list ---------------------------------------------------------------------------------------
+    bool isInterestedInDragSource(const SourceDetails& details) override { return clipbin::decode(details.description).valid(); }
+    void itemDragEnter(const SourceDetails& details) override {
+        const auto plan = planDrop(clipbin::decode(details.description), details.localPosition);
+        if (plan.valid) scrollRowIntoView(plan.row);
+        showDropPlan(plan);
+    }
+    void itemDragMove(const SourceDetails& details) override { showDropPlan(planDrop(clipbin::decode(details.description), details.localPosition)); }
+    void itemDragExit(const SourceDetails&) override { showDropPlan({}); say({}); }
+    void itemDropped(const SourceDetails& details) override {
+        const auto plan = planDrop(clipbin::decode(details.description), details.localPosition);
+        showDropPlan({});
+        if (!plan.valid) { say(plan.message.isNotEmpty() ? plan.message : "That cannot be placed there."); return; }
+        if (place(plan.row, plan.source, plan.tick)) say("Placed on " + laneName(plan.row) + " at bar " + juce::String(plan.tick / timeline::ticksPerBar + 1) + ".");
+    }
+    void showDropPlan(const DropPlan& plan) {
+        dropGhost = plan;
+        if (plan.message.isNotEmpty()) say(plan.message);
+        repaint();
+    }
+    const DropPlan& dropPreview() const noexcept { return dropGhost; }
     // The menu of things that can be placed on a row.
-    enum MenuId { placeSceneBase = 1000, placePatternBase = 2000 };
+    enum MenuId { placeNewClip = 900, placeSceneBase = 1000, placePatternBase = 2000 };
     // The items of the right-click menus.
     enum Command { cmdSplit = 1, cmdMute, cmdDuplicate, cmdCopy, cmdCut, cmdDelete, cmdGroup, cmdUngroup, cmdOpen, cmdPaste, cmdSelectAll, cmdAddMarker,
                    cmdSlipLeft, cmdSlipRight, cmdSourceLoop, cmdReverse, cmdNormalize, cmdFade, cmdCrossfade,
@@ -460,6 +547,8 @@ public:
             for (int p = 0; p < rackProject.patternCount; ++p)
                 menu.addItem(placePatternBase + p, juce::String(p + 1) + "  " + juce::String::fromUTF8(rackProject.patternNames[static_cast<std::size_t>(p)].c_str()));
         } else if (row >= 0 && row < d.trackCount()) {
+            menu.addItem(placeNewClip, "New empty clip");
+            menu.addSeparator();
             for (int s = 0; s < d.sceneCount(); ++s) {
                 const auto& clip = d.clip(row, s);
                 const juce::String what = clip.isAudioClip() ? "audio" : clip.notes().count > 0 ? juce::String(static_cast<int>(clip.notes().count)) + " notes" : "empty";
@@ -471,7 +560,8 @@ public:
     void showPlaceMenu(int row, std::int64_t tick) {
         const auto area = juce::Rectangle<int>(juce::roundToInt(xForTick(static_cast<double>(tick))), rowTop(displayRowOf(row)), 1, rowHeight);
         launch(placeMenu(row), area, [this, row, tick](int id) {
-            if (id >= placePatternBase && id < placePatternBase + 1000) place(row, id - placePatternBase, tick);
+            if (id == placeNewClip) newClipHere(row, tick);
+            else if (id >= placePatternBase && id < placePatternBase + 1000) place(row, id - placePatternBase, tick);
             else if (id >= placeSceneBase && id < placeSceneBase + 1000) place(row, id - placeSceneBase, tick);
         });
     }
@@ -1033,7 +1123,8 @@ private:
             full.addItem(cmdSelectAll, "Select all");
             full.addItem(cmdAddMarker, "Add marker here");
             launch(std::move(full), area, [this, row, tick](int id) {
-                if (id >= placePatternBase && id < placePatternBase + 1000) place(row, id - placePatternBase, tick);
+                if (id == placeNewClip) newClipHere(row, tick);
+                else if (id >= placePatternBase && id < placePatternBase + 1000) place(row, id - placePatternBase, tick);
                 else if (id >= placeSceneBase && id < placeSceneBase + 1000) place(row, id - placeSceneBase, tick);
                 else if (id == cmdPaste) paste(tick);
                 else if (id == cmdSelectAll) selectAll();
@@ -1147,6 +1238,18 @@ private:
                 const float x = static_cast<float>(xForTick(static_cast<double>(r->start)));
                 g.setColour(col::accent.withAlpha(0.6f)); g.fillRect(x, static_cast<float>(topHeight), 1.0f, static_cast<float>(getHeight() - topHeight));
             }
+        }
+        if (dropGhost.valid) {
+            // A row from the clip list is being dragged over: show the lane and where its clip would sit.
+            const int displayRow = displayRowOf(dropGhost.row);
+            g.setColour(col::accent.withAlpha(0.10f));
+            g.fillRect(lanes.getX(), rowTop(displayRow), lanes.getWidth(), rowHeight);
+            timeline::Region ghost; ghost.row = dropGhost.row; ghost.source = dropGhost.source; ghost.start = dropGhost.tick; ghost.length = dropGhost.length;
+            const auto box = regionBounds(ghost);
+            g.setColour(rowColour(ghost.row).withAlpha(0.35f)); g.fillRoundedRectangle(box, 4.0f);
+            g.setColour(col::accent); g.drawRoundedRectangle(box, 4.0f, 1.6f);
+            const float x = static_cast<float>(xForTick(static_cast<double>(dropGhost.tick)));
+            g.fillRect(x, static_cast<float>(topHeight), 1.0f, static_cast<float>(getHeight() - topHeight));
         }
         // The play position, then the playhead.
         const float cx = static_cast<float>(xForTick(static_cast<double>(cursor)));
@@ -1402,6 +1505,7 @@ private:
     int focus{0};
     bool follow{true};
     std::optional<timeline::Timeline> preview;
+    DropPlan dropGhost;   // where a row dragged from the clip list would land, while it is over the lanes
     Drag drag;
 };
 
@@ -1541,7 +1645,7 @@ public:
     static constexpr int toolbarHeight = 46, scrollBarSize = 12, helpHeight = 22;
 
     explicit TimelineView(ProjectController& projectController)
-        : controller(projectController), canvas(projectController), hBar(false), vBar(true), automationEditor(projectController) {
+        : controller(projectController), canvas(projectController), clipBin(projectController), hBar(false), vBar(true), automationEditor(projectController) {
         namespace col = ui::colours;
         setName("Arrangement");
         addChildComponent(automationEditor);
@@ -1549,7 +1653,13 @@ public:
         automationButton.setButtonText("Automation"); automationButton.setClickingTogglesState(true);
         automationButton.setName("Show automation lanes");
         automationButton.onClick = [this] { automationEditor.setVisible(automationButton.getToggleState()); resized(); };
-        addAndMakeVisible(canvas); addAndMakeVisible(hBar); addAndMakeVisible(vBar);
+        addAndMakeVisible(canvas); addAndMakeVisible(hBar); addAndMakeVisible(vBar); addAndMakeVisible(clipBin);
+        addAndMakeVisible(clipsButton);
+        clipsButton.setButtonText("Clips"); clipsButton.setName("Show clip list"); clipsButton.setClickingTogglesState(true);
+        clipsButton.setToggleState(true, juce::dontSendNotification);
+        clipsButton.setTooltip("Show or hide the list of patterns and clips. Drag a row onto a lane to place it.");
+        clipsButton.onClick = [this] { clipBin.setVisible(clipsButton.getToggleState()); resized(); };
+        clipBin.onPlace = [this](const clipbin::Item& item) { canvas.placeItemAtCursor(item); };
         hBar.addListener(this); vBar.addListener(this);
         hBar.setAutoHide(false); vBar.setAutoHide(true);
         for (auto* label : {&snapLabel, &lengthLabel}) {
@@ -1606,6 +1716,8 @@ public:
     ~TimelineView() override { hBar.removeListener(this); vBar.removeListener(this); }
 
     TimelineCanvas& timelineCanvas() noexcept { return canvas; }
+    ClipBin& clipList() noexcept { return clipBin; }
+    bool clipListShown() const noexcept { return clipBin.isVisible(); }
     std::function<void(std::int64_t from, std::int64_t to)> onExport;   // to == -1: through the end of the song; while exporting, the button asks to cancel with (0, -1)
     std::function<void()> onTitleChanged;                                // the subtitle (length, clips, loop) changed
     std::function<void(juce::PopupMenu, std::function<void(int)>)> menuLauncher;   // lets the tests answer for the user
@@ -1633,10 +1745,13 @@ public:
         lengthSlider.setValue(t.lengthBars, juce::dontSendNotification);
         updating = false;
         canvas.refresh();
+        clipBin.refresh();
         automationEditor.refresh();
         updateControls();
         layoutScroll();
     }
+    // The clip list reads the project, which may have changed while another view was showing.
+    void visibilityChanged() override { if (isVisible()) clipBin.refresh(); }
 
     void paint(juce::Graphics& g) override { g.fillAll(ui::colours::surface); }
     void resized() override {
@@ -1660,8 +1775,11 @@ public:
         exportButton.setBounds(bar.removeFromRight(110).withTrimmedTop(14)); bar.removeFromRight(10);
         readout.setBounds(bar.withTrimmedTop(14));
         auto helpRow = r.removeFromBottom(helpHeight).reduced(14, 0);
-        automationButton.setBounds(helpRow.removeFromLeft(110)); helpRow.removeFromLeft(8); help.setBounds(helpRow);
+        automationButton.setBounds(helpRow.removeFromLeft(110)); helpRow.removeFromLeft(8);
+        clipsButton.setBounds(helpRow.removeFromRight(70)); helpRow.removeFromRight(8);
+        help.setBounds(helpRow);
         if (automationEditor.isVisible()) automationEditor.setBounds(r.removeFromBottom(std::min(180, std::max(80, r.getHeight() / 3))));
+        if (clipBin.isVisible()) clipBin.setBounds(r.removeFromRight(ClipBin::width));
         auto bottom = r.removeFromBottom(scrollBarSize);
         hBar.setBounds(bottom.withTrimmedLeft(TimelineCanvas::headerWidth).withTrimmedRight(scrollBarSize));
         vBar.setBounds(r.removeFromRight(scrollBarSize).withTrimmedTop(TimelineCanvas::topHeight));
@@ -1718,9 +1836,10 @@ private:
 
     ProjectController& controller;
     TimelineCanvas canvas;
+    ClipBin clipBin;
     juce::ScrollBar hBar, vBar;
     TrackAutomationEditor automationEditor;
-    juce::TextButton automationButton;
+    juce::TextButton automationButton, clipsButton;
     juce::Label snapLabel, lengthLabel, readout, help;
     juce::ComboBox snapBox;
     juce::TextButton zoomOutButton, zoomInButton, fitButton, loopButton, markerButton, placeButton, exportButton;

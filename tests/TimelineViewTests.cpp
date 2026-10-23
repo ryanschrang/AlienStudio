@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <set>
+#include <tuple>
 #include <vector>
 
 static int failures = 0;
@@ -344,11 +345,12 @@ static void placingChecks() {
     rig.doubleClick(rig.at(0, 2));
     const auto* audio = rig.t().regionAt(2, 0);
     require(audio != nullptr && audio->source == 0 && audio->length == 2 * bar && audio->audioOffset == 0.0, "an audio clip lasts as long as the file at this tempo");
-    // A track with nothing to place says so and changes nothing.
+    // A track with nothing in it starts a new, empty clip instead (the longer checks are in newClipChecks).
     rig.messages.clear();
     const auto count = rig.t().regions.size();
     rig.doubleClick(rig.at(0, 3));
-    require(rig.t().regions.size() == count && !rig.messages.empty() && rig.messages.back().contains("no clips"), "an empty track places nothing and explains why");
+    require(rig.t().regions.size() == count + 1 && rig.t().regionAt(3, 0) != nullptr && !rig.messages.empty() && rig.messages.back().contains("New empty clip"),
+            "an empty track gets a new, empty clip and says so");
     // A pattern lane places the selected Channel Rack pattern.
     rig.doubleClick(rig.at(3 * bar, tl::rackRowBase + 1));
     const auto* pattern = rig.t().regionAt(tl::rackRowBase + 1, 3 * bar);
@@ -404,6 +406,288 @@ static void placingChecks() {
     rig.doubleClick(rig.at(3 * bar + 100, tl::rackRowBase + 1));
     require(rig.opened.size() == 1 && rig.opened[0] == std::make_pair(tl::rackRowBase + 1, 0), "and a pattern opens in the Channel Rack");
     std::cout << "PASS: placing clips and patterns\n";
+}
+
+
+// ---- a new clip from an empty lane --------------------------------------------------------------
+static void newClipChecks() {
+    Rig rig;
+    rig.sources();   // clips on tracks 1 to 3; track 4 (row 3) has nothing
+    auto& c = rig.c;
+    auto& d = rig.controller;
+    c.setSnap(Snap::bar);
+    std::vector<std::tuple<int, int, bool>> created;
+    c.onClipCreated = [&](int track, int scene, bool added) { created.emplace_back(track, scene, added); };
+    const int scenes = d.document().sceneCount();
+    const auto before = rig.t();
+
+    rig.messages.clear();
+    rig.doubleClick(rig.at(2 * bar + 100, 3));
+    require(rig.t().regions.size() == 1, "double-click on an empty track's lane makes one clip");
+    const auto first = rig.t().regions[0];
+    require(first.row == 3 && first.start == 2 * bar && first.length == PianoRollPattern::defaultLoopSteps * PianoRollPattern::ticksPerStep && !first.isPattern(),
+            "it is the track's, starts at the snapped position and is as long as a new clip loops");
+    require(d.document().isValidCell(3, first.source) && d.document().clip(3, first.source).isEmpty() && !d.document().clip(3, first.source).isAudioClip(),
+            "it is a MIDI clip with no notes in it yet");
+    require(rig.selectionIs({first.id}) && c.focusRow() == 3, "the new clip is selected");
+    require(d.document().selectedTrack == 3 && d.document().selectedScene == first.source, "and it is the Session's selected clip, ready for the piano roll");
+    require(created.size() == 1 && created[0] == std::make_tuple(3, first.source, false) && d.document().sceneCount() == scenes, "no scene was needed, and the owner was told");
+    require(!rig.messages.empty() && rig.messages.back().contains("New empty clip") && rig.messages.back().contains("Track 4"), "the message names the track");
+    require(rig.oneUndoRestores(before, true) && d.document().sceneCount() == scenes, "making it is one undo step");
+
+    // The second one is a clip of its own, not another reference to the first.
+    rig.doubleClick(rig.at(8 * bar + 100, 3));
+    require(rig.regionsOnRow(3) == 2, "a second double-click makes a second clip");
+    const auto* a = rig.t().regionAt(3, 2 * bar);
+    const auto* b = rig.t().regionAt(3, 8 * bar);
+    require(a != nullptr && b != nullptr && a->source != b->source && d.document().clip(3, b->source).isEmpty(), "each new clip has its own Session cell");
+    const int aSource = a->source, bSource = b->source;
+    // Editing one clip's notes leaves the other empty.
+    PianoRollPattern notes; notes.add(60, 0, 4);
+    d.setClipPattern(3, aSource, notes, false);
+    require(d.document().clip(3, aSource).notes().count == 1 && d.document().clip(3, bSource).isEmpty(), "writing notes into one does not touch the other");
+    d.setClipPattern(3, aSource, PianoRollPattern{}, false);
+
+    // Double-click on the new clip opens it.
+    rig.opened.clear();
+    rig.doubleClick(rig.at(2 * bar + 100, 3));
+    require(rig.opened.size() == 1 && rig.opened[0] == std::make_pair(3, aSource), "double-clicking it opens the clip (the piano roll in the program)");
+
+    // Every cell of the track is taken, so the next clip adds a scene, still as one undo step.
+    bool added = false;
+    int guard = 0;
+    std::uint32_t id = 0;
+    int scene = -1;
+    const auto beforeScene = rig.t();
+    const int scenesBefore = d.document().sceneCount();
+    while (!added && guard++ < maxSessionScenes) {
+        require(d.placeNewClip(3, (20 + guard * 4) * bar, &id, &scene, &added), "another new clip fits");
+        if (!added) require(scene < scenesBefore, "while there are free cells the Session does not grow");
+    }
+    require(added && d.document().sceneCount() == scenesBefore + 1 && scene == scenesBefore, "when no cell is free a scene is added for it");
+    require(d.document().clip(3, scene).isEmpty() && rig.t().find(id) != nullptr && rig.t().find(id)->source == scene, "and the new clip is in it");
+    require(d.undo() && d.document().sceneCount() == scenesBefore && rig.t().find(id) == nullptr, "one undo removes the clip and the scene");
+    require(d.redo() && d.document().sceneCount() == scenesBefore + 1 && rig.t().find(id) != nullptr, "and one redo brings both back");
+    (void) beforeScene;
+    // Every cell of the track is taken again, so a clip needs another scene; one that cannot be placed must not leave that scene behind.
+    {
+        const auto stateBefore = rig.t();
+        const int scenesNow = d.document().sceneCount();
+        require(!d.placeNewClip(3, tl::maxLength) && rig.t() == stateBefore && d.document().sceneCount() == scenesNow,
+                "a clip that cannot be placed leaves no new scene behind");
+        require(d.document().selectedTrack == 3 && d.document().selectedScene == scene, "and does not change the selection");
+    }
+
+    // When the Session is full nothing is created, and the person is told why.
+    int n = 0;
+    while (n++ < 4 * maxSessionScenes && d.placeNewClip(3, (200 + n * 4) * bar)) {}
+    require(d.document().sceneCount() == maxSessionScenes && n <= 4 * maxSessionScenes, "the Session stops at its scene limit");
+    const auto full = rig.t();
+    const auto fullDoc = d.document().sceneCount();
+    require(!d.placeNewClip(3, 0) && rig.t() == full && d.document().sceneCount() == fullDoc, "a refused clip changes nothing, not even the scenes");
+    rig.view.refresh();
+    rig.messages.clear();
+    rig.doubleClick(rig.at(bar, 3));
+    require(rig.t() == full && !rig.messages.empty() && rig.messages.back().contains("no room"), "double-click says there is no room");
+
+    // Other rows, bad rows and a busy project are refused.
+    Rig plain;
+    plain.sources();
+    const auto base = plain.t();
+    require(!plain.controller.placeNewClip(tl::rackRowBase, 0) && !plain.controller.placeNewClip(-1, 0) && !plain.controller.placeNewClip(99, 0)
+            && !plain.controller.placeNewClip(0, -1) && plain.t() == base, "a pattern lane, a missing track and a negative position make no clip");
+    plain.controller.setExternalBusy(true);
+    require(!plain.controller.placeNewClip(3, 0) && plain.t() == base, "nothing is made while a save or import runs");
+    plain.messages.clear();
+    plain.doubleClick(plain.at(0, 3));
+    require(plain.t() == base && !plain.messages.empty() && plain.messages.back().contains("Wait"), "double-click says to wait");
+    plain.controller.setExternalBusy(false);
+
+    // The menus offer it on a track's lane, never on a pattern lane.
+    Rig menus;
+    menus.sources();
+    menus.rightClick(menus.at(3 * bar, 3));
+    auto items = menus.menu.items();
+    const auto* offer = entry(items, TimelineCanvas::placeNewClip);
+    require(offer != nullptr && offer->enabled && offer->text.contains("New empty clip"), "the lane menu offers a new empty clip");
+    menus.menu.done(TimelineCanvas::placeNewClip);
+    require(menus.t().regionAt(3, 3 * bar) != nullptr && menus.regionsOnRow(3) == 1, "choosing it makes the clip where the pointer was");
+    menus.rightClick(menus.at(3 * bar, tl::rackRowBase));
+    require(entry(menus.menu.items(), TimelineCanvas::placeNewClip) == nullptr, "a pattern lane does not offer it");
+    menus.c.setFocusRow(3); menus.c.setCursor(12 * bar, false);
+    menus.menu.reset();
+    clickButton(*childNamed<juce::TextButton>(menus.view, "Place clip"));
+    require(menus.menu.shown && entry(menus.menu.items(), TimelineCanvas::placeNewClip) != nullptr, "the Place button offers it too");
+    menus.menu.done(TimelineCanvas::placeNewClip);
+    require(menus.t().regionAt(3, 12 * bar) != nullptr, "at the play position");
+    std::cout << "PASS: new empty clips from an empty lane\n";
+}
+
+// ---- the clip list --------------------------------------------------------------------------------
+static void clipListChecks() {
+    Rig rig;
+    rig.view.setVisible(true);
+    rig.view.refresh();
+    auto& bin = rig.view.clipList();
+    using Item = clipbin::Item;
+    require(rig.view.clipListShown() && bin.isVisible(), "the clip list is showing when the Song opens");
+    require(bin.getWidth() == ClipBin::width && bin.getRight() == rig.view.getWidth() && rig.c.getRight() <= bin.getX() && !bin.getBounds().intersects(rig.c.getBounds()),
+            "it sits to the right of the lanes without covering them");
+
+    // An empty project: the pattern, and a note instead of clips.
+    require(bin.rowCount() == 4 && bin.row(0).type == ClipBin::Row::Type::header && bin.row(1).type == ClipBin::Row::Type::item
+            && bin.row(2).type == ClipBin::Row::Type::header && bin.row(3).type == ClipBin::Row::Type::note, "an empty project lists its pattern and says there are no clips");
+    require(bin.row(1).item == Item{Item::Kind::pattern, 0, -1} && bin.row(1).left.contains("Pattern 1") && bin.row(1).right == "16 steps" && bin.row(1).placed == 0,
+            "the pattern row names the pattern, its length, and that it is not in the Song");
+    require(bin.dragDescriptionForRow(0).isVoid() && bin.dragDescriptionForRow(3).isVoid() && bin.dragDescriptionForRow(99).isVoid() && bin.dragDescriptionForRow(-1).isVoid(),
+            "headings, the note and rows that do not exist cannot be dragged");
+
+    rig.song();   // clips (0,0), (1,1), audio (2,0); a pattern placed once
+    require(bin.rowCount() == 6 && bin.indexOf({Item::Kind::clip, 0, 0}) >= 0 && bin.indexOf({Item::Kind::clip, 1, 1}) >= 0 && bin.indexOf({Item::Kind::clip, 2, 0}) >= 0,
+            "every clip with something in it is listed");
+    require(bin.indexOf({Item::Kind::clip, 3, 0}) < 0 && bin.indexOf({Item::Kind::clip, 0, 1}) < 0, "empty cells are not");
+    const auto& one = bin.row(bin.indexOf({Item::Kind::clip, 0, 0}));
+    const auto& two = bin.row(bin.indexOf({Item::Kind::clip, 1, 1}));
+    const auto& audio = bin.row(bin.indexOf({Item::Kind::clip, 2, 0}));
+    require(one.left.contains("Track 1") && one.left.contains("Scene 1") && one.right == "3 notes" && two.right == "2 notes" && audio.right == "audio", "each row says whose clip it is and what is in it");
+    require(bin.row(1).placed == 1 && one.placed == 1 && two.placed == 1 && audio.placed == 1, "rows show how many times the Song already holds them");
+    rig.controller.placeRegion(0, 0, 10 * bar);
+    rig.controller.placeRegion(tl::rackRowBase + 1, 0, 10 * bar);
+    rig.view.refresh();
+    require(bin.row(bin.indexOf({Item::Kind::clip, 0, 0})).placed == 2 && bin.row(1).placed == 2, "and the counts follow the Song");
+    require(bin.row(bin.indexOf({Item::Kind::clip, 2, 0})).placed == 1, "other rows are unaffected");
+
+    // The list is read again when the Song is shown.
+    rig.view.setVisible(false);
+    PianoRollPattern more; more.add(60, 0, 1);
+    rig.controller.setClipPattern(3, 0, more, false);
+    rig.view.setVisible(true);
+    require(bin.indexOf({Item::Kind::clip, 3, 0}) >= 0, "a clip written while the Song was hidden is listed when it comes back");
+    rig.controller.setClipPattern(3, 0, PianoRollPattern{}, false);
+    rig.view.refresh();
+    require(bin.indexOf({Item::Kind::clip, 3, 0}) < 0, "and a clip that was emptied is not");
+
+    // What a drag carries survives the trip.
+    const auto index = bin.indexOf({Item::Kind::clip, 1, 1});
+    const auto description = bin.dragDescriptionForRow(index);
+    require(description.isString() && clipbin::decode(description) == Item{Item::Kind::clip, 1, 1}, "a dragged clip row carries the clip");
+    require(clipbin::decode(bin.dragDescriptionForRow(1)) == Item{Item::Kind::pattern, 0, -1}, "and a pattern row the pattern");
+    for (const char* bad : {"", "alien-song-item", "alien-song-item clip 1", "alien-song-item clip 1 2 3", "alien-song-item clip -1 2", "alien-song-item clip x 2",
+                            "alien-song-item pattern", "alien-song-item pattern 1 2", "alien-song-item pattern 1234567", "alien-song-item gizmo 1", "some other drag 1 2",
+                            "alien-song-item clip 1 2.5", "ALIEN-SONG-ITEM clip 1 2"})
+        require(!clipbin::decode(juce::var(juce::String(bad))).valid(), "a drag that is not one of ours is ignored");
+    require(!clipbin::decode(juce::var(7)).valid() && !clipbin::decode(juce::var()).valid(), "and so is one that is not even text");
+    require(clipbin::decode(juce::var("alien-song-item clip -1 2")).kind == Item::Kind::none
+            && clipbin::decode(juce::var("alien-song-item pattern -3")).kind == Item::Kind::none, "a negative number is not read as an item at all");
+
+    // Double-click or Enter on a row puts it at the play position; headings do nothing.
+    std::vector<Item> asked;
+    bin.onPlace = [&](const Item& item) { asked.push_back(item); };
+    bin.activateRow(index); bin.activateRow(0); bin.activateRow(-5); bin.activateRow(500);
+    require(asked.size() == 1 && asked[0] == Item{Item::Kind::clip, 1, 1}, "activating a row asks for that clip, and headings and missing rows ask for nothing");
+
+    // The Clips button hides it and gives the lanes the room back.
+    auto* button = childNamed<juce::TextButton>(rig.view, "Show clip list");
+    require(button != nullptr && button->getToggleState(), "there is a Clips button, lit while the list shows");
+    const int narrow = rig.c.getWidth();
+    clickButton(*button);
+    require(!bin.isVisible() && !rig.view.clipListShown() && rig.c.getWidth() == narrow + ClipBin::width, "the button hides the list and the lanes get wider");
+    clickButton(*button);
+    require(bin.isVisible() && rig.c.getWidth() == narrow, "and shows it again");
+    std::cout << "PASS: the clip list\n";
+}
+
+// ---- dropping a row from the clip list on the lanes ---------------------------------------------
+static void dropChecks() {
+    Rig rig;
+    rig.song();
+    auto& c = rig.c;
+    c.setSnap(Snap::bar);
+    using Item = clipbin::Item;
+    using Details = juce::DragAndDropTarget::SourceDetails;
+    const auto details = [&](const Item& item, juce::Point<int> p) { return Details(juce::var(clipbin::encode(item)), &rig.view.clipList(), p); };
+    const Item clipA{Item::Kind::clip, 0, 0}, clipB{Item::Kind::clip, 1, 1}, pattern{Item::Kind::pattern, 0, -1};
+
+    require(c.isInterestedInDragSource(details(clipA, {300, 100})) && c.isInterestedInDragSource(details(pattern, {300, 100})), "the lanes accept a clip row and a pattern row");
+    require(!c.isInterestedInDragSource(Details(juce::var("a file"), nullptr, {300, 100})) && !c.isInterestedInDragSource(Details(juce::var(3), nullptr, {300, 100})),
+            "and nothing else");
+
+    // Dragging over a lane shows where the clip would land, on the clip's own track, and says so.
+    rig.messages.clear();
+    c.itemDragEnter(details(clipB, rig.at(5 * bar + 700, 3)));
+    require(c.dropPreview().valid && c.dropPreview().row == 1 && c.dropPreview().source == 1 && c.dropPreview().tick == 5 * bar,
+            "a clip always goes on its own track's lane, whichever lane the pointer is over, at the snapped position");
+    require(c.dropPreview().length == 2 * bar, "the ghost is as long as the clip");
+    require(!rig.messages.empty() && rig.messages.back().contains("Drop to put") && rig.messages.back().contains("Track 2") && rig.messages.back().contains("bar 6"),
+            "the help line says what will happen");
+    c.itemDragMove(details(clipB, rig.at(7 * bar + 100, 1)));
+    require(c.dropPreview().valid && c.dropPreview().tick == 7 * bar, "moving updates the position");
+    const auto snapshotBefore = c.createComponentSnapshot(c.getLocalBounds(), true, 1.0f);
+    c.itemDragExit(details(clipB, {0, 0}));
+    require(!c.dropPreview().valid && rig.messages.back().isEmpty(), "leaving clears the ghost and the message");
+    const auto snapshotAfter = c.createComponentSnapshot(c.getLocalBounds(), true, 1.0f);
+    bool differs = false;
+    for (int y = 0; y < snapshotBefore.getHeight() && !differs; y += 3)
+        for (int x = 0; x < snapshotBefore.getWidth() && !differs; x += 3) differs = snapshotBefore.getPixelAt(x, y) != snapshotAfter.getPixelAt(x, y);
+    require(differs, "and the screen shows the ghost only while dragging");
+
+    // Patterns go on the pattern lane under the pointer, else the first.
+    c.itemDragEnter(details(pattern, rig.at(2 * bar, tl::rackRowBase + 2)));
+    require(c.dropPreview().valid && c.dropPreview().row == tl::rackRowBase + 2 && c.dropPreview().length == bar, "a pattern lands on the pattern lane it is over");
+    c.itemDragMove(details(pattern, rig.at(2 * bar, 0)));
+    require(c.dropPreview().row == tl::rackRowBase, "over a track's lane it goes to the first pattern lane");
+    c.itemDragMove(details(pattern, {juce::roundToInt(c.xForTick(2 * bar)), 5}));
+    require(c.dropPreview().row == tl::rackRowBase, "over the ruler too");
+    c.itemDragMove(details(pattern, {20, rig.at(0, 0).y}));
+    require(!c.dropPreview().valid && rig.messages.back().contains("right of the track names"), "over the track names nothing can be dropped, and it says where to drop");
+    c.itemDragMove(details(Item{Item::Kind::pattern, 7, -1}, rig.at(bar, tl::rackRowBase)));
+    require(!c.dropPreview().valid && rig.messages.back().contains("no longer exists"), "a pattern that is gone is refused");
+    c.itemDragMove(details(Item{Item::Kind::clip, 3, 3}, rig.at(bar, 3)));
+    require(c.dropPreview().valid == rig.controller.document().isValidCell(3, 3), "an empty clip cell is still a real clip");
+    c.itemDragExit(details(pattern, {0, 0}));
+
+    // Dropping places it: one undo step, selected, on the grid.
+    const auto before = rig.t();
+    c.itemDragEnter(details(clipB, rig.at(5 * bar + 700, 1)));
+    c.itemDropped(details(clipB, rig.at(5 * bar + 700, 1)));
+    const auto* dropped = rig.t().regionAt(1, 5 * bar);
+    require(dropped != nullptr && dropped->source == 1 && dropped->length == 2 * bar && dropped->start == 5 * bar, "the drop puts the clip where the ghost was");
+    require(rig.selectionIs({dropped->id}) && !c.dropPreview().valid, "it is selected and the ghost is gone");
+    require(rig.oneUndoRestores(before), "dropping is one undo step");
+
+    const auto beforePattern = rig.t();
+    c.itemDropped(details(pattern, rig.at(6 * bar + 10, tl::rackRowBase + 3)));
+    const auto* droppedPattern = rig.t().regionAt(tl::rackRowBase + 3, 6 * bar);
+    require(droppedPattern != nullptr && droppedPattern->isPattern() && droppedPattern->source == 0, "a pattern is dropped on its lane");
+    require(rig.oneUndoRestores(beforePattern), "also one undo step");
+
+    // A drop that cannot happen changes nothing and explains itself.
+    const auto beforeBad = rig.t();
+    rig.messages.clear();
+    c.itemDropped(details(pattern, {20, 100}));
+    c.itemDropped(details(Item{Item::Kind::pattern, 9, -1}, rig.at(bar, tl::rackRowBase)));
+    c.itemDropped(Details(juce::var("junk"), nullptr, rig.at(bar, 0)));
+    require(rig.t() == beforeBad && !rig.messages.empty(), "a bad drop changes nothing");
+
+    // Dropping on a busy project is refused with a message.
+    rig.controller.setExternalBusy(true);
+    rig.messages.clear();
+    c.itemDropped(details(clipA, rig.at(12 * bar, 0)));
+    require(rig.t() == beforeBad && !rig.messages.empty(), "nothing is placed while a save or import runs");
+    rig.controller.setExternalBusy(false);
+
+    // The clip list's double-click: at the play position, exactly (not snapped), on the focused pattern lane or the clip's own track.
+    c.setCursor(5 * bar + 7, false);
+    require(c.placeItemAtCursor(clipA) && rig.t().regionAt(0, 5 * bar + 7) != nullptr && rig.t().regionAt(0, 5 * bar + 7)->start == 5 * bar + 7, "a clip is placed exactly at the play position");
+    c.setFocusRow(tl::rackRowBase + 2); c.setCursor(9 * bar, false);
+    require(c.placeItemAtCursor(pattern) && rig.t().regionAt(tl::rackRowBase + 2, 9 * bar) != nullptr, "a pattern goes on the focused pattern lane");
+    c.setFocusRow(1); c.setCursor(13 * bar, false);
+    require(c.placeItemAtCursor(pattern) && rig.t().regionAt(tl::rackRowBase, 13 * bar) != nullptr, "or the first lane when a track is focused");
+    const auto beforeGone = rig.t();
+    rig.messages.clear();
+    require(!c.placeItemAtCursor(Item{Item::Kind::clip, 0, 40}) && rig.t() == beforeGone && !rig.messages.empty(), "a clip that is gone is refused with a message");
+    require(rig.valid(), "the song is still valid");
+    std::cout << "PASS: dropping clips and patterns from the list\n";
 }
 
 // ---- selection ---------------------------------------------------------------------------
@@ -1332,6 +1616,9 @@ int main() {
     geometryChecks();
     snapChecks();
     placingChecks();
+    newClipChecks();
+    clipListChecks();
+    dropChecks();
     selectionChecks();
     dragChecks();
     commandChecks();
