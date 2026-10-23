@@ -258,6 +258,16 @@ private:
         timelineView.onExport = [this](std::int64_t from, std::int64_t to) { chooseWavExport(from, to); };
         timelineView.onTitleChanged = [this] { if (tabs.getCurrentTabIndex() == 5) updateEditorTitle(); };
         auto& canvas = timelineView.timelineCanvas();
+        // The audio callback receives only the enabled inputs, in order; a track's input counts among those.
+        canvas.inputNames = [this] {
+            juce::StringArray names;
+            if (auto* device = audio.getCurrentAudioDevice()) {
+                const auto all = device->getInputChannelNames();
+                const auto active = device->getActiveInputChannels();
+                for (int i = 0; i < all.size(); ++i) if (active[i]) names.add(all[i]);
+            }
+            return names;
+        };
         canvas.onSeek = [this](std::int64_t tick) { engine.timelineSeek.store(tick); };
         canvas.onPlayToggle = [this] { togglePlay(); };
         canvas.onOpenSource = [this](int row, int source) { openTimelineSource(row, source); };
@@ -655,6 +665,7 @@ private:
         while (engine.controllerActions.pop(controllerAction)) sessionView.handleControllerAction(controllerAction);
         sessionView.tick();
         timelineView.setPlayhead(engine.patternMode.load() == 2 && isPlaying ? engine.timelinePosition.load() : -1);
+        if (timelineView.isShowing()) timelineView.timelineCanvas().updateInputMeters();
         audioTools.setDestination(d.selectedTrack, d.selectedScene);
         if (activeCapture) {
             audioTools.setMeter(activeCapture->level.load());
@@ -688,7 +699,7 @@ private:
     void showAudioSettings() {
         if(projectBusy || activeCapture) return;
         if(audioSettingsWindow){audioSettingsWindow->toFront(true);return;}
-        auto* selector=new juce::AudioDeviceSelectorComponent(audio,0,2,0,2,false,false,true,false);
+        auto* selector=new juce::AudioDeviceSelectorComponent(audio,0,alien::maxTrackInputs,0,2,false,false,true,false);
         selector->setSize(560,420);
         juce::DialogWindow::LaunchOptions options;options.content.setOwned(selector);
         options.dialogTitle="Audio input & output";options.dialogBackgroundColour=alien::ui::colours::surface;

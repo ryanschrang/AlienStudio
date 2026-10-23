@@ -538,7 +538,8 @@ public:
     // The items of the right-click menus.
     enum Command { cmdSplit = 1, cmdMute, cmdDuplicate, cmdCopy, cmdCut, cmdDelete, cmdGroup, cmdUngroup, cmdOpen, cmdPaste, cmdSelectAll, cmdAddMarker,
                    cmdSlipLeft, cmdSlipRight, cmdSourceLoop, cmdReverse, cmdNormalize, cmdFade, cmdCrossfade,
-                   cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdColourBase = 100 };
+                   cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdColourBase = 100,
+                   cmdArm = 200, cmdMonitorBase = 210, cmdInputMonoBase = 300, cmdInputStereoBase = 400 };
     juce::PopupMenu placeMenu(int row) const {
         juce::PopupMenu menu;
         const auto& d = controller.document();
@@ -702,7 +703,11 @@ public:
 
         switch (hit.zone) {
         case Zone::header:
-            if (hit.displayRow >= 0) { setFocusRow(timelineRow(hit.displayRow)); scrollRowIntoView(focus); }
+            if (hit.displayRow >= 0) {
+                const int row = timelineRow(hit.displayRow);
+                if (!timeline::isPatternRow(row) && armRect(hit.displayRow).expanded(2).contains(e.getPosition())) { toggleArm(row); break; }
+                setFocusRow(row); scrollRowIntoView(focus);
+            }
             break;
         case Zone::ruler:
             drag.kind = DragKind::scrub; drag.active = true;
@@ -1153,7 +1158,88 @@ private:
             menu.addItem(cmdJump, committed().loopEnabled ? "Loop off" : "Loop on");
             menu.addItem(cmdLoopSelection, "Loop the selected clips", !selected.empty());
             launch(std::move(menu), area, [this](int id) { if (id == cmdJump) toggleLoop(); else if (id == cmdLoopSelection) loopSelection(); });
+        } else if (hit.zone == Zone::header && hit.displayRow >= 0 && !timeline::isPatternRow(timelineRow(hit.displayRow))) {
+            const int track = timelineRow(hit.displayRow);
+            launch(recordingMenu(track), area, [this, track](int id) { recordingMenuChosen(track, id); });
         }
+    }
+
+    // ---- recording settings of a track (header) -------------------------------------------------------------------
+public:
+    // Enabled audio inputs of the current device, in the order the audio callback receives them. Set by the owner.
+    std::function<juce::StringArray()> inputNames;
+    juce::Rectangle<int> armRect(int displayRow) const { return {headerWidth - 28, rowTop(displayRow) + 6, 20, 20}; }
+    bool toggleArm(int track) {
+        const auto& d = controller.document();
+        if (track < 0 || track >= d.trackCount()) return false;
+        const bool arm = !d.tracks[static_cast<std::size_t>(track)].settings.armed;
+        const bool done = controller.editTrackRecording(track, (arm ? "Arm " : "Disarm ") + d.tracks[static_cast<std::size_t>(track)].name,
+                                                       [arm](TrackSettings& s) { s.armed = arm; });
+        if (done && arm && !inputAvailable(track)) say("Track armed, but its input is not enabled. Enable it in Audio settings or pick another input (right-click the track name).");
+        repaint(0, topHeight, headerWidth, getHeight() - topHeight);
+        return done;
+    }
+    bool setTrackInput(int track, int first, bool stereo) {
+        const bool done = controller.editTrackRecording(track, "Change track input", [=](TrackSettings& s) { s.input = first; s.stereoInput = stereo; });
+        repaint(0, topHeight, headerWidth, getHeight() - topHeight);
+        return done;
+    }
+    bool setTrackMonitor(int track, InputMonitor mode) {
+        const bool done = controller.editTrackRecording(track, "Change input monitoring", [=](TrackSettings& s) { s.monitor = static_cast<int>(mode); });
+        repaint(0, topHeight, headerWidth, getHeight() - topHeight);
+        return done;
+    }
+    // "In 1", "In 1+2" (the device's channel names in the menu), and whether the device has that input enabled.
+    juce::String inputText(int track) const {
+        const auto& s = controller.document().tracks[static_cast<std::size_t>(track)].settings;
+        return "In " + juce::String(s.input + 1) + (s.stereoInput ? "+" + juce::String(s.input + 2) : juce::String());
+    }
+    bool inputAvailable(int track) const {
+        const auto& s = controller.document().tracks[static_cast<std::size_t>(track)].settings;
+        const int count = inputNames ? inputNames().size() : 0;
+        return s.input + (s.stereoInput ? 1 : 0) < count;
+    }
+    // Called a few times a second: reads each track's input level and repaints the headers whose meters moved.
+    void updateInputMeters() {
+        const auto& d = controller.document();
+        inputLevels.resize(static_cast<std::size_t>(d.trackCount()), 0.0f);
+        bool moved = false;
+        for (int t = 0; t < d.trackCount(); ++t) {
+            auto& shown = inputLevels[static_cast<std::size_t>(t)];
+            const float next = std::max(controller.takeInputLevel(t), shown * 0.7f);
+            const float level = next < 0.001f ? 0.0f : next;
+            moved = moved || std::abs(level - shown) > 0.002f;
+            shown = level;
+        }
+        if (moved) repaint(0, topHeight, headerWidth, getHeight() - topHeight);
+    }
+    float inputLevel(int track) const { return track >= 0 && track < static_cast<int>(inputLevels.size()) ? inputLevels[static_cast<std::size_t>(track)] : 0.0f; }
+private:
+    std::vector<float> inputLevels;
+    juce::PopupMenu recordingMenu(int track) const {
+        const auto& s = controller.document().tracks[static_cast<std::size_t>(track)].settings;
+        const auto names = inputNames ? inputNames() : juce::StringArray();
+        juce::PopupMenu menu, inputs, monitor;
+        if (names.isEmpty()) inputs.addItem(cmdInputMonoBase, "No inputs are enabled (Audio settings)", false);
+        for (int i = 0; i < names.size() && i < maxTrackInputs; ++i)
+            inputs.addItem(cmdInputMonoBase + i, "Mono: " + juce::String(i + 1) + "  " + names[i], true, !s.stereoInput && s.input == i);
+        if (names.size() > 1) inputs.addSeparator();
+        for (int i = 0; i + 1 < names.size() && i + 1 < maxTrackInputs; i += 2)
+            inputs.addItem(cmdInputStereoBase + i, "Stereo: " + juce::String(i + 1) + "+" + juce::String(i + 2) + "  " + names[i] + " / " + names[i + 1],
+                           true, s.stereoInput && s.input == i);
+        monitor.addItem(cmdMonitorBase + static_cast<int>(InputMonitor::automatic), "Auto (while armed)", true, s.monitor == static_cast<int>(InputMonitor::automatic));
+        monitor.addItem(cmdMonitorBase + static_cast<int>(InputMonitor::always), "In (always)", true, s.monitor == static_cast<int>(InputMonitor::always));
+        monitor.addItem(cmdMonitorBase + static_cast<int>(InputMonitor::off), "Off", true, s.monitor == static_cast<int>(InputMonitor::off));
+        menu.addItem(cmdArm, s.armed ? "Disarm recording" : "Arm for recording", true, s.armed);
+        menu.addSubMenu("Input (" + inputText(track) + ")", inputs);
+        menu.addSubMenu("Monitor input", monitor);
+        return menu;
+    }
+    void recordingMenuChosen(int track, int id) {
+        if (id == cmdArm) toggleArm(track);
+        else if (id >= cmdMonitorBase && id <= cmdMonitorBase + 2) setTrackMonitor(track, static_cast<InputMonitor>(id - cmdMonitorBase));
+        else if (id >= cmdInputMonoBase && id < cmdInputMonoBase + maxTrackInputs) setTrackInput(track, id - cmdInputMonoBase, false);
+        else if (id >= cmdInputStereoBase && id < cmdInputStereoBase + maxTrackInputs) setTrackInput(track, id - cmdInputStereoBase, true);
     }
 
     // ---- painting pieces ----------------------------------------------------------------------------------------
@@ -1423,12 +1509,44 @@ private:
             g.setColour(rowColour(row)); g.fillRect(0, y, 4, rowHeight);
             g.setColour(col::text); g.setFont(ui::font(12.0f, true));
             const juce::String name = isLane ? "Pattern lane " + juce::String(row - timeline::rackRowBase + 1) : d.tracks[static_cast<std::size_t>(row)].name;
-            g.drawText(name, 12, y + 7, headerWidth - 20, 16, juce::Justification::centredLeft, true);
+            const int textWidth = headerWidth - (isLane ? 20 : 48);
+            g.drawText(name, 12, y + 7, textWidth, 16, juce::Justification::centredLeft, true);
             g.setColour(col::textFaint); g.setFont(ui::font(10.5f));
-            g.drawText(isLane ? "Channel Rack" : (d.tracks[static_cast<std::size_t>(row)].settings.instrument == 1 ? "Drum kit" : "Session track"), 12, y + 24, headerWidth - 20, 14, juce::Justification::centredLeft, true);
+            if (isLane) { g.drawText("Channel Rack", 12, y + 24, textWidth, 14, juce::Justification::centredLeft, true); }
+            else paintRecordingControls(g, i, row);
             g.setColour(col::line); g.fillRect(0, y + rowHeight - 1, headerWidth, 1);
         }
         g.setColour(col::lineStrong); g.fillRect(headerWidth - 1, topHeight, 1, getHeight() - topHeight);
+    }
+
+    // The second line of a track's header (its input, and whether it monitors), its arm button and its input meter.
+    void paintRecordingControls(juce::Graphics& g, int displayRow, int track) {
+        namespace col = ui::colours;
+        const auto& s = controller.document().tracks[static_cast<std::size_t>(track)].settings;
+        const int y = rowTop(displayRow);
+        const bool available = inputAvailable(track);
+        juce::String line = inputText(track);
+        if (s.monitoring()) line << "  ·  monitoring";
+        else if (s.monitor == static_cast<int>(InputMonitor::off)) line << "  ·  monitor off";
+        g.setColour(!available && (s.armed || s.monitoring()) ? col::warning : col::textFaint);
+        g.setFont(ui::font(10.5f));
+        g.drawText(available || !(s.armed || s.monitoring()) ? line : inputText(track) + "  ·  input not enabled", 12, y + 24, headerWidth - 48, 14,
+                   juce::Justification::centredLeft, true);
+        const auto arm = armRect(displayRow).toFloat();
+        const auto recordRed = juce::Colour(0xffe5484d);
+        g.setColour(s.armed ? recordRed : col::control);
+        g.fillEllipse(arm);
+        g.setColour(s.armed ? recordRed.brighter(0.4f) : col::textFaint);
+        g.drawEllipse(arm.reduced(0.5f), 1.0f);
+        g.setColour(s.armed ? juce::Colours::white : col::textFaint);
+        g.fillEllipse(arm.withSizeKeepingCentre(7.0f, 7.0f));
+        if (s.armed || s.monitoring()) {   // input level along the bottom of the row
+            const float level = std::min(1.0f, inputLevel(track));
+            const auto meter = juce::Rectangle<float>(12.0f, static_cast<float>(y + rowHeight - 5), static_cast<float>(headerWidth - 24), 2.0f);
+            g.setColour(col::inset); g.fillRect(meter);
+            g.setColour(level > 0.95f ? recordRed : col::accent);
+            g.fillRect(meter.withWidth(meter.getWidth() * level));
+        }
     }
 
     void paintTop(juce::Graphics& g, const timeline::Timeline& t) {

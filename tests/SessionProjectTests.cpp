@@ -224,6 +224,8 @@ int main() {
     source.drumPaths[2][7] = "C:/Drums/snare.wav";
     source.trackSettings[0] = {1, 0.5f, -0.75f, true, false};
     source.trackSettings[3] = {2, 1.5f, 0.5f, false, true, 1};
+    source.trackSettings[1].armed = true; source.trackSettings[1].input = 2; source.trackSettings[1].stereoInput = true;
+    source.trackSettings[1].monitor = static_cast<int>(alien::InputMonitor::off);
     source.stepPattern = {true, false, true, false, false, true, false, false,
         true, false, false, true, false, false, true, false};
     source.stepPitches = {36, 48, 60, 72, 84, 96, 108, 120,
@@ -281,6 +283,26 @@ int main() {
     require(!alien::parseSessionProject(juce::JSON::toString(invalidTracks), restored, error)
         && restored.trackSettings[0].gain == 0.5f, "bad mixer data leaves destination unchanged");
     require(restored.trackSettings[3].instrument == 1 && restored.drumPaths[2][7] == source.drumPaths[2][7], "drum instrument and pads round-trip");
+    {
+        alien::SessionProjectData reloaded;
+        require(alien::parseSessionProject(json, reloaded, error) && reloaded.trackSettings[1].armed && reloaded.trackSettings[1].input == 2
+            && reloaded.trackSettings[1].stereoInput && reloaded.trackSettings[1].monitor == static_cast<int>(alien::InputMonitor::off)
+            && !reloaded.trackSettings[0].armed && reloaded.trackSettings[0].monitor == static_cast<int>(alien::InputMonitor::automatic),
+            "track arm, input and monitoring round-trip");
+        auto older = juce::JSON::parse(json);
+        auto* olderTrack = older.getDynamicObject()->getProperty("trackSettings").getArray()->getReference(1).getDynamicObject();
+        for (const auto* key : {"armed", "input", "stereoInput", "monitor"}) olderTrack->removeProperty(key);
+        require(alien::parseSessionProject(juce::JSON::toString(older), reloaded, error) && !reloaded.trackSettings[1].armed
+            && reloaded.trackSettings[1].input == 0 && !reloaded.trackSettings[1].stereoInput
+            && reloaded.trackSettings[1].monitor == static_cast<int>(alien::InputMonitor::automatic),
+            "a project saved before track recording settings opens with the track disarmed on input 1, monitoring automatic");
+        olderTrack->setProperty("monitor", 7);
+        require(!alien::parseSessionProject(juce::JSON::toString(older), reloaded, error), "an unknown monitoring mode is rejected");
+        olderTrack->setProperty("monitor", 0); olderTrack->setProperty("armed", "yes");
+        require(!alien::parseSessionProject(juce::JSON::toString(older), reloaded, error), "a malformed arm state is rejected");
+        olderTrack->setProperty("armed", true); olderTrack->setProperty("input", alien::maxTrackInputs);
+        require(!alien::parseSessionProject(juce::JSON::toString(older), reloaded, error), "an input past the last one is rejected");
+    }
     const auto& restoredMidi = restored.clips[1][2].pattern;
     require(restoredMidi.loopSteps == 128 && restoredMidi.count == 1
         && restoredMidi.notes[0].pitch == 67 && restoredMidi.notes[0].startStep == 7.25

@@ -222,6 +222,11 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Enable one input, record voice/instrument, Stop & save, launch the captured clip.
   Repeat with stereo inputs carrying distinct signals. Check input meter, source
   channels, saved WAV sample rate and no unrequested monitoring/feedback.
+- Song view: enable several inputs in Audio settings (an interface with 4+ inputs if available). Arm tracks on
+  different mono inputs and a stereo pair; confirm each header meter follows only its own input and that
+  Auto/In/Off monitoring behave as labelled. Measure round-trip monitoring latency at 64, 256 and 1024-sample
+  buffers. Monitor a microphone through speakers at low volume only: check that Off and disarming stop it at once.
+  Disable an input a track uses and confirm the header warns and the track stays silent.
 - Record past 60 seconds and manually stop; disconnect/reconfigure the input during capture; close
   the main window during capture. Each must stop safely and save captured frames.
   Test an unwritable destination: preparation fails before capture. A mid-take write failure retains the partial WAV for Recover takes.

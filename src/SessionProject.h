@@ -149,6 +149,8 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
         object->setProperty("pan", track.pan);
         object->setProperty("mute", track.mute);
         object->setProperty("solo", track.solo);
+        object->setProperty("armed", track.armed); object->setProperty("input", track.input);
+        object->setProperty("stereoInput", track.stereoInput); object->setProperty("monitor", track.monitor);
         object->setProperty("name", project.trackNames[t]);
         object->setProperty("colour", project.trackColours[t]);
         settings.add(value);
@@ -460,6 +462,17 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
                 if (!instrument.isInt()) { error = "Invalid instrument type."; return false; }
                 track.instrument = static_cast<int>(instrument);
             }
+            // Recording settings are optional: projects saved before them have none (not armed, input 1, monitoring automatic).
+            const auto armed = object->getProperty("armed"), input = object->getProperty("input"),
+                stereoInput = object->getProperty("stereoInput"), monitor = object->getProperty("monitor");
+            if ((!armed.isVoid() && !armed.isBool()) || (!input.isVoid() && !input.isInt())
+                || (!stereoInput.isVoid() && !stereoInput.isBool()) || (!monitor.isVoid() && !monitor.isInt())) {
+                error = "Invalid track recording settings."; return false;
+            }
+            if (armed.isBool()) track.armed = static_cast<bool>(armed);
+            if (input.isInt()) track.input = static_cast<int>(input);
+            if (stereoInput.isBool()) track.stereoInput = static_cast<bool>(stereoInput);
+            if (monitor.isInt()) track.monitor = static_cast<int>(monitor);
             if (!track.valid()) { error = "Track settings outside supported range."; return false; }
             const auto name = object->getProperty("name"), colour = object->getProperty("colour");
             if (name.isString()) parsed.trackNames[static_cast<std::size_t>(i)] = name.toString().substring(0, 64);

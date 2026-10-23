@@ -719,7 +719,70 @@ static void masterStageTests() {
         && !alien::validMasterGain(std::numeric_limits<float>::quiet_NaN()), "master volume validity range");
 }
 
+// Live input on armed and monitoring tracks: which channels a track hears, when it plays them, and its meter.
+static void inputMonitoringTests() {
+    auto engine = std::make_unique<ToneEngine>();
+    auto& e = *engine;
+    e.prepare(48000);
+    constexpr int frames = 256;
+    std::array<float, frames> in0{}, in1{}, in2{}, l{}, r{};
+    in0.fill(0.25f); in1.fill(-0.125f); in2.fill(0.5f);
+    const float* inputs[]{in0.data(), in1.data(), in2.data()};
+    // Renders a few blocks with `count` enabled inputs (none: the offline case) and reports the last block.
+    auto render = [&](int count) {
+        for (int b = 0; b < 4; ++b) {
+            float* out[]{l.data(), r.data()};
+            const auto before = allocationCount;
+            e.audioDeviceIOCallbackWithContext(count > 0 ? inputs : nullptr, count, out, 2, frames, {});
+            require(allocationCount == before, "input monitoring must not allocate");
+        }
+    };
+    auto same = [](float a, float b) { return std::abs(a - b) < 1.0e-5f; };
+    auto& track = e.tracks[0];
+    render(3);
+    require(l.back() == 0.0f && r.back() == 0.0f && track.inputPeak.load() == 0.0f, "a track that is neither armed nor monitoring ignores its input");
+    track.armed.store(true);
+    render(3);
+    require(same(l.back(), 0.25f) && same(r.back(), 0.25f), "an armed track monitors its mono input on both sides (automatic monitoring)");
+    require(same(track.inputPeak.exchange(0.0f), 0.25f), "and meters it");
+    track.monitor.store(static_cast<int>(alien::InputMonitor::off));
+    render(3);
+    require(l.back() == 0.0f && r.back() == 0.0f, "with monitoring off it is not heard");
+    require(same(track.inputPeak.exchange(0.0f), 0.25f), "but an armed track still meters its input");
+    track.armed.store(false); track.monitor.store(static_cast<int>(alien::InputMonitor::always));
+    render(3);
+    require(same(l.back(), 0.25f), "monitoring In plays the input without arming");
+    track.input.store(1); track.stereoInput.store(true);
+    render(3);
+    require(same(l.back(), -0.125f) && same(r.back(), 0.5f), "a stereo input takes its channel and the next one");
+    track.input.store(2);
+    render(3);
+    require(same(l.back(), 0.5f) && r.back() == 0.0f, "a stereo pair whose second channel is not enabled plays only the first");
+    track.input.store(5); track.stereoInput.store(false);
+    render(3);
+    require(l.back() == 0.0f && r.back() == 0.0f, "an input the device has not enabled is silent");
+    track.input.store(0);
+    render(0);
+    require(l.back() == 0.0f && r.back() == 0.0f, "with no inputs (an offline render) nothing is added");
+    track.mute.store(true);
+    render(3); render(3);
+    require(std::abs(l.back()) < 1.0e-4f, "monitored input goes through the track's fader and mute");
+    track.mute.store(false);
+    e.tracks[1].monitor.store(static_cast<int>(alien::InputMonitor::always));
+    for (int settle = 0; settle < 8; ++settle) render(3);   // the unmuted fader ramps back up over a few milliseconds
+    require(same(l.back(), 0.5f), "two tracks on one input both play it");
+    alien::TrackSettings settings;
+    require(settings.valid() && !settings.monitoring(), "by default a track is valid, not armed and not monitoring");
+    settings.armed = true;
+    require(settings.monitoring(), "automatic monitoring follows arming");
+    settings.input = alien::maxTrackInputs - 1; settings.stereoInput = true;
+    require(!settings.valid(), "a stereo pair cannot start on the last input");
+    settings.stereoInput = false; settings.monitor = 3;
+    require(!settings.valid(), "only three monitoring modes exist");
+}
+
 int main() {
+    inputMonitoringTests();
     masterStageTests();
     arrangementRepublishTests();
     arrangementCaptureRealtimeTests();

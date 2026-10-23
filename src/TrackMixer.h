@@ -5,14 +5,29 @@
 #include "SynthEngine.h"
 
 namespace alien {
+// Audio input channels a track can listen to, counted among the device's enabled inputs.
+inline constexpr int maxTrackInputs = 32;
+// When a track plays what comes in on its input: while it is armed, always, or never.
+enum class InputMonitor { automatic = 0, always = 1, off = 2 };
+
 struct TrackSettings {
     int preset{};
     float gain{1.0f}, pan{};
     bool mute{}, solo{};
     int instrument{}; // 0 synth, 1 drum sampler
+    // Recording: armed for the next take; its input (one channel, or that one and the next); input monitoring.
+    bool armed{};
+    int input{};
+    bool stereoInput{};
+    int monitor{static_cast<int>(InputMonitor::automatic)};
     bool valid() const noexcept {
         return instrument >= 0 && instrument <= 1 && preset >= 0 && preset < presetCount && std::isfinite(gain) && gain >= 0 && gain <= 2
-            && std::isfinite(pan) && pan >= -1 && pan <= 1;
+            && std::isfinite(pan) && pan >= -1 && pan <= 1
+            && input >= 0 && input + (stereoInput ? 1 : 0) < maxTrackInputs && monitor >= 0 && monitor <= 2;
+    }
+    // Whether the track plays its input now.
+    bool monitoring() const noexcept {
+        return monitor == static_cast<int>(InputMonitor::always) || (monitor == static_cast<int>(InputMonitor::automatic) && armed);
     }
 };
 
@@ -20,15 +35,18 @@ static_assert(std::atomic<float>::is_always_lock_free, "Track audio controls req
 static_assert(std::atomic<int>::is_always_lock_free, "Track audio controls require lock-free integers");
 
 struct TrackControls {
-    std::atomic<int> preset{0}, instrument{0};
+    std::atomic<int> preset{0}, instrument{0}, input{0}, monitor{0};
     std::atomic<float> gain{1.0f}, pan{0.0f}, peak{0.0f};
-    std::atomic<bool> mute{false}, solo{false};
+    std::atomic<float> inputPeak{0.0f};   // loudest input sample since the GUI last read it (armed or monitoring tracks)
+    std::atomic<bool> mute{false}, solo{false}, armed{false}, stereoInput{false};
     TrackSettings snapshot() const noexcept {
-        return {preset.load(), gain.load(), pan.load(), mute.load(), solo.load(), instrument.load()};
+        return {preset.load(), gain.load(), pan.load(), mute.load(), solo.load(), instrument.load(),
+                armed.load(), input.load(), stereoInput.load(), monitor.load()};
     }
     void set(const TrackSettings& s) noexcept {
         preset.store(s.preset); gain.store(s.gain); pan.store(s.pan);
         mute.store(s.mute); solo.store(s.solo); instrument.store(s.instrument);
+        armed.store(s.armed); input.store(s.input); stereoInput.store(s.stereoInput); monitor.store(s.monitor);
     }
 };
 
