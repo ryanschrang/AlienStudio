@@ -72,6 +72,15 @@ defects throughout; this ordering does not defer fixes needed to run the example
 - Tests: RackModelTests and ChannelRackViewTests expanded; Windows Debug/Release CI and manual visual/listening checks pending.
 - Next: resizable name columns, multi-channel selection, richer graph gestures, instrument/piano-roll integration and advanced rhythm tools.
 
+## Song flow (feature branch)
+
+- Implemented: **Song** is a main view in the top bar (Steps, Piano Roll, Session, Song, Mixer, Rack); More... keeps Drums, Audio lab and Plugins.
+- Implemented: **Song mode** switch plays the whole song from Steps, Piano Roll, Session, Song and Rack; off by default, not saved in the project.
+- Implemented: Play on an empty song says why it is silent; Record turns Song mode off; the clock shows the song's bar, beat and 16th.
+- Existing project format, tab numbers and engine playback are unchanged.
+- Tests: SongFlowTests (new), ChannelRackViewTests top-bar test updated; Windows Debug/Release CI and manual checks (WINDOWS_AUDIO_CHECKLIST item 36) pending.
+- Next (separate branches): clip list and drag-to-place in the Song view; arm a track and record vocals onto it.
+
 ## Automation and tempo work in progress
 
 | ID | Capability | Status | Evidence / remaining acceptance |

@@ -5,7 +5,7 @@ arrangement/WAV export, disk-streamed recording and offline tempo matching. Proj
 also stores initial VST3 instrument/FX racks. See README for the supported workflow
 and WINDOWS_AUDIO_CHECKLIST.md for unverified hardware/plugin checks.
 
-The Arrange tab is now a full arrangement timeline (Session clips and Channel Rack patterns, snap/zoom/selection/loop/markers, WAV export of the song or loop; project v8).
+The Song view (the arrangement tab, now a main view with a Song mode switch that plays the whole song from any view) is a full arrangement timeline (Session clips and Channel Rack patterns, snap/zoom/selection/loop/markers, WAV export of the song or loop; project v8).
 
 Remaining work: Windows plugin/device listening tests; automation lanes, clip fades and tempo-warped audio clips on the timeline; long-file streaming Session playback; waveform editing; live warp markers;
 plugin automation, sidechains/multi-output, freeze and runtime crash isolation.

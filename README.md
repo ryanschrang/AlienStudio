@@ -28,6 +28,7 @@ The long-term differentiator is **one shared project and audio engine** across a
 - [x] Stock effects: EQ, compressor, reverb, tempo-synced delay and look-ahead limiter in every track and master FX rack, with custom panels.
 - [x] Channel Rack: FL-style drum step sequencer (16 channels, 16/32/64 steps, pattern bank, per-step velocity/pan/pitch/chance, swing) routed to the master or a Session track.
 - [x] Arrangement timeline: place MIDI clips, audio clips and Channel Rack patterns on a zoomable, scrollable timeline with snap, marquee selection, copy/paste/duplicate/group/split, loop range, named markers, playback from any position and WAV export of the whole song or the loop.
+- [x] Song view in the main top bar, and a **Song mode** switch that plays the whole song (drums, synths, audio) from Steps, Piano Roll, Session, Song or Rack.
 - [x] GPL-3.0 license file. Dependency attribution/distribution review remains required before releases.
 
 ### Next implementation sequence
@@ -217,7 +218,7 @@ smaller displays.
 Save the session before closing to retain MIDI patterns, track settings, and audio
 references. Unsaved edits are autosaved once a minute and offered for recovery after an
 abnormal exit (see Undo, saving and recovery below).
-MIDI recording remains future work. Arrangement playback and VST3 instruments are available from **More...** in the top bar.
+MIDI recording remains future work. The **Song** view (arrangement playback) is a main view in the top bar; VST3 instruments are under **More...**.
 Same-pitch overlaps share one gate until the last overlap ends; velocity changes
 to a sounding note apply at its next trigger. Notes end at the clip's loop boundary.
 Edits publish at audio-block boundaries; stop, source changes, preset changes and
@@ -741,9 +742,9 @@ saved by name; sample files by path, relative when they sit inside the project f
 red-labelled channel that **Relink audio** can repair, like a missing clip.
 
 **Limits (honest list).**
-- The rack plays by itself **only while the Rack tab is shown**. To hear patterns in a song,
-  place them on the Arrangement timeline's four pattern lanes (see below): they then play in
-  Song mode and are in **Export WAV**.
+- The rack plays by itself **only while the Rack tab is shown**, unless **Song mode** is on (top bar).
+  To hear patterns in a song, place them on the Song view's four pattern lanes (see below): they then
+  play in the Song and are in **Export WAV**.
 - Pitch is set per step (+-24 semitones, which also changes the sample's speed). There is no
   per-channel root note, sample envelope or start/end trim, no per-channel piano roll, and no
   per-step note length, flam or sample offset yet; every hit is a one-shot.
@@ -755,9 +756,23 @@ red-labelled channel that **Relink audio** can repair, like a missing clip.
   mouse gestures on the screen's components). Not yet verified on Windows hardware: see the
   checklist.
 
+### Song mode: hear everything together
+
+By default each view plays only its own thing: Steps plays the step sequencer, Piano Roll and
+Session play clips, Rack plays the selected pattern, and the **Song** view plays the arrangement.
+Press **Song mode** (the button next to **More...** in the top bar) and **Play** plays the whole Song
+from Steps, Piano Roll, Session, Song and Rack, so the drums, synths and vocals you have placed
+can be heard together while you work on any of them. Mixer, Drums, Audio lab and Plugins play
+nothing of their own, so they do not change what is playing.
+
+- If the Song has nothing on it, Play says so in the status bar instead of running silently.
+- Recording MIDI into a clip needs the clip view, so pressing Record turns Song mode off (and says so).
+- While the Song plays, the clock at the top shows the Song's own bar, beat and 16th.
+- Song mode is not saved in the project; it starts off each time the program starts.
+
 ### Arrangement timeline: clips, patterns, loop and markers
 
-Open it from **More... > Arrange**. The screen is a ruler of bars and beats above one lane per
+Open it from the **Song** button in the top bar (between Session and Mixer). The screen is a ruler of bars and beats above one lane per
 Session track and four **pattern lanes** for the Channel Rack. A strip above the ruler holds the
 **loop range**, and one above that the named **markers**.
 
@@ -827,14 +842,13 @@ stereo 48 kHz/24-bit WAV, including the Channel Rack patterns.
 
 ### Integrated workspaces and VST3 hosting
 
-Use **More...** in the top bar for **Drums**, **Arrange**, **Audio lab** and
-**Plugins**. The four original workspace buttons remain available.
+Use **More...** in the top bar for **Drums**, **Audio lab** and **Plugins**. The Steps, Piano Roll,
+Session, Song, Mixer and Rack views have buttons of their own.
 
 - Drums: load WAV/MP3 samples into eight pads per track, audition and sequence MIDI
   notes 36–43. Select **Drum kit** in Mixer. The MIDI routing selector in Drums
   also routes external MIDI to a track's VST3 instrument; typing/mouse piano
   and the legacy step sequencer continue to use the live synth.
-- Arrange: the Arrangement timeline, described in its own section below.
 - Audio lab: configure device inputs and record mono/stereo takes to a new WAV;
   recording streams 24-bit PCM directly to disk with **no 60-second duration cap**.
   A fixed 262,144-frame FIFO (1 MiB mono / 2 MiB stereo) feeds a dedicated writer.

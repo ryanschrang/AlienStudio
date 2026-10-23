@@ -3,6 +3,7 @@
 #include "Branding.h"
 #include "MidiRecording.h"
 #include "ViewModes.h"
+#include <algorithm>
 #include <array>
 #include <functional>
 
@@ -30,8 +31,8 @@ public:
         brandSubtitle.setJustificationType(juce::Justification::topLeft);
         brandSubtitle.setInterceptsMouseClicks(false, false);
 
-        const std::array<const char*, 5> viewNames{"Steps", "Piano Roll", "Session", "Mixer", "Rack"};
-        for (int i = 0; i < 5; ++i) {
+        const std::array<const char*, viewCount> viewNames{"Steps", "Piano Roll", "Session", "Song", "Mixer", "Rack"};
+        for (int i = 0; i < viewCount; ++i) {
             auto& b = viewButtons[static_cast<std::size_t>(i)];
             const juce::String name(viewNames[static_cast<std::size_t>(i)]);
             addAndMakeVisible(b);
@@ -44,10 +45,20 @@ public:
         }
 
         addAndMakeVisible(extraViews);
-        extraViews.addItem("Drums", 5); extraViews.addItem("Arrange", 6);
+        // The Song (arrangement) is a main view now. The ids stay "tab index + 1", as before.
+        extraViews.addItem("Drums", 5);
         extraViews.addItem("Audio lab", 7); extraViews.addItem("Plugins", 8);
         extraViews.setTextWhenNothingSelected("More...");
         extraViews.onChange = [this] { if (onViewSelected && extraViews.getSelectedId() > 0) onViewSelected(extraViews.getSelectedId() - 1); };
+        addAndMakeVisible(songMode);
+        songMode.setButtonText("Song mode");
+        songMode.setName("Song mode");
+        songMode.getProperties().set("style", "tab");
+        songMode.setClickingTogglesState(true);
+        songMode.setTooltip("Song mode on: Play plays the whole Song from any view, so drums, synths and vocals are heard together. "
+                            "Off: Play plays the pattern or clips of the view you are in.");
+        songMode.setColour(juce::TextButton::buttonOnColourId, col::accent.withAlpha(0.35f));
+        songMode.onClick = [this] { if (onSongModeToggled) onSongModeToggled(songMode.getToggleState()); };
         addAndMakeVisible(play);
         play.setButtonText("Play");
         play.setIconOnly(true);
@@ -148,13 +159,17 @@ public:
     std::function<void(bool)> onMetronomeToggled;
     std::function<void(const RecordSettings&)> onRecordSettingsChanged;
     std::function<void()> onPlayToggled, onTempoCommitted, onNew, onOpen, onSave, onSavePortable, onUndo, onRedo;
+    std::function<void(bool)> onSongModeToggled;   // the "Song mode" switch was clicked (true: on)
     std::function<void(int)> onTempoChanged;
 
     void setActiveView(int index) {
-        extraViews.setSelectedId(index >= 4 && index != viewTabs.back() ? index + 1 : 0, juce::dontSendNotification);
+        const bool inSwitch = std::find(viewTabs.begin(), viewTabs.end(), index) != viewTabs.end();
+        extraViews.setSelectedId(index >= 0 && !inSwitch ? index + 1 : 0, juce::dontSendNotification);
         for (std::size_t i = 0; i < viewButtons.size(); ++i)
             viewButtons[i].setToggleState(viewTabs[i] == index, juce::dontSendNotification);
     }
+    void setSongMode(bool on) { songMode.setToggleState(on, juce::dontSendNotification); }
+    bool isSongMode() const { return songMode.getToggleState(); }
 
     void setPlaying(bool playing) {
         if (play.getToggleState() == playing) return;
@@ -206,8 +221,10 @@ public:
 
     void resized() override {
         extraViews.setBounds(12, 62, 155, 24);
+        songMode.setBounds(175, 62, 104, 24);
         auto top = getLocalBounds().withHeight(58).reduced(12, 0);
-        const bool compact = getWidth() < 1320;
+        // Six view buttons plus the full-size file buttons need about 1440 pixels before the clock is still whole.
+        const bool compact = getWidth() < 1440;
         brandMark.setBounds(top.removeFromLeft(36).withSizeKeepingCentre(36, 36));
         top.removeFromLeft(8);
         if (!compact) {
@@ -219,8 +236,12 @@ public:
         brandSubtitle.setVisible(!compact);
         top.removeFromLeft(compact ? 4 : 10);
 
-        const std::array<int, 5> widths{62, 88, 74, 62, 56};
-        const int total = widths[0] + widths[1] + widths[2] + widths[3] + widths[4] + 16;
+        // Six view buttons need room. On a narrow window they are a little tighter, so the transport display keeps
+        // about the width it had with five buttons.
+        const std::array<int, viewCount> widths = compact ? std::array<int, viewCount>{52, 74, 62, 50, 54, 50}
+                                                          : std::array<int, viewCount>{62, 88, 74, 56, 62, 56};
+        int total = 20;
+        for (const int w : widths) total += w;
         auto views = top.removeFromLeft(total).withSizeKeepingCentre(total, 32);
         viewSwitchBounds = views.expanded(4, 4);
         for (std::size_t i = 0; i < viewButtons.size(); ++i) {
@@ -263,6 +284,8 @@ public:
         g.fillRect(r.getX(), r.getBottom() - 1, r.getWidth(), 1);
         g.setColour(ui::colours::inset.withAlpha(0.8f));
         g.fillRoundedRectangle(viewSwitchBounds.toFloat(), 7.0f);
+        // The Song mode switch gets the same pill, so it reads as a button and not as a label.
+        g.fillRoundedRectangle(songMode.getBounds().toFloat(), 7.0f);
     }
 
 private:
@@ -316,8 +339,11 @@ private:
     juce::Label title, brandSubtitle;
     // The tab each view button shows. The Channel Rack was added after the other
     // tabs, so it keeps the last index and the numbers of the rest do not change.
-    static constexpr std::array<int, 5> viewTabs{0, 1, 2, 3, rackTabIndex};
-    std::array<ui::GlyphButton, 5> viewButtons;
+    // The Song is the arrangement tab (index 5); it sits after Session and before Mixer in the view switch.
+    static constexpr int viewCount = 6;
+    static constexpr std::array<int, viewCount> viewTabs{0, 1, 2, 5, 3, rackTabIndex};
+    std::array<ui::GlyphButton, viewCount> viewButtons;
+    ui::GlyphButton songMode;
     ui::GlyphButton play, record, metronome, recordOptions, newButton, openButton, saveButton, portableButton, undoButton, redoButton;
     RecordSettings recordSettings;
     int recordPhase{RecordControls::idle};
