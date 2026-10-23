@@ -208,6 +208,9 @@ public:
     std::function<void()> onTitleChanged;               // header subtitle text changed
     std::function<void()> onStructureChanged;           // tracks/scenes added, removed, renamed or moved
     std::function<void(const juce::String&)> onEdited;  // a committed document edit, with an undo label
+    // Optional presenter for deterministic UI tests and alternative menu hosts.
+    // The native asynchronous popup remains the default.
+    std::function<void(juce::PopupMenu, std::function<void(int)>)> trackMenuLauncher;
     std::function<void(int, bool)> onTrackMixEdited;    // a track's volume, pan, mute or solo changed here (committed: final value)
 
     // Rebuild the clip and scene buttons after the grid's shape changes.
@@ -525,7 +528,7 @@ private:
         menu.addItem(4, "Add track", d.canAddTrack());
         menu.addItem(5, "Delete track", d.trackCount() > 1);
         juce::Component::SafePointer<SessionView> safe(this);
-        menu.showMenuAsync(juce::PopupMenu::Options().withMousePosition(), [safe, track](int result) {
+        std::function<void(int)> done = [safe, track](int result) {
             if (safe == nullptr) return;
             auto& c = safe->controller;
             if (result == 1) safe->renameTrackAt(track);
@@ -533,7 +536,9 @@ private:
             else if (result == 3 && c.moveTrack(track, 1)) safe->structureChanged(true, "Move track");
             else if (result == 4 && c.addTrack()) safe->structureChanged(true, "Add track");
             else if (result == 5 && c.deleteTrack(track)) safe->structureChanged(true, "Delete track");
-        });
+        };
+        if (trackMenuLauncher) { trackMenuLauncher(std::move(menu), std::move(done)); return; }
+        menu.showMenuAsync(juce::PopupMenu::Options().withMousePosition(), std::move(done));
     }
 
     void showSceneMenu(int scene) {
