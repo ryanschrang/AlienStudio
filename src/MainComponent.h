@@ -29,6 +29,7 @@
 // project controller and every view, and wires them together. Views never talk
 // to each other directly; they report intent and this class routes it.
 class MainComponent final : public juce::Component,
+                            public juce::DragAndDropContainer,   // the Song's clip list is dragged onto its lanes
                             private juce::Timer,
                             private juce::MidiKeyboardState::Listener,
                             private juce::ChangeListener,
@@ -260,6 +261,12 @@ private:
         canvas.onSeek = [this](std::int64_t tick) { engine.timelineSeek.store(tick); };
         canvas.onPlayToggle = [this] { togglePlay(); };
         canvas.onOpenSource = [this](int row, int source) { openTimelineSource(row, source); };
+        // A double-click on an empty lane made a new clip (and a Session scene for it when every cell of the track was taken).
+        canvas.onClipCreated = [this](int, int, bool sceneAdded) {
+            if (sceneAdded) sessionView.rebuildGrid();
+            sessionView.refreshFromDocument();
+            loadSelectedClip();
+        };
     }
 
     // Double-click on a clip: edit what it plays (the piano roll or Session for a clip, the Channel Rack for a pattern).

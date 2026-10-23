@@ -79,7 +79,10 @@ defects throughout; this ordering does not defer fixes needed to run the example
 - Implemented: Play on an empty song says why it is silent; Record turns Song mode off; the clock shows the song's bar, beat and 16th.
 - Existing project format, tab numbers and engine playback are unchanged.
 - Tests: SongFlowTests (new), ChannelRackViewTests top-bar test updated; Windows Debug/Release CI and manual checks (WINDOWS_AUDIO_CHECKLIST item 36) pending.
-- Next (separate branches): clip list and drag-to-place in the Song view; arm a track and record vocals onto it.
+- Implemented (PR 2): clip list beside the Song; drag a pattern or clip onto a lane (ghost + help line), double-click/Enter places at the play position.
+- Implemented (PR 2): a track with no clip gets a new empty four-bar clip from a double-click, the lane menu or Place...; it uses a free Session cell (adds a scene if none), one undo step.
+- Tests (PR 2): TimelineViewTests expanded (new clips, clip list, dropping); manual drag with a real mouse on Windows pending.
+- Next (separate branch): arm a track and record vocals onto it.
 
 ## Automation and tempo work in progress
 

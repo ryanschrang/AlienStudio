@@ -189,6 +189,14 @@ sample rate, buffer size, MIDI controller, display scale, and pass/fail notes.
     each view plays its own pattern or clips again. With an empty Song, press Play in Song mode
     and confirm the status bar explains why it is silent. Press Record with Song mode on: it must
     turn off and the take must record as before.
+37. Song clip list and new clips: open the Song. Drag a Channel Rack pattern from the list to a
+    pattern lane, and a Session clip onto the lanes (it must land on its own track whichever lane
+    the pointer is over), at several zoom levels and with Snap on and off; watch the ghost and the
+    help line. Drop outside the lanes and press Esc during a drag: nothing is placed. Double-click
+    a row: it goes to the play position. Double-click a lane of a track with no clips: a new empty
+    four-bar clip appears; double-click it, write notes in the Piano Roll, return to the Song and
+    play it. Make clips until the Session grows a scene (look at the Session view), then undo: the
+    clip and the scene must go together. Hide and show the list with Clips at 960 x 650.
 
 ## Results
 

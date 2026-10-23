@@ -803,6 +803,45 @@ public:
             return t.place(r, idOut);
         });
     }
+    // A new, empty MIDI clip for a track, put on the timeline in one undo step. It takes the first Session cell of that track
+    // that is empty and that the timeline does not already use, so every new clip is a clip of its own; when there is no such
+    // cell a scene is added. The clip is selected, ready to be opened in the piano roll. Returns false (and changes nothing)
+    // when the track does not exist, the project is busy, or there is no room for another scene.
+    bool placeNewClip(int row, std::int64_t start, std::uint32_t* idOut = nullptr, int* sceneOut = nullptr, bool* sceneAddedOut = nullptr) {
+        using namespace alien::timeline;
+        if (busy || isPatternRow(row) || row < 0 || row >= doc.trackCount() || start < 0) return false;
+        const auto usedByTimeline = [&](int scene) {
+            for (const auto& r : doc.timeline.regions) if (r.row == row && r.source == scene) return true;
+            return false;
+        };
+        const auto isFree = [&](int scene) { return scene >= 0 && scene < doc.sceneCount() && doc.clip(row, scene).isEmpty() && !usedByTimeline(scene); };
+        int scene = -1;
+        if (isFree(doc.selectedScene)) scene = doc.selectedScene;
+        for (int s = 0; s < doc.sceneCount() && scene < 0; ++s) if (isFree(s)) scene = s;
+        const bool needsScene = scene < 0;
+        if (needsScene && !doc.canAddScene()) return false;
+        const auto saved = doc;   // a failed placement must leave no trace, not even the new scene
+        if (needsScene) {
+            if (!insertScene(doc.sceneCount(), nullptr)) return false;
+            scene = doc.sceneCount() - 1;
+        }
+        std::uint32_t id = 0;
+        auto next = doc.timeline;
+        next.tempo = doc.bpm;
+        Region region;
+        region.row = row; region.source = scene; region.start = start; region.length = naturalLength(row, scene);
+        if (!next.place(region, &id) || !next.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount)) {
+            doc = saved;
+            return false;
+        }
+        doc.timeline = std::move(next);
+        selectClip(row, scene);
+        commit("New clip", row, scene);
+        if (idOut != nullptr) *idOut = id;
+        if (sceneOut != nullptr) *sceneOut = scene;
+        if (sceneAddedOut != nullptr) *sceneAddedOut = needsScene;
+        return true;
+    }
     // Deleting a pattern renumbers the ones after it, and the timeline must follow.
     bool deleteRackPattern(int index) {
         auto next = doc.channelRack;

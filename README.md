@@ -784,9 +784,21 @@ it. A clip repeats for as long as it is stretched. Nothing overlaps on one lane:
 paste, place or resize onto is replaced or shortened. The song is 1 to 16,384 bars long (18 hours at 60 BPM) and grows when
 you place something past its end (the **Song length** box shortens it again, but never below the last clip).
 
-**Placing.** Double-click an empty spot in a track's lane to put that track's selected scene there
+**Placing.** The **clip list** on the right (the **Clips** button hides it) shows every Channel Rack
+pattern and every Session clip that has something in it. **Drag a row onto the lanes** to place it: a
+clip always lands on its own track's lane, a pattern on the pattern lane under the pointer (the first
+lane if the pointer is over a track), at the snapped position under the pointer; a ghost and the help
+line show where it will go. **Double-click a row** (or press Enter on it) to put it at the play
+position instead. A dot on a row means the Song already holds it.
+
+Double-click an empty spot in a track's lane to put that track's selected scene there
 (or its first scene that holds a clip); double-click in a pattern lane to put the Channel
-Rack's selected pattern there. Right-click an empty spot to choose which clip or pattern, or use the
+Rack's selected pattern there. **A track with no clip yet gets a new, empty clip** of four bars
+instead: it takes a free cell of that track in the Session (adding a scene when every cell is
+taken), it is a clip of its own (not another reference to one you already placed), and it is one
+undo step. Double-click it to open the Piano Roll and write notes. **New empty clip** is also on the
+right-click menu and the **Place...** button for any track lane, when you want one on a track
+that already has clips. Right-click an empty spot to choose which clip or pattern, or use the
 **Place...** button to put one at the play position on the selected row. Double-click a clip to open
 what it plays (Piano Roll, Session, or the Channel Rack for a pattern).
 
