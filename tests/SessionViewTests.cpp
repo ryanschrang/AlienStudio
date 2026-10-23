@@ -441,10 +441,27 @@ static void selectionAndStructure() {
     juce::ModalComponentManager::getInstance()->cancelAllModalComponents();
     pump();
     require(juce::ModalComponentManager::getInstance()->getNumModalComponents() == 0 && rig.controller.document().tracks[1].name == "Track 2", "and cancelling it leaves the name alone");
+    int menuRequests = 0;
+    std::function<void(int)> menuResult;
+    rig.view.trackMenuLauncher = [&](juce::PopupMenu menu, std::function<void(int)> done) {
+        ++menuRequests;
+        bool rename = false, add = false, remove = false;
+        juce::PopupMenu::MenuItemIterator items(menu, true);
+        while (items.next()) {
+            const auto& item = items.getItem();
+            rename = rename || (item.itemID == 1 && item.text == "Rename..." && item.isEnabled);
+            add = add || (item.itemID == 4 && item.text == "Add track" && item.isEnabled);
+            remove = remove || (item.itemID == 5 && item.text == "Delete track" && item.isEnabled);
+        }
+        require(rename && add && remove, "the track context menu contains its enabled editing actions");
+        menuResult = std::move(done);
+    };
     rig.click(centre(strip.nameRect(1)), rightButton);
-    pump();
-    require(juce::PopupMenu::dismissAllActiveMenus(), "right-clicking a track's name opens a menu");
-    pump();
+    require(menuRequests == 1 && static_cast<bool>(menuResult), "right-clicking a track's name requests a menu");
+    menuResult(0);
+    require(rig.controller.document().trackCount() == 4 && rig.controller.document().tracks[1].name == "Track 2",
+        "cancelling the track menu leaves the document unchanged");
+    rig.view.trackMenuLauncher = {};
 
     // The rows follow the tracks: adding one adds a row, deleting one takes a row away.
     require(strip.trackAt(strip.rowBounds(4).getCentreY()) == -1, "there is no fifth row yet");
