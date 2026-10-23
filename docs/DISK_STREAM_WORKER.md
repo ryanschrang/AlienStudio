@@ -11,8 +11,9 @@ DiskAudioFile is immutable sample-rate/channel/frame metadata. JuceDiskAudioFile
 inspects WAV/MP3 headers and opens a fresh JUCE decoder for every playback voice.
 No decoded whole-file vectors or threads are created per imported source.
 
-DiskAudioStreamService has one worker, 32 admitted endpoints (two available per
-track for active/pending playback), and fixed 8192-frame tagged rings. Each tag
+DiskAudioStreamService has one worker, 48 admitted endpoints (per track, two for
+active/pending playback and two for a timeline crossfade's outgoing clip, which is
+handed its stream at the join), and fixed 8192-frame tagged rings. Each tag
 contains a 64-bit generation and source-frame position. On typical x64 builds
 sample rings total 6 MiB; reader/codec internals and retained source metadata are
 additional. Reads are limited to 1024 frames and readiness requires 2048 frames

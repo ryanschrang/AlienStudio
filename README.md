@@ -810,6 +810,15 @@ everything; Esc clears. Grouped clips (Ctrl+G) select and move together.
 resize it; drag its left edge to hide or reveal the start of its music without moving the music. Ctrl-drag
 copies. Hold **Alt** while dragging to ignore the grid. Each drag is one undo step.
 
+**Fades and crossfades (audio clips).** An audio clip has two small handles in its top corners: drag
+the left one in for a fade in and the right one in for a fade out (straight-line fades, shown
+shaded). To crossfade, put two audio clips end to end on a track, select the second (or both) and
+choose **Crossfade** from the right-click menu: the first clip plays on past its end while the second
+comes in, on equal-power curves, over one beat. Drag the second clip's left handle to lengthen or
+shorten it. **Remove fades** clears a clip's fades and crossfade. None of this changes the audio
+file, and playback and WAV export sound the same. The right-click menu also has slip, source loop,
+reverse, normalize and **Fade in and out** (one beat each).
+
 | Key | Does |
 |---|---|
 | Space | play / stop from the play position |
@@ -844,12 +853,14 @@ can be 128 markers.
 stereo 48 kHz/24-bit WAV, including the Channel Rack patterns.
 
 **Limits (honest list).**
-- Clips have no fades or crossfades, and audio is not tempo-warped on the timeline: audio plays at
-  its original speed, so changing the project tempo changes where a placed audio clip ends but not
-  how fast it plays.
+- Audio is not tempo-warped on the timeline: audio plays at its original speed, so changing the
+  project tempo changes where a placed audio clip ends but not how fast it plays.
+- Fades are straight lines and crossfades equal-power; there is no choice of curve. A crossfade
+  needs the clips to touch; the outgoing clip is silent in it if its file ends at the join. Reverse
+  and source looping are not available for streamed (very long) clips.
 - At most 1,024 clips, 128 markers, 16,384 bars (18 h 12 min at 60 BPM) and four pattern lanes. A Session clip lives on its
   own track's lane; to move music to another track, copy it there from the Session grid.
-- There are no automation lanes yet; there is one loop range and no per-clip gain or pitch.
+- Automation covers track volume and pan only; there is one loop range and no per-clip pitch.
 - The timeline is controlled with the mouse and keyboard only: no MIDI-controller mapping.
 
 ### Integrated workspaces and VST3 hosting

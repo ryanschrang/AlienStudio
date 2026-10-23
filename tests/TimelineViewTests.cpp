@@ -925,6 +925,65 @@ static void dragChecks() {
     std::cout << "PASS: moving, trimming and copying by dragging\n";
 }
 
+// ---- fades and crossfades -----------------------------------------------------------------------
+static void fadeChecks() {
+    Rig rig; rig.song();
+    auto& c = rig.c; const auto& id = rig.id;
+    constexpr int pixelsPerBar = 64;   // at the starting zoom: 60 ticks a pixel
+    const auto before = rig.t();
+    const auto box = c.regionBounds(id.au);
+    const int top = static_cast<int>(box.getY()) + 4;
+    // The handles sit in the top strip of an audio clip; below it the edges still trim.
+    const juce::Point<int> inHandle{static_cast<int>(box.getX()) + 1, top}, outHandle{static_cast<int>(box.getRight()) - 1, top};
+    require(c.hitTest(inHandle).fade == TimelineCanvas::Edge::left && c.hitTest(outHandle).fade == TimelineCanvas::Edge::right,
+            "an audio clip's fade handles are in its top corners");
+    require(c.hitTest({inHandle.x, static_cast<int>(box.getCentreY())}).fade == TimelineCanvas::Edge::none
+            && c.hitTest({inHandle.x, static_cast<int>(box.getCentreY())}).edge == TimelineCanvas::Edge::left, "lower down the edge still trims");
+    require(c.hitTest({static_cast<int>(c.regionBounds(id.a).getX()) + 1, static_cast<int>(c.regionBounds(id.a).getY()) + 4}).fade == TimelineCanvas::Edge::none,
+            "a MIDI clip has no fade handles");
+    rig.drag(inHandle, {inHandle + juce::Point<int>(pixelsPerBar / 2, 0)});
+    require(rig.reg(id.au).fadeIn == tl::ticksPerBar / 2 && rig.reg(id.au).start == 0 && rig.reg(id.au).length == 2 * tl::ticksPerBar,
+            "dragging the fade-in handle sets the fade without trimming the clip");
+    const auto faded = rig.t();
+    const juce::Point<int> movedIn{static_cast<int>(c.regionBounds(id.au).getX()) + pixelsPerBar / 2, top};
+    require(c.hitTest(movedIn).fade == TimelineCanvas::Edge::left, "the handle follows the fade");
+    rig.drag(outHandle, {outHandle + juce::Point<int>(-pixelsPerBar, 0)});
+    require(rig.reg(id.au).fadeOut == tl::ticksPerBar && rig.reg(id.au).fadeIn == tl::ticksPerBar / 2, "dragging the fade-out handle sets the fade out");
+    require(rig.oneUndoRestores(faded) && rig.controller.undo(), "each fade drag is one undo step");
+    rig.view.refresh();
+    require(rig.t() == before, "back to the song");
+
+    // Crossfading the audio clip into a copy placed right after it.
+    std::uint32_t next{};
+    require(rig.controller.placeRegion(2, 0, 2 * tl::ticksPerBar, &next), "place a second audio clip touching the first");
+    rig.view.refresh();
+    const auto touching = rig.t();
+    c.setSelection({next});
+    rig.rightClick(rig.at(2 * tl::ticksPerBar + tl::ticksPerBar / 2, 2));
+    const auto* item = entry(rig.menu.items(), TimelineCanvas::cmdCrossfade);
+    require(item != nullptr && item->enabled, "one selected clip with a clip ending where it starts can be crossfaded");
+    rig.menu.done(TimelineCanvas::cmdCrossfade);
+    require(rig.reg(next).crossfade == tl::ticksPerBeat && rig.reg(id.au).end() == rig.reg(next).start, "the menu crosses them over a beat without moving them");
+    const auto crossed = rig.t();
+    const auto nextBox = c.regionBounds(next);
+    const juce::Point<int> crossHandle{static_cast<int>(nextBox.getX()) + pixelsPerBar / 4, static_cast<int>(nextBox.getY()) + 4};
+    require(c.hitTest(crossHandle).fade == TimelineCanvas::Edge::left, "the crossfade has a handle at its end");
+    rig.drag(crossHandle, {crossHandle + juce::Point<int>(pixelsPerBar / 4, 0)});
+    require(rig.reg(next).crossfade == tl::ticksPerBar / 2 && rig.reg(next).fadeIn == 0, "dragging it lengthens the crossfade");
+    require(rig.oneUndoRestores(crossed), "one undo step");
+    rig.rightClick(rig.at(2 * tl::ticksPerBar + tl::ticksPerBar / 2, 2));
+    item = entry(rig.menu.items(), TimelineCanvas::cmdRemoveFades);
+    require(item != nullptr && item->enabled, "a crossfaded clip offers Remove fades");
+    rig.menu.done(TimelineCanvas::cmdRemoveFades);
+    require(rig.reg(next).crossfade == 0 && rig.t() == touching, "which takes the crossfade away");
+    c.setSelection({id.a});
+    rig.rightClick(rig.at(tl::ticksPerBar / 2, 0));
+    require(entry(rig.menu.items(), TimelineCanvas::cmdCrossfade) == nullptr, "a MIDI clip has no fade commands");
+    rig.menu.reset();
+    require(rig.valid(), "the timeline stays valid");
+    std::cout << "PASS: fades and crossfades\n";
+}
+
 // ---- keys and commands ------------------------------------------------------------------------
 static void commandChecks() {
     Rig rig;
@@ -1621,6 +1680,7 @@ int main() {
     dropChecks();
     selectionChecks();
     dragChecks();
+    fadeChecks();
     commandChecks();
     zoomAndScrollChecks();
     loopChecks();

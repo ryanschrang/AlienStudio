@@ -69,6 +69,10 @@ struct Region {
     // interpret these values when reading it.
     double gain{1.0};
     std::int64_t fadeIn{}, fadeOut{};
+    // Ticks at the region's start that overlap the audio region ending exactly there:
+    // that region's audio plays on past its end, and the two cross with equal-power curves.
+    // Without such a neighbour it is an equal-power fade in.
+    std::int64_t crossfade{};
     bool loopSource{}, reversed{};
     std::int64_t end() const noexcept { return start + length; }
     bool isPattern() const noexcept { return isPatternRow(row); }
@@ -183,7 +187,8 @@ struct Timeline {
         for (const auto& r : regions) {
             if (r.id == 0 || r.start < 0 || r.length < 1 || r.end() > length() || r.offset < 0
                 || !std::isfinite(r.audioOffset) || r.audioOffset < 0.0 || !std::isfinite(r.gain) || r.gain < 0.0 || r.gain > 64.0
-                || r.fadeIn < 0 || r.fadeOut < 0 || r.fadeIn > r.length || r.fadeOut > r.length || r.source < 0) return false;
+                || r.fadeIn < 0 || r.fadeOut < 0 || r.fadeIn > r.length || r.fadeOut > r.length
+                || r.crossfade < 0 || r.crossfade > r.length || r.source < 0) return false;
             if (r.isPattern()) { if (r.source >= patterns) return false; }
             else if (r.row < 0 || r.row >= tracks || r.source >= scenes) return false;
             order.push_back(&r);
@@ -223,7 +228,7 @@ struct Timeline {
             const auto& a = regions[i]; const auto& b = o.regions[i];
             if (a.row != b.row || a.source != b.source || a.start != b.start || a.length != b.length
                 || a.offset != b.offset || a.audioOffset != b.audioOffset || a.gain != b.gain
-                || a.fadeIn != b.fadeIn || a.fadeOut != b.fadeOut || a.loopSource != b.loopSource
+                || a.fadeIn != b.fadeIn || a.fadeOut != b.fadeOut || a.crossfade != b.crossfade || a.loopSource != b.loopSource
                 || a.reversed != b.reversed || a.muted != b.muted) return false;
         }
         return true;
@@ -327,7 +332,7 @@ struct Timeline {
             r.length = tick - r.start;
             // A split creates clean internal edges. The original outer-edge fades
             // remain with the halves that still own those boundaries.
-            r.fadeOut = 0; right.fadeIn = 0;
+            r.fadeOut = 0; right.fadeIn = 0; right.crossfade = 0;
             clampFades(r); clampFades(right);
             rights.push_back(right);
         }
@@ -420,17 +425,41 @@ struct Timeline {
         if (fadeIn < 0 || fadeOut < 0) return false;
         return editAudio(ids, [=](Region& r) { const auto in = std::min(fadeIn, r.length), out = std::min(fadeOut, r.length); if (r.fadeIn == in && r.fadeOut == out) return false; r.fadeIn = in; r.fadeOut = out; return true; });
     }
-    // Applies complementary fades to two touching clips. Their boundaries stay fixed,
-    // which keeps the timeline deterministic and the operation fully reversible.
+    bool clearFades(const Ids& ids) {
+        return editAudio(ids, [](Region& r) { if (r.fadeIn == 0 && r.fadeOut == 0 && r.crossfade == 0) return false; r.fadeIn = r.fadeOut = r.crossfade = 0; return true; });
+    }
+    // One edge of one clip (the fade handles). A clip with a crossfade adjusts that instead of its fade in.
+    bool setFadeIn(std::uint32_t id, std::int64_t ticks) {
+        if (ticks < 0) return false;
+        const Region* r = find(id);
+        if (r != nullptr && r->crossfade > 0) return editAudio({id}, [=](Region& e) { const auto v = std::min(ticks, e.length); if (e.crossfade == v || v == 0) return false; e.crossfade = v; return true; });
+        return editAudio({id}, [=](Region& e) { const auto v = std::min(ticks, e.length); if (e.fadeIn == v) return false; e.fadeIn = v; return true; });
+    }
+    bool setFadeOut(std::uint32_t id, std::int64_t ticks) {
+        if (ticks < 0) return false;
+        return editAudio({id}, [=](Region& e) { const auto v = std::min(ticks, e.length); if (e.fadeOut == v) return false; e.fadeOut = v; return true; });
+    }
+    // Crosses two touching clips over the first `ticks` of the right one: the left
+    // clip's audio plays on past its end while the right one comes in. Their
+    // boundaries stay fixed, so the edit is deterministic and fully reversible.
+    // The edge fades the crossfade replaces are cleared; 0 removes the crossfade.
     bool crossfade(std::uint32_t leftId, std::uint32_t rightId, std::int64_t ticks) {
-        if (ticks <= 0) return false;
+        if (ticks < 0) return false;
         Timeline next = *this;
         auto* left = next.find(leftId); auto* right = next.find(rightId);
-        if (left == nullptr || right == nullptr || left->row != right->row || left->end() != right->start) return false;
-        ticks = std::min({ticks, left->length, right->length});
-        if (left->fadeOut == ticks && right->fadeIn == ticks) return false;
-        left->fadeOut = ticks; right->fadeIn = ticks;
+        if (left == nullptr || right == nullptr || left->isPattern() || left->row != right->row || left->end() != right->start) return false;
+        ticks = std::min(ticks, right->length);
+        if (right->crossfade == ticks && (ticks == 0 || (left->fadeOut == 0 && right->fadeIn == 0))) return false;
+        right->crossfade = ticks;
+        if (ticks > 0) { left->fadeOut = 0; right->fadeIn = 0; }
         return adopt(std::move(next));
+    }
+    // The audio region that ends exactly where `id` starts on the same track, if any.
+    const Region* crossfadePartner(std::uint32_t id) const noexcept {
+        const Region* r = find(id);
+        if (r == nullptr || r->isPattern()) return nullptr;
+        for (const auto& o : regions) if (o.id != id && o.row == r->row && o.end() == r->start) return &o;
+        return nullptr;
     }
 
     bool setMuted(const Ids& ids, bool muted) {
@@ -582,6 +611,7 @@ private:
     static void clampFades(Region& r) noexcept {
         r.fadeIn = std::clamp<std::int64_t>(r.fadeIn, 0, r.length);
         r.fadeOut = std::clamp<std::int64_t>(r.fadeOut, 0, r.length);
+        r.crossfade = std::clamp<std::int64_t>(r.crossfade, 0, r.length);
     }
     template <typename Edit>
     bool editAudio(const Ids& ids, Edit&& edit) {
