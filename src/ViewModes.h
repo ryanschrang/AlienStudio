@@ -18,4 +18,15 @@ inline int patternModeForTab(int tab, int currentMode) noexcept {
     }
 }
 
+// With "Song mode" on, every view that would play something of its own (the 16-step sequencer, the piano roll and
+// Session clips, the arrangement, the Channel Rack) plays the whole song instead, so a beat, a synth line and a
+// vocal can be heard together while you work on any of them. Views that play nothing keep the current mode.
+inline int patternModeForTab(int tab, int currentMode, bool songPlayback) noexcept {
+    if (!songPlayback) return patternModeForTab(tab, currentMode);
+    switch (tab) {
+    case 0: case 1: case 2: case 5: case rackTabIndex: return songMode;
+    default: return currentMode;
+    }
+}
+
 } // namespace alien

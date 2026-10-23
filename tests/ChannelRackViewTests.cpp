@@ -829,7 +829,7 @@ static void topBarButton() {
     std::vector<juce::TextButton*> views;
     for (auto* child : bar.getChildren())
         if (auto* b = dynamic_cast<juce::TextButton*>(child); b != nullptr && b->getName().startsWith("Show ")) views.push_back(b);
-    require(views.size() == 5, "the top bar has five view buttons");
+    require(views.size() == 6, "the top bar has six view buttons (the Song joined them)");
     juce::TextButton* rackButton = nullptr;
     for (auto* b : views) if (b->getName() == "Show Rack view") rackButton = b;
     require(rackButton != nullptr, "one of them is the Rack");
@@ -839,7 +839,7 @@ static void topBarButton() {
     }
     clickButton(*rackButton);
     require(chosen == 8, "it opens the Channel Rack tab (index 8) without renumbering the others");
-    const std::array<std::pair<const char*, int>, 4> others{{{"Show Steps view", 0}, {"Show Piano Roll view", 1}, {"Show Session view", 2}, {"Show Mixer view", 3}}};
+    const std::array<std::pair<const char*, int>, 5> others{{{"Show Steps view", 0}, {"Show Piano Roll view", 1}, {"Show Session view", 2}, {"Show Song view", 5}, {"Show Mixer view", 3}}};
     for (const auto& [name, tab] : others)
         for (auto* b : views) if (b->getName() == name) { clickButton(*b); require(chosen == tab, "the older view buttons keep their tabs"); }
     bar.setActiveView(8);

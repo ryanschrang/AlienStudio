@@ -128,7 +128,7 @@ sample rate, buffer size, MIDI controller, display scale, and pass/fail notes.
     note any one-block glitch when moving channels or changing sounds during playback.
     Confirm that the rack is silent in Song mode and in Export WAV unless patterns have been
     placed on the Arrangement timeline's pattern lanes (items 25 to 34).
-25. Arrangement timeline, placing: on the Arrange tab, double-click empty spots in several track
+25. Arrangement timeline, placing: on the Song tab, double-click empty spots in several track
     lanes and in a pattern lane; right-click an empty spot and pick a clip or pattern; use
     Place... Confirm each lands where clicked, on the grid, with the right colour, name and
     contents (notes, waveform or steps). Place past the end of the song: the song must grow.
@@ -180,6 +180,15 @@ sample rate, buffer size, MIDI controller, display scale, and pass/fail notes.
     dropouts or stuck audio; stop and restart often. Then Export WAV (whole song and a loop range)
     and compare it with live playback; cancel an export; rename the source file and export again
     (it must stop with a message before writing anything).
+36. Song tab and Song mode: check the top bar at 960x650 and at 100/150/200% scaling: six view
+    buttons (Steps, Piano Roll, Session, Song, Mixer, Rack), Song mode and More... all readable,
+    the clock still shows bar, beat and tempo. Place a drum pattern, a MIDI clip and an audio
+    clip in the Song. Turn Song mode on and press Play from Steps, Piano Roll, Session, Rack and
+    Song: the same song must play from each, in time, and the clock must follow the song. Switch
+    views and toggle Song mode while playing: no stuck notes or hung hats. Turn Song mode off:
+    each view plays its own pattern or clips again. With an empty Song, press Play in Song mode
+    and confirm the status bar explains why it is silent. Press Record with Song mode on: it must
+    turn off and the take must record as before.
 
 ## Results
 
@@ -199,7 +208,7 @@ selection. Check the browser and pad buttons at the minimum window size.
 
 - Check track-colored regions and Audio lab cards at 960x650 and 100/150/200%
   scaling. Check focus, text readability, selected pad/region states and meter.
-- Arrange MIDI, drums and stereo audio with gaps. Compare live playback to exported
+- Arrange (on the Song tab) MIDI, drums and stereo audio with gaps. Compare live playback to exported
   WAV at 60, 120 and 200 BPM. Verify region boundaries, exact ending, Stop/restart,
   mute/solo/pan, cancelled export and unwritable output paths.
 - Enable one input, record voice/instrument, Stop & save, launch the captured clip.

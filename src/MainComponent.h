@@ -205,6 +205,7 @@ private:
     void wireTopBar() {
         topBar.onViewSelected = [this](int index) { showView(index); };
         topBar.onPlayToggled = [this] { togglePlay(); };
+        topBar.onSongModeToggled = [this](bool on) { setSongMode(on); };
         topBar.onRecordToggled = [this] { toggleRecording(); };
         topBar.onMetronomeToggled = [this](bool on) {
             auto settings = controller.document().recording;
@@ -231,7 +232,23 @@ private:
         // During a count-in the transport has not started, so Play/Stop cancels the take instead.
         if (engine.recording.phase.load() == alien::RecordControls::countIn) { controller.stopRecording(); return; }
         releaseNotes();
-        engine.playing.store(!engine.playing.load());
+        const bool starting = !engine.playing.load();
+        // Playing the song with nothing on it is silent; say why instead of leaving the transport running for no reason.
+        if (starting && engine.patternMode.load() == alien::songMode && !controller.timeline().hasRegions())
+            statusBar.setProjectStatus("The Song is empty. Open the Song view and place a pattern or clip, then press Play.",
+                                       "Song mode plays the arrangement. Drag a pattern or clip onto a lane in the Song view, or double-click a lane.");
+        engine.playing.store(starting);
+    }
+
+    // "Song mode": Play plays the whole song from any view. Off, each view plays its own pattern or clips.
+    void setSongMode(bool on) {
+        songPlayback = on;
+        topBar.setSongMode(on);
+        const int mode = alien::patternModeForTab(tabs.getCurrentTabIndex(), engine.patternMode.load(), songPlayback);
+        if (engine.patternMode.exchange(mode) != mode) releaseNotes();
+        if (on && !controller.timeline().hasRegions())
+            statusBar.setProjectStatus("Song mode is on, but the Song is empty. Place patterns or clips in the Song view.",
+                                       "Song mode plays the arrangement. Drag a pattern or clip onto a lane in the Song view, or double-click a lane.");
     }
 
     // The Arrangement screen: a click on the ruler (or a marker) picks where playback starts or jumps to, Space is
@@ -388,6 +405,11 @@ private:
     void toggleRecording() {
         if (controller.isRecording()) { controller.stopRecording(); return; }
         if (projectBusy || controller.isBusy()) return;
+        // MIDI recording plays Session clips, so it needs the clip mode that Song mode would replace.
+        if (songPlayback) {
+            setSongMode(false);
+            statusBar.setProjectStatus("Song mode is off while recording MIDI into a clip.", "Turn Song mode on again after the take.");
+        }
         // Recording plays Session clips, so make sure the view that does so is showing.
         if (workspace.isDeviceView() || (tabs.getCurrentTabIndex() != 1 && tabs.getCurrentTabIndex() != 2)) {
             showView(1);
@@ -465,7 +487,7 @@ private:
         case 2: workspace.setEditorTitle("Session", sessionView.subtitle()); break;
         case 3: workspace.setEditorTitle("Mixer", juce::String(d.trackCount()) + " channels"); break;
         case 4: workspace.setEditorTitle("Drum Sampler", "Eight sample pads per track"); break;
-        case 5: workspace.setEditorTitle("Arrangement", timelineView.subtitle()); break;
+        case 5: workspace.setEditorTitle("Song", timelineView.subtitle()); break;
         case 6: workspace.setEditorTitle("Audio Lab", "Record a take or render a tempo match"); break;
         case 7: workspace.setEditorTitle("Plugin Rack", "VST3 instruments and ordered track / master FX"); break;
         case 8: workspace.setEditorTitle("Channel Rack", rackView.subtitle()); break;
@@ -584,7 +606,7 @@ private:
     // Callbacks ---------------------------------------------------------------
     void changeListenerCallback(juce::ChangeBroadcaster*) override {
         const int tab = tabs.getCurrentTabIndex();
-        const int newMode = alien::patternModeForTab(tab, engine.patternMode.load());
+        const int newMode = alien::patternModeForTab(tab, engine.patternMode.load(), songPlayback);
         if (engine.patternMode.exchange(newMode) != newMode) releaseNotes();
         else pianoRoll.releaseAudition();
         syncViewButtons();
@@ -613,7 +635,13 @@ private:
             const int position = engine.sessionTrackPositions[static_cast<std::size_t>(d.selectedTrack)].load();
             displayStep = position >= 0 ? position / 1000 : -1;
         }
-        topBar.setPosition(displayStep, isPlaying || displayStep >= 0, rackMode ? "Rack" : stepMode ? "Steps" : "Session");
+        const bool songShown = engine.patternMode.load() == alien::songMode;
+        if (songShown) {
+            // The whole song: show where the playhead is on the song's own bars and beats.
+            const auto position = engine.timelinePosition.load();
+            displayStep = isPlaying && position >= 0 ? static_cast<int>(position / alien::timeline::ticksPerStep) : -1;
+        }
+        topBar.setPosition(displayStep, isPlaying || displayStep >= 0, songShown ? "Song" : rackMode ? "Rack" : stepMode ? "Steps" : "Session");
         devicesView.midi().tick();
         mixerPanel.tick();
         int controllerAction = -1;
@@ -1139,6 +1167,7 @@ private:
     alien::AudioToolsPanel audioTools;
     alien::ChannelRackView rackView{controller};
     bool projectBusy{}, closeAfterTake{};
+    bool songPlayback{};   // "Song mode" (see setSongMode)
     std::shared_ptr<alien::DiskRecording> activeCapture;
     int takeTrack{}, takeScene{};
     std::unique_ptr<juce::FileChooser> takeFileChooser, warpSourceChooser, warpFileChooser, exportFileChooser;
