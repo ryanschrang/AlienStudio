@@ -7,6 +7,7 @@
 #include "DocumentHistory.h"
 #include "PianoRollProcessing.h"
 #include "RackSounds.h"
+#include "DiskRecording.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <memory>
@@ -96,14 +97,14 @@ public:
     bool isDirty() const noexcept { return runtimeDirty || history.currentId() != savedId; }
 
     bool undo() {
-        if (take.active) return false; // the take would be written over the restored clip
+        if (take.active || songTake.active) return false; // the take would be written over the restored clip
         DocumentHistory::Step step;
         if (const auto* state = history.undo(step)) { restore(*state, step); return true; }
         return false;
     }
 
     bool redo() {
-        if (take.active) return false;
+        if (take.active || songTake.active) return false;
         DocumentHistory::Step step;
         if (const auto* state = history.redo(step)) { restore(*state, step); return true; }
         return false;
@@ -434,7 +435,7 @@ public:
     // or hold MIDI. The count-in, metronome and monitoring are done by the
     // engine; the take becomes one undo step when it ends.
     RecordStart startRecording() {
-        if (take.active) return {false, "Already recording."};
+        if (take.active || songTake.active) return {false, "Already recording."};
         if (busy) return {false, "Wait for the current operation to finish."};
         if (engine.recording.active()) return {false, "The previous take is still finishing. Try again in a moment."};
         if (engine.patternMode.load() != 1)
@@ -465,6 +466,7 @@ public:
 
     // Ask the engine to end the take; its notes arrive through pollRecording().
     void stopRecording() {
+        if (songTake.active) { stopSongTake(); return; }
         if (!take.active) return;
         // Cancelled before the engine saw the request: nothing was recorded.
         if (engine.recording.startRequested.exchange(false)) {
@@ -479,12 +481,13 @@ public:
         engine.recording.stopRequested.store(true);
     }
 
-    bool isRecording() const noexcept { return take.active; }
+    bool isRecording() const noexcept { return take.active || songTake.active; }
     int recordingTrack() const noexcept { return take.active ? take.track : -1; }
     int recordingScene() const noexcept { return take.active ? take.scene : -1; }
 
     // Drops a take without keeping it (the document is being replaced).
     void abandonRecording() {
+        if (songTake.active) { songTake.abandoned = true; stopSongTake(); }
         if (!take.active) return;
         take.active = false;
         engine.recording.startRequested.store(false);
@@ -494,6 +497,7 @@ public:
     // Message-thread timer: turns what the engine captured into notes, lets the
     // looping clip play back what has been recorded so far, and finishes the take.
     void pollRecording() {
+        if (songTake.active) { pollSongTake(); return; }
         if (!take.active) {
             for (RecordEvent stale; engine.recording.events.pop(stale);) {}
             return;
@@ -508,6 +512,87 @@ public:
         }
         if (ended) finishTake();
         else if (changed) previewTake();
+    }
+
+    // Song-view audio takes ----------------------------------------------------
+    // What the user is told when an audio take ends.
+    struct SongTakeOutcome {
+        int placed{};                // takes now on the timeline
+        int recorded{};              // tracks that captured audio
+        bool refused{}, abandoned{};
+        int ended{};                 // SongTakeCapture::Ended
+        std::vector<juce::File> kept; // files of the takes that could not be placed (abandoned, or failed to load)
+        juce::String problems;       // disk or loading problems
+    };
+    std::function<void(const SongTakeOutcome&)> onSongTakeFinished;
+
+    // Message thread only. Records every armed track whose input the device has (`deviceInputs` enabled
+    // channels) into a new WAV in `folder` while the song plays; the engine counts in and starts the song,
+    // and with punch on records only the loop range. The take is placed as one undo step when it ends.
+    RecordStart startSongTake(const juce::File& folder, double sampleRate, int deviceInputs) {
+        if (take.active || songTake.active) return {false, "Already recording."};
+        if (busy) return {false, "Wait for the current operation to finish."};
+        if (engine.recording.active()) return {false, "The previous take is still finishing. Try again in a moment."};
+        if (engine.patternMode.load() != 2) return {false, "Open the Song view (or turn on Song mode) to record onto the timeline."};
+        std::vector<int> armed;
+        bool anyArmed = false;
+        for (int t = 0; t < doc.trackCount() && t < maxSessionTracks; ++t) {
+            const auto& s = doc.tracks[static_cast<std::size_t>(t)].settings;
+            anyArmed = anyArmed || s.armed;
+            if (s.armed && s.input + (s.stereoInput ? 1 : 0) < deviceInputs) armed.push_back(t);
+        }
+        if (armed.empty())
+            return {false, anyArmed ? "The armed tracks' inputs are not enabled. Turn them on in Audio settings."
+                                    : "Arm a track in the Song view (the button on its header) to record onto it."};
+        if (!folder.createDirectory().wasOk()) return {false, "Cannot create the folder for takes: " + folder.getFullPathName()};
+
+        SongTake next;
+        for (const int t : armed) {
+            const auto& track = doc.tracks[static_cast<std::size_t>(t)];
+            const auto file = folder.getNonexistentChildFile(juce::File::createLegalFileName(track.name + " take"), ".wav", false);
+            juce::String error;
+            // Tests that move the autosave folder keep take journals next to it too.
+            const auto journals = recoveryDirectoryOverride() != juce::File{} ? recoveryDirectoryOverride().getChildFile("Recording Recovery")
+                                                                               : RecordingFile::recoveryDirectory();
+            auto recording = DiskRecording::start(file, sampleRate, track.settings.stereoInput ? 2 : 1, error, journals);
+            if (!recording) {
+                for (auto& started : next.recordings) started.second->finish(); // nothing captured: removes its files
+                return {false, "Cannot record " + track.name + ": " + error};
+            }
+            next.recordings.emplace_back(t, std::move(recording));
+        }
+        next.active = true;
+        next.id = ++lastTakeId;
+        next.sampleRate = sampleRate;
+        next.bpm = doc.bpm;
+        next.offsetMs = doc.recording.audioLatencyOffsetMs;
+        next.punch = doc.recording.punch;
+        next.punchIn = doc.timeline.loopStart;
+        next.punchOut = doc.timeline.loopEnd;
+        songTake = std::move(next);
+        for (RecordEvent stale; engine.recording.events.pop(stale);) {}
+
+        auto& capture = *engine.songTake;
+        for (auto& sink : capture.sinks) sink.store(nullptr);
+        for (const auto& [t, recording] : songTake.recordings) capture.sinks[static_cast<std::size_t>(t)].store(recording.get());
+        capture.punch.store(songTake.punch);
+        capture.punchIn.store(songTake.punchIn);
+        capture.punchOut.store(songTake.punchOut);
+        engine.recording.apply(doc.recording);
+        engine.recording.targetTrack.store(-1);
+        engine.recording.targetScene.store(-1);
+        engine.recording.take.store(songTake.id);
+        engine.recording.audioTake.store(true);
+        engine.recording.stopRequested.store(false);
+        engine.recording.startRequested.store(true);
+        return {true, {}};
+    }
+    bool isSongTakeActive() const noexcept { return songTake.active; }
+    // The tracks being recorded, for the view.
+    std::vector<int> songTakeTracks() const {
+        std::vector<int> result;
+        for (const auto& recording : songTake.recordings) result.push_back(recording.first);
+        return result;
     }
 
     void setRecordSettings(const RecordSettings& settings) {
@@ -862,6 +947,65 @@ public:
         if (sceneOut != nullptr) *sceneOut = scene;
         if (sceneAddedOut != nullptr) *sceneAddedOut = needsScene;
         return true;
+    }
+    // A finished Song-view audio take on one track: its file, the loaded (or streamed) audio, and
+    // where it goes on the timeline.
+    struct RecordedTake {
+        int track{-1};
+        juce::File file;
+        std::shared_ptr<SessionAudioClip> clip;
+        alien::TakePlacement placement;
+    };
+    // Puts every take of one recording pass on the timeline as one undo step ("Record take"). Each take
+    // becomes the audio of a Session cell of its track that is empty and unused by the timeline (a scene
+    // is added when there is none) and a region at its placement, over whatever was there. Nothing changes
+    // when any take cannot be placed. Returns how many takes were placed.
+    int addRecordedTakes(const std::vector<RecordedTake>& takes) {
+        using namespace alien::timeline;
+        if (busy || takes.empty()) return 0;
+        const auto saved = doc;
+        const auto savedBytes = retainedBytes;
+        const auto savedRetained = retained.size();
+        const auto fail = [&] {
+            doc = saved;
+            while (retained.size() > savedRetained) retained.pop_back();
+            retainedBytes = savedBytes;
+            return 0;
+        };
+        auto next = doc.timeline;
+        next.tempo = doc.bpm;
+        std::vector<std::pair<int, int>> cells;
+        for (const auto& take : takes) {
+            const int row = take.track;
+            if (row < 0 || row >= doc.trackCount() || !take.clip || !take.placement.valid) return fail();
+            const auto usedByTimeline = [&](int scene) {
+                for (const auto& r : next.regions) if (r.row == row && r.source == scene) return true;
+                return false;
+            };
+            int scene = -1;
+            for (int s = 0; s < doc.sceneCount() && scene < 0; ++s)
+                if (doc.clip(row, s).isEmpty() && !usedByTimeline(s)) scene = s;
+            if (scene < 0) {
+                if (!doc.canAddScene() || !insertScene(doc.sceneCount(), nullptr)) return fail();
+                scene = doc.sceneCount() - 1;
+            }
+            if (!retain(take.clip)) return fail();
+            auto& clip = doc.clip(row, scene);
+            clip.audio = take.clip;
+            clip.audioFileName = take.file.getFileName();
+            clip.audioFilePath = take.file.getFullPathName();
+            Region region;
+            region.row = row; region.source = scene;
+            region.start = take.placement.start; region.length = take.placement.length;
+            region.audioOffset = take.placement.audioOffset;
+            if (!next.place(region)) return fail();
+            cells.emplace_back(row, scene);
+        }
+        if (!next.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount)) return fail();
+        doc.timeline = std::move(next);
+        if (!cells.empty()) selectClip(cells.front().first, cells.front().second);
+        commit("Record take", cells.size() == 1 ? cells.front().first : -1, cells.size() == 1 ? cells.front().second : -1);
+        return static_cast<int>(cells.size());
     }
     // Deleting a pattern renumbers the ones after it, and the timeline must follow.
     bool deleteRackPattern(int index) {
@@ -1533,6 +1677,91 @@ private:
         RecordingAssembler assembler;
     };
     Take take;
+    struct SongTake {
+        bool active{}, abandoned{};
+        std::uint32_t id{};
+        std::vector<std::pair<int, std::shared_ptr<DiskRecording>>> recordings; // track, its take
+        double sampleRate{44100.0};
+        int bpm{120}, offsetMs{};
+        bool punch{};
+        std::int64_t punchIn{}, punchOut{};
+    };
+    SongTake songTake;
+
+    void stopSongTake() {
+        // Cancelled before the engine saw the request: nothing was recorded.
+        if (engine.recording.startRequested.exchange(false)) { finishSongTake(true); return; }
+        engine.recording.stopRequested.store(true);
+    }
+    void pollSongTake() {
+        bool ended = false, refused = false;
+        for (RecordEvent event; engine.recording.events.pop(event);) {
+            if (event.take != songTake.id) continue;
+            if (event.kind == RecordEventKind::refused) refused = true;
+            if (event.kind == RecordEventKind::end || event.kind == RecordEventKind::refused) { ended = true; break; }
+        }
+        if (ended) finishSongTake(refused);
+    }
+    // The engine has ended the take (or never started it) and no longer touches the sinks. The files are
+    // finished and loaded off the message thread; then every take is placed in one undo step.
+    void finishSongTake(bool refused) {
+        auto& capture = *engine.songTake;
+        for (auto& sink : capture.sinks) sink.store(nullptr);
+        engine.recording.audioTake.store(false);
+        const double firstTick = capture.firstTick.load();
+        const auto frames = refused ? 0 : capture.frames.load();
+        const double latency = capture.latencySamples.load() + songTake.offsetMs * songTake.sampleRate / 1000.0;
+        const int ended = capture.ended.load();
+        auto recordings = std::move(songTake.recordings);
+        const auto finished = songTake;
+        songTake = {};
+        struct Loaded { int track{}; RecordingResult result; AudioClipImportResult audio; };
+        auto loaded = std::make_shared<std::vector<Loaded>>();
+        setBusy(true);
+        std::weak_ptr<int> token = alive;
+        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, recordings, loaded, finished, firstTick, frames, latency, ended, refused] {
+            for (const auto& [t, recording] : recordings) {
+                Loaded item; item.track = t; item.result = recording->finish();
+                if (item.result.file.existsAsFile() && !finished.abandoned) item.audio = importSessionAudioClip(item.result.file);
+                loaded->push_back(std::move(item));
+            }
+            juce::MessageManager::callAsync([this, token, loaded, finished, firstTick, frames, latency, ended, refused] {
+                if (token.lock() == nullptr) return;
+                setBusy(false);
+                SongTakeOutcome outcome;
+                outcome.refused = refused; outcome.abandoned = finished.abandoned; outcome.ended = ended;
+                std::vector<RecordedTake> takes;
+                for (const auto& item : *loaded) {
+                    if (item.result.error.isNotEmpty() && item.result.writtenFrames > 0) outcome.problems << item.result.error << " ";
+                    if (!item.result.file.existsAsFile()) continue;
+                    ++outcome.recorded;
+                    if (finished.abandoned) { outcome.kept.push_back(item.result.file); continue; }
+                    if (!item.audio.clip) {
+                        outcome.problems << "Could not load " << item.result.file.getFileName() << ": " << item.audio.error << " ";
+                        outcome.kept.push_back(item.result.file);
+                        continue;
+                    }
+                    RecordedTake recorded;
+                    recorded.track = item.track; recorded.file = item.result.file; recorded.clip = item.audio.clip;
+                    recorded.placement = placeTake(firstTick, std::min<std::uint64_t>(frames, item.result.writtenFrames),
+                                                   finished.sampleRate, finished.bpm, latency,
+                                                   finished.punch ? finished.punchIn : 0, finished.punch ? finished.punchOut : -1);
+                    if (!recorded.placement.valid) { outcome.kept.push_back(item.result.file); continue; }
+                    takes.push_back(std::move(recorded));
+                }
+                if (!takes.empty()) {
+                    outcome.placed = addRecordedTakes(takes);
+                    if (outcome.placed == 0) {
+                        outcome.problems << "The takes could not be placed on the timeline (no free scene, or the song is full). ";
+                        for (const auto& t : takes) outcome.kept.push_back(t.file);
+                    }
+                }
+                if (onSongTakeFinished) onSongTakeFinished(outcome);
+            });
+            return juce::ThreadPoolJob::jobHasFinished;
+        };
+        pool.addJob(std::move(job));
+    }
     std::uint32_t lastTakeId{};
 
     ToneEngine& engine;

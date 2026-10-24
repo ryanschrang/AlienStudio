@@ -15,6 +15,7 @@
 #include "AudioCapture.h"
 #include "PluginRuntime.h"
 #include "MidiRecording.h"
+#include "SongRecording.h"
 #include "RackEngine.h"
 #include <array>
 #include <atomic>
@@ -57,7 +58,9 @@ public:
     // Record, count-in and metronome state shared with the GUI, and the delay the
     // audio device reports between rendering a sample and hearing it.
     alien::RecordControls recording;
-    std::atomic<int> deviceLatencySamples{0};
+    std::atomic<int> deviceLatencySamples{0}, deviceInputLatencySamples{0};
+    // A Song-view audio take (recording.audioTake): the armed tracks' sinks and what was captured.
+    std::unique_ptr<alien::SongTakeCapture> songTake = std::make_unique<alien::SongTakeCapture>();
     std::array<alien::DrumKitControls, sessionTracks> drumKits;
     std::array<NoteQueue, sessionTracks> drumAuditions;
     std::atomic<int> liveDrumTrack{-1};
@@ -122,6 +125,7 @@ public:
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
         prepare(device->getCurrentSampleRate());
         deviceLatencySamples.store(std::max(0, device->getOutputLatencyInSamples()));
+        deviceInputLatencySamples.store(std::max(0, device->getInputLatencyInSamples()));
     }
     // Shared by device startup and offline callback regression tests.
     void prepare(double rate) {
@@ -410,6 +414,7 @@ private:
         for (std::size_t t = 0; t < sessionTracks; ++t)
             for (int c = 0; c < 2; ++c) plugins->tracks[t].addFrom(c,0,clipBuffers[t],c,0,samples);
         addTrackInputs(samples, outputOffset);
+        if (modeNow == 2) captureSongTake(samples, outputOffset);
         renderRack(samples, playNow && modeNow == 3, playNow && modeNow == 2);
         plugins->effectsAndAlign(samples);
         for (int i = 0; i < samples; ++i) {
@@ -521,6 +526,55 @@ private:
             }
             if (peak > controls.inputPeak.load(std::memory_order_relaxed)) controls.inputPeak.store(peak, std::memory_order_relaxed);
         }
+    }
+    // A Song-view audio take: every armed track's sink receives the input of the samples whose song
+    // position is being recorded (all of them, or only those inside the punch range). Those samples
+    // are one run in the block, so each sink gets one append. The take ends by itself at the punch-out
+    // or when the loop wraps (each pass would need a take lane of its own).
+    void captureSongTake(int samples, int offset) noexcept {
+        auto& take = *songTake;
+        if (!recording.audioTake.load(std::memory_order_relaxed)
+            || recording.phase.load(std::memory_order_relaxed) != alien::RecordControls::recording) return;
+        const bool punch = take.punch.load(std::memory_order_relaxed);
+        const double punchIn = static_cast<double>(take.punchIn.load(std::memory_order_relaxed));
+        const double punchOut = static_cast<double>(take.punchOut.load(std::memory_order_relaxed));
+        const bool started = take.frames.load(std::memory_order_relaxed) > 0;
+        int first = -1, last = -1, ending = alien::SongTakeCapture::notEnded;
+        double previous = songTakeLastTick;
+        for (int i = 0; i < samples && ending == alien::SongTakeCapture::notEnded; ++i) {
+            const double tick = automationTicks[static_cast<std::size_t>(i)];
+            if (tick < 0.0) continue;
+            const bool capturing = (started || first >= 0);
+            // The playhead went back (the loop wrapped) or jumped ahead (a seek): the take would no longer be one piece.
+            if (capturing && tick + tickEpsilon < previous) { ending = alien::SongTakeCapture::loopWrapped; break; }
+            if (capturing && tick > previous + timelineRate + 1.0) { ending = alien::SongTakeCapture::jumped; break; }
+            previous = tick;
+            const bool inside = !punch || (tick + tickEpsilon >= punchIn && tick + tickEpsilon < punchOut);
+            if (inside) { if (first < 0) first = i; last = i; }
+            else if (capturing) ending = alien::SongTakeCapture::punchedOut;
+        }
+        songTakeLastTick = previous;
+        if (first >= 0) {
+            const int count = last - first + 1;
+            if (!started) take.firstTick.store(automationTicks[static_cast<std::size_t>(first)], std::memory_order_relaxed);
+            for (std::size_t t = 0; t < sessionTracks; ++t) {
+                auto* sink = take.sinks[t].load(std::memory_order_acquire);
+                if (sink == nullptr) continue;
+                const int input = tracks[t].input.load(std::memory_order_relaxed);
+                const float* left = inputChannel(input);
+                const float* right = sink->channels == 2 ? inputChannel(input + 1) : nullptr;
+                const float* from[2]{left != nullptr ? left + offset + first : nullptr,
+                                     right != nullptr ? right + offset + first : nullptr};
+                // A missing channel (the device lost it) records silence instead of shifting the take.
+                sink->append(from, sink->channels, count);
+            }
+            take.frames.fetch_add(static_cast<std::uint64_t>(count), std::memory_order_release);
+        }
+        if (ending != alien::SongTakeCapture::notEnded) endSongTake(ending);
+    }
+    void endSongTake(int reason) noexcept {
+        songTake->ended.store(reason, std::memory_order_relaxed);
+        endRecording();
     }
 
     // --- Arrangement timeline --------------------------------------------------------
@@ -921,6 +975,9 @@ private:
         pushRecordEvent(velocity > 0 ? alien::RecordEventKind::noteOn : alien::RecordEventKind::noteOff, note, velocity);
     }
     void endRecording() noexcept {
+        if (recording.audioTake.load(std::memory_order_relaxed)
+            && songTake->ended.load(std::memory_order_relaxed) == alien::SongTakeCapture::notEnded)
+            songTake->ended.store(alien::SongTakeCapture::stopped, std::memory_order_relaxed);
         pushRecordEvent(alien::RecordEventKind::end, 0, 0.0f);
         recording.phase.store(alien::RecordControls::idle);
         recording.targetTrack.store(-1, std::memory_order_relaxed);
@@ -943,7 +1000,17 @@ private:
     void beginRecording() noexcept {
         if (recording.phase.load() != alien::RecordControls::idle) return; // a take is already running
         const int track = recording.targetTrack.load(), scene = recording.targetScene.load();
-        if (!validRecordingTarget(track, scene) || patternMode.load() != 1) {
+        const bool audio = recording.audioTake.load();
+        if (audio) {
+            // A Song-view take: the song must be what plays, and at least one armed track must have a sink.
+            if (patternMode.load() != 2 || !songTake->anySink()) {
+                pushRecordEvent(alien::RecordEventKind::refused, 0, 0.0f);
+                return;
+            }
+            songTake->resetReport();
+            songTake->latencySamples.store(deviceInputLatencySamples.load() + deviceLatencySamples.load());
+            songTakeLastTick = -1.0;
+        } else if (!validRecordingTarget(track, scene) || patternMode.load() != 1) {
             pushRecordEvent(alien::RecordEventKind::refused, 0, 0.0f); // tells the GUI the request was refused
             recording.targetTrack.store(-1, std::memory_order_relaxed);
             recording.targetScene.store(-1, std::memory_order_relaxed);
@@ -971,8 +1038,8 @@ private:
             recording.phase.store(alien::RecordControls::recording);
             lastClickBeat = -1; // the first beat of playback is an accented click
             playing.store(true);
-        } else if (phase != alien::RecordControls::idle && patternMode.load() != 1) {
-            endRecording(); // the view changed to one that does not play Session clips
+        } else if (phase != alien::RecordControls::idle && patternMode.load() != (recording.audioTake.load() ? 2 : 1)) {
+            endRecording(); // the view changed to one that does not play what the take records over
         } else if (phase == alien::RecordControls::recording && !playing.load()) {
             endRecording(); // playback was stopped
         }
@@ -1140,6 +1207,7 @@ private:
     std::array<double, alien::PluginRuntime::blockSize> automationTicks{};
     std::int64_t lastClickBeat{-1};
     double countInBeats{}, countInTotalBeats{};
+    double songTakeLastTick{-1.0};   // song position of the last sample a Song-view take looked at
     int monitorTrack{-1}; // track whose instrument plays live input during a take, or -1
     alien::StepClock clock;
     struct RackBuses {

@@ -145,6 +145,7 @@ static void recordingSettingsFormatTests() {
         "default recording settings");
     source.recording.metronome = true; source.recording.metronomeVolume = 0.8f; source.recording.countInBars = 2;
     source.recording.latencyOffsetMs = -35; source.recording.replace = true;
+    source.recording.audioLatencyOffsetMs = 25; source.recording.punch = true;
     alien::SessionProjectData loaded;
     require(alien::parseSessionProject(alien::serializeSessionProject(source), loaded, error) && loaded.recording == source.recording,
         "recording settings round-trip");
@@ -167,11 +168,17 @@ static void recordingSettingsFormatTests() {
              {"countInBars", 3}, {"countInBars", -1}, {"countInBars", 1.5}, {"countInBars", "one"},
              {"latencyOffsetMs", 101}, {"latencyOffsetMs", -101}, {"latencyOffsetMs", 2.5},
              {"metronomeVolume", 1.5}, {"metronomeVolume", -0.1}, {"metronomeVolume", "loud"},
-             {"metronome", 1}, {"metronome", "yes"}, {"replace", 0}, {"replace", "no"}}) {
+             {"metronome", 1}, {"metronome", "yes"}, {"replace", 0}, {"replace", "no"},
+             {"audioLatencyOffsetMs", 101}, {"audioLatencyOffsetMs", 2.5}, {"audioLatencyOffsetMs", "x"}, {"punch", 1}, {"punch", "on"}}) {
         require(!withRecording([&](juce::DynamicObject& o) { o.setProperty(name, value); }, false).first,
             "recording settings that are out of range or of the wrong type are rejected");
     }
     require(!withRecording([](juce::DynamicObject& o) { o.removeProperty("replace"); }, false).first, "a recording object missing a field is rejected");
+    {
+        const auto older = withRecording([](juce::DynamicObject& o) { o.removeProperty("audioLatencyOffsetMs"); o.removeProperty("punch"); }, false);
+        require(older.first && older.second.audioLatencyOffsetMs == 0 && !older.second.punch && older.second.countInBars == 2,
+            "a project saved before audio takes opens with no audio offset and no punch");
+    }
     {
         alien::SessionProjectData fresh;
         auto json = juce::JSON::parse(alien::serializeSessionProject(fresh));

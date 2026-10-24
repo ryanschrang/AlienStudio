@@ -319,6 +319,9 @@ private:
         controller.onRecordingFinished = [this](const alien::ProjectController::RecordingOutcome& outcome) {
             finishedRecording(outcome);
         };
+        controller.onSongTakeFinished = [this](const alien::ProjectController::SongTakeOutcome& outcome) {
+            finishedSongTake(outcome);
+        };
         controller.onClipContentChanged = [this](int track, int scene) {
             sessionView.refreshSelectedClip();
             const auto& d = controller.document();
@@ -422,6 +425,8 @@ private:
     void toggleRecording() {
         if (controller.isRecording()) { controller.stopRecording(); return; }
         if (projectBusy || controller.isBusy()) return;
+        // In the Song view (or with Song mode on) Record records audio from the armed tracks onto the timeline.
+        if (!workspace.isDeviceView() && engine.patternMode.load() == alien::songMode) { startSongTake(); return; }
         // MIDI recording plays Session clips, so it needs the clip mode that Song mode would replace.
         if (songPlayback) {
             setSongMode(false);
@@ -435,6 +440,48 @@ private:
         }
         const auto start = controller.startRecording();
         if (!start.started) statusBar.setProjectStatus(start.reason, start.reason);
+    }
+
+    // Takes go next to the saved project (in "<project> takes"), or in Documents for an unsaved one.
+    juce::File songTakeFolder() const {
+        const auto project = controller.currentFile();
+        if (project.existsAsFile()) return project.getSiblingFile(project.getFileNameWithoutExtension() + " takes");
+        return juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("Alien Studio takes");
+    }
+    void startSongTake() {
+        if (activeCapture) { statusBar.setProjectStatus("Finish the Audio lab take first.", {}); return; }
+        auto* device = audio.getCurrentAudioDevice();
+        if (device == nullptr) { statusBar.setProjectStatus("No audio device is open. Choose one in Audio settings.", {}); return; }
+        releaseNotes();
+        const auto start = controller.startSongTake(songTakeFolder(), device->getCurrentSampleRate(),
+                                                    device->getActiveInputChannels().countNumberOfSetBits());
+        if (!start.started) { statusBar.setProjectStatus(start.reason, start.reason); return; }
+        const auto& rec = controller.document().recording;
+        statusBar.setProjectStatus(juce::String("Recording ") + juce::String(static_cast<int>(controller.songTakeTracks().size()))
+                                       + (controller.songTakeTracks().size() == 1 ? " track" : " tracks")
+                                       + (rec.punch ? " between the loop markers" : "") + ". Press Record or Stop to finish.",
+                                   "Takes are saved in " + songTakeFolder().getFullPathName());
+    }
+    void finishedSongTake(const alien::ProjectController::SongTakeOutcome& outcome) {
+        juce::String message;
+        if (outcome.refused) message = "Recording could not start. Open the Song view and try again.";
+        else if (outcome.recorded == 0) message = "Nothing was recorded" + juce::String(outcome.ended == 0 || outcome.ended == alien::SongTakeCapture::stopped
+                                                     ? "." : " (the playhead never reached the punch-in).");
+        else if (outcome.abandoned) message = "The project changed while recording, so the takes were kept on disk only.";
+        else {
+            message = "Recorded " + juce::String(outcome.placed) + (outcome.placed == 1 ? " take" : " takes") + " onto the Song";
+            if (outcome.ended == alien::SongTakeCapture::punchedOut) message += " (stopped at the punch-out)";
+            else if (outcome.ended == alien::SongTakeCapture::loopWrapped) message += " (stopped where the loop wrapped)";
+            else if (outcome.ended == alien::SongTakeCapture::jumped) message += " (stopped where the playhead jumped)";
+            message += ".";
+        }
+        if (outcome.problems.isNotEmpty()) message += " " + outcome.problems.trim();
+        juce::String detail = message;
+        for (const auto& file : outcome.kept) detail += "\n" + file.getFullPathName();
+        statusBar.setProjectStatus(message, detail);
+        sessionView.rebuildGrid();
+        sessionView.refreshFromDocument();
+        refreshExtraViews();
     }
 
     void finishedRecording(const alien::ProjectController::RecordingOutcome& outcome) {
