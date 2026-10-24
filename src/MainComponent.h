@@ -11,6 +11,7 @@
 #include "TimelineView.h"
 #include "SessionView.h"
 #include "TopBar.h"
+#include "ApplicationToolbar.h"
 #include "ViewModes.h"
 #include "ShellPanels.h"
 #include "StudioWidgets.h"
@@ -42,9 +43,11 @@ public:
         setSize(1280, 800);
 
         addAndMakeVisible(topBar);
+        addAndMakeVisible(applicationToolbar);
         addAndMakeVisible(statusBar);
         addAndMakeVisible(keyboardDock);
         wireTopBar();
+        wireApplicationToolbar();
         wireController();
         wireEditors();
 
@@ -141,10 +144,13 @@ public:
 
     void resized() override {
         auto area = getLocalBounds();
+        applicationToolbar.setBounds(area.removeFromTop(alien::ApplicationToolbar::height));
         topBar.setBounds(area.removeFromTop(alien::TopBar::height));
         statusBar.setBounds(area.removeFromBottom(alien::StatusBar::height));
-        keyboardDock.setBounds(area.removeFromBottom(getHeight() < 760 ? alien::KeyboardDock::compactHeight
-                                                                       : alien::KeyboardDock::fullHeight));
+        keyboardDock.setVisible(keyboardVisible);
+        keyboardDock.setBounds(keyboardVisible ? area.removeFromBottom(getHeight() < 760 ? alien::KeyboardDock::compactHeight
+                                                                                       : alien::KeyboardDock::fullHeight)
+                                               : juce::Rectangle<int>{});
         workspace.setBounds(area);
     }
 
@@ -203,6 +209,65 @@ public:
     }
 
 private:
+    void wireApplicationToolbar() {
+        using Menu=alien::ApplicationToolbar;
+        applicationToolbar.queryState=[this] {
+            Menu::State s;
+            s.busy=projectBusy||controller.isBusy();
+            s.recording=controller.isRecording()||activeCapture!=nullptr;
+            s.playing=engine.playing.load();s.view=tabs.getCurrentTabIndex();
+            s.deviceView=workspace.isDeviceView();s.keyboardVisible=keyboardVisible;
+            s.metronome=controller.document().recording.metronome;s.songMode=songPlayback;
+            s.hasSong=controller.timeline().hasRegions();
+            s.hasLoop=controller.timeline().loopEnd>controller.timeline().loopStart;
+            if(controller.canUndo())s.undoLabel=controller.undoLabel();
+            if(controller.canRedo())s.redoLabel=controller.redoLabel();
+            return s;
+        };
+        applicationToolbar.onCommand=[this](int id) {
+            using Menu=alien::ApplicationToolbar;
+            if(id>=Menu::viewBase&&id<Menu::viewBase+Menu::viewCount){showView(id-Menu::viewBase);return;}
+            switch(id) {
+                case Menu::newProject:newProject();break;
+                case Menu::openProject:openProject();break;
+                case Menu::save:controller.save();break;
+                case Menu::saveAs:controller.chooseSavePath(false);break;
+                case Menu::savePortable:controller.chooseSavePath(true);break;
+                case Menu::exportSong:showView(5);chooseWavExport();break;
+                case Menu::exportLoop:showView(5);chooseWavExport(controller.timeline().loopStart,controller.timeline().loopEnd);break;
+                case Menu::quit:if(auto* app=juce::JUCEApplication::getInstance())app->systemRequestedQuit();break;
+                case Menu::undo:undo();break;
+                case Menu::redo:redo();break;
+                case Menu::devices:case Menu::midiSettings:workspace.showDevices(true);break;
+                case Menu::keyboard:releaseNotes();keyboardVisible=!keyboardVisible;resized();break;
+                case Menu::playStop:togglePlay();break;
+                case Menu::record:if(activeCapture)finishRecording();else toggleRecording();break;
+                case Menu::metronome: {
+                    auto settings=controller.document().recording;settings.metronome=!settings.metronome;
+                    controller.setRecordSettings(settings);break;
+                }
+                case Menu::songMode:setSongMode(!songPlayback);break;
+                case Menu::audioSettings:showAudioSettings();break;
+                case Menu::recordingOptions:topBar.openRecordingOptions();break;
+                case Menu::plugins:showView(7);break;
+                case Menu::recoverTakes:showView(6);chooseTakeRecovery();break;
+                case Menu::shortcuts:
+                    juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,"Keyboard shortcuts",
+                        "F10: open application menus (arrows to navigate, Escape to close)\n"
+                        "Ctrl+,: audio device settings\nCtrl+N / O / S: new, open, save\n"
+                        "Ctrl+Shift+S: save as\nCtrl+Z: undo\nCtrl+Shift+Z / Ctrl+Y: redo\n"
+                        "Shift+Tab: switch editor / devices\nZ / X: typing-piano octave\n\n"
+                        "Editors keep their own shortcuts. Text fields keep normal text editing.","OK",this);break;
+                case Menu::about:
+                    juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,"About Alien Studio",
+                        "Alien Studio 0.1.0\nAn original, free and open-source digital audio workstation.\n\n"
+                        "Create patterns, arrange songs, record audio and MIDI, and host VST3 instruments and effects.","OK",this);break;
+                default:break;
+            }
+            applicationToolbar.refreshState();
+        };
+    }
+
     // Wiring ------------------------------------------------------------------
     void wireTopBar() {
         topBar.onViewSelected = [this](int index) { showView(index); };
@@ -658,7 +723,13 @@ private:
     // Ctrl+Z first; this only sees keys nothing else used.
     bool keyPressed(const juce::KeyPress& key, juce::Component*) override {
         const auto mods = key.getModifiers();
+        if(key.getKeyCode()==juce::KeyPress::F10Key&&!mods.isAnyModifierKeyDown()) {
+            releaseNotes();applicationToolbar.openMenus();return true;
+        }
         if (!mods.isCommandDown() || mods.isAltDown()) return false;
+        if(key.getKeyCode()==','&&!mods.isShiftDown()) {
+            applicationToolbar.menuItemSelected(alien::ApplicationToolbar::audioSettings,4);return true;
+        }
         const auto code = juce::CharacterFunctions::toUpperCase(static_cast<juce::juce_wchar>(key.getKeyCode()));
         if (code == 'Z' && !mods.isShiftDown()) { undo(); return true; }
         if ((code == 'Z' && mods.isShiftDown()) || code == 'Y') { redo(); return true; }
@@ -738,6 +809,7 @@ private:
     }
 
     void timerCallback() override {
+        applicationToolbar.refreshState();
         controller.pollRecording();
         const int recordPhase = engine.recording.phase.load();
         // A take the engine has not picked up yet already shows as recording.
@@ -1276,6 +1348,7 @@ private:
     alien::PluginRackState loadedMaster;
     std::unique_ptr<juce::FileChooser> pluginChooser, relinkChooser;
     alien::TopBar topBar;
+    alien::ApplicationToolbar applicationToolbar;
     alien::StatusBar statusBar;
     alien::KeyboardDock keyboardDock{keyboardState};
     alien::StepSequencerView stepsView{controller};
@@ -1300,6 +1373,7 @@ private:
     alien::ChannelRackView rackView{controller};
     bool projectBusy{}, closeAfterTake{};
     bool songPlayback{};   // "Song mode" (see setSongMode)
+    bool keyboardVisible{true}; // display preference for this window, not project content
     std::shared_ptr<alien::DiskRecording> activeCapture;
     int takeTrack{}, takeScene{};
     std::unique_ptr<juce::FileChooser> takeFileChooser, warpSourceChooser, warpFileChooser, exportFileChooser;

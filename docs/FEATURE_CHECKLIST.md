@@ -1,5 +1,17 @@
 # Alien Studio feature checklist
 
+## Application toolbar
+
+- Added File, Edit, View, Transport, Options and Help above the existing transport.
+- Audio/MIDI quick access, F10 menu access and Ctrl+, audio settings.
+- Project file/export/undo commands, all workspaces, on-screen-keyboard visibility,
+  transport toggles, recording options, plugin rack and take recovery use existing actions.
+- Menu labels, tick marks and enabled states are queried live; selections recheck
+  recording/busy state to reject stale commands. Stopping an active take remains available.
+- Validation: SongFlowTests covers commands, state, stale selections, direct settings
+  buttons, existing top-bar behavior and layouts from 960 to 1920 pixels. Windows
+  build/test results and remaining manual checks are recorded in the feature PR.
+
 Snapshot: 2026-10-20. Baseline: main at 5f73b08919afbedfeea969cc58fbdc1b56538e7d.
 Owner: maintainers. Update this file in each feature PR. Link the PR, exact tested
 commit, automated test result and Windows listening result before promoting a status.

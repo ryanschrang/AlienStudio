@@ -204,6 +204,7 @@ public:
     void setPosition(int step, bool running, const juce::String& source) { transportDisplay.setPosition(step, running, source); }
     void setTempo(int bpm) { tempo.setValue(bpm, juce::dontSendNotification); }
     bool isTempoDragging() const { return tempo.isMouseButtonDown(); }
+    void openRecordingOptions() { showRecordOptions(); }
 
     void setBusy(bool busy) {
         record.setEnabled(!busy || recordPhase != RecordControls::idle);

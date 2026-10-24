@@ -16,6 +16,24 @@ The long-term differentiator is **one shared project and audio engine** across a
 
 ## Roadmap
 
+### Application toolbar
+
+The menu row above the transport groups application commands into **File, Edit,
+View, Transport, Options and Help**. Audio settings (device, sample rate and
+buffer size) and MIDI input/controller settings also have direct buttons at
+the right. **F10** opens the menus; arrow keys navigate and Escape closes them.
+**Ctrl+,** opens audio settings.
+
+File includes Save as, portable copies and song/loop WAV export. Edit shows
+the current project undo/redo operation. View opens every workspace and can
+hide the on-screen keyboard for more editing space; that display choice lasts
+for the current window. Transport exposes playback, recording, metronome,
+Song mode and the existing recording options. Options also links to the plugin
+rack and interrupted-take recovery. Help lists common shortcuts and app details.
+Commands that would replace/save a project or change audio devices are disabled
+while recording or busy, and are checked again when selected from an open menu.
+The existing transport controls and editor shortcuts remain available.
+
 ### Implemented foundations
 - [x] C++20/JUCE/CMake project, Windows Debug/Release CI, and automated tests.
 - [x] Polyphonic lead/bass/pluck synth, USB MIDI input/sustain/reconnection, typing and mouse piano.
