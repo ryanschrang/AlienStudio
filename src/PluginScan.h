@@ -224,8 +224,23 @@ inline juce::String lastSystemError() {
 }
 #endif
 
+// The helper process (scan or check) must never wait for someone to click a system error dialog: nobody may be there
+// to see it, and it would hold the helper until its time limit. Windows shows one when a library cannot be loaded
+// ("Bad Image" for a damaged .vst3), when a drive is not ready, and when a process crashes. A process inherits this
+// setting from whoever starts it, so the helper sets it itself rather than relying on its parent (Alien Studio uses
+// the default, which shows them). Returns the new mode (0 on other systems).
+inline unsigned quietSystemErrorDialogs() {
+   #if JUCE_WINDOWS
+    SetErrorMode(GetErrorMode() | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+    return GetErrorMode();
+   #else
+    return 0;
+   #endif
+}
+
 // What "--scan-vst3 <bundle> <result.xml>" does. Returns the process exit code.
 inline int scanBundleInChild(const juce::String& bundlePath, const juce::File& output) {
+    quietSystemErrorDialogs();
     redirectOutputToFile(output);
     writeStage(output, "start");
     const juce::File bundle(bundlePath);
