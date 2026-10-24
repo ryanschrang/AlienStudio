@@ -67,6 +67,7 @@ public:
         tabs.addTab("Plugins", alien::ui::colours::surface, &pluginPanel, false);
         tabs.addTab("Channel rack", alien::ui::colours::surface, &rackView, false);   // index 8: appended so earlier tab numbers never change
         rackView.onTitleChanged = [this] { updateEditorTitle(); };
+        rackView.rackGrid().onOpenPianoRoll = [this](int channel) { openRackChannel(channel); };
         pluginPanel.onScanCommand = [this](alien::ScanCommand command) { handleScanCommand(command); };
         pluginPanel.onCancelScan = [this] { if (scanCancel) scanCancel->store(true); };
         pluginPanel.health = [this](int destination, int slot) { return pluginHost.health(destination, slot); };
@@ -245,7 +246,7 @@ private:
     void setSongMode(bool on) {
         songPlayback = on;
         topBar.setSongMode(on);
-        const int mode = alien::patternModeForTab(tabs.getCurrentTabIndex(), engine.patternMode.load(), songPlayback);
+        const int mode = modeForTab(tabs.getCurrentTabIndex());
         if (engine.patternMode.exchange(mode) != mode) releaseNotes();
         if (on && !controller.timeline().hasRegions())
             statusBar.setProjectStatus("Song mode is on, but the Song is empty. Place patterns or clips in the Song view.",
@@ -288,6 +289,7 @@ private:
             return;
         }
         controller.selectClip(row, source);
+        rollTarget = {};
         loadSelectedClip();
         sessionView.refreshFromDocument();
         if (controller.document().selectedClip().isAudioClip()) showView(2);
@@ -308,7 +310,7 @@ private:
             drumPanel.setBusy(busy || projectBusy);
             updateStatusState();
         };
-        controller.beforeDocumentReplaced = [this] { releaseNotes(); };
+        controller.beforeDocumentReplaced = [this] { releaseNotes(); rollTarget = {}; };
         controller.onDocumentReplaced = [this] {
             restorePlugins(true);
             refreshAll();
@@ -331,21 +333,46 @@ private:
 
     void wireEditors() {
         pianoRoll.onChange = [this] {
+            if (rollTarget.rack) {
+                if (loadingClip) return;
+                const auto& rack = controller.channelRack();
+                controller.setRackChannelNotes(rack.selectedPattern, rollTarget.channel, pianoRoll.getPattern(),
+                                               "rack-roll-" + juce::String(rollGesture), &rollFit);
+                rackView.refresh();
+                return;
+            }
             const auto& d = controller.document();
             controller.setClipPattern(d.selectedTrack, d.selectedScene, pianoRoll.getPattern(), !loadingClip);
             if (!loadingClip) sessionView.refreshSelectedClip();
         };
         pianoRoll.onEditCommitted = [this] {
             if (suppressPianoRollCommit) return;
+            if (rollTarget.rack) {
+                // The rack already has the edit (one undo step per gesture). Show the notes as the steps hold them.
+                ++rollGesture;
+                if (rollFit.moved || rollFit.merged || rollFit.clamped) {
+                    statusBar.setProjectStatus(rollFit.merged ? "A step holds one note, so the last note placed on each step was kept."
+                                               : rollFit.clamped ? "Rack steps reach two octaves either side of middle C and stop at the pattern's end."
+                                               : "Rack notes sit on whole steps and last one step.", {});
+                    rollFit = {};
+                    loadSelectedClip();
+                }
+                return;
+            }
             const auto& d = controller.document();
             controller.commit("Edit notes", d.selectedTrack, d.selectedScene);
         };
         pianoRoll.onAudition = [this](int note, float velocity) {
+            if (rollTarget.rack) {
+                if (velocity > 0) controller.previewRackChannel(rollTarget.channel, velocity, note - alien::rack::channelRootPitch);
+                return;
+            }
             if (velocity > 0) keyboardState.noteOn(3, note, velocity);
             else keyboardState.noteOff(3, note, 0);
         };
-        sessionView.onSelectionChanged = [this] { loadSelectedClip(); };
+        sessionView.onSelectionChanged = [this] { rollTarget = {}; loadSelectedClip(); };
         sessionView.onEditClip = [this](int track, int scene) {
+            rollTarget = {};
             controller.selectClip(track, scene);
             loadSelectedClip();
             if (controller.document().selectedClip().isAudioClip()) tabs.setCurrentTabIndex(2);
@@ -414,8 +441,12 @@ private:
     }
 
     void loadSelectedClip() {
+        if (rollTarget.rack && !controller.channelRack().validChannel(rollTarget.channel)) rollTarget = {};
         loadingClip = true;
-        pianoRoll.setPattern(controller.document().selectedClip().notes());
+        if (rollTarget.rack) {
+            const auto& rack = controller.channelRack();
+            pianoRoll.setPattern(alien::rack::channelNotes(rack.pattern(rack.selectedPattern), rollTarget.channel));
+        } else pianoRoll.setPattern(controller.document().selectedClip().notes());
         loadingClip = false;
         sessionView.refreshSelectedClip();
         updateEditorTitle();
@@ -425,6 +456,7 @@ private:
     void toggleRecording() {
         if (controller.isRecording()) { controller.stopRecording(); return; }
         if (projectBusy || controller.isBusy()) return;
+        if (rollTarget.rack) { rollTarget = {}; loadSelectedClip(); }   // takes go into Session clips
         // In the Song view (or with Song mode on) Record records audio from the armed tracks onto the timeline.
         if (!workspace.isDeviceView() && engine.patternMode.load() == alien::songMode) { startSongTake(); return; }
         // MIDI recording plays Session clips, so it needs the clip mode that Song mode would replace.
@@ -517,6 +549,7 @@ private:
     }
 
     void clearSelectedClip() {
+        if (rollTarget.rack) { rollTarget = {}; loadSelectedClip(); }   // "Clear clip" is about the Session clip
         const auto& d = controller.document();
         const int track = d.selectedTrack, scene = d.selectedScene;
         controller.removeAudio(track, scene);
@@ -528,6 +561,25 @@ private:
         controller.commit("Clear clip", track, scene);
         sessionView.setImportStatus("Cleared Track " + juce::String(track + 1) + ", Scene " + juce::String(scene + 1), {});
         sessionView.refreshSelectedClip();
+    }
+
+    // The engine plays what the view shows; the piano roll editing a rack channel plays the rack's pattern.
+    int modeForTab(int tab) const {
+        if (tab == 1 && rollTarget.rack && !songPlayback) return alien::rackMode;
+        return alien::patternModeForTab(tab, engine.patternMode.load(), songPlayback);
+    }
+    // FL Studio's channel piano roll: the piano roll edits a rack channel's steps in the selected pattern as notes.
+    void openRackChannel(int channel) {
+        if (!controller.channelRack().validChannel(channel) || controller.isRecording()) return;
+        rollTarget = {true, channel};
+        rollFit = {};
+        loadSelectedClip();
+        showView(1);
+        const int mode = modeForTab(1);
+        if (engine.patternMode.exchange(mode) != mode) releaseNotes();
+        pianoRoll.grabKeyboardFocus();
+        statusBar.setProjectStatus("Editing " + juce::String(controller.channelRack().info[static_cast<std::size_t>(channel)].name)
+                                       + " as notes. Each note is one step; pick a Session clip to edit clips again.", {});
     }
 
     void showView(int index) {
@@ -546,8 +598,16 @@ private:
         const auto dot = juce::String(juce::CharPointer_UTF8("  \xc2\xb7  "));
         switch (tabs.getCurrentTabIndex()) {
         case 0: workspace.setEditorTitle("Step Sequencer", stepsView.subtitle()); break;
-        case 1: workspace.setEditorTitle("Piano Roll", d.tracks[static_cast<std::size_t>(d.selectedTrack)].name + dot
-                                         + d.scenes[static_cast<std::size_t>(d.selectedScene)].name); break;
+        case 1:
+            if (rollTarget.rack) {
+                const auto& rack = controller.channelRack();
+                const auto& name = rack.info[static_cast<std::size_t>(rollTarget.channel)].name;
+                const auto& pattern = rack.patternNames[static_cast<std::size_t>(rack.selectedPattern)];
+                workspace.setEditorTitle("Piano Roll", "Channel Rack" + dot + juce::String::fromUTF8(name.c_str(), static_cast<int>(name.size()))
+                                         + dot + juce::String::fromUTF8(pattern.c_str(), static_cast<int>(pattern.size())));
+            } else workspace.setEditorTitle("Piano Roll", d.tracks[static_cast<std::size_t>(d.selectedTrack)].name + dot
+                                            + d.scenes[static_cast<std::size_t>(d.selectedScene)].name);
+            break;
         case 2: workspace.setEditorTitle("Session", sessionView.subtitle()); break;
         case 3: workspace.setEditorTitle("Mixer", juce::String(d.trackCount()) + " channels"); break;
         case 4: workspace.setEditorTitle("Drum Sampler", "Eight sample pads per track"); break;
@@ -670,7 +730,8 @@ private:
     // Callbacks ---------------------------------------------------------------
     void changeListenerCallback(juce::ChangeBroadcaster*) override {
         const int tab = tabs.getCurrentTabIndex();
-        const int newMode = alien::patternModeForTab(tab, engine.patternMode.load(), songPlayback);
+        const int newMode = modeForTab(tab);
+        if (tab == 1 && rollTarget.rack) loadSelectedClip();   // the rack may have changed while another view showed
         if (engine.patternMode.exchange(newMode) != newMode) releaseNotes();
         else pianoRoll.releaseAudition();
         syncViewButtons();
@@ -682,7 +743,7 @@ private:
         // A take the engine has not picked up yet already shows as recording.
         topBar.setRecordState(controller.isRecording() && recordPhase == alien::RecordControls::idle
                                   ? static_cast<int>(alien::RecordControls::recording) : recordPhase);
-        pianoRoll.setLocked(controller.isRecording() && controller.recordingTrack() == controller.document().selectedTrack
+        pianoRoll.setLocked(!rollTarget.rack && controller.isRecording() && controller.recordingTrack() == controller.document().selectedTrack
                             && controller.recordingScene() == controller.document().selectedScene);
         const bool isPlaying = engine.playing.load();
         topBar.setPlaying(isPlaying);
@@ -726,7 +787,8 @@ private:
                 else keyboardState.noteOff(4, note, 0.0f);
             }
         }
-        pianoRoll.setPlayheadStep(engine.sessionTrackPositions[static_cast<std::size_t>(d.selectedTrack)].load() / 1000.0);
+        if (rollTarget.rack) pianoRoll.setPlayheadStep(rackMode && isPlaying ? engine.rackStep.load() : -1.0);
+        else pianoRoll.setPlayheadStep(engine.sessionTrackPositions[static_cast<std::size_t>(d.selectedTrack)].load() / 1000.0);
         pluginHost.poll();   // plugins that failed on the audio thread are reported here, never from it
         if (pluginHost.changed.exchange(false)) controller.runtimePluginEdited();
         if (++statusTicks % 10 == 0) updateEngineStatus();
@@ -1226,6 +1288,11 @@ private:
     TypingPianoRouter typingInput{*this, keyboardState};
     juce::Component::SafePointer<juce::Component> keySource;
     bool loadingClip{}, suppressPianoRollCommit{}, wasDirty{};
+    // What the piano roll edits: the selected Session clip, or a Channel Rack channel in the rack's selected pattern.
+    struct RollTarget { bool rack{}; int channel{}; };
+    RollTarget rollTarget;
+    int rollGesture{};                  // one undo step per piano-roll gesture on a rack channel
+    alien::rack::ChannelNotesFit rollFit;
     int statusTicks{};
     alien::DrumSamplerPanel drumPanel;
     alien::TimelineView timelineView{controller};

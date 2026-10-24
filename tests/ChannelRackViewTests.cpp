@@ -5,6 +5,7 @@
 // menus and the rename box go through test seams.
 #include "AudioFileWrite.h"
 #include "ChannelRackView.h"
+#include "RackChannelNotes.h"
 #include "TopBar.h"
 #include "StudioTheme.h"
 #include <algorithm>
@@ -1062,8 +1063,83 @@ static void rowToolCommands() {
     require(rig.controller.undo() && rig.rack().channelCount == 4, "duplicate undoes as one edit");
 }
 
+// A channel opened in the piano roll: its steps become notes and edited notes become steps again.
+static void channelPianoRollChecks() {
+    using rack::channelRootPitch;
+    Rig rig;
+    auto& c = rig.controller;
+    // Steps -> notes.
+    c.editRack("Fixture", [](Project& p) {
+        bool ok = p.setStep(p.selectedPattern, 1, 0, Step{true, 90, 10, 0, 100});
+        ok = p.setStep(p.selectedPattern, 1, 4, Step{true, 127, 0, 7, 50}) && ok;
+        return p.setStep(p.selectedPattern, 1, 15, Step{true, 20, -5, -24, 100}) && ok;
+    });
+    const auto& pattern = rig.rack().pattern(rig.rack().selectedPattern);
+    auto notes = rack::channelNotes(pattern, 1);
+    require(notes.count == 3 && notes.loopSteps == pattern.length, "each lit step is a note, over the pattern's length");
+    require(notes.notes[0].startStep == 0.0 && notes.notes[0].lengthSteps == 1.0 && notes.notes[0].pitch == channelRootPitch,
+            "a step is a one-step note; pitch 0 is middle C");
+    require(notes.notes[1].pitch == channelRootPitch + 7 && std::abs(notes.notes[1].velocity - 1.0f) < 1.0e-6f
+            && std::abs(notes.notes[1].probability - 0.5f) < 1.0e-6f, "the step's pitch, velocity and chance carry over");
+    require(notes.notes[2].pitch == channelRootPitch - 24 && notes.notes[2].startStep == 15.0, "down to two octaves below");
+
+    // Notes -> steps.
+    rack::ChannelNotesFit fit;
+    auto row = rack::stepsFromNotes(notes, pattern, 1, &fit);
+    require(row == pattern.steps[1] && !fit.moved && !fit.merged && !fit.clamped, "unchanged notes give back the same steps");
+    notes.add(channelRootPitch + 3, 8.4, 2.0, 0.5f);
+    notes.add(channelRootPitch + 30, 9.0, 1.0);
+    notes.add(channelRootPitch, 70.0, 1.0);
+    row = rack::stepsFromNotes(notes, pattern, 1, &fit);
+    require(row[8].on && row[8].pitch == 3 && row[8].velocity == 64 && fit.moved, "an off-grid, longer note lands on its nearest step");
+    require(row[9].on && row[9].pitch == 24 && fit.clamped, "a note above the range is held at its top");
+    require(row[0].pan == 10 && row[15].pan == -5, "steps keep their pan");
+    notes.add(channelRootPitch - 2, 0.0, 1.0, 0.3f);
+    row = rack::stepsFromNotes(notes, pattern, 1, &fit);
+    require(row[0].pitch == -2 && row[0].velocity == 38 && fit.merged, "of two notes on a step the last one placed wins");
+    PianoRollPattern empty; empty.loopSteps = pattern.length;
+    c.editRack("Hidden step", [&](Project& p) { return p.setStep(p.selectedPattern, 1, 40, Step{true}); });
+    row = rack::stepsFromNotes(empty, rig.rack().pattern(rig.rack().selectedPattern), 1);
+    require(!row[0].on && !row[4].on && !row[15].on && row[40].on, "removing every note clears the pattern's steps but not hidden ones");
+
+    // Through the controller: one undo step per gesture key.
+    auto edited = rack::channelNotes(rig.rack().pattern(rig.rack().selectedPattern), 1);
+    edited.add(channelRootPitch + 5, 2.0, 1.0);
+    require(c.setRackChannelNotes(rig.rack().selectedPattern, 1, edited, "gesture-1") && rig.step(1, 2).on && rig.step(1, 2).pitch == 5,
+            "the controller writes the notes into the channel's steps");
+    edited.add(channelRootPitch + 1, 3.0, 1.0);
+    require(c.setRackChannelNotes(rig.rack().selectedPattern, 1, edited, "gesture-1") && rig.step(1, 3).on, "a second change in the same gesture");
+    require(c.undoLabel() == "Edit channel notes" && c.undo() && !rig.step(1, 2).on && !rig.step(1, 3).on, "one gesture is one undo step");
+    require(!c.setRackChannelNotes(rig.rack().selectedPattern, 1, rack::channelNotes(rig.rack().pattern(rig.rack().selectedPattern), 1)),
+            "notes that change nothing make no undo step");
+    require(!c.setRackChannelNotes(rig.rack().selectedPattern, 99, edited) && !c.setRackChannelNotes(99, 1, edited), "invalid targets are refused");
+
+    // Auditions can carry a pitch; a plain channel number still auditions at the step's pitch 0.
+    require(ToneEngine::rackAuditionEvent(3) == 3 && ToneEngine::rackAuditionEvent(15, -24) == (15 | (1 << 8))
+            && ToneEngine::rackAuditionEvent(0, 24) == (49 << 8), "audition events pack the channel and pitch");
+    rig.render(4096);
+    c.previewRackChannel(0, 1.0f, 12);
+    require(rig.render(4096) > 0.01f, "a pitched preview sounds");
+    rig.render(48000);
+    rig.engine.rackAuditions.push(0, 1.0f);
+    require(rig.render(4096) > 0.01f, "a plain channel preview still sounds");
+
+    // The rack's menu command and Ctrl+P.
+    auto& g = rig.grid;
+    require(!entry(entries(g.channelMenu(2)), ChannelRackGrid::cmdPianoRoll)->enabled, "without a piano roll to open, the item is disabled");
+    int opened = -1;
+    g.onOpenPianoRoll = [&](int channel) { opened = channel; };
+    require(entry(entries(g.channelMenu(2)), ChannelRackGrid::cmdPianoRoll)->enabled, "Open in piano roll is in the channel menu");
+    g.runChannelCommand(2, ChannelRackGrid::cmdPianoRoll);
+    require(opened == 2 && g.selectedChannel() == 2, "it opens that channel and selects it");
+    g.selectChannel(3);
+    require(g.keyPressed(juce::KeyPress('p', juce::ModifierKeys::commandModifier, 0)) && opened == 3, "Ctrl+P opens the selected channel");
+    std::cout << "PASS: channel piano roll\n";
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    channelPianoRollChecks();
     lookChecks();
     rowToolCommands();
     geometryChecks();
