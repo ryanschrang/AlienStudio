@@ -1091,3 +1091,9 @@ the unfinished take remains recoverable. Recovery chooses a new sibling filename
 when needed. Keep unfinished WAVs and journals together until recovery succeeds;
 never remove original source recordings to make space automatically. The
 tempo-warp renderer also streams from disk with no one-minute input cap.
+
+### Chord progression builder
+
+In Piano Roll, choose **Chord progression** in the processing tools list and click **Edit...**. Set a tonic MIDI note (48 = C3), Major or Natural minor, and four scale degrees. The initial 1-5-6-4 sequence becomes I-V-vi-IV in major; each triad's quality comes from the chosen scale. Change individual degrees to write your own sequence.
+
+**Steps / chord** uses sixteenth notes: 16 steps is one 4/4 bar. Apply inserts all four chords at the insertion cursor and selects their notes for further editing, strumming or arpeggiation. Existing notes remain. The sequence must fit inside the current loop and note limit; failures leave the clip unchanged. Undo/redo treats insertion as one edit. Use the normal transport to hear the inserted sequence. This tool does not copy another DAW's UI or include third-party chord content.
