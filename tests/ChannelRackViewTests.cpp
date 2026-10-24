@@ -1062,8 +1062,118 @@ static void rowToolCommands() {
     require(rig.controller.undo() && rig.rack().channelCount == 4, "duplicate undoes as one edit");
 }
 
+// Several channels selected at once: Ctrl/Shift-click and Ctrl+A choose them, and the header controls and
+// channel commands of any of them act on all of them as one undo step.
+static void multiSelectChecks() {
+    Rig rig;
+    auto& g = rig.grid;
+    using Grid = ChannelRackGrid;
+    const juce::ModifierKeys ctrl(juce::ModifierKeys::leftButtonModifier | juce::ModifierKeys::commandModifier);
+    const juce::ModifierKeys shift(juce::ModifierKeys::leftButtonModifier | juce::ModifierKeys::shiftModifier);
+    auto name = [&](int row) { return g.nameRect(row).getCentre(); };
+    auto selection = [&] { return g.selectedChannels(); };
+    require(selection() == std::vector<int>{0} && g.selectedChannel() == 0, "one channel is selected to begin with");
+
+    rig.click(name(2), ctrl);
+    require(selection() == std::vector<int>({0, 2}) && g.selectedChannel() == 2, "Ctrl-click adds a channel and shows it in the graph editor");
+    rig.click(name(2), ctrl);
+    require(selection() == std::vector<int>{0} && g.selectedChannel() == 0, "Ctrl-click again takes it out");
+    rig.click(name(0), ctrl);
+    require(selection() == std::vector<int>{0}, "the last selected channel stays selected");
+    rig.click(name(3), shift);
+    require(selection() == std::vector<int>({0, 1, 2, 3}) && g.selectedChannel() == 3, "Shift-click selects a range");
+    rig.click(name(1));
+    require(selection() == std::vector<int>{1}, "a plain click selects only that channel");
+    rig.click(g.lampRect(3).getCentre(), ctrl);
+    require(selection() == std::vector<int>({1, 3}), "Ctrl-click on the lamp works too");
+    rig.click(rig.cellCentre(1, 0));
+    require(selection() == std::vector<int>({1, 3}) && g.selectedChannel() == 1 && rig.step(1, 0).on,
+            "painting a step of a selected channel keeps the selection");
+    rig.click(rig.cellCentre(1, 0));
+
+    // Mute and solo: all selected channels take the clicked one's new state, as one undo step.
+    rig.controller.editRack("Mute 3", [](Project& p) { auto c = p.channels[3]; c.mute = true; return p.setChannel(3, c); });
+    rig.click(g.muteRect(1).getCentre());
+    require(rig.rack().channels[1].mute && rig.rack().channels[3].mute && !rig.rack().channels[0].mute, "mute acts on every selected channel");
+    require(rig.controller.undoLabel() == "Mute channels" && rig.controller.undo() && !rig.rack().channels[1].mute && rig.rack().channels[3].mute,
+            "and is one undo step");
+    rig.click(g.soloRect(3).getCentre());
+    require(rig.rack().channels[1].solo && rig.rack().channels[3].solo && selection() == std::vector<int>({1, 3}), "solo too, keeping the selection");
+    rig.controller.undo();
+    rig.click(g.muteRect(0).getCentre());
+    require(rig.rack().channels[0].mute && !rig.rack().channels[1].mute && selection() == std::vector<int>{0},
+            "the light of an unselected channel acts on that channel only and selects it");
+    rig.controller.undo();
+
+    // Knobs move together by the same amount, each within its own range.
+    g.selectChannel(1); g.toggleChannelSelection(2);
+    rig.controller.editRack("Set volumes", [](Project& p) {
+        auto a = p.channels[1]; a.volume = 0.5f; auto b = p.channels[2]; b.volume = 0.9f;
+        return p.setChannel(1, a) && p.setChannel(2, b);
+    });
+    const auto knob = g.volumeRect(1).getCentre();
+    g.mouseDown(mouse(g, knob));
+    g.mouseDrag(mouse(g, knob.translated(0, -30), leftButton, 1, true));
+    g.mouseUp(mouse(g, knob.translated(0, -30)));
+    require(std::abs(rig.rack().channels[1].volume - 0.68f) < 1.0e-4f && rig.rack().channels[2].volume == 1.0f,
+            "dragging a selected channel's knob turns every selected one by the same amount, each stopping at its limit");
+    require(rig.rack().channels[0].volume == rack::defaultChannelVolume, "an unselected channel is untouched");
+    require(rig.controller.undo() && rig.rack().channels[1].volume == 0.5f && rig.rack().channels[2].volume == 0.9f, "one knob drag is one undo step");
+    rig.controller.editRack("Pan", [](Project& p) { auto a = p.channels[1]; a.pan = 0.5f; auto b = p.channels[2]; b.pan = -0.3f; return p.setChannel(1, a) && p.setChannel(2, b); });
+    g.mouseDown(mouse(g, g.panRect(2).getCentre(), leftButton, 2));
+    require(rig.rack().channels[1].pan == 0.0f && rig.rack().channels[2].pan == 0.0f, "double-click resets the knob on every selected channel");
+
+    // Channel commands.
+    g.selectChannel(0); g.toggleChannelSelection(2);
+    g.runChannelCommand(2, Grid::cmdFill4);
+    require(rig.step(0, 4).on && rig.step(2, 4).on && !rig.step(1, 4).on, "pattern tools fill every selected channel");
+    require(rig.controller.undo() && !rig.step(0, 4).on && !rig.step(2, 4).on, "in one undo step");
+    g.runChannelCommand(0, Grid::outputBase);
+    require(rig.rack().channels[0].output == 0 && rig.rack().channels[2].output == 0 && rig.rack().channels[1].output == rack::masterOutput,
+            "routing sends every selected channel");
+    rig.controller.undo();
+    const auto names = std::vector<std::string>{rig.rack().info[0].name, rig.rack().info[1].name, rig.rack().info[2].name, rig.rack().info[3].name};
+    g.runChannelCommand(0, Grid::cmdMoveDown);
+    require(rig.rack().info[1].name == names[0] && rig.rack().info[3].name == names[2] && rig.rack().info[0].name == names[1],
+            "the selected channels move down together");
+    require(selection() == std::vector<int>({1, 3}) && g.selectedChannel() == 1, "and stay selected");
+    require(!entry(entries(g.channelMenu(1)), Grid::cmdMoveDown)->enabled, "they cannot move past the end");
+    require(rig.controller.undo() && rig.rack().info[0].name == names[0], "moving is one undo step");
+    g.selectChannel(0); g.toggleChannelSelection(2);
+    const auto menu = entries(g.channelMenu(2));
+    require(entry(menu, Grid::cmdDelete)->text == "Delete 2 channels" && entry(menu, Grid::cmdDuplicate)->text == "Duplicate 2 channels",
+            "the menu says how many channels a command acts on");
+    g.runChannelCommand(2, Grid::cmdDuplicate);
+    require(rig.rack().channelCount == 6 && rig.rack().info[1].name == names[0] + " copy" && rig.rack().info[4].name == names[2] + " copy",
+            "duplicating puts each copy under its original");
+    require(selection() == std::vector<int>({1, 4}), "and selects the copies");
+    rig.controller.undo();
+    g.refresh();
+    g.selectChannel(0); g.toggleChannelSelection(2);
+    g.runChannelCommand(0, Grid::cmdDelete);
+    require(rig.rack().channelCount == 2 && rig.rack().info[0].name == names[1] && rig.rack().info[1].name == names[3],
+            "deleting removes every selected channel");
+    require(selection() == std::vector<int>{0}, "and selects the channel in the first one's place");
+    require(rig.controller.undoLabel() == "Delete channels" && rig.controller.undo() && rig.rack().channelCount == 4, "in one undo step");
+    g.refresh();
+
+    // A channel outside the selection acts alone.
+    g.selectChannel(0); g.toggleChannelSelection(1);
+    g.runChannelCommand(3, Grid::cmdClearSteps);
+    require(selection() == std::vector<int>({0, 1}), "a command on another channel leaves the selection alone");
+
+    // Ctrl+A, and undo shrinking the rack.
+    require(g.keyPressed(juce::KeyPress('a', juce::ModifierKeys::commandModifier, 0)) && selection() == std::vector<int>({0, 1, 2, 3}),
+            "Ctrl+A selects every channel");
+    rig.controller.editRack("Remove", [](Project& p) { return p.removeChannel(3) && p.removeChannel(2); });
+    g.refresh();
+    require(selection() == std::vector<int>({0, 1}), "channels that are gone leave the selection");
+    std::cout << "PASS: several channels selected at once\n";
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    multiSelectChecks();
     lookChecks();
     rowToolCommands();
     geometryChecks();

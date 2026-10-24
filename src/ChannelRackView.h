@@ -38,18 +38,64 @@ public:
     std::function<void(const juce::String&, const juce::String&, std::function<void(const juce::String&)>)> nameRequester;
 
     // ---- state ---------------------------------------------------------------
+    // The selected channel is the one the graph editor shows. Several channels can be selected as in FL Studio
+    // (Ctrl-click adds or removes one, Shift-click a range, Ctrl+A all); the selected channel is always one of
+    // them, and the channel commands, knobs, mute and solo of any of them act on all of them as one undo step.
+    // The selection belongs to the view, not the project.
     int selectedChannel() const noexcept { return selected; }
     void selectChannel(int channel) {
-        const int count = project().channelCount;
-        const int next = count > 0 ? juce::jlimit(0, count - 1, channel) : 0;
-        if (next == selected) return;
-        selected = next; repaint();
+        const int next = clampRow(channel);
+        const auto mask = bit(next);
+        if (next == selected && marked == mask) return;
+        selected = anchor = next; marked = mask; repaint();
+        if (onSelectionChanged) onSelectionChanged();
+    }
+    // Shows `channel` in the graph editor, keeping the selection when it is part of it (a click on a step or a knob).
+    void focusChannel(int channel) {
+        if (!isChannelSelected(channel)) { selectChannel(channel); return; }
+        if (channel == selected) return;
+        selected = channel; repaint();
+        if (onSelectionChanged) onSelectionChanged();
+    }
+    bool isChannelSelected(int row) const noexcept { return row >= 0 && row < project().channelCount && (marked & bit(row)) != 0; }
+    std::vector<int> selectedChannels() const {
+        std::vector<int> rows;
+        for (int r = 0; r < project().channelCount; ++r) if (marked & bit(r)) rows.push_back(r);
+        return rows;
+    }
+    // Ctrl-click: adds a channel to the selection (it becomes the one shown) or takes it out (unless it is the last).
+    void toggleChannelSelection(int channel) {
+        if (!project().validChannel(channel)) return;
+        if (isChannelSelected(channel)) {
+            if (marked == bit(channel)) { anchor = channel; return; }
+            marked &= ~bit(channel);
+            if (selected == channel) selected = selectedChannels().front();
+        } else { marked |= bit(channel); selected = channel; }
+        anchor = channel; repaint();
+        if (onSelectionChanged) onSelectionChanged();
+    }
+    // Shift-click: every channel from the last one clicked to this one.
+    void extendSelection(int channel) {
+        if (!project().validChannel(channel)) return;
+        const int from = clampRow(anchor);
+        marked = 0;
+        for (int r = juce::jmin(from, channel); r <= juce::jmax(from, channel); ++r) marked |= bit(r);
+        selected = channel; repaint();
+        if (onSelectionChanged) onSelectionChanged();
+    }
+    void selectAllChannels() {
+        if (project().channelCount == 0) return;
+        marked = 0;
+        for (int r = 0; r < project().channelCount; ++r) marked |= bit(r);
+        repaint();
         if (onSelectionChanged) onSelectionChanged();
     }
     // Called after the document changed behind the view's back (undo, open, new).
     void refresh() {
-        const int count = project().channelCount;
-        selected = count > 0 ? juce::jlimit(0, count - 1, selected) : 0;
+        selected = clampRow(selected);
+        anchor = clampRow(anchor);
+        marked &= project().channelCount >= 32 ? ~0u : (1u << project().channelCount) - 1u;
+        marked |= bit(selected);
         scrollX = juce::jlimit(0, maxScroll(), scrollX);
         scrollY = juce::jlimit(0, maxScrollY(), scrollY);
         repaint();
@@ -138,8 +184,41 @@ public:
             return p.setChannel(row, channel);
         }, key);
     }
-    void toggleMute(int row) { changeChannel(row, "Mute channel", [](rack::Channel& c) { c.mute = !c.mute; }); repaint(); }
-    void toggleSolo(int row) { changeChannel(row, "Solo channel", [](rack::Channel& c) { c.solo = !c.solo; }); repaint(); }
+    // The channels an edit of `row` applies to: the whole selection when `row` is part of it, else just `row`.
+    std::vector<int> targetsOf(int row) const {
+        if (isChannelSelected(row)) return selectedChannels();
+        return project().validChannel(row) ? std::vector<int>{row} : std::vector<int>{};
+    }
+    // `change` applied to each of `rows`, as one undo step.
+    bool changeChannels(const std::vector<int>& rows, const juce::String& label, const std::function<void(int, rack::Channel&)>& change,
+                        const juce::String& key = {}) {
+        return controller.editRack(label, [&](rack::Project& p) {
+            bool any = false;
+            for (const int row : rows) {
+                if (!p.validChannel(row)) continue;
+                auto channel = p.channels[static_cast<std::size_t>(row)];
+                change(row, channel);
+                any = p.setChannel(row, channel) || any;
+            }
+            return any;
+        }, key);
+    }
+    // Every target takes the clicked channel's new state, so a mixed selection ends up all muted (or all not).
+    void toggleMute(int row) {
+        if (!project().validChannel(row)) return;
+        const bool on = !project().channels[static_cast<std::size_t>(row)].mute;
+        const auto rows = targetsOf(row);
+        changeChannels(rows, plural("Mute channel", rows), [on](int, rack::Channel& c) { c.mute = on; }); repaint();
+    }
+    void toggleSolo(int row) {
+        if (!project().validChannel(row)) return;
+        const bool on = !project().channels[static_cast<std::size_t>(row)].solo;
+        const auto rows = targetsOf(row);
+        changeChannels(rows, plural("Solo channel", rows), [on](int, rack::Channel& c) { c.solo = on; }); repaint();
+    }
+    static juce::String plural(const juce::String& label, const std::vector<int>& rows) {
+        return rows.size() > 1 ? label + "s" : label;
+    }
     void preview(int row, float velocity = 1.0f) { controller.previewRackChannel(row, velocity); }
     bool sampleOffline(int row) const { return controller.rackChannelOffline(row); }
 
@@ -151,7 +230,7 @@ public:
         strokeKey = "rack-stroke-" + juce::String(++strokeCounter);
         paintValue = eraseOnly ? false : !project().pattern(project().selectedPattern).steps[static_cast<std::size_t>(row)][static_cast<std::size_t>(step)].on;
         drag = Drag::steps; lastRow = row; lastStep = step;
-        selectChannel(row);
+        focusChannel(row);
         setStep(row, step, paintValue, strokeKey);
         if (paintValue) preview(row, velocityOf(row, step));
         repaintCell(row, step);
@@ -203,9 +282,12 @@ public:
         for (int g = 1; g <= rack::maxChokeGroup; ++g) choke.addItem(chokeBase + g - 1, "Group " + juce::String(g), true, channel.chokeGroup == g);
         menu.addSubMenu("Choke group (cuts other sounds in the group)", choke);
         menu.addSeparator();
+        const auto rows = targetsOf(row);
+        const int n = static_cast<int>(rows.size());
         menu.addItem(cmdMute, "Mute", true, channel.mute);
         menu.addItem(cmdSolo, "Solo", true, channel.solo);
-        menu.addItem(cmdDuplicate, "Duplicate channel", project().channelCount < rack::maxChannels);
+        menu.addItem(cmdDuplicate, n > 1 ? "Duplicate " + juce::String(n) + " channels" : juce::String("Duplicate channel"),
+                     project().channelCount + n <= rack::maxChannels);
         menu.addItem(cmdCopyRow, "Copy steps"); menu.addItem(cmdPasteRow, "Paste steps", rowClipboard.has_value());
         juce::PopupMenu tools;
         tools.addItem(cmdFill2, "Fill every 2 steps"); tools.addItem(cmdFill4, "Fill every 4 steps"); tools.addItem(cmdFill8, "Fill every 8 steps");
@@ -214,11 +296,11 @@ public:
         tools.addItem(cmdRepeat4, "Repeat first 4 steps"); tools.addItem(cmdRepeat8, "Repeat first 8 steps");
         tools.addItem(cmdRepeat16, "Repeat first 16 steps", length() > 16);
         menu.addSubMenu("Pattern tools", tools);
-        menu.addItem(cmdClearSteps, "Clear this channel's steps");
+        menu.addItem(cmdClearSteps, n > 1 ? "Clear the steps of " + juce::String(n) + " channels" : juce::String("Clear this channel's steps"));
         menu.addSeparator();
-        menu.addItem(cmdMoveUp, "Move up", row > 0);
-        menu.addItem(cmdMoveDown, "Move down", row + 1 < project().channelCount);
-        menu.addItem(cmdDelete, "Delete channel", project().channelCount > 0);
+        menu.addItem(cmdMoveUp, "Move up", rows.front() > 0);
+        menu.addItem(cmdMoveDown, "Move down", rows.back() + 1 < project().channelCount);
+        menu.addItem(cmdDelete, n > 1 ? "Delete " + juce::String(n) + " channels" : juce::String("Delete channel"), project().channelCount > 0);
         return menu;
     }
     juce::PopupMenu outputMenu(int row) const {
@@ -234,23 +316,46 @@ public:
     }
     void showChannelMenu(int row) { launchMenu(channelMenu(row), nameRect(row), row); }
     void showOutputMenu(int row) { launchMenu(outputMenu(row), routeRect(row), row); }
+    // Runs a command of `row`'s menu. When `row` is one of several selected channels the command acts on all of
+    // them as one undo step, except Rename, Load sample and Copy steps, which only make sense for one.
     void runChannelCommand(int row, int id) {
         if (!project().validChannel(row)) return;
+        const auto rows = targetsOf(row);
+        // Each target in turn, as one undo step: true when anything changed.
+        const auto forEach = [&](const juce::String& label, const std::function<bool(rack::Project&, int)>& edit) {
+            return controller.editRack(label, [&](rack::Project& p) {
+                bool any = false;
+                for (const int r : rows) any = edit(p, r) || any;
+                return any;
+            });
+        };
         if (id == cmdCopyRow) { rowClipboard = project().pattern(project().selectedPattern).steps[static_cast<std::size_t>(row)]; return; }
         if (id == cmdPasteRow && rowClipboard) {
             const auto copied = *rowClipboard;
-            controller.editRack("Paste steps", [=](rack::Project& p) { return p.pasteRow(p.selectedPattern, row, copied); }); changed(); return;
+            forEach("Paste steps", [&](rack::Project& p, int r) { return p.pasteRow(p.selectedPattern, r, copied); }); changed(); return;
         }
         if (id == cmdDuplicate) {
-            if (controller.editRack("Duplicate channel", [=](rack::Project& p) { return p.duplicateChannel(row); })) selected = row + 1;
+            // From the bottom up, so each copy lands under its original; the copies become the selection.
+            const int n = static_cast<int>(rows.size());
+            if (project().channelCount + n > rack::maxChannels) return;
+            const bool done = controller.editRack(plural("Duplicate channel", rows), [&](rack::Project& p) {
+                for (auto r = rows.rbegin(); r != rows.rend(); ++r) if (!p.duplicateChannel(*r)) return false;
+                return true;
+            });
+            if (done) {
+                marked = 0;
+                for (int i = 0; i < n; ++i) marked |= bit(rows[static_cast<std::size_t>(i)] + i + 1);
+                const auto at = std::find(rows.begin(), rows.end(), row) - rows.begin();
+                selected = anchor = row + static_cast<int>(at) + 1;
+            }
             changed(); return;
         }
         if (id >= cmdFill2 && id <= cmdRepeat16) {
-            controller.editRack("Edit channel steps", [=](rack::Project& p) {
-                if (id == cmdFill2 || id == cmdFill4 || id == cmdFill8) return p.fillEvery(p.selectedPattern, row, id == cmdFill2 ? 2 : id == cmdFill4 ? 4 : 8);
-                if (id == cmdRotateLeft || id == cmdRotateRight) return p.rotateRow(p.selectedPattern, row, id == cmdRotateLeft ? -1 : 1);
-                if (id == cmdReverseRow) return p.reverseRow(p.selectedPattern, row);
-                return p.repeatRow(p.selectedPattern, row, id == cmdRepeat4 ? 4 : id == cmdRepeat8 ? 8 : 16);
+            forEach("Edit channel steps", [=](rack::Project& p, int r) {
+                if (id == cmdFill2 || id == cmdFill4 || id == cmdFill8) return p.fillEvery(p.selectedPattern, r, id == cmdFill2 ? 2 : id == cmdFill4 ? 4 : 8);
+                if (id == cmdRotateLeft || id == cmdRotateRight) return p.rotateRow(p.selectedPattern, r, id == cmdRotateLeft ? -1 : 1);
+                if (id == cmdReverseRow) return p.reverseRow(p.selectedPattern, r);
+                return p.repeatRow(p.selectedPattern, r, id == cmdRepeat4 ? 4 : id == cmdRepeat8 ? 8 : 16);
             }); changed(); return;
         }
         if (id == cmdRename) { askForName("Rename channel", project().info[static_cast<std::size_t>(row)].name,
@@ -259,27 +364,53 @@ public:
                                            repaint(); if (onStructureChanged) onStructureChanged(); });
         } else if (id == cmdMute) toggleMute(row);
         else if (id == cmdSolo) toggleSolo(row);
-        else if (id == cmdClearSteps) { controller.editRack("Clear channel", [&](rack::Project& p) { return p.clearChannelSteps(p.selectedPattern, row); }); repaint(); }
-        else if (id == cmdMoveUp || id == cmdMoveDown) {
+        else if (id == cmdClearSteps) {
+            forEach(plural("Clear channel", rows), [](rack::Project& p, int r) { return p.clearChannelSteps(p.selectedPattern, r); }); repaint();
+        } else if (id == cmdMoveUp || id == cmdMoveDown) {
+            // The selected channels move together, keeping their order and the gaps between them.
             const int delta = id == cmdMoveUp ? -1 : 1;
-            if (controller.editRack("Move channel", [&](rack::Project& p) { return p.moveChannel(row, delta); })) selected = row + delta;
+            if ((delta < 0 && rows.front() == 0) || (delta > 0 && rows.back() + 1 >= project().channelCount)) return;
+            const bool done = controller.editRack(plural("Move channel", rows), [&](rack::Project& p) {
+                if (delta < 0) { for (const int r : rows) if (!p.moveChannel(r, -1)) return false; }
+                else for (auto r = rows.rbegin(); r != rows.rend(); ++r) if (!p.moveChannel(*r, 1)) return false;
+                return true;
+            });
+            if (done && isChannelSelected(row)) {
+                marked = delta < 0 ? marked >> 1 : marked << 1;
+                selected = row + delta; anchor = clampRow(anchor + delta);
+            } else if (done) selectChannel(row + delta);
             changed();
         } else if (id == cmdDelete) {
-            if (controller.editRack("Delete channel", [&](rack::Project& p) { return p.removeChannel(row); }))
-                selected = juce::jlimit(0, juce::jmax(0, project().channelCount - 1), selected > row ? selected - 1 : selected);
+            const bool done = controller.editRack(plural("Delete channel", rows), [&](rack::Project& p) {
+                for (auto r = rows.rbegin(); r != rows.rend(); ++r) if (!p.removeChannel(*r)) return false;
+                return true;
+            });
+            if (done) {
+                // Deleting another channel keeps the selected one; deleting the selection selects the channel
+                // that took the place of the first one deleted.
+                const bool other = rows.size() == 1 && rows.front() != selected;
+                const int next = other ? selected - (rows.front() < selected ? 1 : 0) : rows.front();
+                selected = -1; marked = 0;
+                selectChannel(next);
+            }
             changed();
-        } else if (id == cmdSilent) { controller.editRack("Silence channel", [&](rack::Project& p) { return p.setSample(row, ""); }); changed(); }
+        } else if (id == cmdSilent) { forEach(plural("Silence channel", rows), [](rack::Project& p, int r) { return p.setSample(r, ""); }); changed(); }
         else if (id == cmdLoadSample) chooseSample(row);
         else if (id >= builtinBase && id < builtinBase + static_cast<int>(rack::builtinSounds.size())) {
-            controller.setRackBuiltin(row, rack::builtinSounds[static_cast<std::size_t>(id - builtinBase)].id);
+            const auto& sound = rack::builtinSounds[static_cast<std::size_t>(id - builtinBase)];
+            if (rows.size() == 1) controller.setRackBuiltin(row, sound.id);
+            else forEach("Change channel sounds", [&](rack::Project& p, int r) {
+                const bool changedSound = p.setSample(r, std::string("builtin:") + sound.id);
+                return p.renameChannel(r, sound.name) || changedSound;
+            });
             changed(); preview(row);
         } else if (id == outputMaster || (id >= outputBase && id < outputBase + rack::maxOutputTrack + 1)) {
             const int output = id == outputMaster ? rack::masterOutput : id - outputBase;
-            changeChannel(row, "Route channel", [output](rack::Channel& c) { c.output = static_cast<std::int8_t>(output); });
+            changeChannels(rows, plural("Route channel", rows), [output](int, rack::Channel& c) { c.output = static_cast<std::int8_t>(output); });
             repaint();
         } else if (id == chokeNone || (id >= chokeBase && id < chokeBase + rack::maxChokeGroup)) {
             const int group = id == chokeNone ? 0 : id - chokeBase + 1;
-            changeChannel(row, "Change choke group", [group](rack::Channel& c) { c.chokeGroup = static_cast<std::uint8_t>(group); });
+            changeChannels(rows, "Change choke group", [group](int, rack::Channel& c) { c.chokeGroup = static_cast<std::uint8_t>(group); });
             repaint();
         }
     }
@@ -288,7 +419,7 @@ public:
         const auto* name = rack::builtinDisplayName(soundId.toStdString());
         if (name == nullptr) return;
         if (controller.editRack("Add channel", [&](rack::Project& p) { return p.addChannel(name, "builtin:" + soundId.toStdString()); })) {
-            selected = project().channelCount - 1;
+            selected = anchor = project().channelCount - 1; marked = bit(selected);
             preview(selected);
         }
         changed();
@@ -296,7 +427,7 @@ public:
     void addChannelWithFile() {
         if (project().channelCount >= rack::maxChannels) return;
         if (controller.editRack("Add channel", [&](rack::Project& p) { return p.addChannel("Sampler", ""); })) {
-            selected = project().channelCount - 1;
+            selected = anchor = project().channelCount - 1; marked = bit(selected);
             changed();
             chooseSample(selected);
         }
@@ -364,7 +495,9 @@ public:
             const auto& channel = p.channels[static_cast<std::size_t>(row)];
             const bool audible = p.audible(row);
             const auto colour = ui::trackColour(row);
-            g.setColour(row == selected ? col::raised : (row % 2 == 0 ? col::surface : col::raised.withAlpha(0.35f))); g.fillRect(bounds);
+            g.setColour(row == selected ? col::raised : isChannelSelected(row) ? col::raised.withAlpha(0.7f)
+                                                       : (row % 2 == 0 ? col::surface : col::raised.withAlpha(0.35f)));
+            g.fillRect(bounds);
             if (row == selected) { g.setColour(colour); g.fillRect(0, bounds.getY(), 3, bounds.getHeight()); }
             g.setColour(col::line);
             g.drawHorizontalLine(bounds.getBottom() - 1, 0.0f, static_cast<float>(getWidth()));
@@ -396,6 +529,7 @@ public:
         if (code == 'C' || code == 'c') { runChannelCommand(selected, cmdCopyRow); return true; }
         if (code == 'V' || code == 'v') { runChannelCommand(selected, cmdPasteRow); return true; }
         if (code == 'D' || code == 'd') { runChannelCommand(selected, cmdDuplicate); return true; }
+        if (code == 'A' || code == 'a') { selectAllChannels(); return true; }
         return false;
     }
 
@@ -406,7 +540,14 @@ public:
         const int row = rowAt(point.y);
         if (row < 0) return;
         if (point.x < headerWidth) {
-            selectChannel(row);
+            // Ctrl-click and Shift-click on the name or the lamp change which channels are selected.
+            const bool selecting = nameRect(row).contains(point) || lampRect(row).expanded(3).contains(point);
+            if (selecting && !e.mods.isPopupMenu() && e.mods.isCommandDown()) { toggleChannelSelection(row); return; }
+            if (selecting && !e.mods.isPopupMenu() && e.mods.isShiftDown()) { extendSelection(row); return; }
+            // The controls of a selected channel act on the whole selection, so they keep it.
+            const bool control = muteRect(row).expanded(4).contains(point) || soloRect(row).contains(point) || routeRect(row).contains(point)
+                || panRect(row).contains(point) || volumeRect(row).contains(point) || e.mods.isPopupMenu();
+            if (control) focusChannel(row); else selectChannel(row);
             if (muteRect(row).expanded(4).contains(point)) { if (e.mods.isPopupMenu()) toggleSolo(row); else toggleMute(row); return; }
             if (soloRect(row).contains(point)) { toggleSolo(row); return; }
             if (routeRect(row).contains(point)) { showOutputMenu(row); return; }
@@ -475,9 +616,10 @@ public:
         if (routeRect(row).contains(hover)) return "Output: click to send this channel to the master or to a Session track";
         if (panRect(row).contains(hover)) return "Channel pan: drag up or down, double-click to centre";
         if (volumeRect(row).contains(hover)) return "Channel volume: drag up or down, double-click to reset";
-        if (lampRect(row).expanded(3).contains(hover)) return "The selected channel: the graph editor below edits its steps";
+        if (lampRect(row).expanded(3).contains(hover))
+            return "Lit for the selected channels. Ctrl-click to add or remove one, Shift-click for a range, Ctrl+A for all; the graph editor edits the one marked in the row's colour";
         if (sampleOffline(row)) return "The sample file " + sampleFileName(row) + " is missing. Use Relink audio on the Session tab, or right-click to load another.";
-        return soundDescription(row) + ". Click to hear this sound. Double-click to rename, right-click for more.";
+        return soundDescription(row) + ". Click to hear and select this sound, Ctrl-click or Shift-click to select several. Double-click to rename, right-click for more.";
     }
 
 private:
@@ -569,7 +711,7 @@ private:
     void paintHeader(juce::Graphics& g, int row, const rack::Channel& channel, bool audible, juce::Colour colour) const {
         namespace col = ui::colours;
         const auto& info = project().info[static_cast<std::size_t>(row)];
-        const bool isSelected = row == selected;
+        const bool isSelected = isChannelSelected(row);
         // The light: lit when the channel will sound, ringed when it is muted.
         const auto led = muteRect(row).toFloat().withSizeKeepingCentre(10.0f, 10.0f);
         g.setColour(col::inset);
@@ -655,27 +797,49 @@ private:
     }
 
     // Knobs ----------------------------------------------------------------------
+    // A knob of a selected channel turns that knob on every selected channel by the same amount, so their
+    // balance is kept (each stops at its own end of the range).
+public:
     void beginKnob(int row, bool pan, int y) {
         drag = Drag::knob; knobRow = row; knobPan = pan; knobStartY = y;
-        const auto& c = project().channels[static_cast<std::size_t>(row)];
-        knobStart = pan ? c.pan : c.volume;
+        knobStarts.clear();
+        for (const int r : targetsOf(row)) {
+            const auto& c = project().channels[static_cast<std::size_t>(r)];
+            knobStarts.emplace_back(r, pan ? c.pan : c.volume);
+        }
         knobKey = "rack-knob-" + juce::String(++strokeCounter);
     }
     void dragKnob(int y, bool fine) {
         const float scale = (fine ? 0.0015f : 0.006f) * (knobPan ? 2.0f : 1.0f);
-        setKnob(knobRow, knobPan, knobStart + static_cast<float>(knobStartY - y) * scale, knobKey);
+        moveKnobs(knobStarts, knobPan, static_cast<float>(knobStartY - y) * scale, knobKey);
     }
-    void setKnob(int row, bool pan, float value, const juce::String& key) {
-        value = pan ? juce::jlimit(-1.0f, 1.0f, std::abs(value) < 0.02f ? 0.0f : value) : juce::jlimit(0.0f, 1.0f, value);
-        changeChannel(row, pan ? "Change channel pan" : "Change channel volume",
-                      [=](rack::Channel& c) { (pan ? c.pan : c.volume) = value; }, key);
-        repaint(rowBounds(row).withWidth(headerWidth));
+private:
+    static float knobValue(bool pan, float value) {
+        return pan ? juce::jlimit(-1.0f, 1.0f, std::abs(value) < 0.02f ? 0.0f : value) : juce::jlimit(0.0f, 1.0f, value);
+    }
+    // Each (channel, start value) moves by `delta`, as one undo step (merged with others of the same key).
+    void moveKnobs(const std::vector<std::pair<int, float>>& starts, bool pan, float delta, const juce::String& key) {
+        std::vector<int> rows;
+        for (const auto& s : starts) rows.push_back(s.first);
+        changeChannels(rows, plural(pan ? "Change channel pan" : "Change channel volume", rows), [&](int r, rack::Channel& c) {
+            for (const auto& s : starts) if (s.first == r) (pan ? c.pan : c.volume) = knobValue(pan, s.second + delta);
+        }, key);
+        repaint(juce::Rectangle<int>(0, 0, headerWidth, getHeight()));
     }
     void nudgeKnob(int row, bool pan, float delta) {
-        const auto& c = project().channels[static_cast<std::size_t>(row)];
-        setKnob(row, pan, (pan ? c.pan : c.volume) + delta, "rack-knob-wheel-" + juce::String(row) + (pan ? "p" : "v"));
+        std::vector<std::pair<int, float>> starts;
+        for (const int r : targetsOf(row)) {
+            const auto& c = project().channels[static_cast<std::size_t>(r)];
+            starts.emplace_back(r, pan ? c.pan : c.volume);
+        }
+        moveKnobs(starts, pan, delta, "rack-knob-wheel-" + juce::String(row) + (pan ? "p" : "v"));
     }
-    void resetKnob(int row, bool pan) { setKnob(row, pan, pan ? 0.0f : rack::defaultChannelVolume, {}); }
+    void resetKnob(int row, bool pan) {
+        const auto rows = targetsOf(row);
+        changeChannels(rows, plural(pan ? "Change channel pan" : "Change channel volume", rows),
+                       [pan](int, rack::Channel& c) { (pan ? c.pan : c.volume) = pan ? 0.0f : rack::defaultChannelVolume; });
+        repaint(juce::Rectangle<int>(0, 0, headerWidth, getHeight()));
+    }
     void paintKnobReadout(juce::Graphics& g) const {
         if (!project().validChannel(knobRow)) return;
         const auto& c = project().channels[static_cast<std::size_t>(knobRow)];
@@ -690,14 +854,20 @@ private:
         g.drawText(text, box, juce::Justification::centred);
     }
 
+    static_assert(rack::maxChannels <= 32, "the selection is a 32-bit mask");
+    static std::uint32_t bit(int row) noexcept { return row >= 0 && row < 32 ? 1u << static_cast<unsigned>(row) : 0u; }
+    int clampRow(int row) const noexcept { return project().channelCount > 0 ? juce::jlimit(0, project().channelCount - 1, row) : 0; }
+
     std::optional<rack::Project::StepRow> rowClipboard;
     ProjectController& controller;
-    int selected{}, playhead{-1}, scrollX{}, scrollY{};
+    int selected{}, anchor{}, playhead{-1}, scrollX{}, scrollY{};
+    std::uint32_t marked{1};   // the selected channels, one bit per row; always includes `selected`
+    std::vector<std::pair<int, float>> knobStarts;   // each knob target and its value when the drag began
     Drag drag{Drag::none};
     bool paintValue{};
     int lastRow{}, lastStep{}, knobRow{}, knobStartY{};
     bool knobPan{};
-    float knobStart{};
+
     std::uint32_t strokeCounter{};
     juce::String strokeKey, knobKey;
     juce::Point<int> hover{-1, -1};
