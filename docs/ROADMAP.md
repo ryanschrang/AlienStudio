@@ -12,6 +12,50 @@ Clips on the timeline have fade handles and equal-power crossfades (project v11)
 Remaining work: Windows plugin/device listening tests; plugin/send automation and tempo-warped audio clips on the timeline; long-file streaming Session playback; waveform editing; live warp markers;
 plugin automation, sidechains/multi-output, freeze and runtime crash isolation.
 
+Tracks can be armed and recorded onto the Song with count-in, punch and latency compensation (REC-02); take lanes and comping for loop recording remain.
+
+## Next: step sequencer, limits and chords (planned October 2026)
+
+Planned, not implemented. Each item is its own branch and pull request, with tests and the Windows
+checks it needs; order may change as work lands.
+
+1. **Finish the Channel Rack "Next" items.** Open a channel straight into the piano roll (the first
+   step towards channels that play notes), then resizable name columns. Multi-channel selection
+   is in review (#67).
+2. **Step sequencer v2, together with raising the limits.** Both change the saved pattern data, so
+   they share one project format version and one migration:
+   - *Per-step expression:* gate (note length), micro-timing nudge, ratchets/retriggers (2-4 hits
+     inside a step) and trigger conditions (every Nth pass, first pass only, fill, not first) on
+     top of the existing velocity, pan, pitch and chance.
+   - *Per-channel timing:* each channel's own length (polymeter) and rate (1/8, 1/16, 1/32,
+     triplets), and swing per channel as well as for the rack.
+   - *Generators and tools:* Euclidean rhythms, seeded random fill with density, humanise,
+     shift row, an undoable "variation" command, step entry from MIDI pads and quantized live
+     recording into the rack.
+   - *Channels that play notes:* a channel can drive the built-in synth or a VST instrument, with
+     its own piano roll and scale-aware pitch steps (FL Studio's channel piano roll).
+   - *Sampler controls per channel:* envelope, sample start, reverse, filter and fine tune, also
+     drawable per step as graph-editor lanes.
+   - *Limits:* more rack channels and steps (beyond 16 and 64), more notes per clip than 1,024,
+     more tracks/scenes than 16/32, and MIDI scene mapping beyond scenes 1-4. These are fixed
+     capacities in the engine (pre-allocated per track, a 32-bit scene-launch mask, fixed-size
+     clip snapshots, tests that hold whole engines on a small stack), so memory, scheduling cost
+     and real-time safety need their own tests.
+   - *Ableton-style extras, later:* a 4x4 pad view of the same channels, note repeat, per-pad
+     effects and sends (sends depend on MIX-02 bus routing), A/B pattern variations, pattern
+     chaining and "split by channel" when placing a pattern on the Song.
+3. **Chord production.** The piano roll already has a single-chord stamp, strum, inversion,
+   arpeggiate and scale guides; the new work is about progressions:
+   - *Chord pads:* choose a key and scale and get its diatonic chords (I-vii) as pads, playable
+     from the mouse, the computer keyboard or MIDI, with voicing controls (spread, octave and
+     automatic voice-leading).
+   - *Progressions:* common progressions to audition and drop into a clip or onto the Song as
+     one undo step.
+   - *Chord effect on a track:* one played note sounds a chord.
+   - *Chord track on the Song,* followed by other clips and by the rack's pitch steps (last: it
+     touches playback, editing and export).
+4. **Take lanes and comping** for loop recording (the rest of REC-02).
+
 Historical milestone notes below describe the earlier stacked branches.
 
 # Alien Studio delivery roadmap
