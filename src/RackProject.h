@@ -1,6 +1,7 @@
 #pragma once
-// The Channel Rack inside a project file (format version 7): channels with their
-// sound and mixer settings, and the pattern bank. Built-in sounds are saved by
+// The Channel Rack inside a project file (format version 7, steps with gate, nudge
+// and ratchet from version 12): channels with their sound and mixer settings, and
+// the pattern bank. Built-in sounds are saved by
 // name and regenerated on load; other samples are saved as file references and
 // handled like drum-pad samples (relative paths, collected on a portable save,
 // relinkable when missing).
@@ -57,7 +58,7 @@ inline juce::var rackToVar(const Project& project) {
         pattern->setProperty("name", detail::text(project.patternNames[static_cast<std::size_t>(p)]));
         pattern->setProperty("length", source.length);
         // Only steps that are on, or that keep non-default values drawn earlier,
-        // are written: [channel, step, on, velocity, pan, pitch, probability].
+        // are written: [channel, step, on, velocity, pan, pitch, probability, gate, nudge, ratchet].
         juce::Array<juce::var> steps;
         for (int c = 0; c < project.channelCount; ++c)
             for (int s = 0; s < maxSteps; ++s) {
@@ -66,6 +67,7 @@ inline juce::var rackToVar(const Project& project) {
                 juce::Array<juce::var> cell;
                 cell.add(c); cell.add(s); cell.add(step.on ? 1 : 0); cell.add(static_cast<int>(step.velocity));
                 cell.add(static_cast<int>(step.pan)); cell.add(static_cast<int>(step.pitch)); cell.add(static_cast<int>(step.probability));
+                cell.add(static_cast<int>(step.gate)); cell.add(static_cast<int>(step.nudge)); cell.add(static_cast<int>(step.ratchet));
                 steps.add(juce::var(cell));
             }
         pattern->setProperty("steps", juce::var(steps));
@@ -130,7 +132,7 @@ inline bool rackFromVar(const juce::var& value, Project& out, juce::String& erro
         int length = 0;
         const auto stepsValue = pattern->getProperty("steps");
         const auto* steps = stepsValue.getArray();
-        if (!name.isString() || !detail::integerIn(pattern->getProperty("length"), 16, 64, length) || !validLength(length) || steps == nullptr
+        if (!name.isString() || !detail::integerIn(pattern->getProperty("length"), 16, maxSteps, length) || !validLength(length) || steps == nullptr
             || steps->size() > maxChannels * maxSteps)
             return fail("A Channel Rack pattern has missing or invalid values.");
         auto built = std::make_shared<Pattern>();
@@ -138,15 +140,20 @@ inline bool rackFromVar(const juce::var& value, Project& out, juce::String& erro
         for (const auto& item : *steps) {
             const auto* cell = item.getArray();
             int c = 0, s = 0, on = 0, velocity = 0, pan = 0, pitch = 0, probability = 0;
-            if (cell == nullptr || cell->size() != 7
+            int gate = fullGate, nudge = 0, ratchet = 1;
+            // Seven values before version 12 (gate, nudge and ratchet take their defaults), ten from then on.
+            if (cell == nullptr || (cell->size() != 7 && cell->size() != 10)
                 || !detail::integerIn((*cell)[0], 0, parsed.channelCount - 1, c) || !detail::integerIn((*cell)[1], 0, maxSteps - 1, s)
                 || !detail::integerIn((*cell)[2], 0, 1, on) || !detail::integerIn((*cell)[3], 1, 127, velocity)
                 || !detail::integerIn((*cell)[4], -63, 63, pan) || !detail::integerIn((*cell)[5], -24, 24, pitch)
-                || !detail::integerIn((*cell)[6], 0, 100, probability))
+                || !detail::integerIn((*cell)[6], 0, 100, probability)
+                || (cell->size() == 10 && (!detail::integerIn((*cell)[7], 1, fullGate, gate) || !detail::integerIn((*cell)[8], 0, maxNudge, nudge)
+                                           || !detail::integerIn((*cell)[9], 1, maxRatchet, ratchet))))
                 return fail("A Channel Rack step is outside the supported range.");
             auto& step = built->steps[static_cast<std::size_t>(c)][static_cast<std::size_t>(s)];
             step.on = on != 0; step.velocity = static_cast<std::uint8_t>(velocity); step.pan = static_cast<std::int8_t>(pan);
             step.pitch = static_cast<std::int8_t>(pitch); step.probability = static_cast<std::uint8_t>(probability);
+            step.gate = static_cast<std::uint8_t>(gate); step.nudge = static_cast<std::uint8_t>(nudge); step.ratchet = static_cast<std::uint8_t>(ratchet);
         }
         parsed.patterns[static_cast<std::size_t>(p)] = std::move(built);
         std::string patternName = Project::clean(name.toString().toStdString());

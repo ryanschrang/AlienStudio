@@ -250,7 +250,7 @@ static void tallRackScrolls() {
     Rig rig(1180, 560);
     auto& g = rig.grid;
     for (int i = 0; i < 12; ++i) g.addChannelWithSound("cowbell");
-    require(rig.rack().channelCount == maxChannels, "sixteen channels");
+    require(rig.rack().channelCount == 16, "sixteen channels");
     require(g.maxScrollY() > 40 && g.rowHeight() == ChannelRackGrid::minRow, "sixteen channels do not fit a 560 px window: the rows scroll");
     require(g.getBottom() <= rig.graph.getY() && rig.graph.getBottom() <= rig.view.getHeight(), "and the graph does not overlap the grid");
     auto* bar = verticalBarOf(rig.view);
@@ -306,7 +306,22 @@ static void tallRackScrolls() {
     for (int i = 0; i < 12; ++i) g.runChannelCommand(g.selectedChannel(), ChannelRackGrid::cmdDelete);
     rig.view.refresh();
     require(rig.rack().channelCount == 4 && g.maxScrollY() == 0 && g.scrollPositionY() == 0 && !bar->isVisible(), "with few channels the scrolling goes away");
-    std::cout << "PASS: sixteen channels scroll vertically\n";
+    // A full rack of 64: the last row scrolls into view, and the selection is wider than 32 bits.
+    while (rig.rack().channelCount < maxChannels) g.addChannelWithSound("cowbell");
+    rig.view.refresh();
+    require(rig.rack().channelCount == 64 && g.selectedChannel() == 63 && g.rowBounds(63).getBottom() <= g.getHeight() && bar->isVisible(),
+            "64 channels fit the rack and the last one is scrolled into view");
+    g.selectAllChannels();
+    require(g.selectedChannels().size() == 64 && g.isChannelSelected(63), "every one of 64 channels can be selected");
+    g.selectChannel(40);
+    g.toggleChannelSelection(63);
+    require(g.selectedChannels() == std::vector<int>{40, 63} && g.selectedChannel() == 63, "Ctrl-click selects channels past the 32nd");
+    // (Renamed first: swapping two identical channels would change nothing, and is not an edit.)
+    rig.controller.editRack("Rename", [](Project& p) { return p.renameChannel(40, "Forty") && p.renameChannel(63, "Last"); });
+    g.runChannelCommand(63, ChannelRackGrid::cmdMoveUp);
+    require(g.selectedChannels() == std::vector<int>{39, 62} && rig.rack().info[62].name == "Last" && rig.rack().info[39].name == "Forty",
+            "moving channels past the 32nd keeps the selection with them");
+    std::cout << "PASS: 16 and 64 channels scroll vertically\n";
 }
 
 // ---- painting ---------------------------------------------------------------------
@@ -615,8 +630,8 @@ static void headerControls() {
             "adding a drum channel selects it");
     g.addChannelWithSound("no such sound");
     require(rig.rack().channelCount == 4, "an unknown sound adds nothing");
-    for (int i = 0; i < 20; ++i) g.addChannelWithSound("kick");
-    require(rig.rack().channelCount == maxChannels, "the rack stops at sixteen channels");
+    for (int i = 0; i < maxChannels + 4; ++i) g.addChannelWithSound("kick");
+    require(rig.rack().channelCount == maxChannels, "the rack stops at 64 channels");
     require(rig.controller.undo() && rig.rack().channelCount == maxChannels - 1, "each add is undoable");
     std::cout << "PASS: mute/solo lights, knobs, name clicks, menus and rename\n";
 }
@@ -688,7 +703,27 @@ static void graphEditor() {
     require(rig.step(0, 4).probability == 40, "chance: a bar is a percentage");
     press({xOf(4), plot.getY() + 1}, rightButton); release({xOf(4), plot.getY() + 1});
     require(rig.step(0, 4).probability == 100, "chance: right-click restores 100%");
-    for (const auto field : {StepField::velocity, StepField::pan, StepField::pitch, StepField::probability}) {
+    // Gate, nudge and ratchet: the top of the plot is a full gate, a whole step of nudge and four hits.
+    graph.setField(StepField::gate);
+    press({xOf(4), graph.yForValue(30)}); release({xOf(4), graph.yForValue(30)});
+    require(rig.step(0, 4).gate == 30, "gate: a bar is a percent of the step");
+    press({xOf(4), plot.getY() + 1}, rightButton); release({xOf(4), plot.getY() + 1});
+    require(rig.step(0, 4).gate == fullGate, "gate: right-click plays the whole sample again");
+    graph.setField(StepField::nudge);
+    press({xOf(4), plot.getY()}); release({xOf(4), plot.getY()});
+    require(rig.step(0, 4).nudge == maxNudge, "nudge: the top is a whole step late");
+    press({xOf(4), plot.getBottom()}); release({xOf(4), plot.getBottom()});
+    require(rig.step(0, 4).nudge == 0, "nudge: the bottom is on the grid");
+    graph.setField(StepField::ratchet);
+    press({xOf(4), graph.yForValue(3)}); release({xOf(4), graph.yForValue(3)});
+    require(rig.step(0, 4).ratchet == 3, "ratchet: three hits");
+    press({xOf(4), plot.getY() - 10}); release({xOf(4), plot.getY() - 10});
+    require(rig.step(0, 4).ratchet == maxRatchet, "ratchet: at most four hits");
+    press({xOf(4), plot.getY() + 1}, rightButton); release({xOf(4), plot.getY() + 1});
+    require(rig.step(0, 4).ratchet == 1 && rig.step(0, 4).gate == fullGate && rig.step(0, 4).probability == 100,
+            "ratchet: right-click restores one hit and leaves the other lanes alone");
+    for (const auto field : {StepField::velocity, StepField::pan, StepField::pitch, StepField::probability,
+                             StepField::gate, StepField::nudge, StepField::ratchet}) {
         graph.setField(field);
         for (const int value : {fieldMinimum(field), fieldDefault(field), fieldMaximum(field)})
             require(graph.yForValue(value) >= plot.getY() && graph.yForValue(value) <= plot.getBottom(), "values map inside the plot");
@@ -708,8 +743,11 @@ static void graphEditor() {
     int tabs = 0;
     for (auto* child : graph.getChildren())
         if (auto* b = dynamic_cast<juce::TextButton*>(child)) { ++tabs; clickButton(*b); }
-    require(tabs == 4 && graph.field() == StepField::probability, "four tabs choose velocity, pan, pitch or chance");
-    std::cout << "PASS: graph editor draws velocity, pan, pitch and chance\n";
+    require(tabs == 7 && graph.field() == StepField::ratchet, "seven tabs choose velocity, pan, pitch, chance, gate, nudge or ratchet");
+    for (auto* child : graph.getChildren())
+        if (auto* b = dynamic_cast<juce::TextButton*>(child))
+            require(b->getRight() <= ChannelRackGrid::defaultHeaderWidth && b->getBottom() < 90, "the tabs fit beside the plot, above the help text");
+    std::cout << "PASS: graph editor draws velocity, pan, pitch, chance, gate, nudge and ratchet\n";
 }
 
 // ---- pattern bank and toolbar ----------------------------------------------------------
@@ -783,6 +821,11 @@ static void patternBankAndToolbar() {
     require(rig.rack().pattern(rig.rack().selectedPattern).length == 32 && rig.grid.length() == 32, "choosing 32 steps lengthens the pattern");
     length->setSelectedId(64, juce::sendNotificationSync);
     require(rig.grid.length() == 64, "and 64");
+    length->setSelectedId(128, juce::sendNotificationSync);
+    require(rig.grid.length() == 128 && rig.grid.contentWidth() == 128 * rig.grid.cellWidth() && rig.grid.maxScroll() > 0, "and 128 steps, which scroll sideways");
+    rig.grid.setScrollPosition(rig.grid.maxScroll());
+    require(rig.grid.stepAtX(rig.grid.cellBounds(0, 127).getCentreX()) == 127, "the last of 128 steps can be reached");
+    rig.grid.setScrollPosition(0);
     length->setSelectedId(16, juce::sendNotificationSync);
     require(rig.grid.length() == 16, "and back to 16");
 
@@ -811,7 +854,7 @@ static void patternBankAndToolbar() {
     require(rig.rack().channelCount == 5 && rig.rack().info[4].sample == "builtin:rim" && rig.grid.selectedChannel() == 4, "choosing a drum adds it as a new channel");
     shown.done(0);
     require(rig.rack().channelCount == 5, "dismissing it adds nothing");
-    for (int i = 0; i < 12; ++i) v.addChannelCommand(ChannelRackView::addSoundBase);
+    while (rig.rack().channelCount < maxChannels) v.addChannelCommand(ChannelRackView::addSoundBase);
     require(rig.rack().channelCount == maxChannels && !addButton->isEnabled(), "the + Channel button turns off when the rack is full");
     require(!entry(entries(v.addChannelMenu()), ChannelRackView::addSampler)->enabled, "and so does the sampler entry");
     v.addChannelCommand(ChannelRackView::addSoundBase + 99);

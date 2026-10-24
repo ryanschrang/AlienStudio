@@ -23,7 +23,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 11;
+inline constexpr int sessionProjectFormatVersion = 12;
 
 struct SessionProjectClip {
     PianoRollPattern pattern;

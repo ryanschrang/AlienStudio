@@ -26,7 +26,7 @@ The long-term differentiator is **one shared project and audio engine** across a
 - [x] Project-wide undo/redo, unsaved-changes prompts, one-minute autosave and crash recovery.
 - [x] MIDI recording into Session clips (computer keyboard or USB MIDI keyboard) with count-in, metronome, overdub/replace and latency compensation.
 - [x] Stock effects: EQ, compressor, reverb, tempo-synced delay and look-ahead limiter in every track and master FX rack, with custom panels.
-- [x] Channel Rack: FL-style drum step sequencer (16 channels, 16/32/64 steps, pattern bank, per-step velocity/pan/pitch/chance, swing) routed to the master or a Session track.
+- [x] Channel Rack: FL-style drum step sequencer (64 channels, 16/32/64/128 steps, pattern bank, per-step velocity/pan/pitch/chance/gate/nudge/ratchet, swing) routed to the master or a Session track.
 - [x] Arrangement timeline: place MIDI clips, audio clips and Channel Rack patterns on a zoomable, scrollable timeline with snap, marquee selection, copy/paste/duplicate/group/split, loop range, named markers, playback from any position and WAV export of the whole song or the loop.
 - [x] Song view in the main top bar, and a **Song mode** switch that plays the whole song (drums, synths, audio) from Steps, Piano Roll, Session, Song or Rack.
 - [x] GPL-3.0 license file. Dependency attribution/distribution review remains required before releases.
@@ -733,9 +733,9 @@ choosing a pattern; older projects open at the usual width.
 like FL Studio's channel piano roll. Each lit step is a one-step note: its height is the step's
 pitch (middle C is no change, two octaves either way), and its velocity and chance are the step's.
 Drawing, moving and deleting notes rewrites the steps, one undo step per gesture, while the
-rack's pattern plays. Steps have no length yet, so a note snaps to the nearest whole step and
-lasts one step, a step holds one note (the last one placed wins), and the status bar says when a
-note was adjusted. Picking a Session clip puts the piano roll back on clips.
+rack's pattern plays. A note snaps to the nearest whole step and lasts one step (its length does
+not set the step's gate yet), a step holds one note (the last one placed wins), and the status bar
+says when a note was adjusted. Gate, nudge and ratchet are kept as they are. Picking a Session clip puts the piano roll back on clips.
 
 **Steps.** Click or drag to paint steps; a drag across several channels paints each cell it
 crosses without gaps. A press on a lit step erases along the drag instead; right-drag always
@@ -746,22 +746,32 @@ sound (muted, or silenced by another channel's solo) is greyed. In a very wide w
 buttons stop growing. A **choke group** cuts the other channels of the same group when one hits
 (closed and open hat).
 
-**Graph editor.** Under the rack, the **Velocity / Pan / Pitch / Chance** buttons choose what
-the bars show for the selected channel. Click or drag across the bars to draw (a fast drag
-draws a straight line between the bars it crosses); right-click a bar to reset it. Only lit
-steps can be edited. Pan runs -63 to +63 (the middle snaps to centre), pitch is +-24 semitones,
-chance is the probability (0 to 100%) that the step plays. Marks on a lit step show anything
+**Graph editor.** Under the rack, the **Velocity / Pan / Pitch / Chance / Gate / Nudge / Ratchet**
+buttons choose what the bars show for the selected channel. Click or drag across the bars to draw
+(a fast drag draws a straight line between the bars it crosses); right-click a bar to reset it.
+Only lit steps can be edited. Pan runs -63 to +63 (the middle snaps to centre), pitch is +-24
+semitones, chance is the probability (0 to 100%) that the step plays.
+- **Gate** is how long a hit sounds: a full bar (the default) plays the whole sample, a lower bar
+  cuts it off after that percent of the step, with a short fade.
+- **Nudge** plays the step later, up to one whole step after the grid (FL Studio's shift), for a
+  laid-back hit or a flam. It never plays early.
+- **Ratchet** plays the step 1 to 4 times, evenly spaced inside it, for hat rolls and stutters.
+  The gate then applies to each hit's share of the step, and the nudge moves every hit. One chance
+  roll decides the whole step: all its hits play, or none. Marks on a lit step show anything
 that is not the default: a dot for chance below 100%, a bar for pitch, a tick for pan.
 
 **Patterns.** The **Pattern** chooser holds up to 64 patterns. **+** adds an empty one;
 **...** clones, renames, clears or deletes the current one. **Steps** sets the pattern's
-length to 16, 32 or 64 steps (one, two or four bars); longer patterns scroll sideways with the
-scroll bar or Shift + mouse wheel, and 16 channels scroll with the mouse wheel on small windows.
+length to 16, 32, 64 or 128 steps (one, two, four or eight bars); longer patterns scroll sideways
+with the scroll bar or Shift + mouse wheel. The rack holds up to 64 channels, which scroll with the
+mouse wheel when they do not fit.
 **Swing** delays every second sixteenth (0% is straight) for all patterns. The Play
 button plays the selected pattern from its first step, looping; switching patterns while it
 plays takes effect at the next block, not on a bar line.
 
-**Saving.** The rack is part of the project (format v7) and of undo/redo. Built-in sounds are
+**Saving.** The rack is part of the project (format v7; gate, nudge and ratchet from v12) and of
+undo/redo. Projects saved before v12 open with every step at a full gate, on the grid, with one hit.
+Earlier versions of Alien Studio cannot open v12 projects. Built-in sounds are
 saved by name; sample files by path, relative when they sit inside the project folder, and
 **Save portable** copies them next to the project. A missing sample opens as a silent,
 red-labelled channel that **Relink audio** can repair, like a missing clip.
