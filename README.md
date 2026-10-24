@@ -810,6 +810,17 @@ everything; Esc clears. Grouped clips (Ctrl+G) select and move together.
 resize it; drag its left edge to hide or reveal the start of its music without moving the music. Ctrl-drag
 copies. Hold **Alt** while dragging to ignore the grid. Each drag is one undo step.
 
+**Arming tracks and listening to an input.** Each track's header has a round arm button (it turns
+red when armed) and shows the track's input under its name. Right-click the track name to arm it,
+choose its **Input** (one channel, or a stereo pair, from the inputs enabled in **Audio settings**,
+which now lists up to 32) and how it **monitors**: **Auto** plays the input while the track is
+armed, **In** always plays it, **Off** never does. What you hear goes through the track's effects,
+volume, pan, mute and solo, and a thin meter along the bottom of the header shows the input level.
+If the chosen input is not enabled on the device the header says so. Arm, input and monitoring are
+saved with the project and each change is one undo step. Recording onto the Song timeline itself
+comes next; for now takes are recorded in **Audio lab**. Use headphones when monitoring a
+microphone, or turn monitoring off, to avoid feedback.
+
 **Fades and crossfades (audio clips).** An audio clip has two small handles in its top corners: drag
 the left one in for a fade in and the right one in for a fade out (straight-line fades, shown
 shaded). To crossfade, put two audio clips end to end on a track, select the second (or both) and

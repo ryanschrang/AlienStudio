@@ -925,6 +925,71 @@ static void dragChecks() {
     std::cout << "PASS: moving, trimming and copying by dragging\n";
 }
 
+// ---- arming tracks and choosing their input ------------------------------------------------------
+static void recordingSetupChecks() {
+    Rig rig; rig.song();
+    auto& c = rig.c;
+    c.inputNames = [] { return juce::StringArray{"Mic", "Line L", "Line R"}; };
+    const auto settings = [&](int track) { return rig.controller.document().tracks[static_cast<std::size_t>(track)].settings; };
+    const auto arm = c.armRect(c.displayRowOf(1)).getCentre();
+    require(!settings(1).armed && !rig.engine.tracks[1].armed.load(), "tracks start disarmed");
+    rig.messages.clear(); c.clearSelection();
+    rig.press(arm);
+    require(settings(1).armed && rig.engine.tracks[1].armed.load(), "clicking a track's arm button arms it, in the project and the engine");
+    require(c.selection().empty() && rig.messages.empty(), "without selecting anything or warning (its input is enabled)");
+    require(rig.controller.undo() && !settings(1).armed && !rig.engine.tracks[1].armed.load(), "arming is one undo step");
+    require(rig.controller.redo() && settings(1).armed && rig.engine.tracks[1].armed.load(), "and redo arms it again");
+    rig.press(arm);
+    require(!settings(1).armed, "a second click disarms it");
+    rig.press({20, arm.y});
+    require(!settings(1).armed, "clicking elsewhere on the header only selects the row");
+
+    const auto header = juce::Point<int>{40, c.rowTop(c.displayRowOf(1)) + 20};
+    rig.rightClick(header);
+    require(rig.menu.shown && entry(rig.menu.items(), TimelineCanvas::cmdArm) != nullptr
+            && entry(rig.menu.items(), TimelineCanvas::cmdInputMonoBase + 2) != nullptr
+            && entry(rig.menu.items(), TimelineCanvas::cmdInputStereoBase) != nullptr
+            && entry(rig.menu.items(), TimelineCanvas::cmdInputStereoBase + 2) == nullptr,
+            "the header menu arms, and lists each enabled input and each pair of them");
+    rig.menu.done(TimelineCanvas::cmdInputStereoBase);
+    require(settings(1).input == 0 && settings(1).stereoInput && rig.engine.tracks[1].stereoInput.load(), "choosing inputs 1+2 makes the track stereo");
+    rig.rightClick(header);
+    rig.menu.done(TimelineCanvas::cmdInputMonoBase + 2);
+    require(settings(1).input == 2 && !settings(1).stereoInput && rig.engine.tracks[1].input.load() == 2, "choosing input 3 makes it mono on that channel");
+    require(c.inputText(1) == "In 3", "the header shows the input");
+    rig.rightClick(header);
+    rig.menu.done(TimelineCanvas::cmdMonitorBase + static_cast<int>(InputMonitor::off));
+    require(settings(1).monitor == static_cast<int>(InputMonitor::off) && rig.engine.tracks[1].monitor.load() == static_cast<int>(InputMonitor::off),
+            "monitoring can be turned off");
+    rig.rightClick(header);
+    rig.menu.done(TimelineCanvas::cmdArm);
+    require(settings(1).armed, "and the menu arms the track");
+
+    c.inputNames = [] { return juce::StringArray{"Mic"}; };
+    rig.messages.clear();
+    rig.press(c.armRect(c.displayRowOf(2)).getCentre());
+    require(settings(2).armed && rig.messages.empty(), "a track on input 1 arms quietly when the device has it");
+    require(!c.inputAvailable(1) && c.inputAvailable(2), "input 3 is reported missing when only one input is enabled");
+    rig.press(c.armRect(c.displayRowOf(1)).getCentre()); rig.press(c.armRect(c.displayRowOf(1)).getCentre());
+    require(settings(1).armed && !rig.messages.empty() && rig.messages.back().contains("not enabled"), "arming a track whose input is not enabled says so");
+
+    rig.menu.reset();
+    rig.rightClick({40, c.rowTop(c.displayRowOf(tl::rackRowBase)) + 20});
+    require(!rig.menu.shown, "pattern lanes have no recording menu");
+    rig.press(c.armRect(c.displayRowOf(tl::rackRowBase)).getCentre());
+    require(rig.valid(), "and clicking where an arm button would be does nothing harmful");
+
+    c.updateInputMeters();
+    require(c.inputLevel(1) == 0.0f, "with no audio coming in the meters read zero");
+    rig.engine.tracks[1].inputPeak.store(0.5f);
+    c.updateInputMeters();
+    require(std::abs(c.inputLevel(1) - 0.5f) < 1.0e-6f && rig.engine.tracks[1].inputPeak.load() == 0.0f, "a meter takes the engine's peak");
+    c.updateInputMeters();
+    require(c.inputLevel(1) > 0.0f && c.inputLevel(1) < 0.5f, "and falls back gradually");
+    (void)c.createComponentSnapshot(c.getLocalBounds(), true, 1.0f);   // headers with arm buttons, inputs and meters paint
+    std::cout << "PASS: arming tracks and choosing inputs\n";
+}
+
 // ---- fades and crossfades -----------------------------------------------------------------------
 static void fadeChecks() {
     Rig rig; rig.song();
@@ -1681,6 +1746,7 @@ int main() {
     selectionChecks();
     dragChecks();
     fadeChecks();
+    recordingSetupChecks();
     commandChecks();
     zoomAndScrollChecks();
     loopChecks();

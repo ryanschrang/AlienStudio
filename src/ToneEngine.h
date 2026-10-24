@@ -167,6 +167,7 @@ public:
         const juce::AudioIODeviceCallbackContext&) override {
         juce::ScopedNoDenormals noDenormals;
         if (auto* take = capture.load(std::memory_order_acquire)) take->append(inputs,inputChannels,samples);
+        deviceInputs = inputs; deviceInputCount = inputs != nullptr ? std::max(0, inputChannels) : 0;
         for (int offset = 0; offset < samples;) {
             // A block boundary falls exactly where a count-in ends, so playback starts on that very sample.
             const int count = std::min({alien::PluginRuntime::blockSize, samples - offset, samplesUntilCountInEnds()});
@@ -408,6 +409,7 @@ private:
         plugins->instruments(samples);
         for (std::size_t t = 0; t < sessionTracks; ++t)
             for (int c = 0; c < 2; ++c) plugins->tracks[t].addFrom(c,0,clipBuffers[t],c,0,samples);
+        addTrackInputs(samples, outputOffset);
         renderRack(samples, playNow && modeNow == 3, playNow && modeNow == 2);
         plugins->effectsAndAlign(samples);
         for (int i = 0; i < samples; ++i) {
@@ -491,6 +493,36 @@ private:
         plugins->live.addFrom(0, 0, left[alien::rack::RackPlayer::masterBus], samples);
         plugins->live.addFrom(1, 0, right[alien::rack::RackPlayer::masterBus], samples);
     }
+    // --- Live audio input --------------------------------------------------------------
+    // An armed or monitoring track meters its input; a monitoring one also plays it, through the
+    // track's own effects and fader like anything else on the track. A mono input feeds both sides.
+    const float* inputChannel(int index) const noexcept {
+        return deviceInputs != nullptr && index >= 0 && index < deviceInputCount ? deviceInputs[index] : nullptr;
+    }
+    void addTrackInputs(int samples, int offset) noexcept {
+        for (std::size_t t = 0; t < sessionTracks; ++t) {
+            auto& controls = tracks[t];
+            const bool armed = controls.armed.load(std::memory_order_relaxed);
+            const int monitor = controls.monitor.load(std::memory_order_relaxed);
+            const bool monitoring = monitor == static_cast<int>(alien::InputMonitor::always)
+                || (monitor == static_cast<int>(alien::InputMonitor::automatic) && armed);
+            if (!armed && !monitoring) continue;
+            const int first = controls.input.load(std::memory_order_relaxed);
+            const float* left = inputChannel(first);
+            const float* right = controls.stereoInput.load(std::memory_order_relaxed) ? inputChannel(first + 1) : left;
+            if (left == nullptr && right == nullptr) continue;
+            float peak = 0.0f;
+            for (int i = 0; i < samples; ++i) {
+                float l = left != nullptr ? left[offset + i] : 0.0f, r = right != nullptr ? right[offset + i] : 0.0f;
+                if (!std::isfinite(l)) l = 0.0f;
+                if (!std::isfinite(r)) r = 0.0f;
+                peak = std::max({peak, std::abs(l), std::abs(r)});
+                if (monitoring) { plugins->tracks[t].addSample(0, i, l); plugins->tracks[t].addSample(1, i, r); }
+            }
+            if (peak > controls.inputPeak.load(std::memory_order_relaxed)) controls.inputPeak.store(peak, std::memory_order_relaxed);
+        }
+    }
+
     // --- Arrangement timeline --------------------------------------------------------
     // Each Session track and each rack lane plays at most one region at a time.
     // A lane remembers which region it started and the tick at which that changes
@@ -1121,6 +1153,8 @@ private:
     FixedHeapArray<alien::SessionAudioPlayer, sessionTracks> audioPlayers;
     FixedHeapArray<alien::SessionAudioPlayer, sessionTracks> tailPlayers;   // a crossfade's outgoing clip
     FixedHeapArray<CrossfadeTail, sessionTracks> tails;   // on the heap: tests keep whole engines on the stack
+    const float* const* deviceInputs{};   // this callback's enabled input channels, in order (null offline)
+    int deviceInputCount{};
     std::unique_ptr<alien::SessionClipLaunch> launchScratch = std::make_unique<alien::SessionClipLaunch>();
     std::array<bool, sessionTracks> audioClipMode{};
     double sampleRate{44100.0};
