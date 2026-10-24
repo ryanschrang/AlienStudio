@@ -17,9 +17,14 @@ namespace alien {
 
 class ChannelRackGrid final : public juce::Component, public juce::TooltipClient {
 public:
-    static constexpr int headerWidth = 308, rulerHeight = 20, minCell = 15, maxCell = 44, minRow = 28, maxRow = 38;
-    // Where the header's parts are centred (x) or start (nameLeft), in pixels from the left edge.
-    static constexpr int ledX = 17, panX = 48, volumeX = 82, nameLeft = 104, nameWidth = 118, soloX = 238, routeX = 266, lampX = 293;
+    static constexpr int rulerHeight = 20, minCell = 15, maxCell = 44, minRow = 28, maxRow = 38;
+    // Where the header's parts are centred (x) or start (nameLeft), in pixels from the left edge. The name column
+    // can be resized (drag its right edge), so the parts after it move with it and the steps start after them.
+    static constexpr int ledX = 17, panX = 48, volumeX = 82, nameLeft = 104;
+    static constexpr int soloAfterName = 16, routeAfterName = 44, lampAfterName = 71, headerAfterName = 86;
+    static constexpr int defaultHeaderWidth = nameLeft + rack::defaultNameColumn + headerAfterName;   // 308
+    // The edge that resizes the name column takes clicks this many pixels either side of it.
+    static constexpr int nameEdgeGrab = 3;
 
     explicit ChannelRackGrid(ProjectController& projectController) : controller(projectController) {
         setName("Channel rack grid");
@@ -32,6 +37,7 @@ public:
     std::function<void(int)> onScrolled;         // horizontal scroll position changed
     std::function<void(int)> onScrolledY;        // vertical scroll position changed
     std::function<void(int)> onOpenPianoRoll;    // "Open in piano roll" was chosen for a channel
+    std::function<void()> onLayoutChanged;       // the name column was resized, so the steps start elsewhere
     // How pop-up menus and the rename box are shown. Left empty they use JUCE's
     // real windows; the tests set them to capture what would be shown and to
     // answer for the user (a real window needs a display).
@@ -132,7 +138,14 @@ public:
     // ---- geometry (public so the graph editor and the tests share it) ------------
     const rack::Project& project() const noexcept { return controller.channelRack(); }
     int length() const { return project().pattern(project().selectedPattern).length; }
-    int stepAreaWidth() const noexcept { return juce::jmax(0, getWidth() - headerWidth); }
+    int nameWidth() const noexcept { return project().nameColumnWidth; }
+    int nameRight() const noexcept { return nameLeft + nameWidth(); }
+    int soloX() const noexcept { return nameRight() + soloAfterName; }
+    int routeX() const noexcept { return nameRight() + routeAfterName; }
+    int lampX() const noexcept { return nameRight() + lampAfterName; }
+    // Where the steps start: everything left of this is the channel header.
+    int headerWidth() const noexcept { return nameRight() + headerAfterName; }
+    int stepAreaWidth() const noexcept { return juce::jmax(0, getWidth() - headerWidth()); }
     int cellWidth() const { return juce::jlimit(minCell, maxCell, stepAreaWidth() / juce::jmax(1, length())); }
     int contentWidth() const { return cellWidth() * length(); }
     int maxScroll() const { return juce::jmax(0, contentWidth() - stepAreaWidth()); }
@@ -146,19 +159,42 @@ public:
     int maxScrollY() const { return juce::jmax(0, contentHeight() - visibleRowsHeight()); }
     juce::Rectangle<int> rowBounds(int row) const { return {0, rulerHeight + row * rowHeight() - scrollY, getWidth(), rowHeight()}; }
     juce::Rectangle<int> cellBounds(int row, int step) const {
-        return {headerWidth + step * cellWidth() - scrollX, rulerHeight + row * rowHeight() - scrollY, cellWidth(), rowHeight()};
+        return {headerWidth() + step * cellWidth() - scrollX, rulerHeight + row * rowHeight() - scrollY, cellWidth(), rowHeight()};
     }
     // Where a step starts and how wide it is, in this component's coordinates.
-    int stepLeft(int step) const { return headerWidth + step * cellWidth() - scrollX; }
+    int stepLeft(int step) const { return headerWidth() + step * cellWidth() - scrollX; }
     // The header, left to right as in FL Studio's rack: the light (mute), pan and volume knobs, the channel's name
     // button, solo and output, and the lamp that shows which channel is selected.
     juce::Rectangle<int> muteRect(int row) const { return juce::Rectangle<int>(0, 0, 16, 16).withCentre({ledX, rowBounds(row).getCentreY()}); }
-    juce::Rectangle<int> nameRect(int row) const { auto r = rowBounds(row); return {nameLeft, r.getY() + 3, nameWidth, r.getHeight() - 6}; }
+    juce::Rectangle<int> nameRect(int row) const { auto r = rowBounds(row); return {nameLeft, r.getY() + 3, nameWidth(), r.getHeight() - 6}; }
     juce::Rectangle<int> panRect(int row) const { return knobRect(row, panX); }
     juce::Rectangle<int> volumeRect(int row) const { return knobRect(row, volumeX); }
-    juce::Rectangle<int> soloRect(int row) const { auto r = rowBounds(row); return juce::Rectangle<int>(0, 0, 24, 18).withCentre({soloX, r.getCentreY()}); }
-    juce::Rectangle<int> routeRect(int row) const { auto r = rowBounds(row); return juce::Rectangle<int>(0, 0, 28, 18).withCentre({routeX, r.getCentreY()}); }
-    juce::Rectangle<int> lampRect(int row) const { return juce::Rectangle<int>(0, 0, 8, 20).withCentre({lampX, rowBounds(row).getCentreY()}); }
+    juce::Rectangle<int> soloRect(int row) const { auto r = rowBounds(row); return juce::Rectangle<int>(0, 0, 24, 18).withCentre({soloX(), r.getCentreY()}); }
+    juce::Rectangle<int> routeRect(int row) const { auto r = rowBounds(row); return juce::Rectangle<int>(0, 0, 28, 18).withCentre({routeX(), r.getCentreY()}); }
+    juce::Rectangle<int> lampRect(int row) const { return juce::Rectangle<int>(0, 0, 8, 20).withCentre({lampX(), rowBounds(row).getCentreY()}); }
+    // The strip along the name column's right edge, from the ruler down past the last row, that resizes the column.
+    bool onNameEdge(juce::Point<int> p) const {
+        const int rowsBottom = juce::jmin(getHeight(), rulerHeight + contentHeight() - scrollY);
+        return std::abs(p.x - nameRight()) <= nameEdgeGrab && p.y >= 0 && p.y < juce::jmax(rulerHeight, rowsBottom);
+    }
+    // Wide enough for the longest channel name (with the button's padding and grip), within the allowed range.
+    int fittedNameWidth() const {
+        const auto font = ui::font(13.0f, true);
+        float widest = 0.0f;
+        for (int r = 0; r < project().channelCount; ++r) {
+            const auto& name = project().info[static_cast<std::size_t>(r)].name;
+            widest = juce::jmax(widest, juce::GlyphArrangement::getStringWidth(font, juce::String::fromUTF8(name.c_str(), static_cast<int>(name.size()))));
+        }
+        return juce::jlimit(rack::minNameColumn, rack::maxNameColumn, static_cast<int>(std::ceil(widest)) + 8 + 20 + 4);
+    }
+    // Resizes the name column (clamped); the steps move to make room. Not an undo step.
+    bool setNameColumnWidth(int width) {
+        if (!controller.setRackNameColumnWidth(width)) return false;
+        scrollX = juce::jlimit(0, maxScroll(), scrollX);
+        repaint();
+        if (onLayoutChanged) onLayoutChanged();
+        return true;
+    }
     int rowAt(int y) const {
         if (y < rulerHeight) return -1;
         const int row = (y - rulerHeight + scrollY) / rowHeight();
@@ -166,8 +202,8 @@ public:
     }
     // The step under x, or -1 (outside the pattern).
     int stepAtX(int x) const {
-        if (x < headerWidth) return -1;
-        const int step = (x - headerWidth + scrollX) / cellWidth();
+        if (x < headerWidth()) return -1;
+        const int step = (x - headerWidth() + scrollX) / cellWidth();
         return step < length() ? step : -1;
     }
 
@@ -467,21 +503,21 @@ public:
 
         // Persistent column labels make the compact channel controls discoverable.
         g.setColour(col::textDim); g.setFont(ui::font(9.0f, true));
-        g.drawText("CHANNEL", nameLeft, 0, nameWidth, rulerHeight, juce::Justification::centred);
+        g.drawText("CHANNEL", nameLeft, 0, nameWidth(), rulerHeight, juce::Justification::centred);
         g.drawText("PAN", panX - 14, 0, 28, rulerHeight, juce::Justification::centred);
         g.drawText("VOL", volumeX - 14, 0, 28, rulerHeight, juce::Justification::centred);
-        g.drawText("SOLO", soloX - 18, 0, 36, rulerHeight, juce::Justification::centred);
-        g.drawText("OUT", routeX - 14, 0, 28, rulerHeight, juce::Justification::centred);
+        g.drawText("SOLO", soloX() - 18, 0, 36, rulerHeight, juce::Justification::centred);
+        g.drawText("OUT", routeX() - 14, 0, 28, rulerHeight, juce::Justification::centred);
         // Ruler: a number at every beat, a stronger line at every bar.
         g.setColour(col::raised);
-        g.fillRect(juce::Rectangle<int>(headerWidth, 0, getWidth() - headerWidth, rulerHeight));
+        g.fillRect(juce::Rectangle<int>(headerWidth(), 0, getWidth() - headerWidth(), rulerHeight));
         {
             juce::Graphics::ScopedSaveState state(g);
-            g.reduceClipRegion(headerWidth, 0, getWidth() - headerWidth, getHeight());
+            g.reduceClipRegion(headerWidth(), 0, getWidth() - headerWidth(), getHeight());
             g.setFont(ui::monoFont(10.5f));
             for (int s = 0; s < len; ++s) {
                 const int x = stepLeft(s);
-                if (x + cell < headerWidth || x > getWidth()) continue;
+                if (x + cell < headerWidth() || x > getWidth()) continue;
                 if (s % 4 == 0) {
                     g.setColour(s % 16 == 0 ? col::textDim : col::textFaint);
                     g.drawText(juce::String(s / 4 + 1), x + 3, 0, cell * 4 - 3, rulerHeight, juce::Justification::centredLeft, false);
@@ -506,10 +542,10 @@ public:
             g.drawHorizontalLine(bounds.getBottom() - 1, 0.0f, static_cast<float>(getWidth()));
             paintHeader(g, row, channel, audible, colour);
             juce::Graphics::ScopedSaveState state(g);
-            g.reduceClipRegion(headerWidth, bounds.getY(), getWidth() - headerWidth, rh);
+            g.reduceClipRegion(headerWidth(), bounds.getY(), getWidth() - headerWidth(), rh);
             for (int s = 0; s < len; ++s) {
                 const auto r = cellBounds(row, s);
-                if (r.getRight() < headerWidth || r.getX() > getWidth()) continue;
+                if (r.getRight() < headerWidth() || r.getX() > getWidth()) continue;
                 paintCell(g, r.toFloat().withTrimmedLeft(s % 4 == 0 ? 3.5f : 1.5f).withTrimmedRight(1.5f).reduced(0.0f, 3.5f), pattern.steps[static_cast<std::size_t>(row)][static_cast<std::size_t>(s)],
                           s, colour, audible, s == playhead);
             }
@@ -521,7 +557,7 @@ public:
         }
         // The pattern ends here: gap past the last step is the rack's background.
         g.setColour(col::line);
-        g.drawVerticalLine(headerWidth - 1, static_cast<float>(rulerHeight), static_cast<float>(getHeight()));
+        g.drawVerticalLine(headerWidth() - 1, static_cast<float>(rulerHeight), static_cast<float>(getHeight()));
         if (drag == Drag::knob) paintKnobReadout(g);
     }
 
@@ -541,9 +577,14 @@ public:
         grabKeyboardFocus();
         const auto point = e.getPosition();
         drag = Drag::none;
+        if (onNameEdge(point) && !e.mods.isPopupMenu()) {
+            if (e.getNumberOfClicks() >= 2) { setNameColumnWidth(fittedNameWidth()); return; }
+            drag = Drag::nameColumn; nameStartWidth = nameWidth(); nameStartX = point.x;
+            return;
+        }
         const int row = rowAt(point.y);
         if (row < 0) return;
-        if (point.x < headerWidth) {
+        if (point.x < headerWidth()) {
             // Ctrl-click and Shift-click on the name or the lamp change which channels are selected.
             const bool selecting = nameRect(row).contains(point) || lampRect(row).expanded(3).contains(point);
             if (selecting && !e.mods.isPopupMenu() && e.mods.isCommandDown()) { toggleChannelSelection(row); return; }
@@ -574,22 +615,27 @@ public:
         if (drag == Drag::steps) {
             const auto point = e.getPosition();
             const int row = point.y < rulerHeight ? 0 : (point.y - rulerHeight + scrollY) / rowHeight();
-            int step = (point.x - headerWidth + scrollX) / cellWidth();
-            if (point.x < headerWidth) step = 0;
+            int step = (point.x - headerWidth() + scrollX) / cellWidth();
+            if (point.x < headerWidth()) step = 0;
             continueStroke(row, step);
         } else if (drag == Drag::knob) {
             dragKnob(e.getPosition().y, e.mods.isShiftDown());
+        } else if (drag == Drag::nameColumn) {
+            setNameColumnWidth(nameStartWidth + e.getPosition().x - nameStartX);
         }
     }
     void mouseUp(const juce::MouseEvent&) override {
         if (drag == Drag::knob) repaint();
         drag = Drag::none;
     }
-    void mouseMove(const juce::MouseEvent& e) override { hover = e.getPosition(); }
+    void mouseMove(const juce::MouseEvent& e) override {
+        hover = e.getPosition();
+        setMouseCursor(onNameEdge(hover) ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
+    }
     void mouseExit(const juce::MouseEvent&) override { hover = {-1, -1}; }
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override {
         const int row = rowAt(e.getPosition().y);
-        if (row >= 0 && e.getPosition().x < headerWidth && (panRect(row).contains(e.getPosition()) || volumeRect(row).contains(e.getPosition()))) {
+        if (row >= 0 && e.getPosition().x < headerWidth() && (panRect(row).contains(e.getPosition()) || volumeRect(row).contains(e.getPosition()))) {
             const bool pan = panRect(row).contains(e.getPosition());
             nudgeKnob(row, pan, wheel.deltaY * (pan ? 0.4f : 0.25f));
             return;
@@ -606,8 +652,9 @@ public:
 
     juce::String getTooltip() override {
         const int row = rowAt(hover.y);
-        if (row < 0) return hover.y >= 0 && hover.y < rulerHeight && hover.x >= headerWidth ? juce::String("Step numbers: one per beat") : juce::String();
-        if (hover.x >= headerWidth) {
+        if (onNameEdge(hover)) return "Drag to resize the name column; double-click to fit the longest name";
+        if (row < 0) return hover.y >= 0 && hover.y < rulerHeight && hover.x >= headerWidth() ? juce::String("Step numbers: one per beat") : juce::String();
+        if (hover.x >= headerWidth()) {
             const int step = stepAtX(hover.x);
             if (step < 0) return {};
             const auto& s = project().pattern(project().selectedPattern).steps[static_cast<std::size_t>(row)][static_cast<std::size_t>(step)];
@@ -627,7 +674,7 @@ public:
     }
 
 private:
-    enum class Drag { none, steps, knob };
+    enum class Drag { none, steps, knob, nameColumn };
 
     // Shows `menu` next to `area` and runs the chosen command on `row`.
     void launchMenu(juce::PopupMenu menu, juce::Rectangle<int> area, int row) {
@@ -828,7 +875,7 @@ private:
         changeChannels(rows, plural(pan ? "Change channel pan" : "Change channel volume", rows), [&](int r, rack::Channel& c) {
             for (const auto& s : starts) if (s.first == r) (pan ? c.pan : c.volume) = knobValue(pan, s.second + delta);
         }, key);
-        repaint(juce::Rectangle<int>(0, 0, headerWidth, getHeight()));
+        repaint(juce::Rectangle<int>(0, 0, headerWidth(), getHeight()));
     }
     void nudgeKnob(int row, bool pan, float delta) {
         std::vector<std::pair<int, float>> starts;
@@ -842,7 +889,7 @@ private:
         const auto rows = targetsOf(row);
         changeChannels(rows, plural(pan ? "Change channel pan" : "Change channel volume", rows),
                        [pan](int, rack::Channel& c) { (pan ? c.pan : c.volume) = pan ? 0.0f : rack::defaultChannelVolume; });
-        repaint(juce::Rectangle<int>(0, 0, headerWidth, getHeight()));
+        repaint(juce::Rectangle<int>(0, 0, headerWidth(), getHeight()));
     }
     void paintKnobReadout(juce::Graphics& g) const {
         if (!project().validChannel(knobRow)) return;
@@ -869,7 +916,7 @@ private:
     std::vector<std::pair<int, float>> knobStarts;   // each knob target and its value when the drag began
     Drag drag{Drag::none};
     bool paintValue{};
-    int lastRow{}, lastStep{}, knobRow{}, knobStartY{};
+    int lastRow{}, lastStep{}, knobRow{}, knobStartY{}, nameStartWidth{}, nameStartX{};
     bool knobPan{};
 
     std::uint32_t strokeCounter{};
@@ -909,7 +956,7 @@ public:
     }
 
     // Geometry shared with the tests.
-    juce::Rectangle<int> plot() const { return {ChannelRackGrid::headerWidth, 8, getWidth() - ChannelRackGrid::headerWidth, getHeight() - 16}; }
+    juce::Rectangle<int> plot() const { return {grid.headerWidth(), 8, getWidth() - grid.headerWidth(), getHeight() - 16}; }
     int valueAtY(int y) const {
         const auto area = plot();
         const double t = 1.0 - juce::jlimit(0.0, 1.0, static_cast<double>(y - area.getY()) / juce::jmax(1, area.getHeight()));
@@ -935,7 +982,7 @@ public:
     }
 
     void resized() override {
-        const int w = ChannelRackGrid::headerWidth - 20;
+        const int w = grid.headerWidth() - 20;
         const int bw = (w - 6) / 2;
         for (int i = 0; i < rack::stepFieldCount; ++i)
             fieldButtons[static_cast<std::size_t>(i)].setBounds(10 + (i % 2) * (bw + 6), 34 + (i / 2) * 30, bw, 26);
@@ -951,11 +998,11 @@ public:
             g.setColour(col::textDim);
             g.setFont(ui::font(12.0f));
             const auto& info = p.info[static_cast<std::size_t>(channel)];
-            g.drawText(juce::String::fromUTF8(info.name.c_str(), static_cast<int>(info.name.size())), juce::Rectangle<int>(110, 8, ChannelRackGrid::headerWidth - 120, 18), juce::Justification::centredRight, true);
+            g.drawText(juce::String::fromUTF8(info.name.c_str(), static_cast<int>(info.name.size())), juce::Rectangle<int>(110, 8, grid.headerWidth() - 120, 18), juce::Justification::centredRight, true);
         }
         g.setColour(col::textFaint);
         g.setFont(ui::font(10.5f));
-        g.drawFittedText("Drag across a row of bars to draw. Right-click a bar to reset it.", juce::Rectangle<int>(10, 96, ChannelRackGrid::headerWidth - 20, 40), juce::Justification::topLeft, 3);
+        g.drawFittedText("Drag across a row of bars to draw. Right-click a bar to reset it.", juce::Rectangle<int>(10, 96, grid.headerWidth() - 20, 40), juce::Justification::topLeft, 3);
         const auto area = plot();
         g.setColour(col::surface);
         g.fillRect(area);
@@ -1049,6 +1096,7 @@ public:
         setName("Channel rack");
         addAndMakeVisible(grid); addAndMakeVisible(graph); addAndMakeVisible(scrollBar); addChildComponent(verticalBar);
         scrollBar.addListener(this); verticalBar.addListener(this);
+        grid.onLayoutChanged = [this] { resized(); };
         scrollBar.setAutoHide(true);
         verticalBar.setAutoHide(false);
         for (auto* label : {&patternLabel, &lengthLabel, &swingLabel}) {
@@ -1170,7 +1218,8 @@ public:
         swing.setValue(p.swing * 100.0, juce::dontSendNotification);
         addChannelButton.setEnabled(p.channelCount < rack::maxChannels);
         updating = false;
-        if (p.channelCount != laidOutChannels) resized();   // the rows (and the graph below them) share the height
+        // The rows (and the graph below them) share the height, and the name column sets where the steps start.
+        if (p.channelCount != laidOutChannels || p.nameColumnWidth != laidOutNameWidth) resized();
         grid.refresh();
         layoutScroll();
         graph.repaint();
@@ -1220,6 +1269,7 @@ public:
         addChannelButton.setBounds(bar.removeFromRight(110).withTrimmedTop(14));
         hint.setBounds(r.removeFromBottom(24).reduced(14, 0));
         laidOutChannels = controller.channelRack().channelCount;
+        laidOutNameWidth = controller.channelRack().nameColumnWidth;
         const int rows = juce::jmax(4, laidOutChannels);
         const int wanted = ChannelRackGrid::rulerHeight + rows * ChannelRackGrid::minRow;
         const int graphHeight = juce::jlimit(90, 150, r.getHeight() - wanted - scrollBarHeight);
@@ -1227,10 +1277,12 @@ public:
         auto bar2 = r.removeFromBottom(scrollBarHeight);
         // More channels than the window has room for: the rows scroll.
         const bool scrolls = ChannelRackGrid::rulerHeight + laidOutChannels * ChannelRackGrid::minRow > r.getHeight();
-        scrollBar.setBounds(bar2.withTrimmedLeft(ChannelRackGrid::headerWidth).withTrimmedRight(scrolls ? verticalBarWidth : 0));
+        scrollBar.setBounds(bar2.withTrimmedLeft(grid.headerWidth()).withTrimmedRight(scrolls ? verticalBarWidth : 0));
         verticalBar.setVisible(scrolls);
         if (scrolls) verticalBar.setBounds(r.removeFromRight(verticalBarWidth).withTrimmedTop(ChannelRackGrid::rulerHeight));
         grid.setBounds(r);
+        graph.resized();   // its buttons fill the header, which may have changed width without the graph changing size
+        graph.repaint();
         layoutScroll();
     }
 
@@ -1259,7 +1311,7 @@ private:
     ChannelRackGrid grid;
     ChannelRackGraph graph;
     juce::ScrollBar scrollBar, verticalBar;
-    int laidOutChannels{-1};
+    int laidOutChannels{-1}, laidOutNameWidth{-1};
     juce::Label patternLabel, lengthLabel, swingLabel, hint;
     juce::ComboBox patternBox, lengthBox;
     juce::StringArray patternNames;

@@ -30,6 +30,8 @@ inline constexpr int maxOutputTrack = 15;   // Channel::output: a Session track 
 inline constexpr int maxChokeGroup = 8;
 inline constexpr int maxNameBytes = 48;
 inline constexpr int maxSampleBytes = 1024;
+// The width of the Channel Rack's name column, in pixels (a view setting saved with the project).
+inline constexpr int defaultNameColumn = 118, minNameColumn = 64, maxNameColumn = 320;
 inline constexpr float defaultChannelVolume = 0.8f; // unity gain; the fader goes up to 1.0 (+1.9 dB)
 
 inline bool validLength(int length) noexcept { return length == 16 || length == 32 || length == 64; }
@@ -154,6 +156,7 @@ struct Project {
     std::array<std::string, maxPatterns> patternNames{};
     int selectedPattern{};
     float swing{};  // 0..1: how late every second sixteenth lands (1 = three quarters of the way to the next)
+    int nameColumnWidth{defaultNameColumn};   // a view setting like selectedPattern: not an undoable edit
 
     static const std::shared_ptr<const Pattern>& emptyPattern() {
         static const auto empty = std::make_shared<const Pattern>();
@@ -194,6 +197,11 @@ struct Project {
     bool selectPattern(int index) {
         if (!validPattern(index) || index == selectedPattern) return false;
         selectedPattern = index; return true;
+    }
+    bool setNameColumnWidth(int width) {
+        width = std::clamp(width, minNameColumn, maxNameColumn);
+        if (width == nameColumnWidth) return false;
+        nameColumnWidth = width; return true;
     }
     // Adds an empty pattern, or a copy of `copyFrom`. The new pattern becomes the selected one.
     bool addPattern(int copyFrom = -1) {
@@ -391,7 +399,8 @@ struct Project {
     // ---- whole-project rules --------------------------------------------------
     bool valid() const noexcept {
         if (channelCount < 0 || channelCount > maxChannels || patternCount < 1 || patternCount > maxPatterns
-            || selectedPattern < 0 || selectedPattern >= patternCount || !std::isfinite(swing) || swing < 0.0f || swing > 1.0f)
+            || selectedPattern < 0 || selectedPattern >= patternCount || !std::isfinite(swing) || swing < 0.0f || swing > 1.0f
+            || nameColumnWidth < minNameColumn || nameColumnWidth > maxNameColumn)
             return false;
         for (int c = 0; c < maxChannels; ++c) {
             const auto i = static_cast<std::size_t>(c);
@@ -408,9 +417,11 @@ struct Project {
     }
     // Identity-cheap comparison: patterns are compared by pointer first, so two
     // projects that share their patterns compare in a few microseconds.
-    bool operator==(const Project& o) const { return selectedPattern == o.selectedPattern && sameContent(o); }
-    // Everything except which pattern is selected, which is a view setting like the
-    // selected track or scene: choosing a different pattern is not an undoable edit.
+    bool operator==(const Project& o) const {
+        return selectedPattern == o.selectedPattern && nameColumnWidth == o.nameColumnWidth && sameContent(o);
+    }
+    // Everything except which pattern is selected and how wide the name column is, which are view settings like
+    // the selected track or scene: choosing a different pattern or resizing the column is not an undoable edit.
     bool sameContent(const Project& o) const {
         if (channelCount != o.channelCount || patternCount != o.patternCount
             || swing != o.swing || channels != o.channels || info != o.info || patternNames != o.patternNames)

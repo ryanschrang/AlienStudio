@@ -32,6 +32,7 @@ inline juce::var rackToVar(const Project& project) {
     auto* object = root.getDynamicObject();
     object->setProperty("swing", static_cast<double>(project.swing));
     object->setProperty("selectedPattern", project.selectedPattern);
+    object->setProperty("nameColumnWidth", project.nameColumnWidth);
     juce::Array<juce::var> channels;
     for (int c = 0; c < project.channelCount; ++c) {
         const auto i = static_cast<std::size_t>(c);
@@ -87,6 +88,10 @@ inline bool rackFromVar(const juce::var& value, Project& out, juce::String& erro
         || !detail::integerIn(object->getProperty("selectedPattern"), 0, maxPatterns - 1, selected))
         return fail("The Channel Rack's swing or selected pattern is invalid.");
     parsed.swing = swing;
+    // Optional (projects saved before it existed use the default width); present but invalid rejects the rack.
+    if (object->hasProperty("nameColumnWidth")
+        && !detail::integerIn(object->getProperty("nameColumnWidth"), minNameColumn, maxNameColumn, parsed.nameColumnWidth))
+        return fail("The Channel Rack's name column width is invalid.");
 
     const auto channelsValue = object->getProperty("channels");
     const auto* channels = channelsValue.getArray();

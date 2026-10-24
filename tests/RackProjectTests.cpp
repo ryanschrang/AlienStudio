@@ -43,6 +43,7 @@ static Project busyRack() {
     p.setPatternLength(2, 64);
     p.setStepOn(2, 4, 63, true);
     p.selectPattern(1);
+    p.setNameColumnWidth(201);
     return p;
 }
 
@@ -60,6 +61,15 @@ static void roundTripAndValidation() {
             "values drawn on a step that is off are kept");
     require(back.channelRack.patternNames[1] == "Fill \xe2\x80\x93 B" && back.channelRack.info[4].name == "T\xc3\xa4m \xe2\x80\x9c" "Tom\xe2\x80\x9d",
             "non-ASCII names survive");
+
+    require(back.channelRack.nameColumnWidth == 201, "the name column's width round-trips");
+    {   // Projects saved before the name column could be resized open with the default width.
+        auto copy = juce::JSON::parse(json);
+        copy.getDynamicObject()->getProperty("channelRack").getDynamicObject()->removeProperty("nameColumnWidth");
+        alien::SessionProjectData older;
+        require(alien::parseSessionProject(juce::JSON::toString(copy), older, error) && older.channelRack.nameColumnWidth == defaultNameColumn,
+                "a rack without a name column width opens with the default one");
+    }
 
     // The default rack is what a project without one (any older file) opens with.
     auto old = juce::JSON::parse(json);   // (a var holds its object by reference: parse afresh for every variant)
@@ -95,6 +105,9 @@ static void roundTripAndValidation() {
     damage("text volume", [&](auto* r) { firstChannel(r)->setProperty("volume", "loud"); });
     damage("swing above 1", [&](auto* r) { r->setProperty("swing", 7.0); });
     damage("selected pattern beyond count", [&](auto* r) { r->setProperty("selectedPattern", 9); });
+    damage("name column too narrow", [&](auto* r) { r->setProperty("nameColumnWidth", minNameColumn - 1); });
+    damage("name column too wide", [&](auto* r) { r->setProperty("nameColumnWidth", maxNameColumn + 1); });
+    damage("text name column width", [&](auto* r) { r->setProperty("nameColumnWidth", "wide"); });
     damage("pattern length 17", [&](auto* r) { firstPattern(r)->setProperty("length", 17); });
     damage("no patterns", [&](auto* r) { r->getProperty("patterns").getArray()->clear(); });
     damage("17 channels", [&](auto* r) { auto* a = r->getProperty("channels").getArray(); const auto first = a->getReference(0); while (a->size() < 17) a->add(first); });
@@ -200,6 +213,18 @@ static void controllerEditsAndUndo() {
     require(peakOf(engine, 3000) == 0.0, "and the engine follows the undo");
     stopRackPlayback(engine);
     require(restored >= 4, "views are told about every undo and redo");
+
+    // Resizing the name column is a view setting too: clamped, never an undo step, and kept through undo and redo.
+    require(c.editRack("Turn step on", [](Project& p) { return p.setStepOn(0, 0, 0, true); }), "an edit to undo later");
+    require(c.setRackNameColumnWidth(180) && c.channelRack().nameColumnWidth == 180 && c.undoLabel() == "Turn step on",
+            "resizing the name column is not an edit");
+    require(!c.setRackNameColumnWidth(180), "the same width again changes nothing");
+    require(c.setRackNameColumnWidth(5) && c.channelRack().nameColumnWidth == minNameColumn
+            && c.setRackNameColumnWidth(5000) && c.channelRack().nameColumnWidth == maxNameColumn, "the width is held to its range");
+    c.setRackNameColumnWidth(180);
+    require(c.undo() && !c.channelRack().pattern(0).steps[0][0].on && c.channelRack().nameColumnWidth == 180, "undo keeps the width");
+    require(c.redo() && c.channelRack().nameColumnWidth == 180, "and so does redo");
+    require(c.undo() && !c.canUndo(), "back to the start");
 
     // A drag of the volume fader is one step.
     for (int i = 1; i <= 8; ++i)
