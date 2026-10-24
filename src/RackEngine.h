@@ -67,9 +67,9 @@ public:
 
     // Plays one channel now, as when its name is clicked. Mute, solo and
     // probability do not apply: a preview always sounds.
-    void audition(const Snapshot& snap, int channel, float velocity, const SessionAudioClip* clip) noexcept {
+    void audition(const Snapshot& snap, int channel, float velocity, const SessionAudioClip* clip, int pitch = 0) noexcept {
         if (clip == nullptr || channel < 0 || channel >= snap.channelCount || !std::isfinite(velocity) || velocity <= 0.0f) return;
-        start(snap.channels[static_cast<std::size_t>(channel)], channel, clip, std::clamp(velocity, 0.0f, 1.0f), 0.0f, 0, true);
+        start(snap.channels[static_cast<std::size_t>(channel)], channel, clip, std::clamp(velocity, 0.0f, 1.0f), 0.0f, std::clamp(pitch, -24, 24), true);
     }
 
     // Renders `samples` samples and ADDS them to the per-bus output pointers.

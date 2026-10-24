@@ -70,8 +70,9 @@ defects throughout; this ordering does not defer fixes needed to run the example
 - Commands use the existing undo path; Ctrl/Cmd+C/V copies/pastes the selected channel's steps, Ctrl/Cmd+D duplicates the channel when the grid has focus.
 - Existing project format and playback scheduling are unchanged.
 - Tests: RackModelTests and ChannelRackViewTests expanded; Windows Debug/Release CI and manual visual/listening checks pending.
+- Implemented: open a channel in the piano roll (menu or Ctrl+P): its steps in the selected pattern become one-step notes (pitch, velocity, chance) and edits rewrite them, one undo step per gesture, while the rack pattern plays; previews play at the note's pitch. ChannelRackViewTests channelPianoRollChecks; Windows piano-roll check pending.
 - Implemented: multi-channel selection (Ctrl/Shift-click on the name or lamp, Ctrl+A); mute, solo, knobs (relative), sound, output, choke, pattern tools, paste, clear, duplicate, move and delete act on every selected channel as one undo step. ChannelRackViewTests multiSelectChecks; Windows mouse/keyboard check pending.
-- Next: resizable name columns, opening a channel in the piano roll, richer graph gestures and advanced rhythm tools.
+- Next: resizable name columns, richer graph gestures, step length and instrument channels (see ROADMAP) and advanced rhythm tools.
 
 ## Song flow (feature branch)
 
