@@ -26,7 +26,7 @@ inline constexpr int sessionProjectSceneCount = 4;
 inline constexpr int sessionProjectFormatVersion = 11;
 
 struct SessionProjectClip {
-    PianoRollPattern pattern;
+    SharedPianoRoll pattern;   // shared with the document; empty clips share nothing at all
     juce::String audioFilePath;
 };
 
@@ -101,7 +101,7 @@ struct SessionProjectData {
         for (const auto& scene : clips) {
             if (static_cast<int>(scene.size()) != tracks) return false;
             for (const auto& clip : scene)
-                if (!clip.pattern.valid()) return false;
+                if (!clip.pattern->valid()) return false;
         }
         for (std::size_t i = 0; i < stepPitches.size(); ++i)
             if (stepPitches[i] < 0 || stepPitches[i] > 127
@@ -242,12 +242,13 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
         for (const auto& clip : scene) {
             auto clipValue = juce::var(new juce::DynamicObject());
             auto* clipObject = clipValue.getDynamicObject();
-            clipObject->setProperty("loopSteps", clip.pattern.loopSteps);
+            const PianoRollPattern& pattern = clip.pattern;
+            clipObject->setProperty("loopSteps", pattern.loopSteps);
             clipObject->setProperty("audioFilePath", clip.audioFilePath);
 
             juce::Array<juce::var> notes;
-            for (std::size_t i = 0; i < clip.pattern.count; ++i) {
-                const auto& note = clip.pattern.notes[i];
+            for (std::size_t i = 0; i < pattern.count; ++i) {
+                const auto& note = pattern.notes[i];
                 auto noteValue = juce::var(new juce::DynamicObject());
                 auto* noteObject = noteValue.getDynamicObject();
                 noteObject->setProperty("pitch", note.pitch);
@@ -551,8 +552,10 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
                 || (!path.isString() && !path.isVoid())) {
                 error = "A project clip is missing valid pattern or audio data."; return false;
             }
-            clip.pattern.loopSteps = static_cast<int>(loopSteps);
-            if (clip.pattern.loopSteps < 1 || clip.pattern.loopSteps > PianoRollPattern::maxLoopSteps) {
+            // Built on the heap: a pattern is 32 KiB, and an empty one with the default loop is not kept at all.
+            auto built = std::make_shared<PianoRollPattern>();
+            built->loopSteps = static_cast<int>(loopSteps);
+            if (built->loopSteps < 1 || built->loopSteps > PianoRollPattern::maxLoopSteps) {
                 error = "A project clip has an unsupported loop length."; return false;
             }
             if (path.isString()) clip.audioFilePath = path.toString();
@@ -575,18 +578,20 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
                 const double noteVelocity = static_cast<double>(velocity);
                 const double noteProbability = static_cast<double>(probability);
                 if (notePitch < 0 || notePitch > 127 || start < 0
-                    || start >= clip.pattern.loopSteps * PianoRollPattern::ticksPerStep || length < 1
-                    || length > clip.pattern.loopSteps * PianoRollPattern::ticksPerStep - start
+                    || start >= built->loopSteps * PianoRollPattern::ticksPerStep || length < 1
+                    || length > built->loopSteps * PianoRollPattern::ticksPerStep - start
                     || !std::isfinite(noteVelocity) || noteVelocity <= 0.0 || noteVelocity > 1.0
                     || !std::isfinite(noteProbability) || noteProbability < 0.0 || noteProbability > 1.0) {
                     error = "A piano-roll note is outside the supported range."; return false;
                 }
-                const auto id = clip.pattern.add(notePitch, PianoRollPattern::fromTicks(start),
+                const auto id = built->add(notePitch, PianoRollPattern::fromTicks(start),
                     PianoRollPattern::fromTicks(length), static_cast<float>(noteVelocity),
                     static_cast<float>(noteProbability));
                 if (id == 0) { error = "A piano-roll note is outside the supported range."; return false; }
             }
-            if (!clip.pattern.valid()) { error = "A project clip contains an invalid piano-roll pattern."; return false; }
+            if (!built->valid()) { error = "A project clip contains an invalid piano-roll pattern."; return false; }
+            if (built->count > 0 || built->loopSteps != PianoRollPattern::defaultLoopSteps)
+                clip.pattern = std::shared_ptr<const PianoRollPattern>(std::move(built));
         }
     }
 

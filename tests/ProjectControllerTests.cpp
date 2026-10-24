@@ -83,6 +83,27 @@ static void fileFormatTests() {
             && back.selectedTrack == 8 && back.selectedScene == 10,
             "names, colours, presets, clips and selection round-trip");
 
+    // Clip notes are shared, never copied, on the way to and from the file.
+    const auto data = alien::toProjectData(doc);
+    require(data.clips[10][8].pattern.shared() == doc.clip(8, 10).pattern && data.clips[0][0].pattern.shared() == doc.clip(0, 0).pattern,
+            "save data shares each clip's notes with the document");
+    std::size_t kept = 0;
+    for (const auto& scene : parsed.clips) for (const auto& clip : scene) kept += clip.pattern.shared() != nullptr ? 1u : 0u;
+    require(kept == 1 && parsed.clips[10][8].pattern->count == 1 && parsed.clips[0][0].pattern->count == 0
+            && parsed.clips[0][0].pattern->loopSteps == alien::PianoRollPattern::defaultLoopSteps,
+            "a loaded project keeps notes only for the clip that has some; empty clips read as empty");
+    require(back.clip(0, 0).pattern == alien::emptyPattern() && back.clip(3, 7).pattern == alien::emptyPattern(),
+            "and the document's empty clips all share the one empty pattern");
+    {   // An empty clip with its own loop length is kept: it is not the default.
+        auto shortLoop = alien::ProjectDocument::createDefault(1, 1);
+        alien::PianoRollPattern p; p.loopSteps = 32;
+        shortLoop.clip(0, 0).pattern = std::make_shared<const alien::PianoRollPattern>(p);
+        alien::SessionProjectData again;
+        require(alien::parseSessionProject(alien::serializeSessionProject(alien::toProjectData(shortLoop)), again, error)
+                && again.clips[0][0].pattern.shared() != nullptr && again.clips[0][0].pattern->loopSteps == 32,
+                "an empty clip with a 32-step loop keeps its loop length");
+    }
+
     // Inconsistent grids are rejected.
     auto broken = juce::JSON::parse(json);
     broken.getDynamicObject()->getProperty("scenes").getArray()->getReference(3).getArray()->remove(0);
@@ -514,15 +535,17 @@ static void timelineIntegrationTests() {
             for (int i = 0; i < 200 && !done; ++i) pump(10);
             require(done && ok, "save");
             const auto live = c.captureArrangement();
-            require(live->clips[0][0].audio != nullptr && live->clips[1][1].pattern.count == 1, "the live song has the audio and the MIDI clip");
+            require(live->clips[0][0].audio != nullptr && live->clips[1][1].pattern->count == 1, "the live song has the audio and the MIDI clip");
         }
         require(wav.deleteFile(), "the audio goes missing");
         ToneEngine engine; alien::ProjectController c(engine);
         c.openProject(song); waitIdle(c);
         require(c.document().clip(0, 0).audioOffline() && c.document().clip(0, 0).notes().count == 1, "the clip is offline and still holds its notes");
         const auto captured = c.captureArrangement();
-        require(captured->clips[0][0].audio == nullptr && captured->clips[0][0].pattern.count == 0, "but the song plays nothing for it");
-        require(captured->clips[1][1].pattern.count == 1, "an ordinary MIDI clip keeps its notes");
+        require(captured->clips[0][0].audio == nullptr && captured->clips[0][0].pattern->count == 0, "but the song plays nothing for it");
+        require(captured->clips[1][1].pattern->count == 1, "an ordinary MIDI clip keeps its notes");
+        require(captured->clips[1][1].pattern.shared() == c.document().clip(1, 1).pattern,
+                "the song snapshot shares the clip's notes with the document instead of copying them");
         c.discardRecovery();
     }
     alien::ProjectController::recoveryDirectoryOverride() = juce::File{};

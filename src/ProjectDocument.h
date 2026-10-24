@@ -205,7 +205,7 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
     for (int s = 0; s < doc.sceneCount(); ++s)
         for (int t = 0; t < doc.trackCount(); ++t) {
             auto& destination = data.clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
-            destination.pattern = doc.clip(t, s).notes();
+            destination.pattern = doc.clip(t, s).pattern;   // shared, not copied
             destination.audioFilePath = doc.clip(t, s).audioFilePath;
         }
     return data;
@@ -242,7 +242,7 @@ inline ProjectDocument fromProjectData(const SessionProjectData& data) {
         for (int t = 0; t < data.trackCount(); ++t) {
             const auto& source = data.clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
             auto& clip = doc.clip(t, s);
-            clip.pattern = std::make_shared<const PianoRollPattern>(source.pattern);
+            clip.pattern = source.pattern.shared() != nullptr ? source.pattern.shared() : emptyPattern();
             clip.audioFilePath = source.audioFilePath;
         }
     doc.clampSelection();
