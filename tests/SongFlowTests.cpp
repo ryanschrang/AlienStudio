@@ -161,6 +161,7 @@ static void layout() {
 }
 
 #include "ApplicationToolbarTests.h"
+#include "DetachableViewTests.h"
 
 int main(int argc,char** argv) {
     juce::ScopedJuceInitialiser_GUI gui;
@@ -170,6 +171,8 @@ int main(int argc,char** argv) {
     songModeSwitch();
     layout();
     applicationToolbarChecks();
+    detachableViewChecks();
+    detachedTypingChecks();
     if(argc>1)renderToolbarPreview(juce::File::getCurrentWorkingDirectory().getChildFile(argv[1]));
     std::cout << "All Song flow tests passed\n";
     return 0;

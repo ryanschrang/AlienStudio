@@ -89,7 +89,7 @@ private:
         }
         void activeWindowStatusChanged() override {
             if (!isActiveWindow())
-                if (auto* content = dynamic_cast<MainComponent*>(getContentComponent())) content->releaseNotes();
+                if (auto* content = dynamic_cast<MainComponent*>(getContentComponent())) content->applicationWindowDeactivated();
         }
         void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
     };
