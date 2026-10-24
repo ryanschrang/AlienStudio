@@ -93,6 +93,8 @@ public:
     alien::rack::SnapshotMailbox rackMailbox;
     alien::rack::RackPlayer::SampleTable rackSamples{};
     NoteQueue rackAuditions;
+    // A rack audition names a channel, and optionally a pitch in semitones (-24..24) to play it at.
+    static constexpr int rackAuditionEvent(int channel, int pitch = 0) noexcept { return pitch == 0 ? channel : channel | ((pitch + 25) << 8); }
     std::atomic<int> rackStep{-1}; // step of the selected pattern that started last, or -1
 
     ToneEngine() noexcept {
@@ -253,10 +255,12 @@ private:
         }
         {   // Previews from the Channel Rack screen (sound whatever the transport is doing).
             NoteQueue::Event preview{};
-            for (int n = 0; n < 64 && rackAuditions.pop(preview); ++n)
-                if (!panic && preview.note >= 0 && preview.note < alien::rack::maxChannels)
-                    rackPlayer.audition(*rackSnapshot, preview.note, preview.velocity,
-                                        rackSamples[static_cast<std::size_t>(preview.note)].load(std::memory_order_relaxed));
+            for (int n = 0; n < 64 && rackAuditions.pop(preview); ++n) {
+                const int channel = preview.note & 0xff, pitch = preview.note >> 8 == 0 ? 0 : (preview.note >> 8) - 25;
+                if (!panic && preview.note >= 0 && channel < alien::rack::maxChannels)
+                    rackPlayer.audition(*rackSnapshot, channel, preview.velocity,
+                                        rackSamples[static_cast<std::size_t>(channel)].load(std::memory_order_relaxed), pitch);
+            }
             if (rackAuditions.panic.exchange(false)) rackPlayer.stop();
         }
         if (panic) {

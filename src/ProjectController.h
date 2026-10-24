@@ -7,6 +7,7 @@
 #include "DocumentHistory.h"
 #include "PianoRollProcessing.h"
 #include "RackSounds.h"
+#include "RackChannelNotes.h"
 #include "DiskRecording.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
@@ -1088,8 +1089,17 @@ public:
         return true;
     }
     // Sounds a channel now, whatever the transport is doing (clicking its name).
-    void previewRackChannel(int channel, float velocity = 1.0f) {
-        if (doc.channelRack.validChannel(channel)) engine.rackAuditions.push(channel, velocity);
+    void previewRackChannel(int channel, float velocity = 1.0f, int pitch = 0) {
+        if (doc.channelRack.validChannel(channel))
+            engine.rackAuditions.push(ToneEngine::rackAuditionEvent(channel, std::clamp(pitch, rack::minStepPitch, rack::maxStepPitch)), velocity);
+    }
+    // The channel's steps in `pattern`, rewritten from piano-roll notes (see RackChannelNotes.h). Edits with the same
+    // coalesceKey made in quick succession are one undo step, so a whole drag in the piano roll is one.
+    bool setRackChannelNotes(int pattern, int channel, const PianoRollPattern& notes, const juce::String& coalesceKey = {},
+                             rack::ChannelNotesFit* fit = nullptr) {
+        if (!doc.channelRack.validPattern(pattern) || !doc.channelRack.validChannel(channel)) return false;
+        const auto row = rack::stepsFromNotes(notes, doc.channelRack.pattern(pattern), channel, fit);
+        return editRack("Edit channel notes", [&](rack::Project& p) { return p.pasteRow(pattern, channel, row); }, coalesceKey);
     }
     // Gives a channel one of the built-in drum sounds and names it after the sound.
     bool setRackBuiltin(int channel, const juce::String& soundId) {

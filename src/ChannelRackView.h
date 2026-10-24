@@ -31,6 +31,7 @@ public:
     std::function<void(const juce::String&)> onMessage;
     std::function<void(int)> onScrolled;         // horizontal scroll position changed
     std::function<void(int)> onScrolledY;        // vertical scroll position changed
+    std::function<void(int)> onOpenPianoRoll;    // "Open in piano roll" was chosen for a channel
     // How pop-up menus and the rename box are shown. Left empty they use JUCE's
     // real windows; the tests set them to capture what would be shown and to
     // answer for the user (a real window needs a display).
@@ -254,7 +255,7 @@ public:
     // ---- menus ---------------------------------------------------------------
     enum MenuId { cmdRename = 1, cmdMute, cmdSolo, cmdClearSteps, cmdMoveUp, cmdMoveDown, cmdDelete, cmdSilent, cmdLoadSample,
                   cmdDuplicate = 100, cmdCopyRow, cmdPasteRow, cmdFill2, cmdFill4, cmdFill8,
-                  cmdRotateLeft, cmdRotateRight, cmdReverseRow, cmdRepeat4, cmdRepeat8, cmdRepeat16,
+                  cmdRotateLeft, cmdRotateRight, cmdReverseRow, cmdRepeat4, cmdRepeat8, cmdRepeat16, cmdPianoRoll,
                   builtinBase = 20, outputMaster = 40, outputBase = 41, chokeNone = 60, chokeBase = 61 };
 
     juce::PopupMenu channelMenu(int row) const {
@@ -262,6 +263,7 @@ public:
         if (!project().validChannel(row)) return menu;
         const auto& channel = project().channels[static_cast<std::size_t>(row)];
         const auto& info = project().info[static_cast<std::size_t>(row)];
+        menu.addItem(cmdPianoRoll, "Open in piano roll", onOpenPianoRoll != nullptr);
         menu.addItem(cmdRename, "Rename...");
         menu.addSeparator();
         juce::PopupMenu sound;
@@ -320,6 +322,7 @@ public:
     // them as one undo step, except Rename, Load sample and Copy steps, which only make sense for one.
     void runChannelCommand(int row, int id) {
         if (!project().validChannel(row)) return;
+        if (id == cmdPianoRoll) { selectChannel(row); if (onOpenPianoRoll) onOpenPianoRoll(row); return; }
         const auto rows = targetsOf(row);
         // Each target in turn, as one undo step: true when anything changed.
         const auto forEach = [&](const juce::String& label, const std::function<bool(rack::Project&, int)>& edit) {
@@ -529,6 +532,7 @@ public:
         if (code == 'C' || code == 'c') { runChannelCommand(selected, cmdCopyRow); return true; }
         if (code == 'V' || code == 'v') { runChannelCommand(selected, cmdPasteRow); return true; }
         if (code == 'D' || code == 'd') { runChannelCommand(selected, cmdDuplicate); return true; }
+        if (code == 'P' || code == 'p') { runChannelCommand(selected, cmdPianoRoll); return true; }
         if (code == 'A' || code == 'a') { selectAllChannels(); return true; }
         return false;
     }

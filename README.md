@@ -722,6 +722,15 @@ sound, output, choke group, pattern tools, paste, clear, duplicate, move and del
 (the menu says how many). Rename, Load sample file and Copy steps stay with the clicked channel.
 The selection is part of the screen, not of the project.
 
+**A channel in the piano roll.** Choose **Open in piano roll** in a channel's menu (or press
+**Ctrl+P** with the rack focused) to edit that channel's steps in the selected pattern as notes,
+like FL Studio's channel piano roll. Each lit step is a one-step note: its height is the step's
+pitch (middle C is no change, two octaves either way), and its velocity and chance are the step's.
+Drawing, moving and deleting notes rewrites the steps, one undo step per gesture, while the
+rack's pattern plays. Steps have no length yet, so a note snaps to the nearest whole step and
+lasts one step, a step holds one note (the last one placed wins), and the status bar says when a
+note was adjusted. Picking a Session clip puts the piano roll back on clips.
+
 **Steps.** Click or drag to paint steps; a drag across several channels paints each cell it
 crosses without gaps. A press on a lit step erases along the drag instead; right-drag always
 erases. Painting plays the sound. A whole stroke is one undo step. Ruler numbers mark each
@@ -756,7 +765,7 @@ red-labelled channel that **Relink audio** can repair, like a missing clip.
   To hear patterns in a song, place them on the Song view's four pattern lanes (see below): they then
   play in the Song and are in **Export WAV**.
 - Pitch is set per step (+-24 semitones, which also changes the sample's speed). There is no
-  per-channel root note, sample envelope or start/end trim, no per-channel piano roll, and no
+  per-channel root note, sample envelope or start/end trim, and no
   per-step note length, flam or sample offset yet; every hit is a one-shot.
 - Channel routing reaches Session mixer strips (volume/pan/mute/solo/FX/meters). Instrument-plugin
   tracks keep their own audio; the rack is mixed into the same strip afterwards.
