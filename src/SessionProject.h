@@ -131,6 +131,8 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
         recordingObject->setProperty("countInBars", project.recording.countInBars);
         recordingObject->setProperty("latencyOffsetMs", project.recording.latencyOffsetMs);
         recordingObject->setProperty("replace", project.recording.replace);
+        recordingObject->setProperty("audioLatencyOffsetMs", project.recording.audioLatencyOffsetMs);
+        recordingObject->setProperty("punch", project.recording.punch);
         rootObject->setProperty("recording", recordingVar);
     }
     rootObject->setProperty("channelRack", rack::rackToVar(project.channelRack));
@@ -438,6 +440,14 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         parsed.recording.countInBars = static_cast<int>(countIn);
         parsed.recording.latencyOffsetMs = static_cast<int>(offset);
         parsed.recording.replace = static_cast<bool>(replace);
+        // Added with Song-view audio takes; older projects leave them out.
+        const auto audioOffset = recordingValue.getProperty("audioLatencyOffsetMs", juce::var());
+        const auto punch = recordingValue.getProperty("punch", juce::var());
+        if ((!audioOffset.isVoid() && !audioOffset.isInt()) || (!punch.isVoid() && !punch.isBool())) {
+            error = "The project's recording settings are invalid."; return false;
+        }
+        if (!audioOffset.isVoid()) parsed.recording.audioLatencyOffsetMs = static_cast<int>(audioOffset);
+        if (!punch.isVoid()) parsed.recording.punch = static_cast<bool>(punch);
         if (!parsed.recording.valid()) { error = "The project's recording settings are out of range."; return false; }
     }
     if (formatVersion < 3) {

@@ -817,9 +817,22 @@ which now lists up to 32) and how it **monitors**: **Auto** plays the input whil
 armed, **In** always plays it, **Off** never does. What you hear goes through the track's effects,
 volume, pan, mute and solo, and a thin meter along the bottom of the header shows the input level.
 If the chosen input is not enabled on the device the header says so. Arm, input and monitoring are
-saved with the project and each change is one undo step. Recording onto the Song timeline itself
-comes next; for now takes are recorded in **Audio lab**. Use headphones when monitoring a
+saved with the project and each change is one undo step. Use headphones when monitoring a
 microphone, or turn monitoring off, to avoid feedback.
+
+**Recording onto the Song.** With the Song view showing (or Song mode on), press **Record**: every
+armed track whose input is enabled records to its own new WAV (24-bit, at the device's rate) while
+the song plays. When stopped, the count-in clicks first and the song starts after it; when already
+playing, recording starts at once. Press **Record** or **Stop** to finish. Each take becomes an audio
+clip on its track, in a free Session cell (a scene is added if there is none), placed where it was
+played: the device's input and output latency is taken off, plus the **Audio input latency** offset
+in the record options menu (use it to line up takes if your interface reports its latency wrongly).
+All the takes of one pass are one undo step, and a take replaces whatever was under it on its lane.
+Turn on **Punch in/out at the loop range** in the same menu to record only between the loop markers:
+start before them for a pre-roll, and the take stops by itself at the loop's end. Without punch, a
+take also stops where the loop wraps or the playhead jumps, because each take is one piece (take
+lanes for loop recording come later). Takes are saved in a "*project* takes" folder next to a saved
+project, or in *Documents/Alien Studio takes* for one not yet saved.
 
 **Fades and crossfades (audio clips).** An audio clip has two small handles in its top corners: drag
 the left one in for a fade in and the right one in for a fade out (straight-line fades, shown

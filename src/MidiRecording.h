@@ -20,11 +20,16 @@ struct RecordSettings {
     int countInBars{1};            // 0 = no count-in
     int latencyOffsetMs{0};        // extra shift on top of the device latency; positive = notes land earlier
     bool replace{false};           // false = overdub (layer onto existing notes), true = replace them
+    // Song-view audio takes. A take moves earlier by the device's input and output latency
+    // plus this offset (positive = earlier). With punch on, only the loop range is recorded.
+    int audioLatencyOffsetMs{0};
+    bool punch{false};
 
     bool valid() const noexcept {
         return std::isfinite(metronomeVolume) && metronomeVolume >= 0.0f && metronomeVolume <= 1.0f
             && countInBars >= 0 && countInBars <= maxCountInBars
-            && latencyOffsetMs >= -maxLatencyOffsetMs && latencyOffsetMs <= maxLatencyOffsetMs;
+            && latencyOffsetMs >= -maxLatencyOffsetMs && latencyOffsetMs <= maxLatencyOffsetMs
+            && audioLatencyOffsetMs >= -maxLatencyOffsetMs && audioLatencyOffsetMs <= maxLatencyOffsetMs;
     }
     bool operator==(const RecordSettings&) const = default;
 };
@@ -38,7 +43,8 @@ inline constexpr std::array<int, 9> latencyChoices{-50, -25, -10, 0, 10, 25, 50,
 inline constexpr int nudgeMs = 5;
 // Menu item ids.
 inline constexpr int countInBase = 100, volumeBase = 200, overdubId = 300, replaceId = 301, latencyBase = 400,
-                     nudgeEarlierId = 500, nudgeLaterId = 501;
+                     nudgeEarlierId = 500, nudgeLaterId = 501, audioLatencyBase = 600, audioNudgeEarlierId = 700,
+                     audioNudgeLaterId = 701, punchId = 800;
 
 inline int closestVolumeIndex(float volume) noexcept {
     int best = 0;
@@ -61,6 +67,13 @@ inline RecordSettings apply(RecordSettings settings, int id) noexcept {
         settings.latencyOffsetMs = std::min(settings.latencyOffsetMs + nudgeMs, RecordSettings::maxLatencyOffsetMs);
     else if (id == nudgeLaterId)
         settings.latencyOffsetMs = std::max(settings.latencyOffsetMs - nudgeMs, -RecordSettings::maxLatencyOffsetMs);
+    else if (id >= audioLatencyBase && id < audioLatencyBase + static_cast<int>(latencyChoices.size()))
+        settings.audioLatencyOffsetMs = latencyChoices[static_cast<std::size_t>(id - audioLatencyBase)];
+    else if (id == audioNudgeEarlierId)
+        settings.audioLatencyOffsetMs = std::min(settings.audioLatencyOffsetMs + nudgeMs, RecordSettings::maxLatencyOffsetMs);
+    else if (id == audioNudgeLaterId)
+        settings.audioLatencyOffsetMs = std::max(settings.audioLatencyOffsetMs - nudgeMs, -RecordSettings::maxLatencyOffsetMs);
+    else if (id == punchId) settings.punch = !settings.punch;
     return settings;
 }
 } // namespace recordmenu
@@ -120,6 +133,9 @@ struct RecordControls {
     std::atomic<bool> startRequested{false}, stopRequested{false};
     std::atomic<int> phase{idle};
     std::atomic<std::uint32_t> take{0}; // set by the GUI before it asks to start
+    // Set by the GUI before it asks to start: the take records audio from the armed tracks in
+    // the Song view (see SongTakeCapture) instead of MIDI into a Session clip.
+    std::atomic<bool> audioTake{false};
     RecordEventRing events;
     static_assert(std::atomic<float>::is_always_lock_free && std::atomic<int>::is_always_lock_free
                   && std::atomic<std::uint32_t>::is_always_lock_free);

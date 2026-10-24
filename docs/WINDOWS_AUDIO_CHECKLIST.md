@@ -227,6 +227,14 @@ selection. Check the browser and pad buttons at the minimum window size.
   Auto/In/Off monitoring behave as labelled. Measure round-trip monitoring latency at 64, 256 and 1024-sample
   buffers. Monitor a microphone through speakers at low volume only: check that Off and disarming stop it at once.
   Disable an input a track uses and confirm the header warns and the track stays silent.
+- Song view takes: arm two tracks (one mono, one stereo) and press Record from stop with a one-bar count-in;
+  play along with a click-heavy part, stop, and confirm both takes appear on their lanes in time with the song
+  (play them back against the original). Measure the offset of a loopback cable (output to input) take at 64,
+  256 and 1024-sample buffers; it should be within a millisecond or two, otherwise note the reported device
+  latency and the Audio input latency offset that fixes it. One Undo removes both takes; Redo brings them back.
+  Turn on punch, set the loop markers, start two bars earlier and confirm only the loop range is recorded and
+  the take stops at the punch-out while the song plays on. Change the audio device during a take and close
+  the app during a take: the captured audio must be kept (placed, or left on disk for Recover takes).
 - Record past 60 seconds and manually stop; disconnect/reconfigure the input during capture; close
   the main window during capture. Each must stop safely and save captured frames.
   Test an unwritable destination: preparation fails before capture. A mid-take write failure retains the partial WAV for Recover takes.

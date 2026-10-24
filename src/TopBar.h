@@ -324,6 +324,27 @@ private:
         menu.addSubMenu("Latency compensation (" + (current.latencyOffsetMs > 0 ? juce::String("+") : juce::String())
                         + juce::String(current.latencyOffsetMs) + " ms)", latency);
 
+        // Song-view audio takes: their own offset, because an audio input has its own delay.
+        juce::PopupMenu audioLatency;
+        bool audioListed = false;
+        for (int i = 0; i < static_cast<int>(rm::latencyChoices.size()); ++i) {
+            const int ms = rm::latencyChoices[static_cast<std::size_t>(i)];
+            const bool on = ms == current.audioLatencyOffsetMs;
+            audioListed = audioListed || on;
+            audioLatency.addItem(rm::audioLatencyBase + i,
+                                 ms == 0 ? juce::String("0 ms (device input and output latency only)")
+                                         : (ms > 0 ? "+" : "") + juce::String(ms) + " ms" + (ms > 0 ? " (earlier)" : " (later)"),
+                                 true, on);
+        }
+        if (!audioListed) audioLatency.addItem(9001, "Current: " + juce::String(current.audioLatencyOffsetMs) + " ms", false, true);
+        audioLatency.addSeparator();
+        audioLatency.addItem(rm::audioNudgeEarlierId, "Nudge earlier by " + juce::String(rm::nudgeMs) + " ms");
+        audioLatency.addItem(rm::audioNudgeLaterId, "Nudge later by " + juce::String(rm::nudgeMs) + " ms");
+        menu.addSectionHeader("Song view audio takes");
+        menu.addItem(rm::punchId, "Punch in/out at the loop range", true, current.punch);
+        menu.addSubMenu("Audio input latency (" + (current.audioLatencyOffsetMs > 0 ? juce::String("+") : juce::String())
+                        + juce::String(current.audioLatencyOffsetMs) + " ms)", audioLatency);
+
         juce::Component::SafePointer<TopBar> safe(this);
         menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&recordOptions), [safe](int id) {
             if (safe == nullptr || id <= 0) return;
