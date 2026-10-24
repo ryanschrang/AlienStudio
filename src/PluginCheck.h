@@ -615,6 +615,7 @@ private:
 // The result file is rewritten after every step, so a crash that cannot be caught still leaves
 // the steps that finished; the ".stage" file names the step that was running.
 inline int checkVst3InChild(const juce::File& descriptionFile, const juce::File& output, bool quick, bool editor) {
+    scan::quietSystemErrorDialogs();
     scan::redirectOutputToFile(output);
     scan::writeStage(output, "start");
     auto xml = juce::parseXML(descriptionFile);

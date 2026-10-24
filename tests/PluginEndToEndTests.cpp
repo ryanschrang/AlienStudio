@@ -79,6 +79,35 @@ static void scanning(Fixture& f) {
     // That is what the safety check before loading is for.
     scan::Verdict fast; juce::PluginDescription fastDescription; scanOnce(f, "crash-load", 60000, &fast, &fastDescription, true);
     test(fast.status == scan::Status::ok && fastDescription.name == "Alien Test Plugin", "a plugin with a module manifest scans fine even though it crashes when created (it is not created): " + fast.detail);
+
+    {   // A damaged file that is not a library at all. Windows answers loading it with a "Bad Image" dialog unless the process
+        // has turned such dialogs off, and a dialog nobody clicks holds the scan until its time limit. The helper turns them off
+        // itself, so this test starts it with the system's default setting (dialogs shown), as Alien Studio does, whatever
+        // setting the test was started with.
+       #if JUCE_WINDOWS
+        const auto previous = SetErrorMode(0);
+       #endif
+        const auto broken = f.scratch.getChildFile("damaged").getChildFile("Broken.vst3");
+        broken.getParentDirectory().createDirectory();
+        broken.replaceWithText("this is not a plugin");
+        setBehaviour("");
+        scan::ChildRequest request; request.executable = f.tool; request.bundle = broken.getFullPathName(); request.timeoutMs = 30000;
+        request.output = f.scratch.getNonexistentChildFile("scan", ".xml", false);
+        const auto started = juce::Time::getMillisecondCounter();
+        const auto result = scan::runChildProcess(request);
+        const auto elapsed = juce::Time::getMillisecondCounter() - started;
+        const auto verdict = scan::classify(result, 0, request.timeoutMs);
+       #if JUCE_WINDOWS
+        SetErrorMode(previous);
+       #endif
+        test(verdict.status == scan::Status::incompatible && elapsed < 15000,
+             "a damaged file is reported as incompatible at once, with no system error dialog holding the scan: "
+             + juce::String(scan::statusLabel(verdict.status)) + " after " + juce::String(elapsed) + " ms, " + verdict.detail);
+       #if JUCE_WINDOWS
+        test((scan::quietSystemErrorDialogs() & SEM_FAILCRITICALERRORS) != 0, "turning the dialogs off sticks");
+        SetErrorMode(previous);
+       #endif
+    }
 }
 
 static void checking(Fixture& f) {
