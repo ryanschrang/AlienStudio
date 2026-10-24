@@ -709,8 +709,18 @@ like FL Studio's channel rack, left to right:
 - **S** (solo) and an **output** chip: **M** sends the channel to the master, **T1** to **T16**
   into that Session track's mixer strip, so its volume/pan/mute/solo, effects and meter apply.
   A channel routed to a track that is later deleted falls back to the master;
-- a small **selection lamp**, lit for the selected channel (the one the graph editor edits).
-  Clicking it selects the channel without playing its sound.
+- a small **selection lamp**, lit for the selected channels. Clicking it selects the channel
+  without playing its sound.
+
+**Selecting several channels.** As in FL Studio, **Ctrl-click** a name or lamp to add a channel
+to the selection or take it out, **Shift-click** to select every channel between it and the last
+one clicked, and **Ctrl+A** to select them all; a plain click selects just that one. The graph
+editor shows the last one clicked (its row is marked in its colour). With several selected, the
+light, solo, knobs and channel menu of any of them act on all of them, as one undo step: mute
+and solo set them all the same way, a knob turns them all by the same amount, and the menu's
+sound, output, choke group, pattern tools, paste, clear, duplicate, move and delete apply to each
+(the menu says how many). Rename, Load sample file and Copy steps stay with the clicked channel.
+The selection is part of the screen, not of the project.
 
 **A channel in the piano roll.** Choose **Open in piano roll** in a channel's menu (or press
 **Ctrl+P** with the rack focused) to edit that channel's steps in the selected pattern as notes,
@@ -755,7 +765,7 @@ red-labelled channel that **Relink audio** can repair, like a missing clip.
   To hear patterns in a song, place them on the Song view's four pattern lanes (see below): they then
   play in the Song and are in **Export WAV**.
 - Pitch is set per step (+-24 semitones, which also changes the sample's speed). There is no
-  per-channel root note, sample envelope or start/end trim, no per-channel piano roll, and no
+  per-channel root note, sample envelope or start/end trim, and no
   per-step note length, flam or sample offset yet; every hit is a one-shot.
 - Channel routing reaches Session mixer strips (volume/pan/mute/solo/FX/meters). Instrument-plugin
   tracks keep their own audio; the rack is mixed into the same strip afterwards.
