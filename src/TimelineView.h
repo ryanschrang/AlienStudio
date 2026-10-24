@@ -43,6 +43,7 @@ public:
     static constexpr int headerWidth = 156, markerStripHeight = 20, loopStripHeight = 16, rulerHeight = 24;
     static constexpr int topHeight = markerStripHeight + loopStripHeight + rulerHeight;
     static constexpr int rowHeight = 46, edgeGrab = 6, dragThreshold = 3;
+    static constexpr float fadeHandleHeight = 10.0f;   // the top strip of an audio clip where its fade handles are grabbed
     static constexpr double minPixelsPerTick = 0.00001, maxPixelsPerTick = 0.6, defaultPixelsPerTick = 64.0 / 3840.0;
 
     enum class Zone { none, corner, header, markerStrip, loopStrip, ruler, region, lane };
@@ -52,6 +53,7 @@ public:
         int displayRow{-1};
         std::uint32_t region{0}, marker{0};
         Edge edge{Edge::none};
+        Edge fade{Edge::none};   // a fade handle at the top of an audio clip: left is the fade in (or crossfade), right the fade out
         enum class LoopPart { none, start, end, body } loopPart{LoopPart::none};
     };
 
@@ -347,12 +349,32 @@ public:
         if (selected.empty()) return false; const auto ids = selected;
         return edit("Fade clips", [=](timeline::Timeline& t) { return t.setFades(ids, timeline::ticksPerBeat, timeline::ticksPerBeat); });
     }
+    // Crosses two selected touching clips, or one selected clip with the clip that ends where it starts.
     bool crossfadeSelection() {
-        if (selected.size() != 2) { say("Select two touching clips on the same track to crossfade."); return false; }
+        const timeline::Region* a = nullptr; const timeline::Region* b = nullptr;
+        if (selected.size() == 1) { b = committed().find(selected[0]); a = committed().crossfadePartner(selected[0]); }
+        else if (selected.size() == 2) {
+            a = committed().find(selected[0]); b = committed().find(selected[1]);
+            if (a != nullptr && b != nullptr && b->start < a->start) std::swap(a, b);
+        }
+        if (a == nullptr || b == nullptr) { say("Select two touching clips on the same track to crossfade."); return false; }
+        const auto left = a->id, right = b->id;
+        const bool done = edit("Crossfade clips", [=](timeline::Timeline& t) { return t.crossfade(left, right, timeline::ticksPerBeat); });
+        if (!done) say("Crossfade needs two touching audio clips on the same track."); return done;
+    }
+    bool removeFadesSelection() {
+        if (selected.empty()) return false; const auto ids = selected;
+        return edit("Remove fades", [=](timeline::Timeline& t) { return t.clearFades(ids); });
+    }
+    bool selectionHasFades() const {
+        for (const auto id : selected) if (const auto* r = committed().find(id); r != nullptr && (r->fadeIn > 0 || r->fadeOut > 0 || r->crossfade > 0)) return true;
+        return false;
+    }
+    bool canCrossfadeSelection() const {
+        if (selected.size() == 1) return committed().crossfadePartner(selected[0]) != nullptr;
+        if (selected.size() != 2) return false;
         const auto* a = committed().find(selected[0]); const auto* b = committed().find(selected[1]);
-        if (a == nullptr || b == nullptr) return false; if (b->start < a->start) std::swap(a, b);
-        const bool done = edit("Crossfade clips", [=](timeline::Timeline& t) { return t.crossfade(a->id, b->id, timeline::ticksPerBeat); });
-        if (!done) say("Crossfade needs two touching clips on the same track."); return done;
+        return a != nullptr && b != nullptr && a->row == b->row && !a->isPattern() && (a->end() == b->start || b->end() == a->start);
     }
     bool normalizeSelection() {
         if (selected.empty()) return false;
@@ -538,7 +560,7 @@ public:
     // The items of the right-click menus.
     enum Command { cmdSplit = 1, cmdMute, cmdDuplicate, cmdCopy, cmdCut, cmdDelete, cmdGroup, cmdUngroup, cmdOpen, cmdPaste, cmdSelectAll, cmdAddMarker,
                    cmdSlipLeft, cmdSlipRight, cmdSourceLoop, cmdReverse, cmdNormalize, cmdFade, cmdCrossfade,
-                   cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdColourBase = 100,
+                   cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdRemoveFades, cmdColourBase = 100,
                    cmdArm = 200, cmdMonitorBase = 210, cmdInputMonoBase = 300, cmdInputStereoBase = 400 };
     juce::PopupMenu placeMenu(int row) const {
         juce::PopupMenu menu;
@@ -650,6 +672,13 @@ public:
             const auto box = regionBounds(*it);
             if (!box.contains(p.toFloat())) continue;
             hit.zone = Zone::region; hit.region = it->id;
+            if (isAudioRegion(*it) && box.getWidth() >= edgeGrab * 4.0f && static_cast<float>(p.y) - box.getY() <= fadeHandleHeight) {
+                const auto handles = fadeHandles(*it, box);
+                const float x = static_cast<float>(p.x);
+                // Nearest wins, so the two can be told apart when they meet.
+                const float toIn = std::abs(x - handles.first), toOut = std::abs(x - handles.second);
+                if (std::min(toIn, toOut) <= edgeGrab) { hit.fade = toIn <= toOut ? Edge::left : Edge::right; break; }
+            }
             if (box.getWidth() >= edgeGrab * 3.0f) {
                 if (p.x - box.getX() <= edgeGrab) hit.edge = Edge::left;
                 else if (box.getRight() - p.x <= edgeGrab) hit.edge = Edge::right;
@@ -683,7 +712,7 @@ public:
     void mouseMove(const juce::MouseEvent& e) override {
         const auto hit = hitTest(e.getPosition());
         auto cursorType = juce::MouseCursor::NormalCursor;
-        if (hit.zone == Zone::region && hit.edge != Edge::none) cursorType = juce::MouseCursor::LeftRightResizeCursor;
+        if (hit.zone == Zone::region && (hit.edge != Edge::none || hit.fade != Edge::none)) cursorType = juce::MouseCursor::LeftRightResizeCursor;
         else if (hit.zone == Zone::loopStrip && (hit.loopPart == Hit::LoopPart::start || hit.loopPart == Hit::LoopPart::end)) cursorType = juce::MouseCursor::LeftRightResizeCursor;
         else if (hit.zone == Zone::markerStrip && hit.marker != 0) cursorType = juce::MouseCursor::PointingHandCursor;
         setMouseCursor(cursorType);
@@ -739,6 +768,12 @@ public:
             const auto* r = committed().find(hit.region);
             if (r == nullptr) break;
             const bool wasSelected = isSelected(hit.region);
+            if (hit.fade != Edge::none && !extend) {
+                if (!wasSelected || selected.size() > 1) setSelection({hit.region});
+                drag.kind = hit.fade == Edge::left ? DragKind::fadeIn : DragKind::fadeOut;
+                drag.grabbed = hit.region; drag.base = baseTimeline();
+                break;
+            }
             if (hit.edge != Edge::none && !extend) {
                 // Resizing is about one clip: select just it.
                 if (!wasSelected || selected.size() > 1) setSelection({hit.region});
@@ -822,6 +857,22 @@ public:
             else drag.apply = [=](timeline::Timeline& t) { return t.trimEnd(id, edgeNow); };
             updatePreview(); break;
         }
+        case DragKind::fadeIn: case DragKind::fadeOut: {
+            const auto* r = drag.base->find(drag.grabbed);
+            if (r == nullptr) break;
+            const auto id = drag.grabbed;
+            const auto at = std::clamp<std::int64_t>(snapTick(tickNow, bypass), r->start, r->end());
+            if (drag.kind == DragKind::fadeIn) {
+                const auto ticks = at - r->start;
+                drag.label = r->crossfade > 0 ? "Crossfade" : "Fade in";
+                drag.apply = [=](timeline::Timeline& t) { return t.setFadeIn(id, ticks); };
+            } else {
+                const auto ticks = r->end() - at;
+                drag.label = "Fade out";
+                drag.apply = [=](timeline::Timeline& t) { return t.setFadeOut(id, ticks); };
+            }
+            updatePreview(); break;
+        }
         case DragKind::marker: {
             const auto id = drag.grabbed;
             const auto to = snapTick(tickNow + drag.grabOffset, bypass);
@@ -867,7 +918,7 @@ public:
         preview.reset();
         switch (kind) {
         case DragKind::move: case DragKind::copy: case DragKind::trimStart: case DragKind::trimEnd:
-        case DragKind::marker: case DragKind::loopNew: case DragKind::loopStart: case DragKind::loopEnd: case DragKind::loopMove:
+        case DragKind::fadeIn: case DragKind::fadeOut: case DragKind::marker: case DragKind::loopNew: case DragKind::loopStart: case DragKind::loopEnd: case DragKind::loopMove:
             if (active && finished.apply) {
                 const bool done = edit(finished.label, finished.apply);
                 if (done && kind == DragKind::copy && finished.created) { selected = *finished.created; stateChanged(); }
@@ -1007,7 +1058,7 @@ public:
     }
 
 private:
-    enum class DragKind { none, scrub, move, copy, trimStart, trimEnd, marker, loopNew, loopStart, loopEnd, loopMove, marquee };
+    enum class DragKind { none, scrub, move, copy, trimStart, trimEnd, fadeIn, fadeOut, marker, loopNew, loopStart, loopEnd, loopMove, marquee };
     struct Drag {
         DragKind kind{DragKind::none};
         bool active{};
@@ -1092,7 +1143,10 @@ private:
                 menu.addSeparator();
                 menu.addItem(cmdSlipLeft, "Slip source left"); menu.addItem(cmdSlipRight, "Slip source right");
                 menu.addItem(cmdSourceLoop, "Loop source"); menu.addItem(cmdReverse, "Reverse"); menu.addItem(cmdNormalize, "Normalize");
-                menu.addItem(cmdFade, "Fade in and out"); menu.addItem(cmdCrossfade, "Crossfade", selected.size() == 2);
+                if (isAudioRegion(*r)) {   // fades act on audio only
+                    menu.addItem(cmdFade, "Fade in and out"); menu.addItem(cmdCrossfade, "Crossfade", canCrossfadeSelection());
+                    menu.addItem(cmdRemoveFades, "Remove fades", selectionHasFades());
+                }
             }
             menu.addSeparator();
             menu.addItem(cmdDuplicate, "Duplicate");
@@ -1107,6 +1161,7 @@ private:
                 case cmdSlipLeft: slipSelection(-timeline::ticksPerStep); break; case cmdSlipRight: slipSelection(timeline::ticksPerStep); break;
                 case cmdSourceLoop: toggleSourceLoopSelection(); break; case cmdReverse: toggleReverseSelection(); break;
                 case cmdNormalize: normalizeSelection(); break; case cmdFade: fadeSelection(); break; case cmdCrossfade: crossfadeSelection(); break;
+                case cmdRemoveFades: removeFadesSelection(); break;
                 case cmdDuplicate: duplicateSelection(); break; case cmdCopy: copySelection(); break;
                 case cmdCut: cutSelection(); break; case cmdDelete: deleteSelection(); break;
                 case cmdGroup: groupSelection(); break; case cmdUngroup: ungroupSelection(); break;
@@ -1377,10 +1432,62 @@ private:
                 g.drawRoundedRectangle(link, 2.5f, 1.2f);
             }
         }
+        if (isAudioRegion(r)) paintFades(g, r, box);
         g.setColour(colour.withAlpha(r.muted ? 0.4f : 1.0f));
         g.fillRoundedRectangle(box.withWidth(std::min(3.0f, box.getWidth())), 1.5f);
         g.setColour(isSel ? juce::Colours::white : colour.withAlpha(0.65f));
         g.drawRoundedRectangle(box, 4.0f, isSel ? 1.6f : 1.0f);
+    }
+
+    bool isAudioRegion(const timeline::Region& r) const {
+        const auto& d = controller.document();
+        return !r.isPattern() && d.isValidCell(r.row, r.source) && d.clip(r.row, r.source).audio != nullptr;
+    }
+    // Where the fade-in (or crossfade) and fade-out handles sit across a clip's box.
+    std::pair<float, float> fadeHandles(const timeline::Region& r, juce::Rectangle<float> box) const {
+        const auto in = static_cast<float>(static_cast<double>(r.crossfade > 0 ? r.crossfade : r.fadeIn) * ppt);
+        const auto out = static_cast<float>(static_cast<double>(r.fadeOut) * ppt);
+        return {std::min(box.getX() + in, box.getRight()), std::max(box.getRight() - out, box.getX())};
+    }
+    // Shades what each fade takes away and draws its curve: straight edge fades, an equal-power crossfade.
+    void paintFades(juce::Graphics& g, const timeline::Region& r, juce::Rectangle<float> box) {
+        juce::Graphics::ScopedSaveState state(g);
+        g.reduceClipRegion(box.toNearestInt());
+        const float top = box.getY() + 2.0f, bottom = box.getBottom() - 1.0f;
+        const auto [inX, outX] = fadeHandles(r, box);
+        auto shade = [&](float from, float to, bool rising, bool curved) {
+            if (to - from < 1.0f) return;
+            juce::Path curve, area;
+            const int steps = curved ? 24 : 1;
+            for (int i = 0; i <= steps; ++i) {
+                const float x = static_cast<float>(i) / static_cast<float>(steps);
+                const float level = curved ? std::sin(x * 1.5707964f) : x;
+                const float y = bottom - (bottom - top) * (rising ? level : 1.0f - level);
+                const float px = from + (to - from) * x;
+                if (i == 0) curve.startNewSubPath(px, y); else curve.lineTo(px, y);
+            }
+            area = curve;
+            area.lineTo(to, top); area.lineTo(from, top); area.closeSubPath();   // everything above the curve is faded away
+            g.setColour(juce::Colours::black.withAlpha(0.28f)); g.fillPath(area);
+            g.setColour(juce::Colours::white.withAlpha(r.muted ? 0.35f : 0.8f)); g.strokePath(curve, juce::PathStrokeType(1.2f));
+        };
+        if (r.crossfade > 0) {
+            shade(box.getX(), inX, true, true);
+            // The outgoing clip's falling curve, mirrored across the same span.
+            juce::Path falling;
+            for (int i = 0; i <= 24; ++i) {
+                const float x = static_cast<float>(i) / 24.0f;
+                const float px = box.getX() + (inX - box.getX()) * x, y = bottom - (bottom - top) * std::cos(x * 1.5707964f);
+                if (i == 0) falling.startNewSubPath(px, y); else falling.lineTo(px, y);
+            }
+            g.setColour(juce::Colours::white.withAlpha(0.45f)); g.strokePath(falling, juce::PathStrokeType(1.0f));
+        } else shade(box.getX(), inX, true, false);
+        shade(outX, box.getRight(), false, false);
+        if (box.getWidth() >= edgeGrab * 4.0f) {
+            g.setColour(juce::Colours::white.withAlpha(r.muted ? 0.4f : 0.9f));
+            for (const float x : {inX, outX})
+                g.fillRect(juce::Rectangle<float>(5.0f, 5.0f).withCentre({std::clamp(x, box.getX() + 3.0f, box.getRight() - 3.0f), box.getY() + 4.0f}));
+        }
     }
 
     // What is inside a region: notes, a waveform, or a pattern's steps, repeated for as long as the region lasts.
@@ -1824,7 +1931,7 @@ public:
         readout.setJustificationType(juce::Justification::centredRight);
         help.setFont(ui::font(12.0f)); help.setColour(juce::Label::textColourId, col::textFaint);
         help.setJustificationType(juce::Justification::centredLeft);
-        defaultHelp = "Double-click a lane to place a clip. Drag to move, drag an edge to resize, drag empty space to select. S splits, M mutes, L loops, K adds a marker, Ctrl+wheel zooms.";
+        defaultHelp = "Double-click a lane to place a clip. Drag to move, drag an edge to resize, drag an audio clip's top corner to fade it, drag empty space to select. S splits, M mutes, L loops, K adds a marker, Ctrl+wheel zooms.";
         help.setText(defaultHelp, juce::dontSendNotification);
         canvas.onViewChanged = [this] { layoutScroll(); };
         canvas.onStateChanged = [this] { updateControls(); };

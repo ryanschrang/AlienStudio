@@ -242,7 +242,7 @@ int main() {
     alien::timeline::Region edited;
     edited.row = 1; edited.source = 3; edited.start = 0; edited.length = alien::timeline::ticksPerBar;
     edited.audioOffset = 0.25; edited.gain = 1.5; edited.fadeIn = 120; edited.fadeOut = 240;
-    edited.loopSource = true; edited.reversed = true;
+    edited.loopSource = true; edited.reversed = true; edited.crossfade = 360;
     require(source.timeline.place(edited), "test project contains a non-destructively edited audio region");
 
     const auto json = alien::serializeSessionProject(source);
@@ -253,11 +253,23 @@ int main() {
     require(error.isEmpty() && restored.valid(), "loaded project passes model validation");
     const auto& restoredEdit = restored.timeline.regions.front();
     require(restoredEdit.audioOffset == 0.25 && restoredEdit.gain == 1.5 && restoredEdit.fadeIn == 120
-        && restoredEdit.fadeOut == 240 && restoredEdit.loopSource && restoredEdit.reversed,
+        && restoredEdit.fadeOut == 240 && restoredEdit.loopSource && restoredEdit.reversed && restoredEdit.crossfade == 360,
         "non-destructive audio edits round-trip in the current project format");
     auto missingEdit = juce::JSON::parse(json);
     auto* missingRegion = missingEdit.getDynamicObject()->getProperty("timeline").getDynamicObject()
         ->getProperty("regions").getArray()->getReference(0).getDynamicObject();
+    missingRegion->setProperty("crossfade", "long");
+    require(!alien::parseSessionProject(juce::JSON::toString(missingEdit), restored, error),
+        "a crossfade that is not a whole number of ticks is rejected");
+    missingRegion->setProperty("crossfade", 2 * alien::timeline::ticksPerBar);
+    require(!alien::parseSessionProject(juce::JSON::toString(missingEdit), restored, error),
+        "a crossfade longer than its region is rejected");
+    missingRegion->removeProperty("crossfade");
+    missingEdit.getDynamicObject()->setProperty("version", 10);
+    require(alien::parseSessionProject(juce::JSON::toString(missingEdit), restored, error)
+        && restored.timeline.regions.front().crossfade == 0 && restored.timeline.regions.front().fadeIn == 120,
+        "version 10 regions, saved before crossfades, load without one");
+    missingEdit.getDynamicObject()->setProperty("version", alien::sessionProjectFormatVersion);
     missingRegion->removeProperty("fadeOut");
     require(!alien::parseSessionProject(juce::JSON::toString(missingEdit), restored, error),
         "a current project missing audio edit metadata is rejected");

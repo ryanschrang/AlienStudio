@@ -23,7 +23,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 10;
+inline constexpr int sessionProjectFormatVersion = 11;
 
 struct SessionProjectClip {
     PianoRollPattern pattern;
@@ -202,7 +202,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
             object->setProperty("offset", static_cast<int>(r.offset)); object->setProperty("audioOffset", r.audioOffset);
             object->setProperty("gain", r.gain); object->setProperty("fadeIn", static_cast<int>(r.fadeIn));
             object->setProperty("fadeOut", static_cast<int>(r.fadeOut)); object->setProperty("loopSource", r.loopSource);
-            object->setProperty("reversed", r.reversed);
+            object->setProperty("reversed", r.reversed); object->setProperty("crossfade", static_cast<int>(r.crossfade));
             object->setProperty("muted", r.muted); object->setProperty("group", group);
             regions.add(value);
         }
@@ -310,6 +310,11 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
             }
             region.gain = static_cast<double>(gain); region.fadeIn = static_cast<int>(fadeIn); region.fadeOut = static_cast<int>(fadeOut);
             region.loopSource = static_cast<bool>(loopSource); region.reversed = static_cast<bool>(reversed);
+        }
+        // Absent before version 11: no crossfade.
+        if (const auto crossfade = r->getProperty("crossfade"); !crossfade.isVoid()) {
+            if (!crossfade.isInt()) { error = "A timeline region has an invalid crossfade."; return false; }
+            region.crossfade = static_cast<int>(crossfade);
         }
         region.muted = static_cast<bool>(muted);
         if (const int g = static_cast<int>(group); g > 0) {

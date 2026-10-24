@@ -1086,7 +1086,117 @@ static void automationPlaybackTests() {
     require(seek.energy(0, 800) == 0.0, "seek evaluates hold automation immediately");
 }
 
+// ---- fades and crossfades ------------------------------------------------------------------------------------
+// Expected gains are computed from the tick of each output frame. The engine reads the playhead one sample on,
+// so a gain may differ by one frame's slope (about 4e-5 here): the tolerances allow that and nothing more.
+
+static void fadeTests() {
+    const auto first = makeSine(4, 441.0), second = makeSine(4, 662.0);
+    constexpr long beat = barFrames / 4;
+    const double pi = 3.14159265358979323846;
+    // Plays one region alone (no edits), the reference for everything else.
+    auto plain = [&](const alien::SessionAudioClip& clip, std::int64_t start, std::int64_t length, long frames) {
+        Rig rig; auto song = newSong(4); song->clips[0][0].audio = &clip;
+        place(*song, regionOf(0, 0, start, length));
+        rig.publish(song); rig.seek(0); rig.play(); rig.render(frames);
+        return rig.out;
+    };
+    // Edge fades are straight lines from silence over their length, and region gain scales the whole clip.
+    {
+        const auto reference = plain(first, 0, ticksPerBar, barFrames);
+        Rig rig; auto song = newSong(2); song->clips[0][0].audio = &first;
+        auto r = regionOf(0, 0, 0, ticksPerBar); r.fadeIn = ticksPerBeat; r.fadeOut = ticksPerBeat; r.gain = 0.5;
+        place(*song, r);
+        rig.publish(song); rig.seek(0); rig.play(); rig.render(barFrames);
+        double worst = 0;
+        for (long i = 0; i < barFrames; ++i) {
+            const double gain = 0.5 * std::min(1.0, static_cast<double>(i) / beat) * std::min(1.0, static_cast<double>(barFrames - i) / beat);
+            worst = std::max(worst, std::abs(rig.out[static_cast<std::size_t>(i)] - reference[static_cast<std::size_t>(i)] * gain));
+        }
+        require(worst < 1.0e-4, "edge fades and region gain shape the clip exactly");
+        require(rig.energy(0, 200) < 1.0e-3 && rig.energy(barFrames - 200, barFrames) < 1.0e-3, "a faded clip starts and ends in silence");
+    }
+    // A crossfade: the first clip plays on past its end and falls on an equal-power curve while the second rises.
+    const auto outgoing = plain(first, ticksPerBar, 2 * ticksPerBar, 3 * barFrames);   // the first clip as if it had not ended
+    const auto incoming = plain(second, 2 * ticksPerBar, ticksPerBar, 3 * barFrames);
+    auto crossfadeSong = [&](std::int64_t gap) {
+        auto song = newSong(4); song->clips[0][0].audio = &first; song->clips[1][0].audio = &second;
+        place(*song, regionOf(0, 0, ticksPerBar, ticksPerBar - gap));
+        auto r = regionOf(0, 1, 2 * ticksPerBar, ticksPerBar); r.crossfade = ticksPerBeat;
+        place(*song, r);
+        return song;
+    };
+    std::vector<float> crossed;
+    {
+        Rig rig; rig.publish(crossfadeSong(0)); rig.seek(0); rig.play(); rig.render(3 * barFrames);
+        crossed = rig.out;
+        double before = 0, during = 0, after = 0;
+        for (long i = barFrames; i < 2 * barFrames; ++i)
+            before = std::max(before, std::abs(static_cast<double>(crossed[static_cast<std::size_t>(i)] - outgoing[static_cast<std::size_t>(i)])));
+        for (long i = 2 * barFrames; i < 2 * barFrames + beat; ++i) {
+            const double x = static_cast<double>(i - 2 * barFrames) / beat;
+            const double expected = outgoing[static_cast<std::size_t>(i)] * std::cos(x * pi / 2) + incoming[static_cast<std::size_t>(i)] * std::sin(x * pi / 2);
+            during = std::max(during, std::abs(crossed[static_cast<std::size_t>(i)] - expected));
+        }
+        for (long i = 2 * barFrames + beat + 1; i < 3 * barFrames; ++i)
+            after = std::max(after, std::abs(static_cast<double>(crossed[static_cast<std::size_t>(i)] - incoming[static_cast<std::size_t>(i)])));
+        require(before < 1.0e-6, "before the crossfade the first clip plays untouched");
+        require(during < 1.0e-4, "during it the clips cross on equal-power curves, the first playing on past its end");
+        require(after < 1.0e-6, "after it only the second clip is heard");
+        double biggestStep = 0;
+        for (long i = 2 * barFrames - 100; i < 2 * barFrames + 100; ++i)
+            biggestStep = std::max(biggestStep, std::abs(static_cast<double>(crossed[static_cast<std::size_t>(i + 1)] - crossed[static_cast<std::size_t>(i)])));
+        require(biggestStep < 0.05, "the join has no click and no dip");
+        Rig single; single.block = 1; single.publish(crossfadeSong(0)); single.seek(0); single.play(); single.render(3 * barFrames);
+        require(worstDifference(single.out, crossed, 0, 3 * barFrames) < 1.0e-7, "a crossfade sounds the same whatever the block size");
+    }
+    // Starting the song inside a crossfade starts the outgoing clip there too.
+    {
+        const long from = 2 * barFrames + beat / 2;
+        Rig rig; rig.publish(crossfadeSong(0)); rig.seek(from / tickFrames); rig.play(); rig.render(3 * barFrames - from);
+        require(worstDifference(rig.out, std::vector<float>(crossed.begin() + from, crossed.end()), 100, 3 * barFrames - from) < 1.0e-5,
+                "joining a crossfade part-way sounds as if the song had played up to there");
+    }
+    // A clip with a crossfade but nothing ending where it starts fades in on the same curve, from silence.
+    {
+        Rig rig; rig.publish(crossfadeSong(ticksPerStep)); rig.seek(0); rig.play(); rig.render(3 * barFrames);
+        double worst = 0;
+        for (long i = 2 * barFrames; i < 2 * barFrames + beat; ++i) {
+            const double x = static_cast<double>(i - 2 * barFrames) / beat;
+            worst = std::max(worst, std::abs(rig.out[static_cast<std::size_t>(i)] - incoming[static_cast<std::size_t>(i)] * std::sin(x * pi / 2)));
+        }
+        require(worst < 1.0e-4, "without a neighbour a crossfade is an equal-power fade in");
+    }
+    // A streamed first clip hands its stream to the tail player at the crossfade (rendered as an export renders).
+    {
+        auto file = std::make_shared<GatedFile>(4 * 48000, true);
+        alien::SessionAudioClip streamed; streamed.sampleRate = 48000; streamed.channels = 1; streamed.frames = 4 * 48000; streamed.streamSource = file;
+        require(streamed.valid(), "streamed test clip");
+        Rig rig; rig.engine.renderStreamsDeterministically();
+        require(rig.engine.retainDiskAudioSource(file) == file.get(), "the engine keeps the source");
+        auto song = crossfadeSong(0); song->clips[0][0].audio = &streamed;
+        rig.publish(song); rig.seek(0); rig.play(); rig.render(3 * barFrames);
+        require(worstDifference(rig.out, crossed, 0, 3 * barFrames) < 1.0e-5, "a streamed clip crosses exactly like one in memory");
+        require(rig.engine.sessionStreamUnderruns(0) == 0 && !rig.engine.sessionStreamFailed(0), "with no underruns");
+    }
+    // Crossing, jumping into and out of crossfades and looping over them never allocates on the audio thread.
+    {
+        Rig rig; auto song = crossfadeSong(0);
+        require(song->timeline.setLoop(2 * ticksPerBar - ticksPerBeat, 2 * ticksPerBar + ticksPerBeat) && song->timeline.setLoopEnabled(true), "loop over the crossfade");
+        rig.publish(song); rig.seek(0); rig.play(); rig.render(2048);
+        const auto before = allocationCount;
+        std::array<float, 311> l{}, r{}; float* outputs[]{l.data(), r.data()};
+        for (int i = 0; i < 1500; ++i) {
+            if (i % 300 == 100) rig.engine.timelineSeek.store(2 * ticksPerBar + (i % 7) * 100);
+            if (i % 300 == 200) rig.engine.timelineSeek.store(2 * ticksPerBar - 200);
+            rig.engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 311, {});
+        }
+        require(before == allocationCount, "crossfades never allocate on the audio thread");
+    }
+}
+
 int main() {
+    timed("fades", fadeTests);
     timed("automation", automationPlaybackTests);
     timed("start from anywhere", startFromAnywhereTests);
     timed("loops", loopTests);
