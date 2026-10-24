@@ -15,6 +15,8 @@
 // corruption detected by the allocator). Those still end the process; this is containment of
 // the common faults, not isolation. Nothing here allocates, locks or does I/O, so it is safe on
 // the audio thread. After a fault the plugin's own state is unknown: do not call it again.
+// On Windows the first guarded call on a thread keeps 64 KB of that thread's stack back so a stack
+// overflow can still be handled (see reserveOverflowStack); the thread has that much less to use.
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -110,8 +112,26 @@ inline int filter(unsigned long code, EXCEPTION_POINTERS* info, Fault* fault) no
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
+// Stack the thread keeps back for handling its own overflow. Windows delivers the stack overflow
+// exception on the overflowed stack itself, and the processor context it pushes there grows with the
+// CPU's register state: about 1.6 KB with AVX, 3.3 KB with AVX-512 and 11.5 KB once AMX tile state is
+// enabled (Intel Sapphire/Emerald Rapids). The default reserve is about 12 KB, so on an AMX machine the
+// dispatcher runs off the end of the stack and the process dies before our filter sees the exception.
+inline constexpr unsigned long overflowReserveBytes = 64 * 1024;
+inline thread_local bool overflowReserved = false;
+
+// Once per thread, on its first guarded call. The guarantee only ever grows, so a larger reserve the
+// host set itself is kept; _resetstkoflw re-arms the guard page with this reserve after each overflow.
+inline void reserveOverflowStack() noexcept {
+    if (overflowReserved) return;
+    overflowReserved = true;
+    ULONG bytes = overflowReserveBytes;
+    SetThreadStackGuarantee(&bytes);
+}
+
 // Only plain data lives in this function: a function that uses __try cannot also unwind C++ objects.
 inline bool run(Thunk thunk, void* context, Fault* fault) noexcept {
+    reserveOverflowStack();
     __try {
         thunk(context);
         return fault->kind == Kind::none;

@@ -198,12 +198,32 @@ int main() {
     // Windows only: running out of stack inside a plugin is survivable, more than once.
     {
         struct Recurse { static int go(int depth) { volatile char pad[512]; pad[0] = static_cast<char>(depth); return go(depth + 1) + pad[0]; } };
+        // The overflow exception is delivered on the overflowed stack, with this CPU's whole register
+        // context pushed onto it (11.5 KB on AMX machines). The guard must have kept enough back for
+        // that and the filter, whatever CPU this runs on - not only where the default happens to fit.
+        DWORD contextBytes = 0;
+        InitializeContext(nullptr, CONTEXT_ALL | CONTEXT_XSTATE, nullptr, &contextBytes);
+        ULONG reserve = 0;
+        SetThreadStackGuarantee(&reserve);   // zero: just reads the current reserve
+        require(reserve >= contextBytes + 16 * 1024, "the guard keeps enough stack back to handle an overflow on this CPU");
         for (int i = 0; i < 3; ++i) {
             Fault fault;
             require(!guarded([&] { sink = Recurse::go(0); }, fault) && fault.kind == Kind::stackOverflow, "stack overflow is contained");
         }
         Fault fault;
         require(guarded([&] { sink = 1; }, fault), "and the thread still works afterwards");
+        // A thread whose very first guarded call overflows, as a plugin's first processBlock might.
+        std::atomic<int> contained{0};
+        std::thread fresh([&] {
+            for (int i = 0; i < 3; ++i) {
+                Fault threadFault;
+                if (!guarded([&] { sink = Recurse::go(0); }, threadFault) && threadFault.kind == Kind::stackOverflow) contained.fetch_add(1);
+            }
+            Fault threadFault;
+            if (guarded([&] { sink = 2; }, threadFault)) contained.fetch_add(1);
+        });
+        fresh.join();
+        require(contained.load() == 4, "a new thread's first guarded call can overflow, repeatedly, and the thread recovers");
     }
    #endif
     std::cout << "PASS: access violations, bad instructions, divide by zero, exceptions, repetition, nesting and threads are contained\n";
