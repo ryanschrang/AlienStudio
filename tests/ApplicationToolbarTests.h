@@ -6,6 +6,7 @@ static void applicationToolbarChecks() {
     using Menu=alien::ApplicationToolbar;
     Menu toolbar;Menu::State state;std::vector<int> commands;
     toolbar.queryState=[&]{return state;};toolbar.onCommand=[&](int id){commands.push_back(id);};
+    require(!state.keyboardVisible,"on-screen piano starts hidden");
     require(toolbar.getMenuBarNames()==juce::StringArray{"File","Edit","View","Transport","Options","Help"},"six named application menus");
     auto entry=[&](int index,int id) {
         auto menu=toolbar.getMenuForIndex(index,{});
@@ -57,15 +58,26 @@ static void applicationToolbarChecks() {
             for(auto* other:toolbar.getChildren())if(child!=other)require(!child->getBounds().intersects(other->getBounds()),"toolbar controls do not overlap");
         }
     }
-    juce::Button* audio=nullptr;juce::Button* midi=nullptr;
+    juce::Button* audio=nullptr;juce::Button* midi=nullptr;juce::Button* piano=nullptr;
     for(auto* child:toolbar.getChildren())if(auto* b=dynamic_cast<juce::Button*>(child)) {
         if(b->getName()=="Open audio settings")audio=b;
         if(b->getName()=="Open MIDI settings")midi=b;
+        if(b->getName()=="Show or hide on-screen piano")piano=b;
     }
     require(audio&&midi,"audio and MIDI quick-access buttons exist");
     commands.clear();toolbar.refreshState();clickButton(*audio);clickButton(*midi);
     require(commands==std::vector<int>{Menu::audioSettings,Menu::midiSettings},"quick-access buttons dispatch settings commands");
+    require(piano&&!piano->getToggleState(),"piano icon starts unlit while piano is hidden");
+    toolbar.onCommand=[&](int id){commands.push_back(id);if(id==Menu::keyboard)state.keyboardVisible=!state.keyboardVisible;toolbar.refreshState();};
+    for(int view=0;view<Menu::viewCount;++view) {
+        state.view=view;state.keyboardVisible=false;toolbar.refreshState();
+        clickButton(*piano);
+        require(state.keyboardVisible&&piano->getToggleState()&&entry(2,Menu::keyboard).isTicked,"piano icon reveals panel in every workspace and lights up");
+        toolbar.menuItemSelected(Menu::keyboard,2);
+        require(!state.keyboardVisible&&!piano->getToggleState(),"View menu hides piano and unlights the icon");
+    }
     state.recording=true;toolbar.refreshState();require(!audio->isEnabled()&&midi->isEnabled(),"audio quick access disabled during recording without blocking MIDI page");
+    require(piano->isEnabled(),"piano toggle remains usable while recording");
     std::cout<<"PASS: application menus, action dispatch, state labels/checkmarks, stale-menu guards, quick settings and layout\n";
 }
 

@@ -1,5 +1,5 @@
 #pragma once
-#include "StudioTheme.h"
+#include "StudioWidgets.h"
 #include <array>
 #include <functional>
 #include <utility>
@@ -19,7 +19,7 @@ public:
         viewBase = 2000, viewCount = 9
     };
     struct State {
-        bool busy{}, recording{}, playing{}, deviceView{}, keyboardVisible{true};
+        bool busy{}, recording{}, playing{}, deviceView{}, keyboardVisible{};
         bool metronome{}, songMode{}, hasSong{}, hasLoop{};
         int view{};
         juce::String undoLabel, redoLabel;
@@ -38,6 +38,12 @@ public:
         midi.setTooltip("MIDI inputs and controller settings");
         audio.onClick=[this]{menuItemSelected(audioSettings,4);};
         midi.onClick=[this]{menuItemSelected(midiSettings,4);};
+        addAndMakeVisible(piano);
+        piano.setButtonText("Piano");piano.setName("Show or hide on-screen piano");
+        piano.setGlyph(ui::Glyph::piano);piano.setIconOnly(true);
+        piano.setClickingTogglesState(true);
+        piano.setTooltip("Show the on-screen piano in any workspace");
+        piano.onClick=[this]{menuItemSelected(keyboard,2);};
     }
     ~ApplicationToolbar() override { menus.setModel(nullptr); }
 
@@ -101,11 +107,14 @@ public:
     void openMenus() { menus.showMenu(0); }
     void refreshState() {
         const auto s=currentState();audio.setEnabled(enabled(audioSettings,s));midi.setEnabled(enabled(midiSettings,s));
+        piano.setToggleState(s.keyboardVisible,juce::dontSendNotification);
+        piano.setTooltip(s.keyboardVisible?"Hide the on-screen piano":"Show the on-screen piano in any workspace");
     }
     void resized() override {
         auto r=getLocalBounds().reduced(8,2);
         midi.setBounds(r.removeFromRight(64));r.removeFromRight(6);
         audio.setBounds(r.removeFromRight(108));r.removeFromRight(8);
+        piano.setBounds(r.removeFromRight(34));r.removeFromRight(8);
         menus.setBounds(r);
     }
     void paint(juce::Graphics& g) override {
@@ -115,5 +124,6 @@ public:
 private:
     juce::MenuBarComponent menus;
     juce::TextButton audio{"Audio settings"},midi{"MIDI"};
+    ui::GlyphButton piano;
 };
 }

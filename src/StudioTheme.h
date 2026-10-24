@@ -95,7 +95,7 @@ inline void drawCard(juce::Graphics& g, juce::Rectangle<float> r, juce::Colour f
 }
 
 enum class Glyph { none, play, stop, plus, minus, open, save, collect, devices, edit,
-                   waveform, learn, close, chevronDown, undo, redo, newDocument, record, metronome };
+                   waveform, learn, close, chevronDown, undo, redo, newDocument, record, metronome, piano };
 
 inline void drawGlyph(juce::Graphics& g, Glyph glyph, juce::Rectangle<float> r, juce::Colour colour) {
     const float s = juce::jmin(r.getWidth(), r.getHeight());
@@ -107,6 +107,15 @@ inline void drawGlyph(juce::Graphics& g, Glyph glyph, juce::Rectangle<float> r, 
     juce::Path p;
     switch (glyph) {
     case Glyph::none: return;
+    case Glyph::piano: {
+        // Original five-key keyboard symbol; vector geometry stays crisp at any DPI.
+        const auto keys=r.reduced(s*.08f,s*.2f);
+        g.drawRoundedRectangle(keys,s*.04f,juce::jmax(1.f,s*.06f));
+        const float keyWidth=keys.getWidth()/5.f;
+        for(int i=1;i<5;++i)g.drawVerticalLine(juce::roundToInt(keys.getX()+keyWidth*i),keys.getY(),keys.getBottom());
+        for(int i:{1,2,4})g.fillRect(keys.getX()+keyWidth*i-keyWidth*.25f,keys.getY(),keyWidth*.5f,keys.getHeight()*.6f);
+        return;
+    }
     case Glyph::play:
         p.addTriangle(x + s * 0.22f, y + s * 0.12f, x + s * 0.22f, y + s * 0.88f, x + s * 0.88f, y + s * 0.5f);
         g.fillPath(p);

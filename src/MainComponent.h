@@ -45,7 +45,7 @@ public:
         addAndMakeVisible(topBar);
         addAndMakeVisible(applicationToolbar);
         addAndMakeVisible(statusBar);
-        addAndMakeVisible(keyboardDock);
+        addChildComponent(keyboardDock);
         wireTopBar();
         wireApplicationToolbar();
         wireController();
@@ -239,7 +239,10 @@ private:
                 case Menu::undo:undo();break;
                 case Menu::redo:redo();break;
                 case Menu::devices:case Menu::midiSettings:workspace.showDevices(true);break;
-                case Menu::keyboard:releaseNotes();keyboardVisible=!keyboardVisible;resized();break;
+                case Menu::keyboard:
+                    // Release the UI's held notes without interrupting external MIDI or playback.
+                    typingInput.release();keyboardState.allNotesOff(1);
+                    keyboardVisible=!keyboardVisible;resized();break;
                 case Menu::playStop:togglePlay();break;
                 case Menu::record:if(activeCapture)finishRecording();else toggleRecording();break;
                 case Menu::metronome: {
@@ -1373,7 +1376,7 @@ private:
     alien::ChannelRackView rackView{controller};
     bool projectBusy{}, closeAfterTake{};
     bool songPlayback{};   // "Song mode" (see setSongMode)
-    bool keyboardVisible{true}; // display preference for this window, not project content
+    bool keyboardVisible{}; // starts hidden; the toolbar piano button reveals it in any view
     std::shared_ptr<alien::DiskRecording> activeCapture;
     int takeTrack{}, takeScene{};
     std::unique_ptr<juce::FileChooser> takeFileChooser, warpSourceChooser, warpFileChooser, exportFileChooser;

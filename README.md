@@ -26,8 +26,13 @@ the right. **F10** opens the menus; arrow keys navigate and Escape closes them.
 
 File includes Save as, portable copies and song/loop WAV export. Edit shows
 the current project undo/redo operation. View opens every workspace and can
-hide the on-screen keyboard for more editing space; that display choice lasts
-for the current window. Transport exposes playback, recording, metronome,
+show the on-screen keyboard for playing notes. It starts hidden to leave more
+editing space. Click the **piano icon** beside Audio settings to open or close
+the bottom piano panel from Steps, Piano Roll, Session, Song, Mixer, Rack or
+any other view; the icon lights while it is open. Switching views keeps the
+same piano visibility, and hiding it does not disable external MIDI or the
+typing piano. That display choice lasts for the current window.
+Transport exposes playback, recording, metronome,
 Song mode and the existing recording options. Options also links to the plugin
 rack and interrupted-take recovery. Help lists common shortcuts and app details.
 Commands that would replace/save a project or change audio devices are disabled

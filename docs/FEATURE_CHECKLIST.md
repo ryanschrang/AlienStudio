@@ -4,6 +4,9 @@
 
 - Added File, Edit, View, Transport, Options and Help above the existing transport.
 - Audio/MIDI quick access, F10 menu access and Ctrl+, audio settings.
+- Piano icon toggles the bottom piano panel from every workspace; starts hidden,
+  lights while open, stays in sync with View > Show on-screen keyboard, and keeps
+  external MIDI/playback running when hidden.
 - Project file/export/undo commands, all workspaces, on-screen-keyboard visibility,
   transport toggles, recording options, plugin rack and take recovery use existing actions.
 - Menu labels, tick marks and enabled states are queried live; selections recheck
