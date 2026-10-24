@@ -72,7 +72,8 @@ defects throughout; this ordering does not defer fixes needed to run the example
 - Tests: RackModelTests and ChannelRackViewTests expanded; Windows Debug/Release CI and manual visual/listening checks pending.
 - Implemented: open a channel in the piano roll (menu or Ctrl+P): its steps in the selected pattern become one-step notes (pitch, velocity, chance) and edits rewrite them, one undo step per gesture, while the rack pattern plays; previews play at the note's pitch. ChannelRackViewTests channelPianoRollChecks; Windows piano-roll check pending.
 - Implemented: multi-channel selection (Ctrl/Shift-click on the name or lamp, Ctrl+A); mute, solo, knobs (relative), sound, output, choke, pattern tools, paste, clear, duplicate, move and delete act on every selected channel as one undo step. ChannelRackViewTests multiSelectChecks; Windows mouse/keyboard check pending.
-- Next: resizable name columns, richer graph gestures, step length and instrument channels (see ROADMAP) and advanced rhythm tools.
+- Implemented: resizable name column (drag its right edge, double-click to fit the longest name); the header controls, steps, graph editor and scroll bar follow it. Saved with the rack as an optional field (no format change), not an undo step. ChannelRackViewTests nameColumnChecks, RackProjectTests; Windows mouse/cursor and DPI check pending.
+- Next: richer graph gestures, step length and instrument channels (see ROADMAP) and advanced rhythm tools.
 
 ## Song flow (feature branch)
 

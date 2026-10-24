@@ -722,6 +722,12 @@ sound, output, choke group, pattern tools, paste, clear, duplicate, move and del
 (the menu says how many). Rename, Load sample file and Copy steps stay with the clicked channel.
 The selection is part of the screen, not of the project.
 
+**Resizing the name column.** Drag the right edge of the name buttons (on any row, or on the
+**CHANNEL** label above them) to make the column wider or narrower, between 64 and 320 pixels;
+double-click the edge to fit the longest channel name. Solo, output, the lamp, the steps and the
+graph editor move to make room. The width is saved with the project but is not an undo step, like
+choosing a pattern; older projects open at the usual width.
+
 **A channel in the piano roll.** Choose **Open in piano roll** in a channel's menu (or press
 **Ctrl+P** with the rack focused) to edit that channel's steps in the selected pattern as notes,
 like FL Studio's channel piano roll. Each lit step is a one-step note: its height is the step's

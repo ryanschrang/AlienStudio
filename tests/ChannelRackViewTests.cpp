@@ -124,7 +124,7 @@ static void geometryChecks() {
     auto& g = rig.grid;
     const int channels = rig.rack().channelCount;
     require(channels == 4, "the starting rack has four channels");
-    const int cell = std::min(ChannelRackGrid::maxCell, (1180 - ChannelRackGrid::headerWidth) / 16);
+    const int cell = std::min(ChannelRackGrid::maxCell, (1180 - ChannelRackGrid::defaultHeaderWidth) / 16);
     require(g.getWidth() == 1180 && g.cellWidth() == cell && g.contentWidth() == cell * 16 && g.maxScroll() == 0 && g.maxScrollY() == 0,
             "16 steps and 4 channels fit without scrolling");
     // Rows tile the grid without overlap, and every header control sits inside the header.
@@ -133,7 +133,7 @@ static void geometryChecks() {
         require(row == 0 || bounds.getY() == g.rowBounds(row - 1).getBottom(), "rows are contiguous");
         const std::array<juce::Rectangle<int>, 7> parts{g.muteRect(row), g.nameRect(row), g.panRect(row), g.volumeRect(row), g.soloRect(row), g.routeRect(row), g.lampRect(row)};
         for (std::size_t i = 0; i < parts.size(); ++i) {
-            require(juce::Rectangle<int>(0, bounds.getY(), ChannelRackGrid::headerWidth, bounds.getHeight()).contains(parts[i]),
+            require(juce::Rectangle<int>(0, bounds.getY(), ChannelRackGrid::defaultHeaderWidth, bounds.getHeight()).contains(parts[i]),
                     "header controls stay inside the header and their row");
             for (std::size_t j = i + 1; j < parts.size(); ++j) require(!parts[i].intersects(parts[j]), "header controls never overlap");
         }
@@ -141,28 +141,28 @@ static void geometryChecks() {
         require(g.muteRect(row).getRight() <= g.panRect(row).getX() && g.panRect(row).getRight() <= g.volumeRect(row).getX()
                 && g.volumeRect(row).getRight() <= g.nameRect(row).getX() && g.nameRect(row).getRight() <= g.soloRect(row).getX()
                 && g.soloRect(row).getRight() <= g.routeRect(row).getX() && g.routeRect(row).getRight() <= g.lampRect(row).getX()
-                && g.lampRect(row).getRight() < ChannelRackGrid::headerWidth, "the header reads like FL's rack, left to right");
+                && g.lampRect(row).getRight() < ChannelRackGrid::defaultHeaderWidth, "the header reads like FL's rack, left to right");
         for (int s = 0; s < 16; ++s) {
-            require(g.cellBounds(row, s).getX() >= ChannelRackGrid::headerWidth && g.stepAtX(g.cellBounds(row, s).getCentreX()) == s
+            require(g.cellBounds(row, s).getX() >= ChannelRackGrid::defaultHeaderWidth && g.stepAtX(g.cellBounds(row, s).getCentreX()) == s
                     && g.rowAt(g.cellBounds(row, s).getCentreY()) == row, "every cell maps back to itself");
         }
     }
     require(g.rowAt(g.rowBounds(channels).getY() + 4) == -1, "below the last channel is empty");
     require(g.rowAt(3) == -1, "the ruler is not a row");
-    require(g.stepAtX(10) == -1 && g.stepAtX(ChannelRackGrid::headerWidth - 1) == -1, "the header is not a step");
-    require(g.stepAtX(ChannelRackGrid::headerWidth) == 0 && g.stepAtX(ChannelRackGrid::headerWidth + cell * 16 - 1) == 15
-            && g.stepAtX(ChannelRackGrid::headerWidth + cell * 16) == -1, "the steps end where the pattern ends");
+    require(g.stepAtX(10) == -1 && g.stepAtX(ChannelRackGrid::defaultHeaderWidth - 1) == -1, "the header is not a step");
+    require(g.stepAtX(ChannelRackGrid::defaultHeaderWidth) == 0 && g.stepAtX(ChannelRackGrid::defaultHeaderWidth + cell * 16 - 1) == 15
+            && g.stepAtX(ChannelRackGrid::defaultHeaderWidth + cell * 16) == -1, "the steps end where the pattern ends");
 
     // A wide window does not stretch 16 steps into long bars: the buttons stop growing and the rest is empty rack.
     {
         Rig wide(1700, 640);
         require(wide.grid.cellWidth() == ChannelRackGrid::maxCell && wide.grid.contentWidth() == 16 * ChannelRackGrid::maxCell
-                && wide.grid.stepAtX(ChannelRackGrid::headerWidth + 16 * ChannelRackGrid::maxCell) == -1 && wide.grid.cellWidth() <= 48,
+                && wide.grid.stepAtX(ChannelRackGrid::defaultHeaderWidth + 16 * ChannelRackGrid::maxCell) == -1 && wide.grid.cellWidth() <= 48,
                 "step buttons stop growing in a very wide window");
     }
 
     // The graph lines up with the grid and sits below it.
-    require(rig.graph.getX() == 0 && rig.graph.plot().getX() == ChannelRackGrid::headerWidth && rig.graph.getWidth() == g.getWidth(), "the graph editor spans the grid's columns");
+    require(rig.graph.getX() == 0 && rig.graph.plot().getX() == ChannelRackGrid::defaultHeaderWidth && rig.graph.getWidth() == g.getWidth(), "the graph editor spans the grid's columns");
     require(rig.graph.getY() >= g.getBottom() && rig.graph.getBottom() <= rig.view.getHeight(), "the graph sits below the grid");
     require(verticalBarOf(rig.view) != nullptr && !verticalBarOf(rig.view)->isVisible(), "four channels need no vertical scroll bar");
 
@@ -172,13 +172,13 @@ static void geometryChecks() {
     narrow.view.refresh();
     auto& n = narrow.grid;
     require(n.length() == 64 && n.cellWidth() == ChannelRackGrid::minCell && n.contentWidth() == 64 * 15, "64 steps use the minimum cell width");
-    require(n.maxScroll() == 64 * 15 - (900 - ChannelRackGrid::headerWidth), "and scroll by the amount that does not fit");
-    require(n.stepAtX(ChannelRackGrid::headerWidth + 3) == 0, "unscrolled, the first column is step 1");
+    require(n.maxScroll() == 64 * 15 - (900 - ChannelRackGrid::defaultHeaderWidth), "and scroll by the amount that does not fit");
+    require(n.stepAtX(ChannelRackGrid::defaultHeaderWidth + 3) == 0, "unscrolled, the first column is step 1");
     int scrolled = -1;
     n.onScrolled = [&](int x) { scrolled = x; };
     n.setScrollPosition(300);
-    require(scrolled == 300 && n.scrollPosition() == 300 && n.stepAtX(ChannelRackGrid::headerWidth + 3) == 20
-            && n.cellBounds(0, 20).getX() == ChannelRackGrid::headerWidth, "scrolling shifts the columns and reports it");
+    require(scrolled == 300 && n.scrollPosition() == 300 && n.stepAtX(ChannelRackGrid::defaultHeaderWidth + 3) == 20
+            && n.cellBounds(0, 20).getX() == ChannelRackGrid::defaultHeaderWidth, "scrolling shifts the columns and reports it");
     n.setScrollPosition(99999);
     require(n.scrollPosition() == n.maxScroll() && n.stepAtX(899) == 63, "scrolling stops at the end");
     n.setScrollPosition(-5);
@@ -195,7 +195,7 @@ static void geometryChecks() {
     Rig mid(1180, 600);
     mid.controller.editRack("Length", [](Project& p) { return p.setPatternLength(p.selectedPattern, 32); });
     mid.view.refresh();
-    require(mid.grid.cellWidth() == (1180 - ChannelRackGrid::headerWidth) / 32 && mid.grid.maxScroll() == 0, "32 steps fit in a wide window");
+    require(mid.grid.cellWidth() == (1180 - ChannelRackGrid::defaultHeaderWidth) / 32 && mid.grid.maxScroll() == 0, "32 steps fit in a wide window");
     std::cout << "PASS: rack grid geometry, hit mapping and sideways scrolling\n";
 }
 
@@ -300,7 +300,7 @@ static void tallRackScrolls() {
     require(rig.step(13, 2).on && rig.step(14, 2).on && rig.step(15, 2).on && rig.totalOn() == 3, "a vertical drag works on scrolled rows");
     // The ruler stays inert while the rows scroll under it.
     const auto frozen = rig.rack();
-    rig.click({ChannelRackGrid::headerWidth + 40, 5});
+    rig.click({ChannelRackGrid::defaultHeaderWidth + 40, 5});
     require(rig.rack() == frozen, "clicking the ruler changes nothing");
     // Removing channels takes the scrolling away again.
     for (int i = 0; i < 12; ++i) g.runChannelCommand(g.selectedChannel(), ChannelRackGrid::cmdDelete);
@@ -366,8 +366,8 @@ static void paintAndEraseStrokes() {
 
     // Presses on the ruler, the empty area and the right margin do nothing.
     const auto snapshot = rig.rack();
-    rig.click({ChannelRackGrid::headerWidth + 30, 5});
-    rig.click({ChannelRackGrid::headerWidth + 30, g.rowBounds(3).getBottom() + 3});
+    rig.click({ChannelRackGrid::defaultHeaderWidth + 30, 5});
+    rig.click({ChannelRackGrid::defaultHeaderWidth + 30, g.rowBounds(3).getBottom() + 3});
     rig.click({g.getWidth() - 2, rig.cellCentre(0, 0).y});
     require(rig.rack() == snapshot, "clicks outside the cells change nothing");
 
@@ -630,7 +630,7 @@ static void graphEditor() {
     g.selectChannel(0);
     const auto plot = graph.plot();
     const auto xOf = [&](int s) { return g.stepLeft(s) + g.cellWidth() / 2; };
-    require(plot.getX() == ChannelRackGrid::headerWidth && graph.field() == StepField::velocity, "the graph lines up with the grid and starts on velocity");
+    require(plot.getX() == ChannelRackGrid::defaultHeaderWidth && graph.field() == StepField::velocity, "the graph lines up with the grid and starts on velocity");
     require(graph.valueAtY(plot.getY()) == 127 && graph.valueAtY(plot.getBottom()) == 1 && graph.valueAtY(plot.getCentreY()) > 55 && graph.valueAtY(plot.getCentreY()) < 72,
             "velocity runs 1 to 127 top to bottom");
     for (int y = plot.getY(); y < plot.getBottom(); ++y) require(graph.valueAtY(y) >= graph.valueAtY(y + 1), "higher on screen means a higher value");
@@ -1246,8 +1246,83 @@ static void multiSelectChecks() {
     std::cout << "PASS: several channels selected at once\n";
 }
 
+// The name column's right edge can be dragged to resize it (double-click fits the longest name). The controls after
+// the name, the steps, the graph editor and the scroll bar all move with it; the width is saved, not an undo step.
+static void nameColumnChecks() {
+    Rig rig;
+    auto& g = rig.grid;
+    const int rowY = g.rowBounds(1).getCentreY();
+    auto edge = [&] { return juce::Point<int>(g.nameRect(0).getRight(), rowY); };
+    auto childNamed = [](juce::Component& parent, const juce::String& name) -> juce::Component* {
+        for (auto* child : parent.getChildren()) if (child->getName() == name) return child;
+        return nullptr;
+    };
+    // Everything after the name sits where the column ends, and the steps start after it.
+    auto followsColumn = [&] {
+        const int header = g.headerWidth();
+        bool ok = header == g.nameRect(0).getRight() + ChannelRackGrid::headerAfterName;
+        for (int row = 0; row < rig.rack().channelCount; ++row)
+            ok = ok && g.nameRect(row).getRight() <= g.soloRect(row).getX() && g.soloRect(row).getRight() <= g.routeRect(row).getX()
+                 && g.routeRect(row).getRight() <= g.lampRect(row).getX() && g.lampRect(row).getRight() < header;
+        const auto* button = childNamed(rig.graph, "Graph shows Chance");
+        return ok && g.cellBounds(0, 0).getX() == header && g.stepAtX(header - 1) == -1 && g.stepAtX(header) == 0
+            && rig.graph.plot().getX() == header && button != nullptr && button->getRight() <= header
+            && horizontalBarOf(rig.view)->getX() == g.getX() + header;
+    };
+
+    require(g.nameWidth() == rack::defaultNameColumn && g.headerWidth() == ChannelRackGrid::defaultHeaderWidth && followsColumn(),
+            "the name column starts at its default width");
+    require(g.onNameEdge(edge()) && g.onNameEdge({edge().x - ChannelRackGrid::nameEdgeGrab, rowY}) && g.onNameEdge({edge().x, 5}),
+            "the column's edge can be grabbed on any row and on the ruler");
+    require(!g.onNameEdge({edge().x + ChannelRackGrid::nameEdgeGrab + 1, rowY}) && !g.onNameEdge({edge().x, g.rowBounds(rig.rack().channelCount).getY() + 8}),
+            "but not beside it or below the last channel");
+    g.mouseMove(mouse(g, edge()));
+    require(g.getTooltip().contains("resize the name column"), "hovering the edge says what it does");
+
+    // Dragging the edge.
+    const int stepsOn = rig.totalOn();
+    rig.stroke(edge(), {{edge().x + 30, rowY}, {edge().x + 60, rowY + 9}});
+    require(g.nameWidth() == rack::defaultNameColumn + 60 && rig.rack().nameColumnWidth == rack::defaultNameColumn + 60,
+            "dragging the edge right widens the column");
+    require(followsColumn(), "solo, output, the lamp, the steps, the graph editor and the scroll bar move with it");
+    require(!rig.controller.canUndo() && rig.totalOn() == stepsOn && g.selectedChannel() == 0, "resizing is not an edit, paints nothing and selects nothing");
+    rig.stroke(edge(), {{edge().x - 1000, rowY}});
+    require(g.nameWidth() == rack::minNameColumn && followsColumn(), "it stops at the narrowest width");
+    rig.stroke(edge(), {{edge().x + 1000, rowY}});
+    require(g.nameWidth() == rack::maxNameColumn && followsColumn(), "and at the widest");
+    rig.stroke({edge().x, 5}, {{edge().x - 100, 5}});
+    require(g.nameWidth() == rack::maxNameColumn - 100, "the edge can be dragged from the ruler too");
+    bool menuShown = false;
+    g.menuLauncher = [&](juce::PopupMenu, juce::Rectangle<int>, std::function<void(int)>) { menuShown = true; };
+    rig.click(edge(), rightButton);
+    require(g.nameWidth() == rack::maxNameColumn - 100 && menuShown, "a right-click on the edge does not resize: it opens the channel menu");
+
+    // Double-click: as wide as the longest name needs.
+    const std::string longName = "A very long channel name indeed";
+    rig.controller.editRack("Rename", [&](Project& p) { return p.renameChannel(2, longName); });
+    rig.view.refresh();
+    rig.click(edge(), leftButton, 2);
+    const float needed = juce::GlyphArrangement::getStringWidth(ui::font(13.0f, true), juce::String(longName));
+    require(g.nameWidth() == g.fittedNameWidth() && g.nameWidth() - 28 >= needed && g.nameWidth() - 28 < needed + 8 && followsColumn(),
+            "double-clicking the edge fits the longest name");
+    rig.controller.editRack("Rename", [&](Project& p) { return p.renameChannel(2, "Hat"); });
+    rig.view.refresh();
+    rig.click(edge(), leftButton, 2);
+    require(g.nameWidth() < rack::defaultNameColumn && g.nameWidth() >= rack::minNameColumn, "and shrinks it when the names are short");
+
+    // A project that opens with another width lays the view out again.
+    rig.controller.setRackNameColumnWidth(250);
+    rig.view.refresh();
+    require(g.nameWidth() == 250 && followsColumn(), "a width set in the project (opening a file) is laid out on refresh");
+    rig.controller.newProject();
+    rig.view.refresh();
+    require(g.nameWidth() == rack::defaultNameColumn && followsColumn(), "a new project starts at the default width");
+    std::cout << "PASS: resizable name column\n";
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    nameColumnChecks();
     channelPianoRollChecks();
     multiSelectChecks();
     lookChecks();

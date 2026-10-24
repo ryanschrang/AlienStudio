@@ -1088,6 +1088,9 @@ public:
         pushRackToEngine();
         return true;
     }
+    // Resizes the Channel Rack's name column (clamped). Like choosing a pattern it is saved with the project but is
+    // not an undo step, and the engine does not need to hear about it.
+    bool setRackNameColumnWidth(int width) { return doc.channelRack.setNameColumnWidth(width); }
     // Sounds a channel now, whatever the transport is doing (clicking its name).
     void previewRackChannel(int channel, float velocity = 1.0f, int pitch = 0) {
         if (doc.channelRack.validChannel(channel))
@@ -1532,6 +1535,7 @@ private:
         doc.selectedScene = step.focusScene >= 0 ? step.focusScene : previous.selectedScene;
         doc.clampSelection();
         doc.channelRack.selectedPattern = juce::jlimit(0, doc.channelRack.patternCount - 1, previous.channelRack.selectedPattern);
+        doc.channelRack.nameColumnWidth = previous.channelRack.nameColumnWidth;
         if (reordered) stopEverySlot();
         pushDocumentToEngine();
         if (!reordered) {

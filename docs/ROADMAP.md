@@ -19,9 +19,9 @@ Tracks can be armed and recorded onto the Song with count-in, punch and latency 
 Planned, not implemented. Each item is its own branch and pull request, with tests and the Windows
 checks it needs; order may change as work lands.
 
-1. **Finish the Channel Rack "Next" items.** Open a channel straight into the piano roll (the first
-   step towards channels that play notes), then resizable name columns. Multi-channel selection
-   is in review (#67).
+1. **Finish the Channel Rack "Next" items.** Multi-channel selection (#67) and opening a channel
+   straight into the piano roll (#68, the first step towards channels that play notes) have
+   landed; resizable name columns are in review.
 2. **Step sequencer v2, together with raising the limits.** Both change the saved pattern data, so
    they share one project format version and one migration:
    - *Per-step expression:* gate (note length), micro-timing nudge, ratchets/retriggers (2-4 hits
