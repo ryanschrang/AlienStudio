@@ -1107,3 +1107,9 @@ Use **+ Channel > Built-in synth** and choose one of Alien Studio's 12 factory s
 Change the preset with **channel menu > Sound > Built-in synth**. Pan, volume, mute/solo and Output routing use the rack's existing controls. Choosing a drum, loading a sample, or choosing Silent switches the sound source; the channel's note data stays intact. Instrument selection, duplication and edits support undo/redo. Project format 14 saves the preset; older channels load as sample channels. Song playback and WAV export use the same synth path.
 
 Clicking a channel name gives a timed preview. Piano-roll key/chord previews can sustain until released; stop, app deactivation and panic release voices. On step-mode synth rows, full gate means one step (or one ratchet interval); sample full gate still means play the sample to its end. Live hardware MIDI and the global typing/on-screen keyboard keep their existing Session routing in this milestone. VST3 rack instruments, custom synth-patch editing and per-instrument MIDI input routing remain later work.
+
+### Chord progression builder
+
+In Piano Roll, choose **Chord progression** in the processing tools list and click **Edit...**. Set a tonic MIDI note (48 = C3), Major or Natural minor, and four scale degrees. The initial 1-5-6-4 sequence becomes I-V-vi-IV in major; each triad's quality comes from the chosen scale. Change individual degrees to write your own sequence.
+
+**Steps / chord** uses sixteenth notes: 16 steps is one 4/4 bar. Apply inserts all four chords at the insertion cursor and selects their notes for further editing, strumming or arpeggiation. Existing notes remain. The sequence must fit inside the current loop and note limit; failures leave the clip unchanged. Undo/redo treats insertion as one edit. Use the normal transport to hear the inserted sequence. This tool does not copy another DAW's UI or include third-party chord content.
