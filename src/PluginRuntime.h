@@ -20,7 +20,11 @@ namespace alien {
 // because its internal state (held locks, half-freed memory) is unknown. It is parked instead.
 class PluginRuntime {
 public:
+    // Racks: one per Session track, then the master, then return tracks A-D.
     static constexpr int blockSize = 512, maxDelay = 96000, masterIndex = maxSessionTracks;
+    static constexpr int returnBase = masterIndex + 1, rackCount = returnBase + maxReturns;
+    static constexpr int returnIndex(int r) noexcept { return returnBase + r; }
+    static constexpr bool isReturn(int rack) noexcept { return rack >= returnBase && rack < rackCount; }
     struct PlayHead final : juce::AudioPlayHead {
         PositionInfo info;
         juce::Optional<PositionInfo> getPosition() const override { return info; }
@@ -46,9 +50,10 @@ public:
         std::array<Slot,8> effects;
         int effectCount{};
     };
-    std::array<Rack, maxSessionTracks + 1> racks;
+    std::array<Rack, rackCount> racks;
     std::array<juce::AudioBuffer<float>, maxSessionTracks> tracks;
     juce::AudioBuffer<float> live, master;
+    std::array<juce::AudioBuffer<float>, maxReturns> returns;   // what the tracks send to each return, then its FX
     std::array<juce::MidiBuffer, maxSessionTracks> midi;
     int sampleOffset{};
     std::array<int,maxSessionTracks> eventCounts{};
@@ -58,7 +63,7 @@ public:
 
     PluginRuntime() { prepare(44100); }
     ~PluginRuntime() {
-        for (int r=0;r<=masterIndex;++r) {
+        for (int r=0;r<rackCount;++r) {
             destroy(racks[static_cast<std::size_t>(r)].instrument,r,-1);
             for (int i=0;i<static_cast<int>(racks[static_cast<std::size_t>(r)].effects.size());++i) destroy(racks[static_cast<std::size_t>(r)].effects[static_cast<std::size_t>(i)],r,i);
         }
@@ -107,10 +112,13 @@ public:
         rate = sampleRate; renderedSamples = 0;
         for (auto& b : tracks) b.setSize(2, blockSize);
         live.setSize(2, blockSize); master.setSize(2, blockSize);
+        for (auto& b : returns) b.setSize(2, blockSize);
         for (auto& m : midi) m.ensureSize(65536);
         emptyMidi.ensureSize(65536);
         for (auto& delay : delays) delay.prepare();
-        for (int r=0;r<=masterIndex;++r) {
+        for (auto& delay : returnDelays) delay.prepare();
+        dryDelay.prepare();
+        for (int r=0;r<rackCount;++r) {
             auto& rack=racks[static_cast<std::size_t>(r)];
             prepareSlot(rack.instrument,r,-1);
             for (int i=0;i<static_cast<int>(rack.effects.size());++i) prepareSlot(rack.effects[static_cast<std::size_t>(i)],r,i);
@@ -126,6 +134,7 @@ public:
     }
     void begin(int samples, int bpm, bool playing, double ppq) noexcept {
         for (auto& b : tracks) b.clear(); live.clear(); master.clear();
+        for (auto& b : returns) b.clear();
         for (auto& m : midi) m.clear();
         sampleOffset = 0; currentSamples = samples; eventCounts.fill(0);
         playHead.info.setBpm(static_cast<double>(bpm));
@@ -180,6 +189,27 @@ public:
         for (std::size_t t = 0; t < tracks.size(); ++t) delays[t].process(tracks[t],samples,maximum-rackLatency(racks[t]));
         delays[maxSessionTracks].process(live,samples,maximum);
     }
+    // Runs each return's FX, then lines everything up: every return waits for the slowest return
+    // chain, and the dry mix already summed into `master` waits as long, so what a track sends
+    // arrives together with the track itself.
+    void processReturns(int samples) {
+        int slowest = 0;
+        for (int r = 0; r < maxReturns; ++r) {
+            auto& rack = racks[static_cast<std::size_t>(returnIndex(r))];
+            for (int i = 0; i < rack.effectCount; ++i) { emptyMidi.clear(); process(rack.effects[i], returnIndex(r), i, returns[static_cast<std::size_t>(r)], emptyMidi, samples); }
+            slowest = std::max(slowest, rackLatency(rack));
+        }
+        for (int r = 0; r < maxReturns; ++r)
+            returnDelays[static_cast<std::size_t>(r)].process(returns[static_cast<std::size_t>(r)], samples,
+                                                              slowest - rackLatency(racks[static_cast<std::size_t>(returnIndex(r))]));
+        dryDelay.process(master, samples, slowest);
+    }
+    // The delay the return chains add (the slowest one).
+    int returnLatency() const noexcept {
+        int slowest = 0;
+        for (int r = 0; r < maxReturns; ++r) slowest = std::max(slowest, rackLatency(racks[static_cast<std::size_t>(returnIndex(r))]));
+        return slowest;
+    }
     void processMaster(int samples) {
         for (int i = 0; i < racks[masterIndex].effectCount; ++i) { emptyMidi.clear(); process(racks[masterIndex].effects[i], masterIndex, i, master, emptyMidi, samples); }
         renderedSamples += samples;
@@ -200,7 +230,7 @@ public:
     int latencySamples() const noexcept {
         int maximum = 0;
         for (int t = 0; t < maxSessionTracks; ++t) maximum = std::max(maximum,rackLatency(racks[t]));
-        return maximum + rackLatency(racks[masterIndex]);
+        return maximum + returnLatency() + rackLatency(racks[masterIndex]);
     }
     // Asks each plugin how long it rings on. A plugin that fails the question is disabled like any other.
     double tailSeconds() {
@@ -215,9 +245,11 @@ public:
             for (int i=0;i<rack.effectCount;++i) tail += slotTail(rack.effects[static_cast<std::size_t>(i)],rackIndex,i);
             return std::isfinite(tail) ? std::clamp(tail,0.0,30.0) : 30.0;
         };
-        double longest=0;
+        double longest=0, returnTail=0;
         for(int t=0;t<maxSessionTracks;++t)longest=std::max(longest,rackTail(racks[static_cast<std::size_t>(t)],t));
-        return std::min(30.0,longest+rackTail(racks[masterIndex],masterIndex));
+        // A return rings on after the track that feeds it, and the master after that.
+        for(int r=0;r<maxReturns;++r)returnTail=std::max(returnTail,rackTail(racks[static_cast<std::size_t>(returnIndex(r))],returnIndex(r)));
+        return std::min(30.0,longest+returnTail+rackTail(racks[masterIndex],masterIndex));
     }
 private:
     struct Delay {
@@ -259,6 +291,8 @@ private:
     static std::atomic<std::size_t>& quarantineTally() { static std::atomic<std::size_t> tally{0}; return tally; }
     std::array<std::array<float,blockSize>,2> dry{};
     std::array<Delay,maxSessionTracks+1> delays;
+    std::array<Delay,maxReturns> returnDelays;
+    Delay dryDelay;
     juce::MidiBuffer emptyMidi;
     double rate{44100};
     juce::int64 renderedSamples{};

@@ -1,5 +1,7 @@
 #pragma once
+#include "SessionCapacity.h"
 #include <juce_core/juce_core.h>
+#include <array>
 #include <vector>
 
 namespace alien {
@@ -41,6 +43,9 @@ inline juce::String oversizedPluginName(const PluginRackState& rack) {
         if (effect.stateBase64.length() > maxPluginStateChars) return pluginDisplayName(effect);
     return {};
 }
+// The four return tracks' FX racks (effects only, like the master's).
+using ReturnRacks = std::array<PluginRackState, maxReturns>;
+
 inline juce::var pluginToVar(const PluginState& p) {
     auto value = juce::var(new juce::DynamicObject()); auto* o = value.getDynamicObject();
     o->setProperty("description", p.descriptionXml); o->setProperty("state", p.stateBase64); o->setProperty("bypass", p.bypass);

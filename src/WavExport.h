@@ -75,6 +75,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     auto* engine = preparedEngine ? preparedEngine : ownedEngine.get();
     engine->renderStreamsDeterministically();   // streamed clips are read here, on this thread, in order
     engine->masterControls.gain.store(project.masterGain);
+    for (std::size_t r = 0; r < engine->returns.size(); ++r) engine->returns[r].set(project.returns[r]);
     engine->prepare(exportRate);
     engine->recording.metronome.store(false);
     for (auto& rack : engine->plugins->racks) {

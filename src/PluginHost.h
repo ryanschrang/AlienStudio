@@ -111,18 +111,23 @@ public:
     // placeholders; never silently substitute another sound or erase state.
     // A plugin that crashes while loading is a placeholder too; the others still load.
     juce::String restore(const std::vector<PluginRackState>& tracks, const PluginRackState& master, double rate) {
+        return restore(tracks, master, ReturnRacks{}, rate);
+    }
+    juce::String restore(const std::vector<PluginRackState>& tracks, const PluginRackState& master, const ReturnRacks& returns, double rate) {
         closeEditors(); clearListeners();
         juce::String errors;
         loadProblems.clear();
-        for (int t=0;t<=maxSessionTracks;++t) {
+        for (int t=0;t<PluginRuntime::rackCount;++t) {
             auto& rack=runtime.racks[static_cast<std::size_t>(t)];
             runtime.destroy(rack.instrument,t,-1);
             for (int i=0;i<static_cast<int>(rack.effects.size());++i) runtime.destroy(rack.effects[static_cast<std::size_t>(i)],t,i);
             rack={};
             const PluginRackState empty;
-            const auto& state=t==maxSessionTracks?master:t<static_cast<int>(tracks.size())?tracks[static_cast<std::size_t>(t)]:empty;
-            rack.instrumentAssigned = !state.instrument.descriptionXml.isEmpty();
-            if (t != maxSessionTracks) loadSlot(rack.instrument,state.instrument,true,rate,errors,t,-1);
+            const auto& state=PluginRuntime::isReturn(t)?returns[static_cast<std::size_t>(t-PluginRuntime::returnBase)]
+                             :t==maxSessionTracks?master:t<static_cast<int>(tracks.size())?tracks[static_cast<std::size_t>(t)]:empty;
+            // Only Session tracks have an instrument; the master and the returns are effects only.
+            rack.instrumentAssigned = t < maxSessionTracks && !state.instrument.descriptionXml.isEmpty();
+            if (t < maxSessionTracks) loadSlot(rack.instrument,state.instrument,true,rate,errors,t,-1);
             rack.effectCount=juce::jmin(static_cast<int>(state.effects.size()),static_cast<int>(rack.effects.size()));
             for (int i=0;i<rack.effectCount;++i) loadSlot(rack.effects[static_cast<std::size_t>(i)],state.effects[static_cast<std::size_t>(i)],false,rate,errors,t,i);
             int latency = rack.instrument.processor ? rack.instrument.processor->getLatencySamples() : 0;
@@ -141,10 +146,13 @@ public:
     }
     // Copies each plugin's state into the rack states. A plugin that has failed keeps the state
     // saved before the failure: asking a broken plugin for its state would only break it more.
-    void snapshot(std::vector<PluginRackState>& tracks, PluginRackState& master) {
-        for (int t=0;t<=maxSessionTracks;++t) {
-            if (t!=maxSessionTracks && t>=static_cast<int>(tracks.size())) continue;
-            auto& state=t==maxSessionTracks?master:tracks[static_cast<std::size_t>(t)]; auto& rack=runtime.racks[static_cast<std::size_t>(t)];
+    void snapshot(std::vector<PluginRackState>& tracks, PluginRackState& master) { ReturnRacks unused; snapshot(tracks, master, unused); }
+    void snapshot(std::vector<PluginRackState>& tracks, PluginRackState& master, ReturnRacks& returns) {
+        for (int t=0;t<PluginRuntime::rackCount;++t) {
+            if (t<maxSessionTracks && t>=static_cast<int>(tracks.size())) continue;
+            auto& state=PluginRuntime::isReturn(t)?returns[static_cast<std::size_t>(t-PluginRuntime::returnBase)]
+                       :t==maxSessionTracks?master:tracks[static_cast<std::size_t>(t)];
+            auto& rack=runtime.racks[static_cast<std::size_t>(t)];
             capture(rack.instrument,state.instrument,t,-1);
             for (std::size_t i=0;i<state.effects.size() && i<rack.effects.size();++i) capture(rack.effects[i],state.effects[i],t,static_cast<int>(i));
         }
@@ -152,7 +160,7 @@ public:
     // Opens (or raises) a plugin's editor. Returns an empty string on success, otherwise a message
     // for the user; the failure is also logged. An editor that crashes while opening is contained.
     juce::String openEditor(int track,int slot) {
-        if (track<0 || track>maxSessionTracks || slot<-1 || slot>=static_cast<int>(runtime.racks[0].effects.size())) return {};
+        if (track<0 || track>=PluginRuntime::rackCount || slot<-1 || slot>=static_cast<int>(runtime.racks[0].effects.size())) return {};
         auto& rack=runtime.racks[static_cast<std::size_t>(track)];
         auto& entry=slot<0?rack.instrument:rack.effects[static_cast<std::size_t>(slot)];
         auto* processor=entry.processor.get();
@@ -190,7 +198,7 @@ public:
     }
     // Empty when the slot is fine, otherwise a short description for the plugin panel.
     juce::String health(int track,int slot) const {
-        if (track<0 || track>maxSessionTracks || slot<-1 || slot>=static_cast<int>(runtime.racks[0].effects.size())) return {};
+        if (track<0 || track>=PluginRuntime::rackCount || slot<-1 || slot>=static_cast<int>(runtime.racks[0].effects.size())) return {};
         const auto& rack=runtime.racks[static_cast<std::size_t>(track)];
         const auto& entry=slot<0?rack.instrument:rack.effects[static_cast<std::size_t>(slot)];
         if (!entry.processor) {
@@ -217,7 +225,7 @@ private:
     }
     struct Found { PluginRuntime::Slot* slot; int rack; int index; };
     std::optional<Found> findSlot(const juce::AudioProcessor* processor) {
-        for (int t=0;t<=maxSessionTracks;++t) {
+        for (int t=0;t<PluginRuntime::rackCount;++t) {
             auto& rack=runtime.racks[static_cast<std::size_t>(t)];
             if (rack.instrument.processor.get()==processor) return Found{&rack.instrument,t,-1};
             for (int i=0;i<static_cast<int>(rack.effects.size());++i)
@@ -226,7 +234,9 @@ private:
         return std::nullopt;
     }
     static juce::String where(int rack,int index) {
-        const juce::String place = rack<0 ? juce::String("unknown location") : rack==PluginRuntime::masterIndex ? juce::String("master") : "track "+juce::String(rack+1);
+        const juce::String place = rack<0 ? juce::String("unknown location") : rack==PluginRuntime::masterIndex ? juce::String("master")
+            : PluginRuntime::isReturn(rack) ? "return "+juce::String::charToString(static_cast<juce::juce_wchar>('A'+rack-PluginRuntime::returnBase))
+            : "track "+juce::String(rack+1);
         return place+(index<0?(rack<0?"":" instrument"):" FX "+juce::String(index+1));
     }
     static juce::String slotLabel(const PluginRuntime::Slot& slot,int rack,int index) {
@@ -239,7 +249,7 @@ private:
         PluginFault f;
         while (runtime.faults.pop(f)) {
             const PluginRuntime::Slot* slot=nullptr;
-            if (f.rack>=0 && f.rack<=maxSessionTracks) {
+            if (f.rack>=0 && f.rack<PluginRuntime::rackCount) {
                 const auto& rack=runtime.racks[static_cast<std::size_t>(f.rack)];
                 if (f.slot<0) slot=&rack.instrument; else if (f.slot<static_cast<int>(rack.effects.size())) slot=&rack.effects[static_cast<std::size_t>(f.slot)];
             }

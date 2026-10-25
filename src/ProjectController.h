@@ -86,10 +86,20 @@ public:
     // True when a plugin was edited since its state was last copied into the document.
     bool pluginStateDirty() const noexcept { return runtimeDirty; }
     void setPluginRacks(const std::vector<PluginRackState>& racks, const PluginRackState& master) {
+        setPluginRacks(racks, master, returnRacks());
+    }
+    void setPluginRacks(const std::vector<PluginRackState>& racks, const PluginRackState& master, const ReturnRacks& returns) {
         if (racks.size() != doc.tracks.size()) return;
         for (std::size_t t=0;t<racks.size();++t) doc.tracks[t].plugins = racks[t];
         doc.masterPlugins = master; runtimeDirty = false;
+        for (std::size_t r=0;r<returns.size();++r) doc.returns[r].plugins = returns[r];
         commit("Change plugins");
+    }
+    // The return tracks' FX racks, in the shape PluginHost takes them.
+    ReturnRacks returnRacks() const {
+        ReturnRacks racks;
+        for (std::size_t r=0;r<racks.size();++r) racks[r] = doc.returns[r].plugins;
+        return racks;
     }
     bool canUndo() const noexcept { return history.canUndo(); }
     bool canRedo() const noexcept { return history.canRedo(); }
@@ -177,6 +187,7 @@ public:
         else if (onBeforeSnapshot) onBeforeSnapshot();
         if (history.currentId() == autosavedId) return;
         for (int t = 0; t < doc.trackCount(); ++t) trackSettingsEdited(t);
+        for (int r = 0; r < maxReturns; ++r) returnSettingsEdited(r);
         masterGainEdited();
         auto project = toProjectData(doc);
         if (!project.valid()) {
@@ -238,6 +249,7 @@ public:
             engine.tracks[t].set(t < doc.tracks.size() ? doc.tracks[t].settings : TrackSettings{});
         engine.activeTracks.store(doc.trackCount());
         engine.masterControls.gain.store(doc.masterGain);
+        for (std::size_t r = 0; r < engine.returns.size(); ++r) engine.returns[r].set(doc.returns[r].settings);
         engine.recording.apply(doc.recording);
         for (std::size_t t = 0; t < engine.tracks.size(); ++t)
             for (int pad = 0; pad < drumPadCount; ++pad)
@@ -352,6 +364,11 @@ public:
     // The mixer writes the engine directly while a control moves; this copies
     // the result back into the document.
     void masterGainEdited() { doc.masterGain = sanitizedMasterGain(engine.masterControls.gain.load()); }
+    void returnSettingsEdited(int r) {
+        if (r < 0 || r >= maxReturns) return;
+        const auto next = engine.returns[static_cast<std::size_t>(r)].snapshot();
+        if (next.valid()) doc.returns[static_cast<std::size_t>(r)].settings = next;
+    }
     void trackSettingsEdited(int track) {
         if (track < 0 || track >= doc.trackCount() || track >= static_cast<int>(engine.tracks.size())) return;
         doc.tracks[static_cast<std::size_t>(track)].settings = engine.tracks[static_cast<std::size_t>(track)].snapshot();
@@ -719,6 +736,7 @@ public:
         if (busy) { if (done) done(false); return; }
         if (onBeforeSnapshot) onBeforeSnapshot();
         for (int t = 0; t < doc.trackCount(); ++t) trackSettingsEdited(t);
+        for (int r = 0; r < maxReturns; ++r) returnSettingsEdited(r);
         masterGainEdited();
         const auto project = toProjectData(doc);
         if (!project.valid()) {

@@ -21,7 +21,7 @@ public:
         scan.setButtonText("Scan VST3..."); cancelScan.setButtonText("Cancel scan"); addInstrument.setButtonText("Use instrument"); addEffect.setButtonText("Add FX");
         open.setButtonText("Open editor"); bypass.setButtonText("Bypass / enable"); up.setButtonText("Move FX up"); down.setButtonText("Move FX down"); remove.setButtonText("Remove");
         available.setTextWhenNothingSelected("Choose a stock effect or a scanned VST3 plugin");
-        target.setName("Plugin destination track or master"); available.setName("Stock effects and scanned VST3 plugins"); slot.setName("Instrument or FX slot");
+        target.setName("Plugin destination track, return or master"); available.setName("Stock effects and scanned VST3 plugins"); slot.setName("Instrument or FX slot");
         liveInput.setName("Live MIDI destination");
         liveInput.setTooltip("Hardware MIDI, typing keyboard and on-screen piano. Recording uses its armed track.");
         liveInput.onChange=[this]{if(onLiveInput)onLiveInput(liveInput.getSelectedId()-2);};
@@ -35,7 +35,7 @@ public:
     std::function<void(ScanCommand)> onScanCommand;
     std::function<void()> onCancelScan;
     // The text to show beside a slot that has a problem (for example "FAILED - switched off"); empty when it is fine.
-    // Arguments: destination (a track index, or maxSessionTracks for Master FX) and slot (-1 instrument, 0.. FX).
+    // Arguments: destination (a track index, maxSessionTracks for Master FX, or a return's rack index after it) and slot (-1 instrument, 0.. FX).
     std::function<juce::String(int,int)> health;
     std::function<void(int)> onTarget;
     std::function<void(int)> onLiveInput;
@@ -51,8 +51,10 @@ public:
     void refresh(const juce::StringArray& names, const PluginRackState& rack, const juce::KnownPluginList& list) {
         const int t=target.getSelectedId(); target.clear(juce::dontSendNotification);
         for(int i=0;i<names.size();++i)target.addItem(names[i],i+1);
+        // Ids are destination + 1: tracks, then Master FX (maxSessionTracks), then the returns right after it.
+        for(int r=0;r<maxReturns;++r)target.addItem("Return "+juce::String::charToString(static_cast<juce::juce_wchar>('A'+r))+" FX",maxSessionTracks+2+r);
         target.addItem("Master FX",maxSessionTracks+1);
-        target.setSelectedId(t==maxSessionTracks+1?t:juce::jlimit(1,names.size(),t),juce::dontSendNotification);
+        target.setSelectedId(t>maxSessionTracks&&t<=maxSessionTracks+1+maxReturns?t:juce::jlimit(1,names.size(),t),juce::dontSendNotification);
         const int selectedPlugin=available.getSelectedId(); available.clear(juce::dontSendNotification);
         for(std::size_t i=0;i<stock::catalog.size();++i)available.addItem(juce::String(stock::catalog[i].name)+" [stock FX]",stockBase+static_cast<int>(i));
         auto descriptions=list.getTypes(); if(!descriptions.isEmpty())available.addSeparator();
@@ -60,12 +62,13 @@ public:
         available.setSelectedId(available.indexOfItemId(selectedPlugin)>=0?selectedPlugin:stockBase,juce::dontSendNotification);
         const int s=slot.getSelectedId(); slot.clear(juce::dontSendNotification);
         const int where=destination();
-        if(where!=maxSessionTracks)slot.addItem("Instrument: "+name(rack.instrument)+problem(where,-1),1);
+        // The master and the returns are effects only: no instrument row.
+        const bool bus=where>=maxSessionTracks;
+        if(!bus)slot.addItem("Instrument: "+name(rack.instrument)+problem(where,-1),1);
         for(std::size_t i=0;i<rack.effects.size();++i)slot.addItem("FX "+juce::String(static_cast<int>(i+1))+": "+name(rack.effects[i])+problem(where,static_cast<int>(i)),static_cast<int>(i+2));
-        // Master FX has no instrument row, so its first effect is id 2; a kept id of 1 would match no item.
-        const bool master=destination()==maxSessionTracks;
-        slot.setSelectedId(s>=(master?2:1)&&s<=static_cast<int>(rack.effects.size()+1)?s:master?(rack.effects.empty()?0:2):1,juce::dontSendNotification);
-        addInstrument.setEnabled(destination()!=maxSessionTracks);
+        // A bus has no instrument row, so its first effect is id 2; a kept id of 1 would match no item.
+        slot.setSelectedId(s>=(bus?2:1)&&s<=static_cast<int>(rack.effects.size()+1)?s:bus?(rack.effects.empty()?0:2):1,juce::dontSendNotification);
+        addInstrument.setEnabled(!bus);
     }
     // While a scan runs, Scan is disabled and Cancel is offered.
     void setScanning(bool running){scanning=running;scan.setEnabled(!running);cancelScan.setVisible(running);resized();}
