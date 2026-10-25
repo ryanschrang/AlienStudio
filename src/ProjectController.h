@@ -545,6 +545,8 @@ public:
         if (armed.empty())
             return {false, anyArmed ? "The armed tracks' inputs are not enabled. Turn them on in Audio settings."
                                     : "Arm a track in the Song view (the button on its header) to record onto it."};
+        if (doc.timeline.takes.size() + armed.size() > timeline::maxTakes)
+            return {false, "The recording take list is full. Forget unused takes in the Takes panel before recording."};
         if (!folder.createDirectory().wasOk()) return {false, "Cannot create the folder for takes: " + folder.getFullPathName()};
 
         SongTake next;
@@ -918,6 +920,7 @@ public:
         using namespace alien::timeline;
         if (busy || isPatternRow(row) || row < 0 || row >= doc.trackCount() || start < 0) return false;
         const auto usedByTimeline = [&](int scene) {
+            for (const auto& r : doc.timeline.takes) if (r.row == row && r.source == scene) return true;
             for (const auto& r : doc.timeline.regions) if (r.row == row && r.source == scene) return true;
             return false;
         };
@@ -980,6 +983,7 @@ public:
             const int row = take.track;
             if (row < 0 || row >= doc.trackCount() || !take.clip || !take.placement.valid) return fail();
             const auto usedByTimeline = [&](int scene) {
+                for (const auto& r : next.takes) if (r.row == row && r.source == scene) return true;
                 for (const auto& r : next.regions) if (r.row == row && r.source == scene) return true;
                 return false;
             };
@@ -999,7 +1003,7 @@ public:
             region.row = row; region.source = scene;
             region.start = take.placement.start; region.length = take.placement.length;
             region.audioOffset = take.placement.audioOffset;
-            if (!next.place(region)) return fail();
+            if (!next.recordTake(region)) return fail();
             cells.emplace_back(row, scene);
         }
         if (!next.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount)) return fail();
@@ -1007,6 +1011,14 @@ public:
         if (!cells.empty()) selectClip(cells.front().first, cells.front().second);
         commit("Record take", cells.size() == 1 ? cells.front().first : -1, cells.size() == 1 ? cells.front().second : -1);
         return static_cast<int>(cells.size());
+    }
+    bool compRecordedTake(std::uint32_t id, std::int64_t from, std::int64_t to) {
+        if (isRecording() || busy) return false;
+        const auto found = std::find_if(doc.timeline.takes.begin(), doc.timeline.takes.end(),
+            [=](const timeline::Region& r) { return r.id == id; });
+        if (found == doc.timeline.takes.end() || !doc.isValidCell(found->row, found->source)
+            || !doc.clip(found->row, found->source).isAudioClip()) return false;
+        return editTimeline("Comp recording take", [=](timeline::Timeline& t) { return t.compTake(id, from, to); });
     }
     // Deleting a pattern renumbers the ones after it, and the timeline must follow.
     bool deleteRackPattern(int index) {

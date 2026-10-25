@@ -287,6 +287,10 @@ if(BUILD_TESTING)
     target_include_directories(StockDspTests PRIVATE src)
     add_test(NAME StockDspTests COMMAND StockDspTests)
 
+    add_executable(TakeCompTests tests/TakeCompTests.cpp)
+    target_include_directories(TakeCompTests PRIVATE src)
+    add_test(NAME TakeCompTests COMMAND TakeCompTests)
+
     add_executable(TimelineTests tests/TimelineTests.cpp)
     target_include_directories(TimelineTests PRIVATE src)
     target_link_libraries(TimelineTests PRIVATE Threads::Threads)

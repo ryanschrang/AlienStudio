@@ -1211,7 +1211,26 @@ static void fadeTests() {
     }
 }
 
+static void takeCompPlaybackTests() {
+    const auto first = makeSine(2, 220), second = makeSine(2, 660);
+    auto song = newSong(2);
+    auto& t = song->timeline;
+    require(t.recordTake(regionOf(0, 0, 0, ticksPerBar)) && t.recordTake(regionOf(0, 1, 0, ticksPerBar)), "record two audio passes");
+    require(t.compTake(t.takes.front().id, ticksPerBeat, 2 * ticksPerBeat), "comp one beat from first pass");
+    song->clips[0][0].audio = &first; song->clips[1][0].audio = &second;
+    Rig actual; actual.publish(song); actual.seek(0); actual.play(); actual.render(barFrames);
+    auto plain = std::make_shared<alien::ArrangementPlayback>(*song); plain->timeline.takes.clear();
+    Rig reference; reference.block = 113; reference.publish(plain); reference.seek(0); reference.play(); reference.render(barFrames);
+    require(actual.out == reference.out && actual.energy(0, barFrames) > 100, "archive never mixes with active comp and block sizes agree");
+    const auto before = allocationCount;
+    std::array<float, 257> l{}, r{}; float* outputs[]{l.data(), r.data()};
+    actual.engine.timelineSeek.store(ticksPerBeat + 300);
+    actual.engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 257, {});
+    require(allocationCount == before, "seeking within a comp allocates nothing on callback");
+}
+
 int main() {
+    timed("take comp", takeCompPlaybackTests);
     timed("fades", fadeTests);
     timed("automation", automationPlaybackTests);
     timed("start from anywhere", startFromAnywhereTests);

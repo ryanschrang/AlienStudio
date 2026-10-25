@@ -366,6 +366,22 @@ void controllerTests(const juce::File& root) {
         int count = 0;
         for (const auto& r : c.timeline().regions) count += r.isPattern() ? 0 : 1;
         require(count == 2, "redo brings both takes back");
+        require(c.timeline().takes.size() == 2, "redo restores preserved recording passes");
+        const auto originals = c.timeline().takes;
+        require(c.compRecordedTake(originals[0].id, 48, 96) && c.undoLabel() == "Comp recording take",
+            "recorded audio can be comped in one undo step");
+        require(c.timeline().takes == originals && file.existsAsFile(), "comp preserves every original pass and WAV");
+        require(c.undo() && c.timeline().regions.size() == 2, "undo restores pre-comp arrangement");
+        require(c.redo() && c.timeline().takes == originals, "redo restores comp without changing sources");
+        rig.engine.timelineSeek.store(0); rig.render(256);
+        require(c.startSongTake(root.getChildFile("second-pass"), rate, 2).started, "start another pass");
+        rig.render(4800); c.stopRecording(); rig.render(512); rig.waitForFinish();
+        require(rig.outcomes.back().placed == 2 && c.timeline().takes.size() == 4,
+            "repeated multitrack recording appends passes instead of losing originals");
+        require(c.timeline().takes[0] == originals[0] && c.timeline().takes[1] == originals[1]
+            && file.existsAsFile(), "later recording preserves original passes and files");
+
+
     }
     {
         ControllerRig rig;   // punch and a playhead later in the song

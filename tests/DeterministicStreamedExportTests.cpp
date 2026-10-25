@@ -167,6 +167,21 @@ int main() {
     juce::String error;
     alien::DrumSamplePointers noDrums{};
 
+    // A comp export reads only its active pieces; retained alternate passes stay silent.
+    {
+        auto first = makeMaterial(48000, 1, 2, 1), second = makeMaterial(48000, 1, 2, 2);
+        Song comp;
+        auto& t = comp.playback->timeline; t.setLengthBars(1);
+        check(t.recordTake(region(0, 0, 0, ticksPerBar)) && t.recordTake(region(0, 1, 0, ticksPerBar)), "two export takes");
+        check(t.compTake(t.takes.front().id, 960, 1920), "comp export range");
+        put(comp, 0, 0, *first, 0); put(comp, 0, 1, *second, 0); finish(comp);
+        const auto withTakes = render(comp);
+        t.takes.clear(); finish(comp);
+        const auto withoutTakes = render(comp);
+        check(maxDifference(withTakes, withoutTakes) == 0 && energy(withTakes, 0, 96000) > 1,
+            "preserved takes neither mix into nor change comp export");
+    }
+
     // --- The same song, from memory or from disk ---------------------------------------------------------------
     std::array<std::unique_ptr<Material>, 4> materials;
     const auto decoded = render(busySong(materials, 0));

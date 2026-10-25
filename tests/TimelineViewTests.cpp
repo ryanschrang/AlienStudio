@@ -1735,8 +1735,46 @@ static void snapshots() {
     std::cout << "PASS: the timeline renders\n";
 }
 
+static void takeCompChecks() {
+    auto rig = std::make_unique<Rig>();
+    rig->sources();
+    require(rig->controller.editTimeline("Take fixture", [](tl::Timeline& t) {
+        tl::Region take; take.row = 2; take.source = 0; take.length = 2 * bar;
+        return t.recordTake(take);
+    }), "fixture: recorded pass");
+    rig->view.refresh();
+    auto* toggle = childNamed<juce::TextButton>(rig->view, "Show recording takes");
+    require(toggle != nullptr, "takes toggle available"); clickButton(*toggle);
+    auto* panel = childNamed<RecordingTakesPanel>(rig->view, "Recording takes");
+    require(panel && panel->isVisible(), "recording take panel shown");
+    auto* range = childNamed<juce::TextButton>(*panel, "Comp loop range");
+    auto* whole = childNamed<juce::TextButton>(*panel, "Comp whole take");
+    require(range && whole && whole->isEnabled() && !range->isEnabled(), "range beyond take coverage disabled");
+    require(rig->controller.editTimeline("Comp range", [](tl::Timeline& t) { return t.setLoop(960, 1920); }), "set comp range");
+    rig->view.refresh(); require(range->isEnabled(), "covered range enables comp");
+    clickButton(*range);
+    require(rig->controller.undoLabel() == "Comp recording take" && rig->t().regions.size() == 3
+        && rig->t().takes.size() == 1, "panel comps range and retains original");
+    require(rig->controller.undo() && rig->t().regions.size() == 1, "panel comp undo");
+    clickButton(*whole); require(rig->t().takes.size() == 1, "whole take comp retains source");
+    auto* forget = childNamed<juce::TextButton>(*panel, "Forget recording take");
+    const auto active = rig->t().regions;
+    require(forget && forget->isEnabled(), "forget action available"); clickButton(*forget);
+    require(rig->t().takes.empty() && rig->t().regions == active, "forget leaves active comp intact");
+    require(rig->controller.undo() && rig->t().takes.size() == 1, "forget is undoable");
+    rig->view.refresh();
+    for (const int width : {960, 1200}) {
+        rig->view.setSize(width, 650);
+        require(rig->view.getLocalBounds().contains(panel->getBounds())
+            && panel->getLocalBounds().contains(range->getBounds()), "take panel fits minimum layout");
+    }
+    writePng(rig->view.createComponentSnapshot(rig->view.getLocalBounds(), true, 1.0f),
+        std::getenv("ALIEN_SNAPSHOT_DIR"), "recording-takes.png");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    takeCompChecks();
     geometryChecks();
     snapChecks();
     placingChecks();
