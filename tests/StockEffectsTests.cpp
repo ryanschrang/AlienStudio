@@ -79,7 +79,7 @@ static bool allFinite(const std::vector<float>& x) { for (float v : x) if (!dsp:
 
 // ---------------------------------------------------------------------------
 static void catalogueTests() {
-    check(stock::catalog.size() == 5, "five stock effects");
+    check(stock::catalog.size() == 6, "six stock effects");
     std::set<juce::String> names, ids;
     for (const auto& info : stock::catalog) {
         auto e = stock::create(info.id);
@@ -96,7 +96,7 @@ static void catalogueTests() {
         check(PluginState{xml->toString(), {}, false}.valid(), std::string("description is a valid rack entry: ") + info.id);
         check(e->hasEditor(), std::string("has an editor: ") + info.id);
     }
-    check(names.size() == 5 && ids.size() == 5, "names and ids are unique");
+    check(names.size() == 6 && ids.size() == 6, "names and ids are unique");
     check(stock::create("nonsense") == nullptr && stock::create("") == nullptr, "unknown ids create nothing");
     juce::PluginDescription vst; vst.pluginFormatName = "VST3";
     check(!stock::isStock(vst), "a VST3 is not a stock effect");
@@ -363,6 +363,36 @@ static void allocationTests() {
     }
 }
 
+static void filterEffectTests() {
+    // Through the hosted processor: the controls reach the filter.
+    auto e = make("filter");
+    auto& filterEffect = static_cast<stock::FilterEffect&>(*e);
+    check(filterEffect.settings().mode == dsp::FilterMode::lowPass && !filterEffect.settings().steep, "starts as a 12 dB/oct low-pass");
+    checkNear(filterEffect.settings().frequency, 1000.0, 0.5, "default cutoff 1 kHz");
+    auto l = sine(10000.0, 0.5, 9600), r = l;
+    process(*e, l, r);
+    check(peak(l, 4800, 9600) < 0.5 * dsp::dbToGain(-35.0), "the default low-pass removes 10 kHz");
+    setParam(*e, stock::filter::mode, 1.0); // High-pass
+    check(filterEffect.settings().mode == dsp::FilterMode::highPass, "the mode parameter selects high-pass");
+    auto h = sine(10000.0, 0.5, 9600), hr = h;
+    process(*e, h, hr);
+    checkNear(peak(h, 4800, 9600), 0.5, 0.02, "...which passes 10 kHz");
+    setParam(*e, stock::filter::slope, 1.0);
+    check(filterEffect.settings().steep, "the slope parameter selects 24 dB/oct");
+    auto* cutoff = e->parameters.getParameter(stock::filter::cutoff);
+    checkNear(cutoff->convertFrom0to1(cutoff->getValueForText("2.5k")), 2500.0, 2.0, "typed cutoff in kHz");
+    check(cutoff->getText(cutoff->convertTo0to1(250.0f), 32) == "250 Hz", "cutoff text");
+    auto* mode = e->parameters.getParameter(stock::filter::mode);
+    check(mode->getText(mode->convertTo0to1(3.0f), 32) == "Notch", "mode text");
+    setParam(*e, stock::filter::mode, 0.0); setParam(*e, stock::filter::slope, 0.0);
+    setParam(*e, stock::filter::cutoff, 200.0);
+    setParam(*e, stock::filter::resonance, 0.7071);
+    const double plain = e->getTailLengthSeconds();
+    setParam(*e, stock::filter::resonance, 10.0);
+    check(e->getTailLengthSeconds() > plain, "the reported tail grows with resonance, so exports keep the ringing");
+    check(e->getLatencySamples() == 0, "the filter adds no latency");
+}
+
 // ---------------------------------------------------------------------------
 static void stateTests() {
     std::mt19937 gen(11); std::uniform_real_distribution<float> unit(0.0f, 1.0f);
@@ -591,6 +621,28 @@ static void editorTests() {
         curve.moveBand(0, 10.0, 99.0); // beyond the limits: clamped
         check(getParam(*e, stock::eq::lowFreq) >= 20.0 && getParam(*e, stock::eq::lowGain) <= 18.0, "dragging beyond the edge is clamped");
     }
+    // Filter curve and mode controls.
+    {
+        auto e = make("filter");
+        std::unique_ptr<juce::AudioProcessorEditor> editor(e->createEditorIfNeeded());
+        auto* filterEditor = dynamic_cast<stock::FilterEditor*>(editor.get());
+        check(filterEditor != nullptr, "filter editor type");
+        auto& curve = filterEditor->response();
+        checkNear(curve.responseDb(1000.0), -3.0103, 0.05, "the curve shows -3 dB at the default cutoff");
+        curve.moveHandle(4000.0, 4.0);
+        checkNear(getParam(*e, stock::filter::cutoff), 4000.0, 4.0, "dragging the handle sets the cutoff");
+        checkNear(getParam(*e, stock::filter::resonance), 4.0, 0.01, "...and the resonance");
+        checkNear(curve.responseDb(4000.0), 20.0 * std::log10(4.0), 0.3, "the curve follows the resonance");
+        filterEditor->modeBox().setSelectedId(3, juce::sendNotificationSync);
+        check(static_cast<stock::FilterEffect&>(*e).settings().mode == dsp::FilterMode::bandPass, "the mode menu selects band-pass");
+        filterEditor->slopeBox().setSelectedId(2, juce::sendNotificationSync);
+        check(static_cast<stock::FilterEffect&>(*e).settings().steep, "the slope menu selects 24 dB/oct");
+        setParam(*e, stock::filter::mode, 3.0);
+        check(filterEditor->modeBox().getSelectedId() == 4, "changing the parameter (automation, undo) moves the menu");
+        const auto bounds = filterEditor->modeBox().getBounds();
+        check(!bounds.isEmpty() && editor->getLocalBounds().contains(bounds) && editor->getLocalBounds().contains(filterEditor->slopeBox().getBounds()),
+              "mode and slope menus are laid out inside the editor");
+    }
     juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
 }
 
@@ -603,6 +655,7 @@ int main() {
     reverbPreDelayTailTest();
     robustnessTests();
     allocationTests();
+    filterEffectTests();
     stateTests();
     hostTests();
     editorTests();
