@@ -1113,3 +1113,9 @@ Clicking a channel name gives a timed preview. Piano-roll key/chord previews can
 In **Plugins**, scan/select a VST3 instrument, choose a destination track and click **Use instrument**. Set **Live MIDI** to that track to play it from a hardware controller, the typing keyboard or the on-screen piano while stopped or playing. The same selector also plays Session built-in synths and drum kits. **Standalone synth** restores the separate live synth. The Drums input selector shares this route; plugin destination and live destination are independent.
 
 Hardware note channels, velocity, CC messages and pitch bend reach the selected VST3 instrument. Recording continues to monitor the armed recording track. Changing the live destination releases the previous instrument, and device reset/panic releases hardware notes. This route is a current-session control, not saved project data. Channel Rack VST3 slots and direct live input to Channel Rack channels remain a separate integration step.
+
+### Chord progression builder
+
+In Piano Roll, choose **Chord progression** in the processing tools list and click **Edit...**. Set a tonic MIDI note (48 = C3), Major or Natural minor, and four scale degrees. The initial 1-5-6-4 sequence becomes I-V-vi-IV in major; each triad's quality comes from the chosen scale. Change individual degrees to write your own sequence.
+
+**Steps / chord** uses sixteenth notes: 16 steps is one 4/4 bar. Apply inserts all four chords at the insertion cursor and selects their notes for further editing, strumming or arpeggiation. Existing notes remain. The sequence must fit inside the current loop and note limit; failures leave the clip unchanged. Undo/redo treats insertion as one edit. Use the normal transport to hear the inserted sequence. This tool does not copy another DAW's UI or include third-party chord content.
