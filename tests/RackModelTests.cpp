@@ -465,7 +465,31 @@ static void rowToolTests() {
     const auto full = p; check(!p.duplicateChannel(0) && p == full, "full rack duplication is rejected without mutation");
 }
 
+static void melodicRows() {
+    Project p = Project::createDefault();
+    alien::PianoRollPattern notes; notes.loopSteps = 16;
+    notes.add(36, 0.25, 8); notes.add(60, 0.25, 4); notes.add(67, 1.5, 9);
+    check(p.setChannelNotes(0, 1, notes) && p.valid(), "full range, overlapping chords are valid rack data");
+    const auto original = p;
+    check(!p.setChannelNotes(0, 1, notes), "same notes are a no-op");
+    check(!p.setStepOn(0, 1, 0, true) && !p.fillEvery(0, 1, 2), "step edits cannot overwrite a melodic row");
+    check(p.duplicateChannel(1) && p.pattern(0).notes[1] == p.pattern(0).notes[2], "duplicate shares immutable notes");
+    notes.add(127, 12, 3);
+    check(p.setChannelNotes(0, 2, notes) && p.pattern(0).notes[1]->count == 3, "editing clone leaves source unchanged");
+    check(p.moveChannel(2, 1) && p.pattern(0).notes[3]->count == 4, "notes follow channel movement");
+    check(p.removeChannel(2) && p.pattern(0).notes[2]->count == 4 && p.valid(), "notes follow channel deletion");
+    check(p.setPatternLength(0, 32) && p.pattern(0).notes[1]->loopSteps == 32, "length extension keeps notes");
+    notes.loopSteps = 32; notes.add(60, 20, 8);
+    check(p.setChannelNotes(0, 1, notes) && !p.setPatternLength(0, 16), "shortening that would cut a note is refused");
+    check(p.clearChannelSteps(0, 1) && !p.isNoteChannel(0, 1) && p.valid(), "explicit channel clear returns to steps");
+    check(original.pattern(0).notes[1]->count == 3, "old undo snapshot remains immutable");
+    check(p.clearPattern(0) && p.pattern(0).empty() && !p.isNoteChannel(0, 2), "clear pattern removes melodic notes too");
+    alien::PianoRollPattern empty; empty.loopSteps = 32;
+    check(p.setChannelNotes(0, 1, empty) && p.clearPattern(0) && !p.isNoteChannel(0, 1), "clear pattern resets even an empty melodic row");
+}
+
 int main() {
+    melodicRows();
     rowToolTests();
     defaultProjectTests();
     stepTests();

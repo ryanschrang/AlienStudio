@@ -138,3 +138,10 @@ The editor shows the entire song. Format 10 saves automation; older projects ope
 
 - LIVE-01 look and layout: tracks are rows and scenes are columns (FL Studio Performance-mode style). A track header holds a light (mute/solo), pan and volume knobs, the name button, a solo chip and a per-track stop button; the knobs, mute and solo are the Mixer's own controls. Clip tiles are raised and coloured with a launch triangle.
 - Tests: SessionViewTests (layout, launching, per-track stop through the offline engine, header controls, look, mouse wheel). Windows Debug/Release CI and manual visual/feel checks pending.
+
+## Channel Rack melodic notes (feature branch)
+
+- Full immutable note sequences per channel/pattern: lengths, fractional timing, overlaps, chords, full MIDI pitch, velocity and chance; drum steps remain a separate mode.
+- Miniature rack note previews open Piano Roll; step tools refuse melodic rows. Explicit channel clear returns to steps. Channel/pattern copies, move/delete, undo/redo and project format 13 retain notes.
+- Sample playback schedules note starts and independent releases without allocation. Song regions bound note endings; partial-step trim/seek keeps future note-ons. Sample looping, built-in synth channels and VST3 channels are not part of this milestone.
+- Windows listening, mouse/DPI checks and Debug/Release CI remain pending until recorded in the PR.

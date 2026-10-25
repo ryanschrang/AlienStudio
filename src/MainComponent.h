@@ -448,15 +448,8 @@ private:
         pianoRoll.onEditCommitted = [this] {
             if (suppressPianoRollCommit) return;
             if (rollTarget.rack) {
-                // The rack already has the edit (one undo step per gesture). Show the notes as the steps hold them.
+                // The stored note sequence is authoritative; do not reload a lossy step conversion.
                 ++rollGesture;
-                if (rollFit.moved || rollFit.merged || rollFit.clamped) {
-                    statusBar.setProjectStatus(rollFit.merged ? "A step holds one note, so the last note placed on each step was kept."
-                                               : rollFit.clamped ? "Rack steps reach two octaves either side of middle C and stop at the pattern's end."
-                                               : "Rack notes sit on whole steps and last one step.", {});
-                    rollFit = {};
-                    loadSelectedClip();
-                }
                 return;
             }
             const auto& d = controller.document();

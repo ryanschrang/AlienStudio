@@ -396,7 +396,47 @@ static void tabsChooseTheEngineMode() {
     require(stepsMode == 0 && sessionMode == 1 && songMode == 2 && rackMode == 3, "the mode numbers match the engine's");
 }
 
+static void melodicCallback() {
+    Rig rig;
+    alien::PianoRollPattern notes; notes.loopSteps = 16;
+    notes.add(60, 0.25, 2); notes.add(64, 0.25, 4); notes.add(67, 0.25, 6);
+    require(rig.project.setChannelNotes(0, 0, notes), "store a melodic chord");
+    rig.publish(); rig.setClip(0, Rig::dc(48000 * 2, 48000, 0.2f));
+    rig.engine.patternMode.store(alien::rackMode); rig.engine.playing.store(true);
+    require(rig.render(1500).peak == 0, "real callback waits for fractional chord onset");
+    const auto before = allocationCount;
+    const auto sounding = rig.render(6000);
+    const auto after = allocationCount;
+    require(sounding.peak > 0.05f && before == after, "real callback renders chords without heap allocation");
+    rig.engine.playing.store(false);
+    rig.render(6000);
+    require(rig.render(1000).peak < 0.001f, "real callback releases melodic notes after stop");
+    Rig songRig;
+    songRig.project.setChannelNotes(0, 0, notes);
+    songRig.publish(); songRig.setClip(0, Rig::dc(48000 * 2, 48000, 0.2f));
+    auto song = std::make_shared<alien::ArrangementPlayback>();
+    alien::timeline::Region region;
+    region.row = alien::timeline::rackRowBase; region.source = 0;
+    region.start = 0; region.length = alien::timeline::ticksPerStep;
+    require(song->timeline.place(region), "place a trimmed melodic rack region");
+    songRig.engine.arrangementMailbox.publish(song);
+    songRig.engine.patternMode.store(alien::songMode);
+    songRig.engine.timelineSeek.store(20); // 500 samples into the enclosing step.
+    songRig.engine.playing.store(true);
+    require(songRig.render(1000).peak == 0 && songRig.render(1000).peak > 0.05f,
+            "Song seek into a partial step retains the upcoming fractional chord");
+    songRig.render(7000);
+    require(songRig.render(1000).peak < 0.001f, "Song region end releases melodic notes early");
+    auto loopSong = std::make_shared<alien::ArrangementPlayback>(*song);
+    loopSong->timeline.regions.front().length = 16 * alien::timeline::ticksPerStep;
+    loopSong->timeline.setLoop(0, alien::timeline::ticksPerStep); loopSong->timeline.setLoopEnabled(true);
+    songRig.engine.arrangementMailbox.publish(loopSong); songRig.engine.timelineSeek.store(0);
+    songRig.render(6000 + 1250);
+    require(songRig.render(150).peak < 0.001f, "Song loop boundary releases prior notes before the next fractional onset");
+}
+
 int main() {
+    melodicCallback();
     silentInEveryOtherMode();
     patternModePlaysTheSelectedPattern();
     stoppingAndLeavingModeFadeOut();

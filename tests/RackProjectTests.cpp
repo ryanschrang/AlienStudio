@@ -75,7 +75,7 @@ static void roundTripAndValidation() {
         require(steps[0][4].gate == 35 && steps[0][8].nudge == 60 && steps[0][12].ratchet == 3 && steps[1][6].ratchet == 4 && !steps[1][6].on,
                 "gate, nudge and ratchet round-trip, also on a step that is off");
         require(back.channelRack.pattern(3).length == 128 && back.channelRack.pattern(3).steps[1][127].on, "a 128-step pattern round-trips");
-        require(juce::JSON::parse(json).getProperty("version", 0) == juce::var(12), "projects are written as version 12");
+        require(static_cast<int>(juce::JSON::parse(json).getProperty("version", 0)) >= 12, "projects are written as version 12 or later (gate, nudge and ratchet need 12)");
     }
     {   // Steps saved before version 12 have seven values: gate, nudge and ratchet take their defaults.
         auto copy = juce::JSON::parse(json);
@@ -623,8 +623,28 @@ static void exportHandOff() {
     std::cout << "PASS: the export is handed the same sounds the engine plays\n";
 }
 
+static void melodicPersistence() {
+    alien::SessionProjectData data;
+    alien::PianoRollPattern notes; notes.loopSteps = 16;
+    notes.add(0, 0.25, 12.5, 0.6f, 0.25f); notes.add(127, 0.25, 4.75);
+    data.channelRack.setChannelNotes(0, 0, notes);
+    alien::SessionProjectData loaded; juce::String error;
+    require(alien::parseSessionProject(alien::serializeSessionProject(data), loaded, error), "melodic project parses");
+    require(loaded.channelRack == data.channelRack, "note IDs, chords, timing, full pitch range and expression round-trip");
+    auto damaged = rackToVar(data.channelRack);
+    auto* rows = damaged.getDynamicObject()->getProperty("patterns").getArray()->getReference(0).getDynamicObject()->getProperty("noteRows").getArray();
+    auto* events = rows->getReference(0).getDynamicObject()->getProperty("notes").getArray();
+    events->getReference(1).getArray()->getReference(0) = events->getReference(0).getArray()->getReference(0);
+    Project output = loaded.channelRack;
+    require(!rackFromVar(damaged, output, error) && output == loaded.channelRack, "duplicate note IDs reject whole rack transactionally");
+    auto legacy = rackToVar(Project::createDefault());
+    legacy.getDynamicObject()->getProperty("patterns").getArray()->getReference(0).getDynamicObject()->removeProperty("noteRows");
+    require(rackFromVar(legacy, output, error) && !output.isNoteChannel(0, 0), "older racks without noteRows retain step mode");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    melodicPersistence();
     roundTripAndValidation();
     controllerEditsAndUndo();
     previewsAndPublishing();

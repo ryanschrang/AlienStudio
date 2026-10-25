@@ -71,6 +71,25 @@ inline juce::var rackToVar(const Project& project) {
                 steps.add(juce::var(cell));
             }
         pattern->setProperty("steps", juce::var(steps));
+        juce::Array<juce::var> noteRows;
+        for (int c = 0; c < project.channelCount; ++c) {
+            const auto& sequence = source.notes[static_cast<std::size_t>(c)];
+            if (!sequence) continue;
+            auto rowValue = juce::var(new juce::DynamicObject());
+            rowValue.getDynamicObject()->setProperty("channel", c);
+            juce::Array<juce::var> events;
+            for (std::size_t n = 0; n < sequence->count; ++n) {
+                const auto& note = sequence->notes[n];
+                juce::Array<juce::var> event;
+                event.add(static_cast<juce::int64>(note.id)); event.add(note.pitch);
+                event.add(PianoRollPattern::toTicks(note.startStep)); event.add(PianoRollPattern::toTicks(note.lengthSteps));
+                event.add(static_cast<double>(note.velocity)); event.add(static_cast<double>(note.probability));
+                events.add(juce::var(event));
+            }
+            rowValue.getDynamicObject()->setProperty("notes", juce::var(events));
+            noteRows.add(rowValue);
+        }
+        pattern->setProperty("noteRows", juce::var(noteRows));
         patterns.add(value);
     }
     object->setProperty("patterns", juce::var(patterns));
@@ -154,6 +173,41 @@ inline bool rackFromVar(const juce::var& value, Project& out, juce::String& erro
             step.on = on != 0; step.velocity = static_cast<std::uint8_t>(velocity); step.pan = static_cast<std::int8_t>(pan);
             step.pitch = static_cast<std::int8_t>(pitch); step.probability = static_cast<std::uint8_t>(probability);
             step.gate = static_cast<std::uint8_t>(gate); step.nudge = static_cast<std::uint8_t>(nudge); step.ratchet = static_cast<std::uint8_t>(ratchet);
+        }
+        // Optional for older projects; present but malformed is never silently ignored.
+        if (pattern->hasProperty("noteRows")) {
+            const auto rowsValue = pattern->getProperty("noteRows");
+            const auto* rows = rowsValue.getArray();
+            if (!rows || rows->size() > parsed.channelCount) return fail("Invalid rack note rows.");
+            for (const auto& rowValue : *rows) {
+                const auto* row = rowValue.getDynamicObject();
+                int c = 0;
+                if (!row || !detail::integerIn(row->getProperty("channel"), 0, parsed.channelCount - 1, c)
+                    || built->notes[static_cast<std::size_t>(c)]) return fail("Invalid or duplicate rack note channel.");
+                const auto eventsValue = row->getProperty("notes");
+                const auto* events = eventsValue.getArray();
+                if (!events || events->size() > static_cast<int>(PianoRollPattern::maxNotes)) return fail("Invalid rack note list.");
+                auto sequence = std::make_shared<PianoRollPattern>(); sequence->loopSteps = length;
+                for (const auto& eventValue : *events) {
+                    const auto* event = eventValue.getArray();
+                    int pitch = 0, start = 0, duration = 0; float velocity = 0, probability = 0;
+                    if (!event || event->size() != 6 || !((*event)[0].isInt() || (*event)[0].isInt64())
+                        || static_cast<juce::int64>((*event)[0]) <= 0 || static_cast<juce::int64>((*event)[0]) > 0xffffffffLL
+                        || !detail::integerIn((*event)[1], 0, 127, pitch)
+                        || !detail::integerIn((*event)[2], 0, length * PianoRollPattern::ticksPerStep - 1, start)
+                        || !detail::integerIn((*event)[3], 1, length * PianoRollPattern::ticksPerStep - start, duration)
+                        || !detail::floatIn((*event)[4], 0, 1, velocity) || velocity <= 0
+                        || !detail::floatIn((*event)[5], 0, 1, probability)) return fail("Invalid rack note event.");
+                    if (!sequence->add(pitch, PianoRollPattern::fromTicks(start), PianoRollPattern::fromTicks(duration), velocity, probability))
+                        return fail("Cannot load rack note event.");
+                    auto& note = sequence->notes[sequence->count - 1];
+                    note.id = static_cast<std::uint32_t>(static_cast<juce::int64>((*event)[0]));
+                    note.velocity = velocity; note.probability = probability;
+                }
+                if (!sequence->valid()) return fail("Duplicate or invalid rack note IDs.");
+                built->notes[static_cast<std::size_t>(c)] = std::move(sequence);
+                built->noteRevisions[static_cast<std::size_t>(c)] = nextNoteRevision();
+            }
         }
         parsed.patterns[static_cast<std::size_t>(p)] = std::move(built);
         std::string patternName = Project::clean(name.toString().toStdString());

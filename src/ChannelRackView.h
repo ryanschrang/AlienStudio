@@ -264,6 +264,11 @@ public:
     // "off" cell paints; right-button strokes always erase.
     void beginStroke(int row, int step, bool eraseOnly) {
         if (!project().validStep(project().selectedPattern, row, step) || step >= length()) return;
+        if (project().isNoteChannel(project().selectedPattern, row)) {
+            focusChannel(row);
+            if (onOpenPianoRoll) onOpenPianoRoll(row);
+            return;
+        }
         strokeKey = "rack-stroke-" + juce::String(++strokeCounter);
         paintValue = eraseOnly ? false : !project().pattern(project().selectedPattern).steps[static_cast<std::size_t>(row)][static_cast<std::size_t>(step)].on;
         drag = Drag::steps; lastRow = row; lastStep = step;
@@ -326,15 +331,16 @@ public:
         menu.addItem(cmdSolo, "Solo", true, channel.solo);
         menu.addItem(cmdDuplicate, n > 1 ? "Duplicate " + juce::String(n) + " channels" : juce::String("Duplicate channel"),
                      project().channelCount + n <= rack::maxChannels);
-        menu.addItem(cmdCopyRow, "Copy steps"); menu.addItem(cmdPasteRow, "Paste steps", rowClipboard.has_value());
+        const bool stepsOnly = std::none_of(rows.begin(), rows.end(), [&](int r) { return project().isNoteChannel(project().selectedPattern, r); });
+        menu.addItem(cmdCopyRow, "Copy steps", stepsOnly); menu.addItem(cmdPasteRow, "Paste steps", stepsOnly && rowClipboard.has_value());
         juce::PopupMenu tools;
         tools.addItem(cmdFill2, "Fill every 2 steps"); tools.addItem(cmdFill4, "Fill every 4 steps"); tools.addItem(cmdFill8, "Fill every 8 steps");
         tools.addSeparator(); tools.addItem(cmdRotateLeft, "Rotate left"); tools.addItem(cmdRotateRight, "Rotate right");
         tools.addItem(cmdReverseRow, "Reverse steps");
         tools.addItem(cmdRepeat4, "Repeat first 4 steps"); tools.addItem(cmdRepeat8, "Repeat first 8 steps");
         tools.addItem(cmdRepeat16, "Repeat first 16 steps", length() > 16);
-        menu.addSubMenu("Pattern tools", tools);
-        menu.addItem(cmdClearSteps, n > 1 ? "Clear the steps of " + juce::String(n) + " channels" : juce::String("Clear this channel's steps"));
+        menu.addSubMenu("Pattern tools", tools, stepsOnly);
+        menu.addItem(cmdClearSteps, n > 1 ? "Clear notes and steps of " + juce::String(n) + " channels" : juce::String("Clear this channel (notes and steps)"));
         menu.addSeparator();
         menu.addItem(cmdMoveUp, "Move up", rows.front() > 0);
         menu.addItem(cmdMoveDown, "Move down", rows.back() + 1 < project().channelCount);
@@ -368,6 +374,7 @@ public:
                 return any;
             });
         };
+        if (id == cmdCopyRow && project().isNoteChannel(project().selectedPattern, row)) return;
         if (id == cmdCopyRow) { rowClipboard = project().pattern(project().selectedPattern).steps[static_cast<std::size_t>(row)]; return; }
         if (id == cmdPasteRow && rowClipboard) {
             const auto copied = *rowClipboard;
@@ -543,6 +550,20 @@ public:
             paintHeader(g, row, channel, audible, colour);
             juce::Graphics::ScopedSaveState state(g);
             g.reduceClipRegion(headerWidth(), bounds.getY(), getWidth() - headerWidth(), rh);
+            if (const auto& sequence = pattern.notes[static_cast<std::size_t>(row)]) {
+                int low = 127, high = 0;
+                for (std::size_t n = 0; n < sequence->count; ++n) { low = std::min(low, sequence->notes[n].pitch); high = std::max(high, sequence->notes[n].pitch); }
+                g.setColour(colour.withAlpha(audible ? 0.9f : 0.35f));
+                for (std::size_t n = 0; n < sequence->count; ++n) {
+                    const auto& note = sequence->notes[n];
+                    const float x = static_cast<float>(stepLeft(0) + note.startStep * cellWidth());
+                    const float y = static_cast<float>(bounds.getBottom() - 6)
+                        - static_cast<float>(note.pitch - low) / static_cast<float>(std::max(1, high - low)) * static_cast<float>(rh - 14);
+                    g.fillRoundedRectangle(x, y, std::max(2.0f, static_cast<float>(note.lengthSteps * cellWidth()) - 1), 3.0f, 1.0f);
+                }
+                if (sequence->count == 0) g.drawText("Piano roll (empty) - click to edit", bounds.withTrimmedLeft(headerWidth() + 8), juce::Justification::centredLeft);
+                continue;
+            }
             for (int s = 0; s < len; ++s) {
                 const auto r = cellBounds(row, s);
                 if (r.getRight() < headerWidth() || r.getX() > getWidth()) continue;
@@ -655,6 +676,7 @@ public:
         if (onNameEdge(hover)) return "Drag to resize the name column; double-click to fit the longest name";
         if (row < 0) return hover.y >= 0 && hover.y < rulerHeight && hover.x >= headerWidth() ? juce::String("Step numbers: one per beat") : juce::String();
         if (hover.x >= headerWidth()) {
+            if (project().isNoteChannel(project().selectedPattern, row)) return "Piano-roll notes: click to edit lengths, chords and timing. Clear channel returns this row to steps.";
             const int step = stepAtX(hover.x);
             if (step < 0) return {};
             const auto& s = project().pattern(project().selectedPattern).steps[static_cast<std::size_t>(row)][static_cast<std::size_t>(step)];
@@ -1021,6 +1043,11 @@ public:
         g.fillRect(area);
         if (!p.validChannel(channel)) return;
         const auto& pattern = p.pattern(p.selectedPattern);
+        if (p.isNoteChannel(p.selectedPattern, channel)) {
+            g.setColour(col::textDim);
+            g.drawText("This row uses piano-roll notes. Open Piano Roll to edit velocity, pitch and chance.", area.reduced(12), juce::Justification::centredLeft, true);
+            return;
+        }
         const int len = pattern.length, cell = grid.cellWidth();
         juce::Graphics::ScopedSaveState state(g);
         g.reduceClipRegion(area);
@@ -1156,8 +1183,9 @@ public:
         lengthBox.onChange = [this] {
             if (updating) return;
             const int length = lengthBox.getSelectedId();
-            controller.editRack("Change pattern length", [&](rack::Project& p) { return p.setPatternLength(p.selectedPattern, length); });
+            const bool changed = controller.editRack("Change pattern length", [&](rack::Project& p) { return p.setPatternLength(p.selectedPattern, length); });
             refresh();
+            hint.setText(changed ? "Pattern length changed." : "Length unchanged: move or shorten notes that extend past the chosen end.", juce::dontSendNotification);
         };
         addAndMakeVisible(swing); swing.setName("Swing");
         swing.setTooltip("Delays every second sixteenth. 0% is straight; higher is more shuffled. Applies to all patterns.");

@@ -73,6 +73,17 @@ struct Rig {
             frames -= count;
         }
     }
+    // Renders as the audio device would, in time order but faster than real time (about four times), so the stream
+    // service's worker can refill each stream as it would in the app. An unpaced render can outrun the worker on a
+    // busy machine: the stream then runs dry and the audio stops matching, which is not something the app can do.
+    void renderPaced(long frames) {
+        while (frames > 0) {
+            const long count = std::min<long>(frames, 1024);
+            render(count);
+            frames -= count;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
     long frames() const { return static_cast<long>(out.size()); }
     double energy(long from, long to) const {
         double sum = 0;
@@ -943,11 +954,12 @@ static void streamedTests() {
         require(waitUntil([&] { return s.file->readCount() > 0; }), "it is asked for ahead of time");
         require(s.file->firstRead() == 12000, "...from where the region begins inside the clip");
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        s.rig.render(2 * barFrames - s.rig.frames());
+        s.rig.renderPaced(2 * barFrames - s.rig.frames());
         const auto reference = decodedReference(decoded, ticksPerBar, ticksPerBar / 2, 0.25, 2 * barFrames);
         require(s.rig.energy(barFrames, barFrames + barFrames / 2) > 100, "the streamed region is heard");
-        require(worstDifference(s.rig.out, reference, 0, 2 * barFrames) < 1.0e-6, "a prefetched streamed clip is the same sound as the clip in memory");
+        // Checked first, so a failure says whether the stream ran dry or the audio really differs.
         require(s.rig.engine.sessionStreamUnderruns(0) == 0 && !s.rig.engine.sessionStreamFailed(0), "with no underruns");
+        require(worstDifference(s.rig.out, reference, 0, 2 * barFrames) < 1.0e-6, "a prefetched streamed clip is the same sound as the clip in memory");
     }
     // Starting the song in the middle of a streamed region: it is asked for from that point.
     {
@@ -982,13 +994,15 @@ static void streamedTests() {
         s.file->gate.store(true);
         std::this_thread::sleep_for(std::chrono::milliseconds(200));   // the stream is ready long before the song needs it
         const long resumed = s.rig.frames();
-        s.rig.render(30000);
+        s.rig.renderPaced(30000);
         const long heard = s.rig.firstAbove(resumed, s.rig.frames());
         std::cerr << what << ": first heard at frame " << heard << '\n';
         require(heard >= earliest && heard <= latest, what);
         const auto reference = decodedReference(decoded, ticksPerBar / 4, ticksPerBar / 2, 0.0, static_cast<int>(s.rig.frames()));
-        require(worstDifference(s.rig.out, reference, heard + 70, heard + 20000) < 1.0e-5, "and it is in time with the song: the same audio as if it had been ready");
+        // Checked first, so a failure says whether the stream ran dry or the audio really is out of time.
+        if (s.rig.engine.sessionStreamUnderruns(0) != 0) std::cerr << "underruns: " << s.rig.engine.sessionStreamUnderruns(0) << '\n';
         require(s.rig.engine.sessionStreamUnderruns(0) == 0, "joining late is not an underrun");
+        require(worstDifference(s.rig.out, reference, heard + 70, heard + 20000) < 1.0e-5, "and it is in time with the song: the same audio as if it had been ready");
     };
     lateStream(3000, 29810, 29930, "a stream that arrives early in its wait starts when the song reaches the point it was asked for (0.1 s ahead)");
     lateStream(12000, 40430, 40560, "a stream that is later still is asked for further ahead each time and starts there");
@@ -1000,10 +1014,12 @@ static void streamedTests() {
         s.file->gate.store(true);
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         const long resumed = s.rig.frames();
-        s.rig.render(20000);
+        s.rig.renderPaced(20000);
         const long heard = s.rig.firstAbove(resumed, s.rig.frames());
         require(heard >= resumed && heard < resumed + 200, "a stream that is only a little late starts as soon as it is ready");
         const auto reference = decodedReference(decoded, ticksPerBar / 4, ticksPerBar / 2, 0.0, static_cast<int>(s.rig.frames()));
+        if (s.rig.engine.sessionStreamUnderruns(0) != 0) std::cerr << "underruns: " << s.rig.engine.sessionStreamUnderruns(0) << '\n';
+        require(s.rig.engine.sessionStreamUnderruns(0) == 0, "a stream that starts a little late does not then run dry");
         require(worstDifference(s.rig.out, reference, heard + 70, heard + 15000) < 1.0e-5, "in time with the song");
     }
     // A stream that is still not ready when its region ends is never started late; the next clip is not disturbed.
