@@ -94,6 +94,8 @@ public:
         if (std::abs(level - target) < 1.0e-7f) level = target;
         return level;
     }
+    // Off and finished gliding: next() would return 0 until the target changes.
+    bool idle() const noexcept { return level == 0.0f && target == 0.0f; }
 private:
     float level{}, target{}, coefficient{1};
 };

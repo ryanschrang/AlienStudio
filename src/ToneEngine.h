@@ -441,6 +441,11 @@ private:
         plugins->effectsAndAlign(samples);
         for (std::size_t r = 0; r < static_cast<std::size_t>(alien::maxReturns); ++r)
             returnMixers[r].setTarget(returns[r].snapshot().asTrack(), false);
+        // Send targets only change between blocks, so a track whose sends are all idle now
+        // stays silent to the returns for the whole block and skips the send loop.
+        std::array<bool, sessionTracks> sending{};
+        for (std::size_t t = 0; t < sessionTracks; ++t)
+            for (const auto& ramp : sendRamps[t]) sending[t] = sending[t] || !ramp.idle();
         for (int i = 0; i < samples; ++i) {
             float left = plugins->live.getSample(0,i), right = plugins->live.getSample(1,i);
             for (std::size_t t = 0; t < sessionTracks; ++t) {
@@ -461,6 +466,7 @@ private:
                 else trackMixers[t].process(l,r);
                 peaks[t] = std::max(peaks[t], std::max(std::abs(l), std::abs(r)));
                 left += l; right += r;
+                if (!sending[t]) continue;
                 for (std::size_t k = 0; k < static_cast<std::size_t>(alien::maxReturns); ++k) {
                     const float level = sendRamps[t][k].next();
                     if (level == 0.0f) continue;
