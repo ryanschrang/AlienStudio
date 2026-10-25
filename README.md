@@ -1143,3 +1143,14 @@ Hardware note channels, velocity, CC messages and pitch bend reach the selected 
 In Piano Roll, choose **Chord progression** in the processing tools list and click **Edit...**. Set a tonic MIDI note (48 = C3), Major or Natural minor, and four scale degrees. The initial 1-5-6-4 sequence becomes I-V-vi-IV in major; each triad's quality comes from the chosen scale. Change individual degrees to write your own sequence.
 
 **Steps / chord** uses sixteenth notes: 16 steps is one 4/4 bar. Apply inserts all four chords at the insertion cursor and selects their notes for further editing, strumming or arpeggiation. Existing notes remain. The sequence must fit inside the current loop and note limit; failures leave the clip unchanged. Undo/redo treats insertion as one edit. Use the normal transport to hear the inserted sequence. This tool does not copy another DAW's UI or include third-party chord content.
+
+
+### Recording takes and range comps
+
+Recording in Song view keeps original passes in **Takes**. Choose a pass and
+**Use whole take**, or set loop markers inside the pass and choose **Use loop
+range** to replace just that part of the active arrangement. Undo restores the
+previous comp. Original files remain unchanged. **Forget take** removes a list
+entry without deleting its active comp or audio file. Projects use format 15.
+Recording still stops at loop boundaries; continuous loop takes and waveform
+lanes are not included in this increment.

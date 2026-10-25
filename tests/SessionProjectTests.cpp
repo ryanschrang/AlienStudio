@@ -25,6 +25,10 @@ static void portableProjectTests() {
     source.clips[0][1].audioFilePath = second.getFullPathName();
     source.clips[1][0].audioFilePath = first.getFullPathName();
     source.drumPaths[0][0] = first.getFullPathName();
+    alien::timeline::Region archived; archived.row = 0; archived.source = 0;
+    require(source.timeline.recordTake(archived), "portable fixture has original take");
+    source.timeline.regions.clear(); // The original is not part of the active comp.
+
     juce::String error;
     const auto target = projectDir.getChildFile("Song.alienstudio");
     require(alien::writeSessionProjectFile(target, source, true, saved, error), "collect portable project");
@@ -216,7 +220,37 @@ static void automationFormatTests() {
     require(!alien::parseSessionProject(juce::JSON::toString(damaged), loaded, error), "unknown automation targets rejected");
 }
 
+static void takeFormatTests() {
+    alien::SessionProjectData source;
+    alien::timeline::Region take; take.row = 0; take.source = 1; take.length = 3840;
+    require(source.timeline.recordTake(take), "fixture recording pass");
+    take.source = 2;
+    require(source.timeline.recordTake(take), "fixture alternate pass");
+    require(source.timeline.compTake(source.timeline.takes[0].id, 960, 1920), "fixture comp");
+    source.clips[1][0].audioFilePath = "C:/takes/first.wav";
+    source.clips[2][0].audioFilePath = "C:/takes/second.wav";
+    alien::SessionProjectData loaded; juce::String error;
+    const auto json = alien::serializeSessionProject(source);
+    require(alien::parseSessionProject(json, loaded, error) && loaded.timeline.takes.size() == 2
+        && loaded.timeline.regions.size() == 3, "takes and comp round-trip");
+    require(loaded.timeline.takes[0].source == 1 && loaded.timeline.takes[1].source == 2
+        && loaded.clips[1][0].audioFilePath == source.clips[1][0].audioFilePath, "original source references survive");
+    require(loaded.timeline.compTake(loaded.timeline.takes[1].id, 0, 3840), "restored take can replace comp");
+    auto broken = juce::JSON::parse(json);
+    auto* regions = broken.getProperty("timeline", {}).getDynamicObject()->getProperty("regions").getArray();
+    regions->getReference(regions->size() - 1).getDynamicObject()->setProperty("take", "wrong");
+    const auto prior = loaded.timeline;
+    require(!alien::parseSessionProject(juce::JSON::toString(broken), loaded, error) && loaded.timeline == prior,
+        "malformed take is rejected without changing loaded project");
+    alien::SessionProjectData oldSource;
+    auto old = juce::JSON::parse(alien::serializeSessionProject(oldSource));
+    old.getDynamicObject()->setProperty("version", 14);
+    require(alien::parseSessionProject(juce::JSON::toString(old), loaded, error) && loaded.timeline.takes.empty(),
+        "version 14 projects open with no recording archive");
+}
+
 int main() {
+    takeFormatTests();
     automationFormatTests();
     recordingSettingsFormatTests();
     masterVolumeFormatTests();
