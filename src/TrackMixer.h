@@ -1,7 +1,9 @@
 #pragma once
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
+#include "SessionCapacity.h"
 #include "SynthEngine.h"
 
 namespace alien {
@@ -20,7 +22,12 @@ struct TrackSettings {
     int input{};
     bool stereoInput{};
     int monitor{static_cast<int>(InputMonitor::automatic)};
+    // How much goes to each return track, 0 (off) to 1 (0 dB), and whether it is taken before the fader.
+    // A pre-fader send ignores the fader and pan but still follows mute and solo.
+    std::array<float, maxReturns> send{};
+    std::array<bool, maxReturns> sendPre{};
     bool valid() const noexcept {
+        for (const float level : send) if (!std::isfinite(level) || level < 0 || level > 1) return false;
         return instrument >= 0 && instrument <= 1 && preset >= 0 && preset < presetCount && std::isfinite(gain) && gain >= 0 && gain <= 2
             && std::isfinite(pan) && pan >= -1 && pan <= 1
             && input >= 0 && input + (stereoInput ? 1 : 0) < maxTrackInputs && monitor >= 0 && monitor <= 2;
@@ -39,15 +46,56 @@ struct TrackControls {
     std::atomic<float> gain{1.0f}, pan{0.0f}, peak{0.0f};
     std::atomic<float> inputPeak{0.0f};   // loudest input sample since the GUI last read it (armed or monitoring tracks)
     std::atomic<bool> mute{false}, solo{false}, armed{false}, stereoInput{false};
+    std::array<std::atomic<float>, maxReturns> send{};
+    std::array<std::atomic<bool>, maxReturns> sendPre{};
     TrackSettings snapshot() const noexcept {
-        return {preset.load(), gain.load(), pan.load(), mute.load(), solo.load(), instrument.load(),
-                armed.load(), input.load(), stereoInput.load(), monitor.load()};
+        TrackSettings s{preset.load(), gain.load(), pan.load(), mute.load(), solo.load(), instrument.load(),
+                        armed.load(), input.load(), stereoInput.load(), monitor.load()};
+        for (std::size_t r = 0; r < s.send.size(); ++r) { s.send[r] = send[r].load(); s.sendPre[r] = sendPre[r].load(); }
+        return s;
     }
     void set(const TrackSettings& s) noexcept {
         preset.store(s.preset); gain.store(s.gain); pan.store(s.pan);
         mute.store(s.mute); solo.store(s.solo); instrument.store(s.instrument);
         armed.store(s.armed); input.store(s.input); stereoInput.store(s.stereoInput); monitor.store(s.monitor);
+        for (std::size_t r = 0; r < s.send.size(); ++r) { send[r].store(s.send[r]); sendPre[r].store(s.sendPre[r]); }
     }
+};
+
+// A return track's own strip: level (0..2, like a track fader), pan and mute. Track solo never
+// silences a return, so a soloed track is still heard through its sends.
+struct ReturnSettings {
+    float gain{1.0f}, pan{};
+    bool mute{};
+    bool operator==(const ReturnSettings&) const = default;
+    bool valid() const noexcept { return std::isfinite(gain) && gain >= 0 && gain <= 2 && std::isfinite(pan) && pan >= -1 && pan <= 1; }
+    // The same balance law and fader range as a track, so the same mixer runs it.
+    TrackSettings asTrack() const noexcept { TrackSettings t; t.gain = gain; t.pan = pan; t.mute = mute; return t; }
+};
+
+struct ReturnControls {
+    std::atomic<float> gain{1.0f}, pan{0.0f}, peak{0.0f};
+    std::atomic<bool> mute{false};
+    ReturnSettings snapshot() const noexcept { return {gain.load(), pan.load(), mute.load()}; }
+    void set(const ReturnSettings& s) noexcept { gain.store(s.gain); pan.store(s.pan); mute.store(s.mute); }
+};
+
+// One send's level, glided over 5 ms like the fader, so turning a send knob (or muting the
+// track) never clicks. Audio thread only.
+class SendRamp {
+public:
+    void prepare(double sampleRate) noexcept {
+        coefficient = static_cast<float>(1.0 - std::exp(-1.0 / (sampleRate * 0.005)));
+        level = target;
+    }
+    void setTarget(float value) noexcept { target = std::isfinite(value) ? std::clamp(value, 0.0f, 1.0f) : 0.0f; }
+    float next() noexcept {
+        level += coefficient * (target - level);
+        if (std::abs(level - target) < 1.0e-7f) level = target;
+        return level;
+    }
+private:
+    float level{}, target{}, coefficient{1};
 };
 
 // Whole-mix level, applied after the master FX chain. 0..4 is silence to +12 dB;

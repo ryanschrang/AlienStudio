@@ -606,6 +606,30 @@ left to right, with the centre preserving both stereo channels. Mute overrides
 Solo; multiple soloed tracks can play together. Gain changes use a short ramp to
 reduce clicks. Meters show the post-control track peak.
 
+**Sends and return tracks.** Between the tracks and the master are four return
+tracks, **A** to **D**, for effects that several tracks share, such as one reverb
+or delay for the whole mix. Every track strip has a **SENDS** row: one knob per
+return (off to 0 dB; double-click turns a send off) and, under it, a letter
+button that switches that send between post-fader (unlit, the default: it
+follows the track's fader, pan and volume automation) and pre-fader (lit: it
+ignores the fader and pan, so you can pull a track down and keep its reverb).
+Either way a muted track, or one silenced by another track's solo, sends
+nothing. A return's own strip has pan, mute, a volume fader (0-200 %, like a
+track) and a meter; track solo never silences a return, so a soloed track is
+still heard through its reverb. Put effects on a return in **Plugins** by
+choosing **Return A FX** (to **D**) as the destination: any stock effect or VST3
+effect works there, with up to eight per return and no instrument slot. Sends,
+return strips and return FX are saved with the project (format v13; older
+projects open with every send off and the returns at 0 dB with no effects),
+are undoable, and are included in WAV export.
+
+Plugin delay is compensated through the returns as well: each return waits for
+the slowest return's effects, and the dry tracks wait just as long, so a send
+always lines up with the track it came from. The extra delay is added to the
+latency Alien Studio reports. Moving a send knob glides over a few
+milliseconds, so it does not click; switching a send between pre and post
+fader while it plays jumps at once and can click.
+
 The **Master** strip at the right edge of the mixer has a volume fader
 (0–400%, i.e. −∞ to +12 dB, double-click for 0 dB) and an output meter. The
 master volume is applied after the master FX chain, is saved with the project

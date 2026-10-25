@@ -54,6 +54,13 @@ struct SessionTrack {
     std::uint32_t id = newObjectId();
 };
 
+// A return track: its strip and its FX rack. There are always maxReturns of them (A-D).
+struct ReturnTrack {
+    ReturnSettings settings;
+    PluginRackState plugins;
+    bool operator==(const ReturnTrack&) const = default;
+};
+
 struct SessionScene {
     juce::String name;
     std::uint32_t id = newObjectId();
@@ -80,6 +87,7 @@ struct ProjectDocument {
     StepSequence steps;
     alien::timeline::Timeline timeline;   // the Arrangement view: where clips and rack patterns sit on the song
     PluginRackState masterPlugins;
+    std::array<ReturnTrack, maxReturns> returns{};   // return tracks A-D
     rack::Project channelRack = rack::Project::createDefault(); // the Channel Rack; decoded samples are held by the ProjectController
 
     static ProjectDocument createDefault(int trackCount = sessionProjectTrackCount,
@@ -149,9 +157,10 @@ struct ProjectDocument {
 inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
     auto sameSettings = [](const TrackSettings& x, const TrackSettings& y) {
         return x.preset == y.preset && x.gain == y.gain && x.pan == y.pan && x.mute == y.mute && x.solo == y.solo && x.instrument == y.instrument
-            && x.armed == y.armed && x.input == y.input && x.stereoInput == y.stereoInput && x.monitor == y.monitor;
+            && x.armed == y.armed && x.input == y.input && x.stereoInput == y.stereoInput && x.monitor == y.monitor
+            && x.send == y.send && x.sendPre == y.sendPre;
     };
-    if (a.masterPlugins != b.masterPlugins || a.masterGain != b.masterGain || !(a.recording == b.recording)) return false;
+    if (a.masterPlugins != b.masterPlugins || a.masterGain != b.masterGain || !(a.recording == b.recording) || a.returns != b.returns) return false;
     if (!a.channelRack.sameContent(b.channelRack)) return false; // which pattern is selected is not an edit
     if (!(a.timeline == b.timeline)) return false;
     if (a.bpm != b.bpm || a.launchQuantizationSteps != b.launchQuantizationSteps || a.livePreset != b.livePreset
@@ -181,6 +190,7 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
     SessionProjectData data(doc.trackCount(), doc.sceneCount());
     data.timeline = doc.timeline;
     data.masterPlugins = doc.masterPlugins;
+    for (std::size_t r = 0; r < doc.returns.size(); ++r) { data.returns[r] = doc.returns[r].settings; data.returnPlugins[r] = doc.returns[r].plugins; }
     data.channelRack = doc.channelRack;
     data.launchQuantizationSteps = doc.launchQuantizationSteps;
     data.masterGain = doc.masterGain;
@@ -216,6 +226,7 @@ inline ProjectDocument fromProjectData(const SessionProjectData& data) {
     doc.timeline = data.timeline;
     doc.timeline.tempo = data.bpm;
     doc.masterPlugins = data.masterPlugins;
+    for (std::size_t r = 0; r < doc.returns.size(); ++r) doc.returns[r] = {data.returns[r], data.returnPlugins[r]};
     doc.channelRack = data.channelRack;
     doc.launchQuantizationSteps = data.launchQuantizationSteps;
     doc.masterGain = data.masterGain;

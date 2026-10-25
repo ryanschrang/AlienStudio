@@ -54,6 +54,7 @@ public:
     std::atomic<bool> playing{false};
     std::atomic<int> bpm{120}, currentStep{-1}, preset{0};
     std::array<alien::TrackControls, sessionTracks> tracks;
+    std::array<alien::ReturnControls, alien::maxReturns> returns;
     alien::MasterControls masterControls;
     // Record, count-in and metronome state shared with the GUI, and the delay the
     // audio device reports between rendering a sample and hearing it.
@@ -147,6 +148,8 @@ public:
         for (auto& sampler : drumSamplers) sampler.prepare(sampleRate);
         rackPlayer.prepare(sampleRate); rackStep.store(-1);
         for (auto& mixer : trackMixers) mixer.prepare(sampleRate);
+        for (auto& mixer : returnMixers) mixer.prepare(sampleRate);
+        for (auto& trackSends : sendRamps) for (auto& ramp : trackSends) ramp.prepare(sampleRate);
         masterRampCoefficient = static_cast<float>(1.0 - std::exp(-1.0 / (sampleRate * 0.005)));
         masterRamp = alien::sanitizedMasterGain(masterControls.gain.load()); // no fade-in on start
         click.prepare(sampleRate);
@@ -231,6 +234,12 @@ private:
             const auto settings = tracks[t].snapshot();
             trackSynths[t].setPatch(alien::presets[static_cast<std::size_t>(std::clamp(settings.preset, 0, alien::presetCount - 1))]);
             trackMixers[t].setTarget(settings, anySolo);
+            // A pre-fader send skips the fader but not mute or solo; a post-fader one hears all three.
+            const float gate = settings.mute || (anySolo && !settings.solo) ? 0.0f : 1.0f;
+            for (std::size_t r = 0; r < static_cast<std::size_t>(alien::maxReturns); ++r) {
+                sendPre[t][r] = settings.sendPre[r];
+                sendRamps[t][r].setTarget(settings.send[r] * (settings.sendPre[r] ? gate : 1.0f));
+            }
             if (instrumentModes[t] != settings.instrument) {
                 trackSynths[t].allSoundOff(); drumSamplers[t].stop();
                 instrumentModes[t] = settings.instrument;
@@ -421,10 +430,13 @@ private:
         if (modeNow == 2) captureSongTake(samples, outputOffset);
         renderRack(samples, playNow && modeNow == 3, playNow && modeNow == 2);
         plugins->effectsAndAlign(samples);
+        for (std::size_t r = 0; r < static_cast<std::size_t>(alien::maxReturns); ++r)
+            returnMixers[r].setTarget(returns[r].snapshot().asTrack(), false);
         for (int i = 0; i < samples; ++i) {
             float left = plugins->live.getSample(0,i), right = plugins->live.getSample(1,i);
             for (std::size_t t = 0; t < sessionTracks; ++t) {
                 float l = plugins->tracks[t].getSample(0,i), r = plugins->tracks[t].getSample(1,i);
+                const float preLeft = l, preRight = r;
                 auto settings = tracks[t].snapshot();
                 bool automated = false;
                 const double automationTick = automationTicks[static_cast<std::size_t>(i)];
@@ -440,9 +452,25 @@ private:
                 else trackMixers[t].process(l,r);
                 peaks[t] = std::max(peaks[t], std::max(std::abs(l), std::abs(r)));
                 left += l; right += r;
+                for (std::size_t k = 0; k < static_cast<std::size_t>(alien::maxReturns); ++k) {
+                    const float level = sendRamps[t][k].next();
+                    if (level == 0.0f) continue;
+                    plugins->returns[k].addSample(0, i, (sendPre[t][k] ? preLeft : l) * level);
+                    plugins->returns[k].addSample(1, i, (sendPre[t][k] ? preRight : r) * level);
+                }
             }
             plugins->master.setSample(0,i,left); plugins->master.setSample(1,i,right);
         }
+        plugins->processReturns(samples);
+        std::array<float, alien::maxReturns> returnPeaks{};
+        for (int i = 0; i < samples; ++i)
+            for (std::size_t k = 0; k < static_cast<std::size_t>(alien::maxReturns); ++k) {
+                float l = plugins->returns[k].getSample(0, i), r = plugins->returns[k].getSample(1, i);
+                returnMixers[k].process(l, r);
+                returnPeaks[k] = std::max(returnPeaks[k], std::max(std::abs(l), std::abs(r)));
+                plugins->master.addSample(0, i, l); plugins->master.addSample(1, i, r);
+            }
+        for (std::size_t k = 0; k < static_cast<std::size_t>(alien::maxReturns); ++k) returns[k].peak.store(returnPeaks[k], std::memory_order_relaxed);
         plugins->processMaster(samples);
         const float masterTarget = alien::sanitizedMasterGain(masterControls.gain.load(std::memory_order_relaxed));
         float masterPeak = 0.0f;
@@ -1202,6 +1230,10 @@ private:
     alien::SynthEngine synth; // Live keyboard and legacy step sequencer.
     FixedHeapArray<alien::SynthEngine, sessionTracks> trackSynths;
     FixedHeapArray<alien::TrackMixer, sessionTracks> trackMixers;
+    std::array<alien::TrackMixer, alien::maxReturns> returnMixers{};
+    // Each track's send to each return: its glided level, and (for this block) whether it is taken before the fader.
+    FixedHeapArray<std::array<alien::SendRamp, alien::maxReturns>, sessionTracks> sendRamps;
+    std::array<std::array<bool, alien::maxReturns>, sessionTracks> sendPre{};
     float masterRamp{1.0f}, masterRampCoefficient{1.0f};
     FixedHeapArray<alien::DrumSampler, sessionTracks> drumSamplers;
     std::array<int, sessionTracks> instrumentModes{};

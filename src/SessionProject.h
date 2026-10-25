@@ -23,7 +23,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 12;
+inline constexpr int sessionProjectFormatVersion = 13;
 
 struct SessionProjectClip {
     SharedPianoRoll pattern;   // shared with the document; empty clips share nothing at all
@@ -41,6 +41,9 @@ struct SessionProjectData {
     alien::timeline::Timeline timeline;   // Absent before version 8: the old bar-based arrangement, converted on load.
     std::vector<PluginRackState> plugins;
     PluginRackState masterPlugins;
+    // Return tracks A-D and their FX. Absent before version 13: unity, centred, no FX (and every send off).
+    std::array<ReturnSettings, maxReturns> returns{};
+    ReturnRacks returnPlugins{};
     rack::Project channelRack = rack::Project::createDefault(); // Absent before version 7: the starting rack.
     int launchQuantizationSteps{16};
     float masterGain{1.0f}; // Absent in older files: unity.
@@ -95,6 +98,8 @@ struct SessionProjectData {
             return false;
         if (plugins.size() != trackSettings.size() || !masterPlugins.valid() || !masterPlugins.instrument.descriptionXml.isEmpty()) return false;
         for (const auto& pluginRack : plugins) if (!pluginRack.valid()) return false;
+        for (const auto& r : returns) if (!r.valid()) return false;
+        for (const auto& pluginRack : returnPlugins) if (!pluginRack.valid() || !pluginRack.instrument.descriptionXml.isEmpty()) return false;
         if (!channelRack.valid()) return false;
         for (const auto& track : trackSettings) if (!track.valid()) return false;
         for (const int colour : trackColours) if (colour < 0 || colour > 255) return false;
@@ -140,6 +145,17 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     for (const auto& pluginRack : project.plugins) pluginRacks.add(rackToVar(pluginRack));
     rootObject->setProperty("plugins", juce::var(pluginRacks));
     rootObject->setProperty("masterPlugins", rackToVar(project.masterPlugins));
+    juce::Array<juce::var> returns;
+    for (std::size_t r = 0; r < project.returns.size(); ++r) {
+        auto value = juce::var(new juce::DynamicObject());
+        auto* object = value.getDynamicObject();
+        object->setProperty("gain", project.returns[r].gain);
+        object->setProperty("pan", project.returns[r].pan);
+        object->setProperty("mute", project.returns[r].mute);
+        object->setProperty("plugins", rackToVar(project.returnPlugins[r]));
+        returns.add(value);
+    }
+    rootObject->setProperty("returns", juce::var(returns));
     juce::Array<juce::var> settings;
     for (std::size_t t = 0; t < project.trackSettings.size(); ++t) {
         const auto& track = project.trackSettings[t];
@@ -153,6 +169,13 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
         object->setProperty("solo", track.solo);
         object->setProperty("armed", track.armed); object->setProperty("input", track.input);
         object->setProperty("stereoInput", track.stereoInput); object->setProperty("monitor", track.monitor);
+        juce::Array<juce::var> sends;   // [level, pre-fader] for each return
+        for (std::size_t r = 0; r < track.send.size(); ++r) {
+            juce::Array<juce::var> send;
+            send.add(track.send[r]); send.add(track.sendPre[r]);
+            sends.add(juce::var(send));
+        }
+        object->setProperty("sends", juce::var(sends));
         object->setProperty("name", project.trackNames[t]);
         object->setProperty("colour", project.trackColours[t]);
         settings.add(value);
@@ -489,6 +512,20 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
             if (input.isInt()) track.input = static_cast<int>(input);
             if (stereoInput.isBool()) track.stereoInput = static_cast<bool>(stereoInput);
             if (monitor.isInt()) track.monitor = static_cast<int>(monitor);
+            // Sends are optional (absent before version 13: all off); when present there is one [level, pre] per return.
+            if (object->hasProperty("sends")) {
+                const auto sendsValue = object->getProperty("sends");
+                const auto* sends = sendsValue.getArray();
+                if (sends == nullptr || sends->size() != maxReturns) { error = "Invalid track sends."; return false; }
+                for (int r = 0; r < maxReturns; ++r) {
+                    const auto* send = (*sends)[r].getArray();
+                    if (send == nullptr || send->size() != 2 || !((*send)[0].isDouble() || (*send)[0].isInt()) || !(*send)[1].isBool()) {
+                        error = "Invalid track sends."; return false;
+                    }
+                    track.send[static_cast<std::size_t>(r)] = static_cast<float>(static_cast<double>((*send)[0]));
+                    track.sendPre[static_cast<std::size_t>(r)] = static_cast<bool>((*send)[1]);
+                }
+            }
             if (!track.valid()) { error = "Track settings outside supported range."; return false; }
             const auto name = object->getProperty("name"), colour = object->getProperty("colour");
             if (name.isString()) parsed.trackNames[static_cast<std::size_t>(i)] = name.toString().substring(0, 64);
@@ -630,6 +667,24 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         for (int t=0;t<trackCount;++t) if (!rackFromVar((*racks)[t],parsed.plugins[t])) { error="Invalid plugin state"; return false; }
     }
     if (formatVersion >= 7 && !rack::rackFromVar(rootObject->getProperty("channelRack"), parsed.channelRack, error)) return false;
+    if (rootObject->hasProperty("returns")) {
+        const auto returnsValue = rootObject->getProperty("returns");
+        const auto* returns = returnsValue.getArray();
+        if (returns == nullptr || returns->size() != maxReturns) { error = "Invalid return tracks."; return false; }
+        for (int r = 0; r < maxReturns; ++r) {
+            const auto* object = (*returns)[r].getDynamicObject();
+            if (object == nullptr) { error = "Invalid return tracks."; return false; }
+            const auto g = object->getProperty("gain"), pan = object->getProperty("pan"), mute = object->getProperty("mute");
+            auto& settings = parsed.returns[static_cast<std::size_t>(r)];
+            auto& plugins = parsed.returnPlugins[static_cast<std::size_t>(r)];
+            if (!(g.isDouble() || g.isInt()) || !(pan.isDouble() || pan.isInt()) || !mute.isBool()
+                || !rackFromVar(object->getProperty("plugins"), plugins) || !plugins.instrument.descriptionXml.isEmpty()) {
+                error = "Invalid return tracks."; return false;
+            }
+            settings = {static_cast<float>(static_cast<double>(g)), static_cast<float>(static_cast<double>(pan)), static_cast<bool>(mute)};
+            if (!settings.valid()) { error = "A return track's level or pan is out of range."; return false; }
+        }
+    }
     if (!parsed.valid()) { error = "Project settings are outside the supported range."; return false; }
     destination = std::move(parsed);
     error.clear();

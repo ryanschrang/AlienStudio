@@ -214,6 +214,14 @@ if(BUILD_TESTING)
     target_link_libraries(PluginRuntimeTests PRIVATE juce::juce_audio_processors juce::juce_audio_devices)
     add_test(NAME PluginRuntimeTests COMMAND PluginRuntimeTests)
 
+    # Return tracks and sends: mixing, delay compensation, format, undo and the mixer/plugin panels.
+    add_executable(MixerRoutingTests tests/MixerRoutingTests.cpp)
+    target_include_directories(MixerRoutingTests PRIVATE src)
+    target_compile_definitions(MixerRoutingTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(MixerRoutingTests PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_audio_devices
+        juce::juce_audio_formats juce::juce_audio_basics)
+    add_test(NAME MixerRoutingTests COMMAND MixerRoutingTests)
+
     # Containment of crashes inside plugin code. Plain C++ (no JUCE): it really faults on purpose.
     add_executable(FaultGuardTests tests/FaultGuardTests.cpp)
     target_include_directories(FaultGuardTests PRIVATE src)
