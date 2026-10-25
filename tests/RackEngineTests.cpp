@@ -756,7 +756,61 @@ static void melodicPlayback() {
     near(left[RackPlayer::masterBus][500], 2 * kCenter, 0.0001, "fractional chord ahead of a trim point still plays");
 }
 
+static void synthChannels() {
+    const auto setup = [](Rig& rig) {
+        rig.project.setInstrumentPreset(0, 9); // Organ: sustaining, with a 60 ms release.
+        PianoRollPattern notes; notes.loopSteps = 16;
+        notes.add(60, 0, 8, 1); notes.add(60, 1, 2, 1);
+        rig.project.setChannelNotes(0, 0, notes); rig.publish();
+    };
+    Rig a; setup(a); a.run(24000, true, 120, 4, 257);
+    check(peakOf(a.master(), 1000, 5000) > 0.01 && a.player.activeVoices() == 1,
+          "same-pitch overlaps release independently and the longer synth note sustains");
+    a.run(32000, true);
+    check(a.player.activeVoices() == 0 && peakOf(a.master(), 54000, 56000) == 0, "note ends include the preset release, then exact silence");
+    Rig b; setup(b); b.run(24000, true, 120, 4, 1);
+    check(std::equal(b.master().begin(), b.master().end(), a.master().begin()), "synth output is callback-size independent");
+    Rig preview; preview.project.setInstrumentPreset(0, 9); preview.publish();
+    preview.player.audition(*preview.snap, 0, 1, nullptr, 0, true); preview.run(30000, false);
+    check(preview.player.activeVoices() == 1, "held piano-roll audition sustains beyond the timed preview");
+    preview.player.audition(*preview.snap, 0, 0, nullptr, 0, true); preview.run(4000, false);
+    check(!preview.player.busy(), "preview note-off releases its synth voice");
+    for (int preset = 0; preset < alien::presetCount; ++preset) {
+        Rig rig; rig.project.setInstrumentPreset(0, preset); rig.publish();
+        rig.player.audition(*rig.snap, 0, 1, nullptr); rig.run(96000, false);
+        check(peakOf(rig.master(), 0, 24000) > 0.001 && !rig.player.busy(), "every synth preset sounds without a sample and timed preview ends");
+    }
+    Rig stop; setup(stop); stop.run(5000, true); stop.run(4000, false);
+    check(!stop.player.busy(), "transport stop releases synths without a stuck sustain");
+    Rig mute; setup(mute); mute.run(5000, true);
+    auto settings = mute.project.channels[0]; settings.mute = true; mute.project.setChannel(0, settings); mute.publish(); mute.run(4000, true);
+    check(!mute.player.busy(), "mute releases synth voices");
+    Rig change; change.project.setInstrumentPreset(0, 9); change.publish();
+    change.player.audition(*change.snap, 0, 1, nullptr, 0, true); change.run(5000, false);
+    change.project.setSample(0, ""); change.publish(); change.run(4000, false);
+    check(!change.player.busy(), "switching a held synth to sample/silent releases the old instrument");
+    Rig steps; steps.project.setInstrumentPreset(0, 9); steps.on(0, 0); steps.publish(); steps.run(12000, true);
+    check(!steps.player.busy() && peakOf(steps.master(), 500, 5000) > 0.01, "synth step hits get finite one-step gates");
+    Rig route; setup(route); settings = route.project.channels[0]; settings.output = 2; settings.pan = 1;
+    route.project.setChannel(0, settings); route.publish(); route.run(512, false); route.run(12000, true);
+    check(peakOf(route.right[2], 512, 12000) > 0.01 && peakOf(route.left[2], 512, 12000) < 0.000001
+          && peakOf(route.master(), 512, 12000) == 0, "synths use the channel pan and selected mixer bus");
+    std::array<std::array<float, 512>, RackPlayer::busCount> left{}, right{};
+    std::array<float*, RackPlayer::busCount> pl{}, pr{};
+    for (std::size_t bus = 0; bus < pl.size(); ++bus) { pl[bus] = left[bus].data(); pr[bus] = right[bus].data(); }
+    Rig rt; setup(rt);
+    const auto before = allocations;
+    for (int block = 0; block < 150; ++block) {
+        rt.player.process(*rt.snap, rt.clips, block < 130, 120, 4, 512, pl.data(), pr.data());
+        if (block == 10) rt.player.audition(*rt.snap, 0, 1, nullptr, 12, true);
+        if (block == 20) rt.player.audition(*rt.snap, 0, 0, nullptr, 12, true);
+    }
+    const auto after = allocations;
+    check(before == after, "synth start, render, note-off and transport stop allocate no memory on the audio thread");
+}
+
 int main() {
+    synthChannels();
     clockTests();
     melodicPlayback();
     timingTests();

@@ -297,7 +297,7 @@ public:
     enum MenuId { cmdRename = 1, cmdMute, cmdSolo, cmdClearSteps, cmdMoveUp, cmdMoveDown, cmdDelete, cmdSilent, cmdLoadSample,
                   cmdDuplicate = 100, cmdCopyRow, cmdPasteRow, cmdFill2, cmdFill4, cmdFill8,
                   cmdRotateLeft, cmdRotateRight, cmdReverseRow, cmdRepeat4, cmdRepeat8, cmdRepeat16, cmdPianoRoll,
-                  builtinBase = 20, outputMaster = 40, outputBase = 41, chokeNone = 60, chokeBase = 61 };
+                  synthBase = 200, builtinBase = 20, outputMaster = 40, outputBase = 41, chokeNone = 60, chokeBase = 61 };
 
     juce::PopupMenu channelMenu(int row) const {
         juce::PopupMenu menu;
@@ -310,9 +310,13 @@ public:
         juce::PopupMenu sound;
         for (std::size_t i = 0; i < rack::builtinSounds.size(); ++i)
             sound.addItem(builtinBase + static_cast<int>(i), rack::builtinSounds[i].name, true, info.sample == std::string("builtin:") + rack::builtinSounds[i].id);
+        juce::PopupMenu synths;
+        for (int preset = 0; preset < alien::presetCount; ++preset)
+            synths.addItem(synthBase + preset, alien::presetNames[static_cast<std::size_t>(preset)], true, channel.instrumentPreset == preset);
+        sound.addSubMenu("Built-in synth", synths);
         sound.addSeparator();
         sound.addItem(cmdLoadSample, "Load sample file...");
-        sound.addItem(cmdSilent, "Silent (no sound)", true, info.sample.empty());
+        sound.addItem(cmdSilent, "Silent (no sound)", true, info.sample.empty() && !channel.isSynth());
         menu.addSubMenu("Sound", sound);
         juce::PopupMenu output;
         output.addItem(outputMaster, "Master", true, channel.output == rack::masterOutput);
@@ -442,6 +446,14 @@ public:
             changed();
         } else if (id == cmdSilent) { forEach(plural("Silence channel", rows), [](rack::Project& p, int r) { return p.setSample(r, ""); }); changed(); }
         else if (id == cmdLoadSample) chooseSample(row);
+        else if (id >= synthBase && id < synthBase + alien::presetCount) {
+            const int preset = id - synthBase;
+            forEach("Change channel instrument", [&](rack::Project& p, int r) {
+                const bool done = p.setInstrumentPreset(r, preset);
+                if (done) p.renameChannel(r, alien::presetNames[static_cast<std::size_t>(preset)]);
+                return done;
+            }); changed(); preview(row);
+        }
         else if (id >= builtinBase && id < builtinBase + static_cast<int>(rack::builtinSounds.size())) {
             const auto& sound = rack::builtinSounds[static_cast<std::size_t>(id - builtinBase)];
             if (rows.size() == 1) controller.setRackBuiltin(row, sound.id);
@@ -469,6 +481,20 @@ public:
             preview(selected);
         }
         changed();
+    }
+    void addSynthChannel(int preset) {
+        if (project().channelCount >= rack::maxChannels || preset < 0 || preset >= alien::presetCount) return;
+        if (controller.editRack("Add synth channel", [&](rack::Project& p) {
+            if (!p.addChannel(alien::presetNames[static_cast<std::size_t>(preset)], "")) return false;
+            const int channel = p.channelCount - 1;
+            p.setInstrumentPreset(channel, preset);
+            PianoRollPattern notes; notes.loopSteps = p.pattern(p.selectedPattern).length;
+            return p.setChannelNotes(p.selectedPattern, channel, notes);
+        })) {
+            selected = anchor = project().channelCount - 1; marked = bit(selected);
+            changed();
+            if (onOpenPianoRoll) onOpenPianoRoll(selected);
+        }
     }
     void addChannelWithFile() {
         if (project().channelCount >= rack::maxChannels) return;
@@ -771,6 +797,7 @@ private:
     juce::String soundDescription(int row) const {
         const auto& info = project().info[static_cast<std::size_t>(row)];
         const auto name = juce::String::fromUTF8(info.name.c_str(), static_cast<int>(info.name.size()));
+        if (project().channels[static_cast<std::size_t>(row)].isSynth()) return name + " (built-in synth)";
         if (info.sample.empty()) return name + " (no sound)";
         if (info.isBuiltin()) return name + " (built-in drum)";
         return name + " (" + sampleFileName(row) + ")";
@@ -1218,7 +1245,7 @@ public:
     std::function<void(juce::PopupMenu, std::function<void(int)>)> menuLauncher;
 
     // The "..." menu next to the pattern chooser, and the "+ Channel" menu.
-    enum AddChannelId { addSampler = 99, addSoundBase = 100 };
+    enum AddChannelId { addSampler = 99, addSoundBase = 100, addSynthBase = 200 };
     juce::PopupMenu patternMenu() const {
         juce::PopupMenu menu;
         menu.addItem(newPattern, "New pattern");
@@ -1232,12 +1259,17 @@ public:
     juce::PopupMenu addChannelMenu() const {
         juce::PopupMenu menu;
         for (std::size_t i = 0; i < rack::builtinSounds.size(); ++i) menu.addItem(addSoundBase + static_cast<int>(i), rack::builtinSounds[i].name);
+        juce::PopupMenu synths;
+        for (int preset = 0; preset < alien::presetCount; ++preset)
+            synths.addItem(addSynthBase + preset, alien::presetNames[static_cast<std::size_t>(preset)], controller.channelRack().channelCount < rack::maxChannels);
+        menu.addSubMenu("Built-in synth", synths);
         menu.addSeparator();
         menu.addItem(addSampler, "Sampler (load a file)...", controller.channelRack().channelCount < rack::maxChannels);
         return menu;
     }
     void addChannelCommand(int id) {
         if (id == addSampler) grid.addChannelWithFile();
+        else if (id >= addSynthBase && id < addSynthBase + alien::presetCount) grid.addSynthChannel(id - addSynthBase);
         else if (id >= addSoundBase && id < addSoundBase + static_cast<int>(rack::builtinSounds.size()))
             grid.addChannelWithSound(rack::builtinSounds[static_cast<std::size_t>(id - addSoundBase)].id);
     }

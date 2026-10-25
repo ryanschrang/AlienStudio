@@ -435,7 +435,36 @@ static void melodicCallback() {
     require(songRig.render(150).peak < 0.001f, "Song loop boundary releases prior notes before the next fractional onset");
 }
 
+static void synthCallback() {
+    Rig rig;
+    rig.project.setInstrumentPreset(0, 9);
+    alien::PianoRollPattern notes; notes.loopSteps = 16;
+    notes.add(60, 0.25, 8); notes.add(64, 0.25, 8); notes.add(67, 0.25, 8);
+    rig.project.setChannelNotes(0, 0, notes); rig.publish();
+    require(rig.engine.rackSamples[0].load() == nullptr, "synth channel needs no sample buffer");
+    rig.engine.patternMode.store(alien::rackMode); rig.engine.playing.store(true);
+    require(rig.render(1500).peak == 0, "synth chord waits for fractional note start");
+    const auto before = allocationCount;
+    const auto audible = rig.render(30000);
+    const auto after = allocationCount;
+    require(audible.peak > 0.01f && before == after, "real callback sustains a chord without allocating");
+    rig.engine.playing.store(false); rig.render(6000);
+    require(rig.render(1000).peak < 0.001f, "stopping the real callback silences the synth");
+    rig.engine.rackAuditions.push(ToneEngine::rackAuditionEvent(0, -36, true), 0.8f);
+    require(rig.render(30000).peak > 0.001f, "held low-pitch piano-roll preview decodes through the real callback");
+    rig.engine.rackAuditions.push(ToneEngine::rackAuditionEvent(0, -36, true), 0);
+    rig.render(5000); require(rig.render(1000).peak < 0.001f, "piano-roll note-off releases its instrument preview");
+    auto song = std::make_shared<alien::ArrangementPlayback>();
+    alien::timeline::Region region; region.row = alien::timeline::rackRowBase; region.source = 0; region.start = 0; region.length = alien::timeline::ticksPerStep;
+    require(song->timeline.place(region), "place a synth rack region");
+    rig.engine.arrangementMailbox.publish(song); rig.engine.patternMode.store(alien::songMode);
+    rig.engine.timelineSeek.store(20); rig.engine.playing.store(true);
+    require(rig.render(1000).peak == 0 && rig.render(3000).peak > 0.001f, "Song seek retains upcoming fractional synth chord");
+    rig.render(6000); require(rig.render(1000).peak < 0.001f, "Song region sends note-offs with the synth's release envelope");
+}
+
 int main() {
+    synthCallback();
     melodicCallback();
     silentInEveryOtherMode();
     patternModePlaysTheSelectedPattern();

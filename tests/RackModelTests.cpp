@@ -488,7 +488,23 @@ static void melodicRows() {
     check(p.setChannelNotes(0, 1, empty) && p.clearPattern(0) && !p.isNoteChannel(0, 1), "clear pattern resets even an empty melodic row");
 }
 
+static void synthChannelModel() {
+    Project p = Project::createDefault();
+    check(p.setInstrumentPreset(0, 9) && p.valid() && p.channels[0].isSynth() && p.info[0].sample.empty(), "synth replaces sample source");
+    const auto original = p;
+    check(!p.setInstrumentPreset(0, 9) && !p.setInstrumentPreset(0, alien::presetCount)
+          && !p.setInstrumentPreset(0, -1) && p == original, "invalid and unchanged synth presets are atomic no-ops");
+    check(p.duplicateChannel(0) && p.channels[1].instrumentPreset == 9, "duplicate preserves synth preset");
+    check(p.moveChannel(1, 1) && p.channels[2].instrumentPreset == 9 && p.removeChannel(1)
+          && p.channels[1].instrumentPreset == 9 && p.valid(), "synth identity follows channel movement and deletion");
+    check(p.setSample(0, "builtin:kick") && !p.channels[0].isSynth() && p.valid(), "choosing a sample returns to sample playback");
+    check(original.channels[0].instrumentPreset == 9 && original.info[0].sample.empty(), "undo snapshots keep their instrument");
+    p.channels[1].instrumentPreset = alien::presetCount;
+    check(!p.valid(), "unknown presets invalidate a rack");
+}
+
 int main() {
+    synthChannelModel();
     melodicRows();
     rowToolTests();
     defaultProjectTests();
