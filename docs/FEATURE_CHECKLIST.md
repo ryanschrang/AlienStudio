@@ -1,5 +1,20 @@
 # Alien Studio feature checklist
 
+## Detachable workspaces
+
+- One native resizable window per editor: Steps, Piano Roll, Session, Song,
+  Mixer, Rack, Drums, Audio lab and Plugins; multiple editors can remain visible.
+- Toolbar detach icon and View > Detach current view / Dock current view /
+  Dock all views. Closing a detached window docks its original editor.
+- Stable tab hosts preserve tab indices, editor identity and shared controller /
+  engine state. Main-window resizing does not reparent or resize floated content.
+- Shared project shortcuts and typing-piano routing follow detached windows;
+  app blur still panics notes, while switching between app windows avoids a MIDI reset.
+- SongFlowTests covers native detach/dock/close/shutdown, concurrent Song/Mixer,
+  shared editor state, toolbar states and detached typing/text-focus lifecycle.
+- Window layout is session-only. Real multi-monitor/mixed-DPI and listening
+  verification remains pending; build and regression results are in the feature PR.
+
 ## Application toolbar
 
 - Added File, Edit, View, Transport, Options and Help above the existing transport.

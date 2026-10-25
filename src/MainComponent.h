@@ -12,6 +12,7 @@
 #include "SessionView.h"
 #include "TopBar.h"
 #include "ApplicationToolbar.h"
+#include "DetachableView.h"
 #include "ViewModes.h"
 #include "ShellPanels.h"
 #include "StudioWidgets.h"
@@ -51,13 +52,13 @@ public:
         wireController();
         wireEditors();
 
-        tabs.addTab("16-step sequencer", alien::ui::colours::surface, &stepsView, false);
-        tabs.addTab("Piano roll", alien::ui::colours::surface, &pianoRoll, false);
-        tabs.addTab("Session", alien::ui::colours::surface, &sessionView, false);
-        tabs.addTab("Mixer", alien::ui::colours::surface, &mixerPanel, false);
-        tabs.addTab("Drums", alien::ui::colours::surface, &drumPanel, false);
-        tabs.addTab("Arrangement", alien::ui::colours::surface, &timelineView, false);
-        tabs.addTab("Audio lab", alien::ui::colours::surface, &audioTools, false);
+        addWorkspace("16-step sequencer", stepsView);
+        addWorkspace("Piano roll", pianoRoll);
+        addWorkspace("Session", sessionView);
+        addWorkspace("Mixer", mixerPanel);
+        addWorkspace("Drums", drumPanel);
+        addWorkspace("Arrangement", timelineView);
+        addWorkspace("Audio lab", audioTools);
         drumPanel.onLoad = [this](int t, int p, const juce::File& f) { controller.loadDrum(f, t, p); };
         drumPanel.onClear = [this](int t, int p) { controller.clearDrum(t, p); refreshExtraViews(); };
         drumPanel.onHit = [this](int t, int p) { engine.drumAuditions[t].push(alien::drumBaseNote + p, 0.8f); };
@@ -67,8 +68,8 @@ public:
         audioTools.onSettings = [this] { showAudioSettings(); };
         audioTools.onWarp = [this] { chooseTempoWarp(); };
         audioTools.onRecover = [this] { chooseTakeRecovery(); };
-        tabs.addTab("Plugins", alien::ui::colours::surface, &pluginPanel, false);
-        tabs.addTab("Channel rack", alien::ui::colours::surface, &rackView, false);   // index 8: appended so earlier tab numbers never change
+        addWorkspace("Plugins", pluginPanel);
+        addWorkspace("Channel rack", rackView); // index 8: earlier tab numbers never change
         rackView.onTitleChanged = [this] { updateEditorTitle(); };
         rackView.rackGrid().onOpenPianoRoll = [this](int channel) { openRackChannel(channel); };
         pluginPanel.onScanCommand = [this](alien::ScanCommand command) { handleScanCommand(command); };
@@ -208,7 +209,32 @@ public:
         engine.notes.panic.store(true);
     }
 
+    // Switching between our own main/detached windows must not reset live MIDI.
+    // Defer until the new foreground window is established, then panic on app blur.
+    void applicationWindowDeactivated() {
+        juce::Component::SafePointer<MainComponent> safe(this);
+        juce::MessageManager::callAsync([safe]{if(safe&&!juce::Process::isForegroundProcess())safe->releaseNotes();});
+    }
+
 private:
+    void addWorkspace(const juce::String& title,juce::Component& view) {
+        const int index=tabs.getNumTabs();
+        jassert(index<static_cast<int>(detachableViews.size()));
+        auto panel=std::make_unique<alien::DetachableView>(title,view);
+        panel->onWindowOpened=[this](juce::Component& window){window.addKeyListener(this);typingInput.addAuxiliaryRoot(window);};
+        panel->onWindowClosed=[this](juce::Component& window){window.removeKeyListener(this);typingInput.removeAuxiliaryRoot(window);};
+        panel->onWindowDeactivated=[this]{applicationWindowDeactivated();};
+        panel->onDocked=[this,index]{
+            if(!dockingAll){showView(index);if(auto* window=getTopLevelComponent())window->toFront(true);}
+            applicationToolbar.refreshState();
+        };
+        tabs.addTab(title,alien::ui::colours::surface,panel.get(),false);
+        detachableViews[static_cast<size_t>(index)]=std::move(panel);
+    }
+    alien::DetachableView* currentWorkspace() const {
+        const int index=tabs.getCurrentTabIndex();
+        return index>=0&&index<static_cast<int>(detachableViews.size())?detachableViews[static_cast<size_t>(index)].get():nullptr;
+    }
     void wireApplicationToolbar() {
         using Menu=alien::ApplicationToolbar;
         applicationToolbar.queryState=[this] {
@@ -220,6 +246,8 @@ private:
             s.metronome=controller.document().recording.metronome;s.songMode=songPlayback;
             s.hasSong=controller.timeline().hasRegions();
             s.hasLoop=controller.timeline().loopEnd>controller.timeline().loopStart;
+            if(auto* current=currentWorkspace())s.viewDetached=current->isDetached();
+            for(const auto& view:detachableViews)if(view&&view->isDetached())s.hasDetachedViews=true;
             if(controller.canUndo())s.undoLabel=controller.undoLabel();
             if(controller.canRedo())s.redoLabel=controller.redoLabel();
             return s;
@@ -253,6 +281,10 @@ private:
                 case Menu::audioSettings:showAudioSettings();break;
                 case Menu::recordingOptions:topBar.openRecordingOptions();break;
                 case Menu::plugins:showView(7);break;
+                case Menu::detachView:if(auto* view=currentWorkspace())view->detach();break;
+                case Menu::dockView:if(auto* view=currentWorkspace())view->dock();break;
+                case Menu::dockAllViews:
+                    dockingAll=true;for(auto& view:detachableViews)if(view)view->dock();dockingAll=false;break;
                 case Menu::recoverTakes:showView(6);chooseTakeRecovery();break;
                 case Menu::shortcuts:
                     juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,"Keyboard shortcuts",
@@ -654,6 +686,7 @@ private:
         if (workspace.isDeviceView()) workspace.showDevices(false);
         tabs.setCurrentTabIndex(index);
         syncViewButtons();
+        if(auto* view=currentWorkspace();view&&view->isDetached())view->bringToFront();
     }
 
     void syncViewButtons() {
@@ -1384,4 +1417,7 @@ private:
     std::shared_ptr<std::atomic<bool>> audioWorkCancellation, exportCancellation;
     juce::ThreadPool audioWorkPool{1};
     juce::ThreadPool scanPool{1};   // plugin scans can take minutes; they must not queue behind audio-tool jobs
+    bool dockingAll{};
+    // Destroy windows/wrappers before the original editors, typing router and controller.
+    std::array<std::unique_ptr<alien::DetachableView>,alien::ApplicationToolbar::viewCount> detachableViews;
 };

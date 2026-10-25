@@ -3,6 +3,8 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include "TypingPiano.h"
 #include <functional>
+#include <vector>
+#include <algorithm>
 
 // One window-scoped message-thread listener routes unhandled keys. Editable controls
 // keep their typing keys; Tab/Shift-Tab and other navigation are never consumed.
@@ -21,10 +23,20 @@ public:
         juce::Desktop::getInstance().removeFocusChangeListener(this);
         root.removeComponentListener(this);
         if (eventSource != nullptr) eventSource->removeKeyListener(this);
+        for(auto& window:auxiliaryRoots)if(window)window->removeKeyListener(this);
         release();
     }
     TypingPiano typing;
     std::function<void()> octaveChanged;
+    void addAuxiliaryRoot(juce::Component& window) {
+        for(const auto& root:auxiliaryRoots)if(root.getComponent()==&window)return;
+        auxiliaryRoots.emplace_back(&window);window.addKeyListener(this);
+    }
+    void removeAuxiliaryRoot(juce::Component& window) {
+        window.removeKeyListener(this);
+        if(target==&window||window.isParentOf(target.getComponent())) {release();target=nullptr;}
+        std::erase_if(auxiliaryRoots,[&](const auto& item){return item==nullptr||item.getComponent()==&window;});
+    }
     void release() {
         typing.releaseAll([this](int n, bool on) { send(n, on); });
         // A key held through blur/panic must be lifted before repeats can start it again.
@@ -41,8 +53,11 @@ private:
     }
     void componentParentHierarchyChanged(juce::Component&) override { attachToWindow(); }
     bool accepts(juce::Component* c) const {
-        if (c == nullptr || !(c == &root || c == root.getTopLevelComponent() || root.isParentOf(c))
-            || c->isCurrentlyBlockedByAnotherModalComponent()) return false;
+        if(c==nullptr||c->isCurrentlyBlockedByAnotherModalComponent())return false;
+        bool owned=c==&root||c==root.getTopLevelComponent()||root.isParentOf(c);
+        for(const auto& window:auxiliaryRoots)
+            if(window&&(c==window.getComponent()||window->isParentOf(c)))owned=true;
+        if(!owned)return false;
         for (auto* p = c; p != nullptr; p = p->getParentComponent())
             if (dynamic_cast<juce::TextEditor*>(p) != nullptr
                 || dynamic_cast<juce::ComboBox*>(p) != nullptr) return false;
@@ -89,5 +104,6 @@ private:
     juce::MidiKeyboardState& state;
     KeyDown isDown;
     juce::Component::SafePointer<juce::Component> target, eventSource;
+    std::vector<juce::Component::SafePointer<juce::Component>> auxiliaryRoots;
     std::array<bool, watched.size()> blocked{};
 };

@@ -16,11 +16,13 @@ public:
         newProject = 1000, openProject, save, saveAs, savePortable, exportSong, exportLoop, quit,
         undo, redo, devices, keyboard, playStop, record, metronome, songMode,
         audioSettings, midiSettings, recordingOptions, plugins, recoverTakes, shortcuts, about,
+        detachView, dockView, dockAllViews,
         viewBase = 2000, viewCount = 9
     };
     struct State {
         bool busy{}, recording{}, playing{}, deviceView{}, keyboardVisible{};
         bool metronome{}, songMode{}, hasSong{}, hasLoop{};
+        bool viewDetached{}, hasDetachedViews{};
         int view{};
         juce::String undoLabel, redoLabel;
     };
@@ -44,6 +46,10 @@ public:
         piano.setClickingTogglesState(true);
         piano.setTooltip("Show the on-screen piano in any workspace");
         piano.onClick=[this]{menuItemSelected(keyboard,2);};
+        addAndMakeVisible(detach);
+        detach.setButtonText("Detach view");detach.setName("Detach current workspace");
+        detach.setGlyph(ui::Glyph::detach);detach.setIconOnly(true);
+        detach.onClick=[this]{menuItemSelected(detachView,2);};
     }
     ~ApplicationToolbar() override { menus.setModel(nullptr); }
 
@@ -62,6 +68,9 @@ public:
             case record:return !s.busy||s.recording;
             case devices:case keyboard:case playStop:case metronome:case midiSettings:
             case plugins:case shortcuts:case about:case quit:return true;
+            case detachView:return !s.deviceView&&s.view>=0&&s.view<viewCount;
+            case dockView:return !s.deviceView&&s.viewDetached;
+            case dockAllViews:return s.hasDetachedViews;
             default:return false;
         }
     }
@@ -85,7 +94,9 @@ public:
                 const std::array<const char*,viewCount> names{"Steps","Piano Roll","Session","Mixer","Drums","Song","Audio lab","Plugins","Channel Rack"};
                 for(int i=0;i<viewCount;++i)item(viewBase+i,names[static_cast<size_t>(i)],{},!s.deviceView&&s.view==i);
                 menu.addSeparator();item(devices,"Devices / MIDI input",{},s.deviceView);
-                item(keyboard,"Show on-screen keyboard",{},s.keyboardVisible);break;
+                item(keyboard,"Show on-screen keyboard",{},s.keyboardVisible);
+                menu.addSeparator();item(detachView,s.viewDetached?"Show detached view":"Detach current view");
+                item(dockView,"Dock current view");item(dockAllViews,"Dock all views");break;
             }
             case 3:
                 item(playStop,s.playing?"Stop playback":"Start playback");
@@ -109,12 +120,15 @@ public:
         const auto s=currentState();audio.setEnabled(enabled(audioSettings,s));midi.setEnabled(enabled(midiSettings,s));
         piano.setToggleState(s.keyboardVisible,juce::dontSendNotification);
         piano.setTooltip(s.keyboardVisible?"Hide the on-screen piano":"Show the on-screen piano in any workspace");
+        detach.setEnabled(enabled(detachView,s));detach.setToggleState(s.viewDetached,juce::dontSendNotification);
+        detach.setTooltip(s.viewDetached?"Bring this detached workspace to the front":"Detach current workspace into its own resizable window");
     }
     void resized() override {
         auto r=getLocalBounds().reduced(8,2);
         midi.setBounds(r.removeFromRight(64));r.removeFromRight(6);
         audio.setBounds(r.removeFromRight(108));r.removeFromRight(8);
         piano.setBounds(r.removeFromRight(34));r.removeFromRight(8);
+        detach.setBounds(r.removeFromRight(34));r.removeFromRight(8);
         menus.setBounds(r);
     }
     void paint(juce::Graphics& g) override {
@@ -124,6 +138,6 @@ public:
 private:
     juce::MenuBarComponent menus;
     juce::TextButton audio{"Audio settings"},midi{"MIDI"};
-    ui::GlyphButton piano;
+    ui::GlyphButton piano,detach;
 };
 }

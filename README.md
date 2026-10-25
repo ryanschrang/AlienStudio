@@ -39,6 +39,28 @@ Commands that would replace/save a project or change audio devices are disabled
 while recording or busy, and are checked again when selected from an open menu.
 The existing transport controls and editor shortcuts remain available.
 
+### Detachable workspaces
+
+Select **Steps, Piano Roll, Session, Song, Mixer or Rack**, then click the
+**detach icon** beside the piano icon (or **View > Detach current view**).
+The editor opens in its own resizable native window, which can be dragged to
+another monitor. Drums, Audio lab and Plugins can be detached in the same way.
+For example, detach Song and Mixer to keep both visible at once.
+
+Each editor is the same live component connected to the same project and audio
+engine; detaching does not create another project or synth engine. Windows share
+one transport. Use Song mode when editing patterns alongside song playback.
+The original tab shows **Show detached window** and **Dock back here** instead
+of a second editor. Selecting that view again raises its existing window.
+
+Use **Dock into main window**, the detached window's close button, or
+**View > Dock current view** to return it. **View > Dock all views** gathers all
+editors. Global project shortcuts and typing-piano input work in detached views;
+text fields retain text entry. All detached windows close with the application.
+Window placement is temporary and is not saved in project files. Physical
+multi-monitor movement, mixed-DPI layouts and audio-device listening remain
+manual checks before release.
+
 ### Implemented foundations
 - [x] C++20/JUCE/CMake project, Windows Debug/Release CI, and automated tests.
 - [x] Polyphonic lead/bass/pluck synth, USB MIDI input/sustain/reconnection, typing and mouse piano.
