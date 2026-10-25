@@ -532,4 +532,170 @@ private:
     SlidingMinimum minimum;
 };
 
+// ---- Saturator ---------------------------------------------------------------
+
+// Linear-phase 4x oversampling. A 161-tap Kaiser-windowed sinc (cutoff at 0.45 of the
+// base rate, about 80 dB stopband) is used to interpolate up and again to filter before
+// decimating, so the harmonics a curve creates above the base Nyquist are removed instead
+// of folding back as inharmonic aliases. Up plus down is exactly `latency` base samples.
+class Oversampler4x {
+public:
+    static constexpr int factor = 4, taps = 161, latency = (taps - 1) / factor;
+    static constexpr int phaseTaps = (taps + factor - 1) / factor;
+    static constexpr double cutoff = 0.45 / factor, beta = 8.0; // cutoff in cycles per oversampled sample
+
+    Oversampler4x() noexcept { design(); }
+    // Magnitude of the anti-aliasing filter at a frequency given as a fraction of the base rate, in dB.
+    double responseDb(double baseFraction) const noexcept {
+        const double w = 2.0 * pi * baseFraction / factor;
+        double re = 0, im = 0;
+        for (int i = 0; i < taps; ++i) { re += h[static_cast<std::size_t>(i)] * std::cos(w * i); im -= h[static_cast<std::size_t>(i)] * std::sin(w * i); }
+        return 10.0 * std::log10(std::max(re * re + im * im, 1.0e-30));
+    }
+    void reset() noexcept { input = {}; oversampled = {}; inputPos = 0; overPos = 0; }
+
+    // Runs one base-rate sample through up-sampling, `curve` at the oversampled rate and
+    // decimation. The result is the input from `latency` samples ago, shaped by the curve.
+    template <typename Curve>
+    double process(double x, Curve&& curve) noexcept {
+        inputPos = (inputPos + phaseTaps - 1) % phaseTaps;
+        input[static_cast<std::size_t>(inputPos)] = input[static_cast<std::size_t>(inputPos + phaseTaps)] = x;
+        double out = 0;
+        for (int phase = 0; phase < factor; ++phase) {
+            double u = 0;
+            for (int k = 0, t = phase; t < taps; ++k, t += factor) u += h[static_cast<std::size_t>(t)] * input[static_cast<std::size_t>(inputPos + k)];
+            overPos = (overPos + taps - 1) % taps;
+            oversampled[static_cast<std::size_t>(overPos)] = oversampled[static_cast<std::size_t>(overPos + taps)] = curve(u * factor);
+            if (phase == 0) // decimate at phase 0, so the delay is a whole number of base samples
+                for (int j = 0; j < taps; ++j) out += h[static_cast<std::size_t>(j)] * oversampled[static_cast<std::size_t>(overPos + j)];
+        }
+        return out;
+    }
+
+private:
+    static double besselI0(double x) noexcept {
+        double sum = 1, term = 1;
+        for (int k = 1; k < 50; ++k) { term *= (x / (2.0 * k)) * (x / (2.0 * k)); sum += term; if (term < 1e-17 * sum) break; }
+        return sum;
+    }
+    void design() noexcept {
+        const double centre = (taps - 1) / 2.0, norm = besselI0(beta);
+        double sum = 0;
+        for (int i = 0; i < taps; ++i) {
+            const double n = i - centre;
+            const double sinc = n == 0 ? 2.0 * cutoff : std::sin(2.0 * pi * cutoff * n) / (pi * n);
+            const double r = n / centre;
+            h[static_cast<std::size_t>(i)] = sinc * besselI0(beta * std::sqrt(std::max(0.0, 1.0 - r * r))) / norm;
+            sum += h[static_cast<std::size_t>(i)];
+        }
+        for (auto& v : h) v /= sum; // exactly unity at DC
+    }
+    std::array<double, taps> h{};
+    std::array<double, phaseTaps * 2> input{};   // each sample stored twice, so a window never wraps
+    std::array<double, taps * 2> oversampled{};
+    int inputPos{0}, overPos{0};
+};
+
+enum class SaturationCurve { soft, warm, hard };
+
+// The three curves, each with a small-signal gain of exactly 1 so Drive alone sets how hard
+// the signal is pushed. Soft: tanh. Warm: tanh with a bias (even harmonics, like a tube
+// stage), re-centred so silence stays silent. Hard: a clip at +/-1.
+inline double saturate(SaturationCurve curve, double x) noexcept {
+    switch (curve) {
+        case SaturationCurve::soft: return std::tanh(x);
+        case SaturationCurve::warm: {
+            // tanh(bias) and its slope there, written out so nothing is initialised on the audio thread.
+            constexpr double bias = 0.3, offset = 0.2913126124515909, slope = 0.9151369618266292;
+            return (std::tanh(x + bias) - offset) / slope;
+        }
+        default: return std::clamp(x, -1.0, 1.0);
+    }
+}
+
+// Drive -> curve (oversampled) -> DC blocker -> tone low-pass, mixed with the dry signal
+// delayed by the same latency so the mix never comb-filters. Changing the curve crossfades
+// between the old and new curve over 3 ms; drive, tone, mix and output glide.
+class Saturator {
+public:
+    static constexpr int latency = Oversampler4x::latency, chunk = 32;
+    static constexpr double switchMs = 3.0, openTone = 19999.0, dcHz = 5.0;
+    struct Settings { SaturationCurve curve{SaturationCurve::soft}; double driveDb{6}, toneHz{20000}, mix{1}, outputDb{0}; };
+
+    void prepare(double sampleRate) noexcept {
+        rate = sampleRate;
+        drive.configure(rate, 25.0); tone.configure(rate, 25.0); mix.configure(rate, 25.0); output.configure(rate, 25.0);
+        fadeStep = 1.0 / std::max(1.0, switchMs * 0.001 * rate * Oversampler4x::factor);
+        dcCoefficient = std::exp(-2.0 * pi * dcHz / rate);
+        reset();
+    }
+    void reset() noexcept {
+        for (auto& o : oversampler) o.reset();
+        dry = {}; dryPos = 0;
+        for (auto& c : channel) c = {};
+        snapNext = true;
+    }
+    SaturationCurve activeCurve() const noexcept { return channel[0].current; }
+
+    void process(float* left, float* right, int count, const Settings& settings) noexcept {
+        if (snapNext) {
+            drive.reset(settings.driveDb); tone.reset(std::log(std::clamp(settings.toneHz, 20.0, 20000.0)));
+            mix.reset(std::clamp(settings.mix, 0.0, 1.0)); output.reset(settings.outputDb);
+            for (auto& c : channel) { c.current = c.previous = settings.curve; c.fade = 1.0; }
+            snapNext = false;
+        }
+        drive.setTarget(settings.driveDb); tone.setTarget(std::log(std::clamp(settings.toneHz, 20.0, 20000.0)));
+        mix.setTarget(std::clamp(settings.mix, 0.0, 1.0)); output.setTarget(settings.outputDb);
+        for (int done = 0; done < count;) {
+            const int length = std::min(chunk, count - done);
+            const double driveFrom = dbToGain(drive.value()), mixFrom = mix.value(), gainFrom = dbToGain(output.value());
+            drive.advance(length); tone.advance(length); mix.advance(length); output.advance(length);
+            const double driveTo = dbToGain(drive.value()), mixTo = mix.value(), gainTo = dbToGain(output.value());
+            const double toneHz = std::exp(tone.value());
+            const double toneCoefficient = toneHz >= openTone ? 1.0 : 1.0 - std::exp(-2.0 * pi * toneHz / rate);
+            for (int i = 0; i < length; ++i) {
+                const double t = length > 1 ? static_cast<double>(i + 1) / length : 1.0;
+                const double gain = driveFrom + (driveTo - driveFrom) * t, m = mixFrom + (mixTo - mixFrom) * t, g = gainFrom + (gainTo - gainFrom) * t;
+                float* samples[2]{left + done + i, right + done + i};
+                for (int c = 0; c < 2; ++c) {
+                    const double x = *samples[c];
+                    auto& st = channel[static_cast<std::size_t>(c)];
+                    double wet = oversampler[static_cast<std::size_t>(c)].process(x * gain, [&](double u) { return shape(st, u, settings.curve); });
+                    // DC blocker (the warm curve is asymmetric), then the tone low-pass.
+                    const double blocked = wet - st.dcIn + dcCoefficient * st.dcOut;
+                    st.dcIn = wet; st.dcOut = blocked;
+                    st.tone += toneCoefficient * (blocked - st.tone);
+                    wet = toneCoefficient == 1.0 ? blocked : st.tone;
+                    const double delayed = dry[static_cast<std::size_t>(c)][static_cast<std::size_t>(dryPos)];
+                    dry[static_cast<std::size_t>(c)][static_cast<std::size_t>(dryPos)] = x;
+                    *samples[c] = static_cast<float>((delayed * (1.0 - m) + wet * m) * g);
+                }
+                dryPos = (dryPos + 1) % latency;
+            }
+            done += length;
+        }
+    }
+
+private:
+    struct Channel {
+        double dcIn{}, dcOut{}, tone{}, fade{1.0};
+        SaturationCurve current{SaturationCurve::soft}, previous{SaturationCurve::soft};
+    };
+    // The curve at the oversampled rate, crossfading from the previous one after a change.
+    double shape(Channel& c, double u, SaturationCurve target) const noexcept {
+        if (target != c.current) { c.previous = c.current; c.current = target; c.fade = 0.0; }
+        if (c.fade >= 1.0) return saturate(c.current, u);
+        const double y = saturate(c.previous, u) * (1.0 - c.fade) + saturate(c.current, u) * c.fade;
+        c.fade = std::min(1.0, c.fade + fadeStep);
+        return y;
+    }
+    double rate{44100}, fadeStep{0.01}, dcCoefficient{0.999};
+    Smoother drive, tone, mix, output;
+    bool snapNext{true};
+    std::array<Oversampler4x, 2> oversampler{};
+    std::array<std::array<double, latency>, 2> dry{};
+    int dryPos{0};
+    std::array<Channel, 2> channel{};
+};
+
 } // namespace alien::dsp

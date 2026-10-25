@@ -165,7 +165,7 @@ artwork stay original.
 
 | ID | Capability (for comparison) | Status | Notes / acceptance |
 | --- | --- | --- | --- |
-| FX-01 | Stock filter, saturator, chorus/phaser, gate and transient shaper | Planned: next | One small PR each; DSP tests, no callback allocation, automatable parameters (AUTO-03) |
+| FX-01 | Stock filter, saturator, chorus/phaser, gate and transient shaper | In progress: filter implemented (#91), saturator in #92; chorus/phaser, gate and transient shaper planned | One small PR each; DSP tests, no callback allocation, automatable parameters (AUTO-03). Filter and saturator: StockDspTests, StockEffectsTests; Windows listening pending |
 | FX-02 | More stock effects: flanger, multiband compressor, de-esser, stereo imager, bit crusher, convolution reverb | Planned | FL, Live and Logic all ship large native effect sets |
 | INST-03 | Wavetable synth (Live Wavetable; FL Sytrus/Harmor-style sound design) | Planned | Band-limited tables; preset scaffolding shared with INST-01 |
 | INST-04 | FM / additive synth (Live Operator, FL Sytrus, Logic Retro Synth) | Planned | Voice allocation and stealing tests as for INST-01 |
