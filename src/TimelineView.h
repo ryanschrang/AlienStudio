@@ -1865,14 +1865,117 @@ private:
     std::int64_t activeTick{-1};
 };
 
+// Recording passes remain separate from the active arrangement. Comping places
+// an ordinary audio region, so live playback and WAV export share the result.
+class RecordingTakesPanel final : public juce::Component, private juce::ListBoxModel {
+public:
+    explicit RecordingTakesPanel(ProjectController& owner) : controller(owner), list("Recording takes", this) {
+        setName("Recording takes");
+        addAndMakeVisible(list); addAndMakeVisible(whole); addAndMakeVisible(range); addAndMakeVisible(forget); addAndMakeVisible(hint);
+        list.setRowHeight(26); list.setMultipleSelectionEnabled(false);
+        whole.setButtonText("Use whole take"); whole.setName("Comp whole take");
+        range.setButtonText("Use loop range"); range.setName("Comp loop range");
+        range.setTooltip("Replace only the loop-marker range on this take's track; the rest of the comp stays.");
+        forget.setButtonText("Forget take"); forget.setName("Forget recording take");
+        forget.setTooltip("Remove this pass from the take list. Active comp and audio file stay; Undo restores the list entry.");
+        forget.onClick = [this] {
+            const auto id = selectedId;
+            if (controller.isBusy() || controller.isRecording()) return;
+            controller.editTimeline("Forget recording take", [=](timeline::Timeline& t) {
+                return std::erase_if(t.takes, [=](const auto& take) { return take.id == id; }) != 0;
+            });
+            refresh();
+        };
+        whole.onClick = [this] { apply(false); };
+        range.onClick = [this] { apply(true); };
+        hint.setColour(juce::Label::textColourId, ui::colours::textDim);
+        hint.setFont(ui::font(12.0f));
+        refresh();
+    }
+    ~RecordingTakesPanel() override { list.setModel(nullptr); }
+    void refresh() {
+        const auto old = selectedId;
+        ids.clear();
+        for (const auto& take : controller.timeline().takes) ids.push_back(take.id);
+        list.updateContent();
+        auto found = std::find(ids.begin(), ids.end(), old);
+        if (!ids.empty()) list.selectRow(found == ids.end() ? static_cast<int>(ids.size()) - 1 : static_cast<int>(found - ids.begin()));
+        else { list.deselectAllRows(); selectedId = 0; }
+        updateButtons(); list.repaint();
+    }
+    void resized() override {
+        auto area = getLocalBounds().reduced(8);
+        list.setBounds(area.removeFromLeft(std::max(160, area.getWidth() / 2)));
+        area.removeFromLeft(12);
+        auto buttons = area.removeFromTop(28);
+        whole.setBounds(buttons.removeFromLeft(124)); buttons.removeFromLeft(6);
+        range.setBounds(buttons.removeFromLeft(124));
+        forget.setBounds(area.removeFromBottom(26).removeFromLeft(124));
+        hint.setBounds(area.reduced(0, 4));
+    }
+    void paint(juce::Graphics& g) override { g.fillAll(ui::colours::raised); }
+private:
+    int getNumRows() override { return static_cast<int>(ids.size()); }
+    const timeline::Region* selected() const {
+        for (const auto& take : controller.timeline().takes) if (take.id == selectedId) return &take;
+        return nullptr;
+    }
+    void paintListBoxItem(int row, juce::Graphics& g, int width, int height, bool selectedRow) override {
+        if (row < 0 || row >= static_cast<int>(ids.size())) return;
+        if (selectedRow) g.fillAll(ui::colours::accent.withAlpha(0.2f));
+        const auto& takes = controller.timeline().takes;
+        const auto found = std::find_if(takes.begin(), takes.end(), [&](const auto& take) { return take.id == ids[static_cast<std::size_t>(row)]; });
+        if (found == takes.end() || !controller.document().isValidCell(found->row, found->source)) return;
+        const auto& clip = controller.document().clip(found->row, found->source);
+        g.setColour(ui::colours::text); g.setFont(ui::font(12.0f));
+        g.drawText("Take " + juce::String(row + 1) + " | Track " + juce::String(found->row + 1)
+            + " | " + clip.audioFileName, 8, 0, width - 16, height, juce::Justification::centredLeft, true);
+    }
+    void selectedRowsChanged(int row) override {
+        selectedId = row >= 0 && row < static_cast<int>(ids.size()) ? ids[static_cast<std::size_t>(row)] : 0;
+        updateButtons();
+    }
+    void updateButtons() {
+        const auto* take = selected(); const auto& t = controller.timeline();
+        const bool idle = take != nullptr && !controller.isBusy() && !controller.isRecording();
+        forget.setEnabled(idle);
+        const bool ready = idle && !take->reversed && !take->loopSource
+            && controller.document().isValidCell(take->row, take->source)
+            && controller.document().clip(take->row, take->source).isAudioClip();
+        whole.setEnabled(ready);
+        range.setEnabled(ready && t.loopStart >= take->start && t.loopEnd <= take->end());
+        hint.setText(ids.empty() ? "Record a pass in Song view to keep a take here."
+            : "Choose a pass. Use loop markers to comp a smaller range. Original passes are kept; Undo restores the previous comp.", juce::dontSendNotification);
+    }
+    void apply(bool loopRange) {
+        const auto* take = selected(); if (take == nullptr) return;
+        const auto id = take->id;
+        const auto from = loopRange ? controller.timeline().loopStart : take->start;
+        const auto to = loopRange ? controller.timeline().loopEnd : take->end();
+        controller.compRecordedTake(id, from, to);
+        refresh();
+    }
+    ProjectController& controller;
+    juce::ListBox list;
+    juce::TextButton whole, range, forget;
+    juce::Label hint;
+    std::vector<std::uint32_t> ids;
+    std::uint32_t selectedId{};
+};
+
 class TimelineView final : public juce::Component, private juce::ScrollBar::Listener {
 public:
     static constexpr int toolbarHeight = 46, scrollBarSize = 12, helpHeight = 22;
 
     explicit TimelineView(ProjectController& projectController)
-        : controller(projectController), canvas(projectController), clipBin(projectController), hBar(false), vBar(true), automationEditor(projectController) {
+        : controller(projectController), canvas(projectController), clipBin(projectController), hBar(false), vBar(true), automationEditor(projectController), takesPanel(projectController) {
         namespace col = ui::colours;
         setName("Arrangement");
+        addChildComponent(takesPanel);
+        addAndMakeVisible(takesButton);
+        takesButton.setButtonText("Takes"); takesButton.setName("Show recording takes");
+        takesButton.setClickingTogglesState(true);
+        takesButton.onClick = [this] { takesPanel.refresh(); takesPanel.setVisible(takesButton.getToggleState()); resized(); };
         addChildComponent(automationEditor);
         addAndMakeVisible(automationButton);
         automationButton.setButtonText("Automation"); automationButton.setClickingTogglesState(true);
@@ -1973,6 +2076,7 @@ public:
         canvas.refresh();
         clipBin.refresh();
         automationEditor.refresh();
+        takesPanel.refresh();
         updateControls();
         layoutScroll();
     }
@@ -2002,8 +2106,10 @@ public:
         readout.setBounds(bar.withTrimmedTop(14));
         auto helpRow = r.removeFromBottom(helpHeight).reduced(14, 0);
         automationButton.setBounds(helpRow.removeFromLeft(110)); helpRow.removeFromLeft(8);
+        takesButton.setBounds(helpRow.removeFromLeft(68)); helpRow.removeFromLeft(8);
         clipsButton.setBounds(helpRow.removeFromRight(70)); helpRow.removeFromRight(8);
         help.setBounds(helpRow);
+        if (takesPanel.isVisible()) takesPanel.setBounds(r.removeFromBottom(std::min(150, std::max(100, r.getHeight() / 3))));
         if (automationEditor.isVisible()) automationEditor.setBounds(r.removeFromBottom(std::min(180, std::max(80, r.getHeight() / 3))));
         if (clipBin.isVisible()) clipBin.setBounds(r.removeFromRight(ClipBin::width));
         auto bottom = r.removeFromBottom(scrollBarSize);
@@ -2072,7 +2178,8 @@ private:
     ClipBin clipBin;
     juce::ScrollBar hBar, vBar;
     TrackAutomationEditor automationEditor;
-    juce::TextButton automationButton, clipsButton;
+    RecordingTakesPanel takesPanel;
+    juce::TextButton automationButton, clipsButton, takesButton;
     juce::Label snapLabel, lengthLabel, readout, help;
     juce::ComboBox snapBox;
     juce::TextButton zoomOutButton, zoomInButton, fitButton, loopButton, markerButton, placeButton, exportButton;

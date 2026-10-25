@@ -1160,3 +1160,13 @@ Summing the files reconstructs the pre-master bus subject to PCM quantization
 and clipping of individual stems above full scale. Cancellation or a plugin/write
 failure discards the staging folder. Existing folders are not replaced. Freeze
 and unfreeze are not implemented by this export increment.
+
+### Recording takes and range comps
+
+Recording in Song view keeps original passes in **Takes**. Choose a pass and
+**Use whole take**, or set loop markers inside the pass and choose **Use loop
+range** to replace just that part of the active arrangement. Undo restores the
+previous comp. Original files remain unchanged. **Forget take** removes a list
+entry without deleting its active comp or audio file. Projects use format 15.
+Recording still stops at loop boundaries; continuous loop takes and waveform
+lanes are not included in this increment.

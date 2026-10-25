@@ -33,7 +33,7 @@ inline constexpr std::int64_t maxLength = maxBars * ticksPerBar;
 inline constexpr int rackLanes = 4;
 inline constexpr int rackRowBase = maxSessionTracks;      // rows 0..15 are Session tracks, then the rack lanes
 inline constexpr int rowCount = rackRowBase + rackLanes;
-inline constexpr std::size_t maxRegions = 1024, maxMarkers = 128;
+inline constexpr std::size_t maxRegions = 1024, maxMarkers = 128, maxTakes = 256;
 inline constexpr int maxMarkerNameBytes = 32;
 
 inline constexpr bool isTrackRow(int row) noexcept { return row >= 0 && row < rackRowBase; }
@@ -116,6 +116,7 @@ struct Timeline {
     bool loopEnabled{false};
     std::int64_t loopStart{0}, loopEnd{4 * ticksPerBar};
     std::vector<Region> regions;
+    std::vector<Region> takes; // Preserved recording passes, not played directly.
     std::vector<Marker> markers;   // ascending by tick
     std::vector<automation::Lane> automationLanes;
     // Tempo used to turn a tick distance into audio seconds when an edit trims or
@@ -162,6 +163,7 @@ struct Timeline {
     std::int64_t contentEnd() const noexcept {
         std::int64_t end = 0;
         for (const auto& r : regions) end = std::max(end, r.end());
+        for (const auto& r : takes) end = std::max(end, r.end());
         for (const auto& m : markers) end = std::max(end, m.tick);
         for (const auto& lane : automationLanes) if (!lane.points.empty()) end = std::max(end, lane.points.back().tick);
         return end;
@@ -174,6 +176,17 @@ struct Timeline {
     // ---- whole-timeline rules -----------------------------------------------------
     bool valid(int tracks = maxSessionTracks, int scenes = maxSessionScenes, int patterns = rack::maxPatterns) const {
         if (lengthBars < 1 || lengthBars > maxBars || regions.size() > maxRegions || markers.size() > maxMarkers) return false;
+        if (takes.size() > maxTakes) return false;
+        for (std::size_t i = 0; i < takes.size(); ++i) {
+            const auto& r = takes[i];
+            if (r.id == 0 || r.row < 0 || r.row >= tracks || r.source < 0 || r.source >= scenes
+                || r.start < 0 || r.start > length() || r.length < 1 || r.length > length() - r.start
+                || r.offset < 0 || r.offset > maxLength || !std::isfinite(r.audioOffset) || r.audioOffset < 0
+                || !std::isfinite(r.gain) || r.gain < 0 || r.gain > 64
+                || r.fadeIn < 0 || r.fadeOut < 0 || r.crossfade < 0 || r.fadeIn > r.length
+                || r.fadeOut > r.length || r.crossfade > r.length || r.group != 0) return false;
+            for (std::size_t j = 0; j < i; ++j) if (takes[j].id == r.id) return false;
+        }
         if (automationLanes.size() > static_cast<std::size_t>(tracks) * 2) return false;
         for (std::size_t i = 0; i < automationLanes.size(); ++i) {
             const auto& lane = automationLanes[i];
@@ -217,7 +230,7 @@ struct Timeline {
     // Same song, whatever the tempo bookkeeping.
     bool operator==(const Timeline& o) const noexcept {
         return lengthBars == o.lengthBars && loopEnabled == o.loopEnabled && loopStart == o.loopStart
-            && loopEnd == o.loopEnd && regions == o.regions && markers == o.markers && automationLanes == o.automationLanes;
+            && loopEnd == o.loopEnd && regions == o.regions && takes == o.takes && markers == o.markers && automationLanes == o.automationLanes;
     }
     // Would the audio engine play these two identically? Names, colours, ids and
     // groups do not change the sound, so editing them must not republish the song.
@@ -246,6 +259,37 @@ struct Timeline {
         if (!adopt(std::move(next))) return false;
         if (idOut != nullptr) *idOut = r.id;
         return true;
+    }
+    // Retain the unedited pass and place its active copy atomically.
+    bool recordTake(Region region) {
+        if (takes.size() >= maxTakes || region.isPattern() || region.start < 0 || region.start > maxLength
+            || region.length < 1 || region.length > maxLength - region.start) return false;
+        Timeline next = *this;
+        region.id = newId(); region.group = 0;
+        next.takes.push_back(region);
+        if (!next.place(region)) return false;
+        return adopt(std::move(next));
+    }
+    // A range comp edits only the active arrangement. Original take stays intact.
+    bool compTake(std::uint32_t id, std::int64_t from, std::int64_t to) {
+        const auto found = std::find_if(takes.begin(), takes.end(), [=](const Region& r) { return r.id == id; });
+        if (found == takes.end() || from < found->start || to > found->end() || to <= from
+            || found->reversed || found->loopSource) return false;
+        Region piece = *found;
+        const auto delta = from - piece.start;
+        piece.audioOffset += secondsForTicks(delta, tempo);
+        piece.offset += delta; piece.start = from; piece.length = to - from;
+        piece.muted = false; piece.group = 0; piece.crossfade = 0;
+        // Five-millisecond edge fades avoid hard edits; users can refine/crossfade
+        // the resulting ordinary audio clips with existing Song editing tools.
+        const auto edge = std::min(piece.length / 2, std::max<std::int64_t>(1,
+            static_cast<std::int64_t>(std::llround(0.005 * tempo * ticksPerBeat / 60.0))));
+        piece.fadeIn = piece.fadeOut = edge;
+        Timeline next = *this;
+        next.carve(piece.row, from, to);
+        for (auto& remaining : next.regions) clampFades(remaining);
+        piece.id = newId(); next.regions.push_back(piece);
+        return adopt(std::move(next));
     }
     // A whole-bar placement of a Session clip, as the old bar-based arrangement made them.
     bool placeBars(int track, int scene, int startBar, int lengthBarCount, std::uint32_t* idOut = nullptr) {
@@ -561,6 +605,8 @@ struct Timeline {
 
     // ---- keeping references right when the project changes shape ----------------------------
     void trackDeleted(int track) {
+        std::erase_if(takes, [=](const Region& r) { return r.row == track; });
+        for (auto& r : takes) if (r.row > track) --r.row;
         std::erase_if(automationLanes, [=](const automation::Lane& lane) { return lane.track == track; });
         for (auto& lane : automationLanes) if (lane.track > track) --lane.track;
         std::erase_if(regions, [&](const Region& r) { return !r.isPattern() && r.row == track; });
@@ -568,18 +614,23 @@ struct Timeline {
         tidyGroups();
     }
     void tracksSwapped(int a, int b) {
+        for (auto& r : takes) { if (r.row == a) r.row = b; else if (r.row == b) r.row = a; }
         for (auto& lane : automationLanes) { if (lane.track == a) lane.track = b; else if (lane.track == b) lane.track = a; }
         for (auto& r : regions) if (!r.isPattern()) { if (r.row == a) r.row = b; else if (r.row == b) r.row = a; }
     }
     void sceneDeleted(int scene) {
+        std::erase_if(takes, [=](const Region& r) { return r.source == scene; });
+        for (auto& r : takes) if (r.source > scene) --r.source;
         std::erase_if(regions, [&](const Region& r) { return !r.isPattern() && r.source == scene; });
         for (auto& r : regions) if (!r.isPattern() && r.source > scene) --r.source;
         tidyGroups();
     }
     void scenesSwapped(int a, int b) {
+        for (auto& r : takes) { if (r.source == a) r.source = b; else if (r.source == b) r.source = a; }
         for (auto& r : regions) if (!r.isPattern()) { if (r.source == a) r.source = b; else if (r.source == b) r.source = a; }
     }
     void sceneInserted(int index) {
+        for (auto& r : takes) if (r.source >= index) ++r.source;
         for (auto& r : regions) if (!r.isPattern() && r.source >= index) ++r.source;
     }
     void patternDeleted(int index) {
@@ -589,6 +640,7 @@ struct Timeline {
     }
     // Drops regions that point at a track, scene or pattern that does not exist.
     void prune(int tracks, int scenes, int patterns) {
+        std::erase_if(takes, [=](const Region& r) { return r.row < 0 || r.row >= tracks || r.source < 0 || r.source >= scenes; });
         std::erase_if(automationLanes, [=](const automation::Lane& lane) { return lane.track < 0 || lane.track >= tracks; });
         std::erase_if(regions, [&](const Region& r) {
             return r.isPattern() ? r.source < 0 || r.source >= patterns

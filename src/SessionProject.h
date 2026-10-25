@@ -213,7 +213,10 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
         // Groups are saved as small numbers (1, 2, ...), not the in-memory ids, which differ every run.
         std::vector<std::uint32_t> groups;
         juce::Array<juce::var> regions;
-        for (const auto& r : project.timeline.regions) {
+        auto savedRegions = project.timeline.regions;
+        savedRegions.insert(savedRegions.end(), project.timeline.takes.begin(), project.timeline.takes.end());
+        for (std::size_t savedIndex = 0; savedIndex < savedRegions.size(); ++savedIndex) {
+            const auto& r = savedRegions[savedIndex];
             auto value = juce::var(new juce::DynamicObject());
             auto* object = value.getDynamicObject();
             int group = 0;
@@ -229,6 +232,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
             object->setProperty("fadeOut", static_cast<int>(r.fadeOut)); object->setProperty("loopSource", r.loopSource);
             object->setProperty("reversed", r.reversed); object->setProperty("crossfade", static_cast<int>(r.crossfade));
             object->setProperty("muted", r.muted); object->setProperty("group", group);
+            if (savedIndex >= project.timeline.regions.size()) object->setProperty("take", true);
             regions.add(value);
         }
         timelineObject->setProperty("regions", juce::var(regions));
@@ -308,7 +312,7 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
     const auto regionsValue = object->getProperty("regions"), markersValue = object->getProperty("markers");
     const auto* regions = regionsValue.getArray();
     const auto* markers = markersValue.getArray();
-    if (regions == nullptr || markers == nullptr || regions->size() > static_cast<int>(timeline::maxRegions)
+    if (regions == nullptr || markers == nullptr || regions->size() > static_cast<int>(timeline::maxRegions + timeline::maxTakes)
         || markers->size() > static_cast<int>(timeline::maxMarkers)) {
         error = "The project's timeline has too many regions or markers."; return false;
     }
@@ -348,7 +352,10 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
             if (it == groups.end()) { groups.emplace_back(g, timeline::newId()); it = groups.end() - 1; }
             region.group = it->second;
         }
-        parsed.regions.push_back(region);
+        const auto take = r->getProperty("take");
+        if (!take.isVoid() && !take.isBool()) { error = "Invalid recording take flag."; return false; }
+        if (static_cast<bool>(take)) parsed.takes.push_back(region);
+        else parsed.regions.push_back(region);
     }
     for (const auto& item : *markers) {
         const auto* m = item.getDynamicObject();

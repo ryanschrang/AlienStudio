@@ -39,9 +39,9 @@ Main: 80e2fff. #78 merged. #82 merged into the former #78 branch after its main
 merge, so synth/MIDI work remains outside main. #84 owns sends/returns. Recheck
 before shared-code changes. Separate branches can still need conflict resolution.
 
-## Stem export increment (based on main 2b2fef1)
+## Stem export increment (integrated with main 12bb76e)
 
-Sends/returns from #84 are now on main; take-comp PR #88 remains separate.
+Sends/returns from #84 and take-comp PR #88 are now on main.
 Song's export menu now offers whole-song and loop-range stems. An offline-only
 capture object records post-track-mixer buses, post-return-mixer buses, and the
 direct-to-master Channel Rack bus in one render. Dry captures receive the same
@@ -59,3 +59,25 @@ master exclusion, names, folder collision, cancellation and source/plugin errors
 Next: freeze/unfreeze needs a separately persisted original track state and a
 pre-fader render path, with bypass/substitution that does not apply FX or
 volume/pan automation twice. It is not implemented by this stem increment.
+
+## Take comp increment (based on main afbfd9a)
+
+Song recordings now retain their original passes, up to 256 per project, within
+existing Session scene/track limits. Open **Song > Takes**, choose a pass, and use
+**Use whole take** or **Use loop range**. The loop range must fit entirely inside
+that pass. Outside the chosen range, the current arrangement remains intact.
+New comp clips receive short 5 ms edge fades; existing Song fade/crossfade tools
+can refine the joins. Each comp is one undo step. **Forget take** removes only
+the list entry, leaving the active arrangement, Session clip and audio file.
+
+Projects save as format 15. Versions 1–14 open with an empty take list. Earlier
+app versions refuse format 15 instead of dropping the archive. Original audio
+stays in Session cells, so existing missing-media, relink and portable-save paths
+apply. Explicit source-scene/track deletion also removes its take references.
+
+This is a take-list and range-comp workflow, not waveform lanes or continuous
+loop capture. The recorder still stops at a loop boundary; record another pass
+to add a take. Automatic loop splitting, waveform lane gestures, grouped
+multitrack comp selection and listening/physical recording validation remain.
+The synth/MIDI recovery (#87) and automation model (#86) are now on main;
+automation UI/host scheduling remain unfinished, and #84 still owns mixer sends.
