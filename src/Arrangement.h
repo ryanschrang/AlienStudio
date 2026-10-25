@@ -8,19 +8,28 @@
 #include <mutex>
 
 namespace alien {
+// One Session clip as the song plays it: its notes (shared with the document, never
+// copied) and its decoded audio, or nothing.
+struct ArrangementClip {
+    SharedPianoRoll pattern;
+    const SessionAudioClip* audio{};
+};
+
 // What the audio thread plays in the Arrangement view: the timeline (where
-// everything sits) plus the content of every Session clip it can refer to.
+// everything sits) plus every Session clip it can refer to. Clips point at shared,
+// immutable notes, so a snapshot is a few KiB however many notes the song holds.
 struct ArrangementPlayback {
     alien::timeline::Timeline timeline;
-    std::array<std::array<SessionClipLaunch, maxSessionTracks>, maxSessionScenes> clips{};
+    std::array<std::array<ArrangementClip, maxSessionTracks>, maxSessionScenes> clips{};
 };
 
 // Hands complete, immutable song snapshots from the message thread to the audio
-// thread. A snapshot is about 16 MiB, so only a pointer ever crosses threads:
+// thread. Only a pointer ever crosses threads:
 // the audio callback swaps a slot index and reads through a raw pointer, and
 // never copies, allocates, or frees a snapshot. All three slots hold
-// shared_ptrs that only the publishing thread assigns, so an old snapshot is
-// released on the message thread, and only after the audio thread has moved on.
+// shared_ptrs that only the publishing thread assigns, so an old snapshot (and
+// with it any clip notes nothing else holds) is released on the message thread,
+// and only after the audio thread has moved on.
 class ArrangementMailbox {
 public:
     ArrangementMailbox() {
@@ -30,7 +39,7 @@ public:
     static bool validSnapshot(const ArrangementPlayback& value) {
         if (!value.timeline.valid()) return false;
         for (const auto& scene : value.clips) for (const auto& clip : scene)
-            if (!clip.pattern.valid()) return false;
+            if (!clip.pattern->valid()) return false;
         return true;
     }
     // Message thread. Copies the value into a fresh snapshot.
@@ -38,7 +47,7 @@ public:
         if (!validSnapshot(value)) return false;
         return publishValidated(std::make_shared<const ArrangementPlayback>(value));
     }
-    // Message thread. Takes ownership without copying the 16 MiB payload.
+    // Message thread. Takes ownership without copying the snapshot.
     bool publish(std::shared_ptr<const ArrangementPlayback> value) {
         if (value == nullptr || !validSnapshot(*value)) return false;
         return publishValidated(std::move(value));
