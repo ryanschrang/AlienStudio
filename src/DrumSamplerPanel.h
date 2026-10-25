@@ -50,6 +50,7 @@ public:
         route.setSelectedId(juce::jlimit(1, labels.size() + 1, inputRoute), juce::dontSendNotification);
         refresh();
     }
+    void setLiveInput(int destination) { route.setSelectedId(destination+2,juce::dontSendNotification); }
     void setStatus(const juce::String& text) { status.setText(text, juce::dontSendNotification); status.setTooltip(text); }
     void setBusy(bool busy) { load.setEnabled(!busy); clear.setEnabled(!busy); }
     void resized() override {

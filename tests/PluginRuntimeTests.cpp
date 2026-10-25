@@ -18,7 +18,21 @@ public:
     void processBlock(juce::AudioBuffer<float>& b,juce::MidiBuffer& midi) override {
         auto it=midi.begin();const auto end=midi.end();
         for(int i=0;i<b.getNumSamples();++i){
-            while(it!=end && (*it).samplePosition<=i){const auto msg=(*it).getMessage();if(msg.isNoteOn())active=true;else if(msg.isNoteOff()||msg.isAllNotesOff()||msg.isAllSoundOff())active=false;++it;}
+            while(it!=end && (*it).samplePosition<=i){
+                const auto msg=(*it).getMessage(); const int channel=msg.getChannel();
+                if(msg.isController()) {
+                    lastController=msg.getControllerNumber(); controlChannel=channel;
+                    if(lastController==64) {
+                        sustain[channel]=msg.getControllerValue()>=64;
+                        if(!sustain[channel] && !held && noteChannel==channel) active=false;
+                    }
+                }
+                if(msg.isPitchWheel()) {lastWheel=msg.getPitchWheelValue();controlChannel=channel;}
+                if(msg.isNoteOn()) {active=held=true;noteChannel=channel;}
+                else if(msg.isAllSoundOff() || msg.isAllNotesOff()) {if(noteChannel==channel) active=held=false;}
+                else if(msg.isNoteOff() && noteChannel==channel) {held=false;if(!sustain[channel])active=false;}
+                ++it;
+            }
             for(int c=0;c<b.getNumChannels();++c)b.setSample(c,i,(synth?(active?0.2f:0.0f):b.getSample(c,i))*factor);
             if(delay){const auto value=b.getSample(0,i);const auto out=ring[position];ring[position]=value;position=(position+1)%delay;b.setSample(0,i,out);b.setSample(1,i,out);}
         }
@@ -33,7 +47,7 @@ public:
     bool hasEditor() const override{return false;}juce::AudioProcessorEditor* createEditor() override{return nullptr;}
     void getStateInformation(juce::MemoryBlock& data) override{data.append(&factor,sizeof(factor));}
     void setStateInformation(const void* data,int n) override{if(n==sizeof(factor))std::memcpy(&factor,data,n);}
-    bool synth{},active{},sawTempo{};float factor;int delay{},position{};std::array<float,16> ring{};
+    std::array<bool,17> sustain{}; bool held{},synth{},active{},sawTempo{};float factor;int delay{},position{},noteChannel{},controlChannel{},lastController{-1},lastWheel{};std::array<float,16> ring{};
 };
 int main(){
     auto engine=std::make_unique<ToneEngine>();engine->prepare(48000);engine->patternMode.store(1);engine->launchQuantizationSteps.store(4);
@@ -51,6 +65,34 @@ int main(){
     }
     require(heard && first==6000,"MIDI event was not sample accurate across callback chunks");require(raw->sawTempo,"tempo/playhead missing");
     engine->playing.store(false);engine->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,1024,{});require(!raw->active,"transport stop left plugin notes held");
+    // Live input works while stopped and releases the old plugin on route changes.
+    engine->liveDrumTrack.store(0);
+    engine->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,1024,{});
+    engine->notes.push(60,1);
+    const auto liveAllocations=allocations;
+    engine->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,1024,{});
+    require(raw->active,"typing piano did not reach selected VST instrument");
+    require(allocations==liveAllocations,"live instrument route allocated callback memory");
+    engine->liveDrumTrack.store(-1);
+    engine->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,1024,{});
+    require(!raw->active,"changing live route left plugin note held");
+    engine->liveDrumTrack.store(0);
+    const auto token=engine->midi.beginSession();
+    engine->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,1024,{});
+    engine->midi.push(token,0x9f,60,100);
+    engine->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,1024,{});
+    require(raw->active && raw->noteChannel==16,"hardware MIDI channel did not reach selected VST instrument");
+    engine->midi.push(token,0xbf,1,75);
+    engine->midi.push(token,0xef,0,80);
+    engine->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,1024,{});
+    require(raw->lastController==1 && raw->controlChannel==16 && raw->lastWheel==10240,"live CC/pitch wheel routing failed");
+    engine->midi.push(token,0xbf,64,127);
+    engine->midi.push(token,0x8f,60,0);
+    engine->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,1024,{});
+    require(raw->active,"sustain pedal failed to retain live note");
+    engine->midi.requestReset();
+    engine->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,1024,{});
+    require(!raw->active,"device reset left plugin note held");
     // PDC: both an inherent-latency track and an immediate track align at 4.
     auto runtime=std::make_unique<alien::PluginRuntime>();runtime->racks[0].effectCount=1;runtime->racks[0].effects[0].processor=std::make_unique<TestProcessor>(false,1,4);runtime->prepare(48000);
     runtime->begin(16,120,true,0);runtime->tracks[0].setSample(0,0,1);runtime->tracks[0].setSample(1,0,1);runtime->tracks[1].setSample(0,0,1);runtime->tracks[1].setSample(1,0,1);runtime->effectsAndAlign(16);
