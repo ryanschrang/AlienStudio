@@ -1091,3 +1091,11 @@ the unfinished take remains recoverable. Recovery chooses a new sibling filename
 when needed. Keep unfinished WAVs and journals together until recovery succeeds;
 never remove original source recordings to make space automatically. The
 tempo-warp renderer also streams from disk with no one-minute input cap.
+
+### Full Channel Rack piano-roll notes
+
+Open a rack channel with **Open in piano roll** or **Ctrl+P**. Editing now stores a full note sequence instead of converting it back to steps: lengths, fractional starts, overlapping notes, chords, velocity, chance and MIDI pitches 0-127 are retained. This works with the rack's existing sample channels; playback ends each note with a short release, and samples still end naturally if they are shorter than the note. Sustaining samples by looping, synth channels and VST3 instrument channels are later milestones.
+
+A melodic row displays a miniature note preview; clicking it opens Piano Roll. Drum rows retain gate/nudge/ratchet step sequencing. Step painting and row step tools do not overwrite melodic rows. **Clear this channel (notes and steps)** explicitly removes its notes and returns the row to step mode. Duplicate, move, delete, undo, pattern copies and save/open retain melodic data. Shortening a pattern is refused if it would cut an existing note; move/shorten those notes first. The initial import of a legacy drum row uses one-step notes, as before. Keep a row in step mode for gate/nudge/ratchet programming; the legacy import does not translate those controls into melodic notes.
+
+Projects with melodic rack rows use format 13; older projects still load as step rows. The sample player has 64 voices and a fixed scheduling queue, with no callback allocation. Song/WAV-export scheduling uses the same note path, clips note endings to region boundaries, and plays future fractional note-ons after a partial-step trim/seek. It does not chase notes whose starts have already passed.

@@ -54,7 +54,7 @@ public:
     static constexpr int voiceCount = 64;
     // Hits waiting for their nudge or ratchet time: at most every channel's ratchets of two
     // overlapping steps (a step nudged a whole step late meets the next one's hits).
-    static constexpr int maxPending = maxChannels * maxRatchet * 2;
+    static constexpr int maxPending = maxChannels * (maxRatchet * 2 + static_cast<int>(PianoRollPattern::maxNotes));
     static constexpr int masterBus = maxSessionTracks;  // buses 0..maxSessionTracks-1 are Session tracks
     static constexpr int busCount = maxSessionTracks + 1;
     using SampleTable = std::array<std::atomic<const SessionAudioClip*>, maxChannels>;
@@ -74,7 +74,7 @@ public:
     // probability do not apply: a preview always sounds.
     void audition(const Snapshot& snap, int channel, float velocity, const SessionAudioClip* clip, int pitch = 0) noexcept {
         if (clip == nullptr || channel < 0 || channel >= snap.channelCount || !std::isfinite(velocity) || velocity <= 0.0f) return;
-        start(snap.channels[static_cast<std::size_t>(channel)], channel, clip, std::clamp(velocity, 0.0f, 1.0f), 0.0f, std::clamp(pitch, -24, 24), true);
+        start(snap.channels[static_cast<std::size_t>(channel)], channel, clip, std::clamp(velocity, 0.0f, 1.0f), 0.0f, std::clamp(pitch, -60, 67), true);
     }
 
     // Renders `samples` samples and ADDS them to the per-bus output pointers.
@@ -91,7 +91,7 @@ public:
     // One step of one pattern, due on a given sample of the block. The arrangement
     // timeline decides when each step is due (it knows where every pattern region
     // begins, ends and loops), so no clock runs here.
-    struct TimelineHit { int sample{}, pattern{}, step{}; };
+    struct TimelineHit { int sample{}, pattern{}, step{}; std::int64_t remainingSamples{std::numeric_limits<std::int64_t>::max()}; std::int64_t elapsedSamples{}; };
     // `hits` must be in ascending order of sample. `bpm` sets how far nudges and ratchets reach.
     void processTimeline(const Snapshot& snap, const SampleTable& clips, bool running, const TimelineHit* hits, int hitCount,
                          double bpm, int activeTracks, int samples, float* const* left, float* const* right) noexcept {
@@ -100,7 +100,7 @@ public:
         render(snap, clips, running, activeTracks, samples, left, right, [&](int i) {
             for (; next < hitCount && hits[next].sample <= i; ++next) {
                 const Pattern* p = snap.pattern(hits[next].pattern);
-                if (p != nullptr) triggerStep(snap, clips, *p, std::clamp(hits[next].step, 0, p->length - 1));
+                if (p != nullptr) triggerStep(snap, clips, *p, std::clamp(hits[next].step, 0, p->length - 1), hits[next].pattern, hits[next].remainingSamples, hits[next].elapsedSamples);
             }
         });
     }
@@ -161,7 +161,8 @@ private:
         float velocity{}, stepPan{}, gl{}, gr{}, dl{}, dr{}, release{1.0f};
         std::uint64_t age{};
         std::int64_t gateLeft{-1};   // samples until the gate releases the voice; -1: plays to the end
-        int channel{-1}, bus{masterBus};
+        int channel{-1}, bus{masterBus}, pattern{-1};
+        std::uint64_t sequence{};
         std::uint8_t choke{};
         bool active{false}, releasing{false}, preview{false};
     };
@@ -175,6 +176,10 @@ private:
             const bool now = c < snap.channelCount && snap.audible(c);
             if (wasAudible[static_cast<std::size_t>(c)] && !now)
                 for (auto& v : voices) if (v.channel == c && !v.preview) releaseVoice(v);
+            for (auto& v : voices) if (v.active && v.channel == c && v.sequence != 0) {
+                const auto* p = snap.pattern(v.pattern);
+                if (!p || p->noteRevisions[static_cast<std::size_t>(c)] != v.sequence) releaseVoice(v);
+            }
             wasAudible[static_cast<std::size_t>(c)] = now;
         }
     }
@@ -202,7 +207,7 @@ private:
     void trigger(const Snapshot& snap, const SampleTable& clips, std::int64_t grid) noexcept {
         const Pattern* p = snap.selected();
         if (p == nullptr) return;
-        triggerStep(snap, clips, *p, static_cast<int>(grid % p->length));
+        triggerStep(snap, clips, *p, static_cast<int>(grid % p->length), snap.selectedPattern);
     }
 
     // A hit waiting for its time. The sample and mute/solo are looked up again when it plays.
@@ -210,14 +215,34 @@ private:
         std::int64_t due{}, gate{-1};
         float velocity{}, pan{};
         int channel{}, pitch{};
+        int pattern{-1}; std::uint64_t sequence{};
     };
+    static bool later(const Pending& a, const Pending& b) noexcept { return a.due > b.due; }
 
-    void triggerStep(const Snapshot& snap, const SampleTable& clips, const Pattern& pattern, int step) noexcept {
+    void triggerStep(const Snapshot& snap, const SampleTable& clips, const Pattern& pattern, int step, int patternIndex,
+                     std::int64_t remainingSamples = std::numeric_limits<std::int64_t>::max(), std::int64_t elapsedSamples = 0) noexcept {
         const Pattern* p = &pattern;
         lastStep = step;
         for (int c = 0; c < snap.channelCount; ++c) {
+            const auto& sequence = p->notes[static_cast<std::size_t>(c)];
+            if (sequence) {
+                if (!snap.audible(c)) continue;
+                const auto token = p->noteRevisions[static_cast<std::size_t>(c)];
+                for (std::size_t n = 0; n < sequence->count; ++n) {
+                    const auto& note = sequence->notes[n];
+                    if (note.startStep < step || note.startStep >= step + 1) continue;
+                    if (note.probability < 1.0f && static_cast<double>(nextRandom()) / 4294967296.0 >= note.probability) continue;
+                    const auto delay = std::llround((note.startStep - step) * stepSamples) - elapsedSamples;
+                    if (delay < 0) continue; // No chase: only note-ons still ahead of the seek/trim point.
+                    if (delay >= remainingSamples) continue;
+                    const auto gate = std::min(std::max<std::int64_t>(1, std::llround(note.lengthSteps * stepSamples)), remainingSamples - delay) + 1;
+                    if (delay == 0) play(snap, clips, c, note.velocity, 0, note.pitch - 60, gate, patternIndex, token);
+                    else schedule({now + delay, gate, note.velocity, 0, c, note.pitch - 60, patternIndex, token});
+                }
+                continue;
+            }
             const Step& s = p->steps[static_cast<std::size_t>(c)][static_cast<std::size_t>(step)];
-            if (!s.on || !snap.audible(c)) continue;
+            if (elapsedSamples > 0 || !s.on || !snap.audible(c)) continue;
             // The generator only advances for steps that can miss, so a pattern of
             // certain hits plays identically however the probabilities are edited elsewhere.
             // One draw decides the whole step, ratchets included.
@@ -238,32 +263,32 @@ private:
         }
     }
 
-    // A full queue drops the new hit, as a full voice pool steals one: bounded either way.
+    // A fixed-capacity min heap bounds both memory and scheduling work. No allocation.
     void schedule(const Pending& hit) noexcept {
         if (pendingCount >= maxPending) return;
         pending[static_cast<std::size_t>(pendingCount++)] = hit;
-        if (pendingCount == 1 || hit.due < nextDue) nextDue = hit.due;
+        std::push_heap(pending.begin(), pending.begin() + pendingCount, later);
+        nextDue = pending[0].due;
     }
     void firePending(const Snapshot& snap, const SampleTable& clips) noexcept {
-        std::int64_t soonest = std::numeric_limits<std::int64_t>::max();
-        for (int i = 0; i < pendingCount;) {
-            auto& hit = pending[static_cast<std::size_t>(i)];
-            if (hit.due <= now) {
-                const Pending due = hit;
-                hit = pending[static_cast<std::size_t>(--pendingCount)];
-                if (snap.audible(due.channel)) play(snap, clips, due.channel, due.velocity, due.pan, due.pitch, due.gate);
-                continue;
+        while (pendingCount > 0 && pending[0].due <= now) {
+            std::pop_heap(pending.begin(), pending.begin() + pendingCount, later);
+            const auto due = pending[static_cast<std::size_t>(--pendingCount)];
+            bool current = true;
+            if (due.sequence != 0) {
+                const auto* p = snap.pattern(due.pattern);
+                current = p && p->noteRevisions[static_cast<std::size_t>(due.channel)] == due.sequence;
             }
-            soonest = std::min(soonest, hit.due);
-            ++i;
+            if (current && snap.audible(due.channel))
+                play(snap, clips, due.channel, due.velocity, due.pan, due.pitch, due.gate, due.pattern, due.sequence);
         }
-        nextDue = soonest;
+        nextDue = pendingCount > 0 ? pending[0].due : std::numeric_limits<std::int64_t>::max();
     }
-    void play(const Snapshot& snap, const SampleTable& clips, int c, float velocity, float stepPan, int pitch, std::int64_t gate) noexcept {
+    void play(const Snapshot& snap, const SampleTable& clips, int c, float velocity, float stepPan, int pitch, std::int64_t gate, int pattern = -1, std::uint64_t sequence = 0) noexcept {
         const SessionAudioClip* clip = clips[static_cast<std::size_t>(c)].load(std::memory_order_relaxed);
         if (clip == nullptr) return;
         Voice& v = start(snap.channels[static_cast<std::size_t>(c)], c, clip, velocity, stepPan, pitch);
-        v.gateLeft = gate;
+        v.gateLeft = gate; v.pattern = pattern; v.sequence = sequence;
     }
 
     Voice& start(const Channel& channel, int index, const SessionAudioClip* clip, float velocity, float stepPan, int semitones,
@@ -331,7 +356,7 @@ private:
     }
 
     RackClock clock;
-    // The voice pool and the hit queue (about 22 KiB) live on the heap, allocated once here, so the
+    // The voice pool and fixed-capacity hit queue live on the heap, allocated once here, so the
     // engine that holds this player stays small enough for the tests that keep one on the stack.
     std::unique_ptr<std::array<Voice, voiceCount>> voiceStorage = std::make_unique<std::array<Voice, voiceCount>>();
     std::unique_ptr<std::array<Pending, maxPending>> pendingStorage = std::make_unique<std::array<Pending, maxPending>>();

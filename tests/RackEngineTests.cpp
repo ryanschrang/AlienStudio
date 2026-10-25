@@ -712,8 +712,53 @@ static void realTimeSafetyTests() {
     check(made == 0, "the audio path made no heap allocations (" + std::to_string(made) + ")");
 }
 
+static void melodicPlayback() {
+    PianoRollPattern notes; notes.loopSteps = 16;
+    notes.add(60, 0.25, 4, 1); notes.add(64, 0.25, 2, 1); notes.add(67, 1.5, 3, 1);
+    auto setup = [&](Rig& rig) {
+        rig.on(0, 0); // Dormant steps must not also trigger.
+        rig.project.setChannelNotes(0, 0, notes); rig.setClip(0, dc(48000 * 4)); rig.publish();
+    };
+    Rig a; setup(a); a.run(40000, true, 120, 4, 257);
+    near(peakOf(a.master(), 0, 1500), 0, 0, "fractional notes do not fire at their enclosing step");
+    near(a.master()[1500], 2 * kCenter, 0.0001, "both chord notes start at sample 1500");
+    near(a.master()[9000], 3 * kCenter, 0.0001, "later note overlaps the chord");
+    near(a.master()[13499], 3 * kCenter, 0.0001, "short chord note holds its full length");
+    check(a.master()[13500] < a.master()[13499], "short chord note releases independently after its exact duration");
+    check(peakOf(a.master(), 29000, 40000) < 0.001, "long notes release without waiting for sample end");
+    Rig b; setup(b); b.run(40000, true, 120, 4, 1);
+    check(a.master() == b.master(), "melodic playback is independent of callback size");
+    Rig cancel; setup(cancel); cancel.run(100, true);
+    PianoRollPattern empty; empty.loopSteps = 16;
+    cancel.project.setChannelNotes(0, 0, empty); cancel.publish(); cancel.run(10000, true);
+    near(peakOf(cancel.master(), 0, cancel.length()), 0, 0, "replaced notes cancel pending fractional hits");
+    Rig stopped; setup(stopped); stopped.run(100, true); stopped.run(10000, false);
+    near(peakOf(stopped.master(), 0, stopped.length()), 0, 0, "stop cancels queued melodic notes");
+    Rig muted; setup(muted); muted.run(2000, true);
+    auto channel = muted.project.channels[0]; channel.mute = true; muted.project.setChannel(0, channel); muted.publish(); muted.run(8000, true);
+    check(peakOf(muted.master(), 5000, 10000) < 0.001, "muting releases active melodic voices");
+    Rig timeline; setup(timeline);
+    std::array<std::vector<float>, RackPlayer::busCount> left, right;
+    std::array<float*, RackPlayer::busCount> pl{}, pr{};
+    for (std::size_t bus = 0; bus < pl.size(); ++bus) { left[bus].resize(12000); right[bus].resize(12000); pl[bus] = left[bus].data(); pr[bus] = right[bus].data(); }
+    RackPlayer::TimelineHit hit {0, 0, 0, 6000};
+    const auto before = allocations;
+    timeline.player.processTimeline(*timeline.snap, timeline.clips, true, &hit, 1, 120, 4, 12000, pl.data(), pr.data());
+    const auto after = allocations;
+    check(before == after, "melodic timeline scheduling and rendering allocate nothing");
+    near(left[RackPlayer::masterBus][1500], 2 * kCenter, 0.0001, "Song path plays fractional chords");
+    check(peakOf(left[RackPlayer::masterBus], 8500, 12000) < 0.001, "trimmed Song region limits note lengths");
+    for (std::size_t bus = 0; bus < pl.size(); ++bus) { std::fill(left[bus].begin(), left[bus].end(), 0); std::fill(right[bus].begin(), right[bus].end(), 0); }
+    timeline.player.prepare(48000);
+    hit = {0, 0, 0, 5000, 1000};
+    timeline.player.processTimeline(*timeline.snap, timeline.clips, true, &hit, 1, 120, 4, 12000, pl.data(), pr.data());
+    near(peakOf(left[RackPlayer::masterBus], 0, 500), 0, 0, "trim into a partial step waits for the note onset");
+    near(left[RackPlayer::masterBus][500], 2 * kCenter, 0.0001, "fractional chord ahead of a trim point still plays");
+}
+
 int main() {
     clockTests();
+    melodicPlayback();
     timingTests();
     voiceTests();
     stealingTests();
