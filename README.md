@@ -619,7 +619,7 @@ track) and a meter; track solo never silences a return, so a soloed track is
 still heard through its reverb. Put effects on a return in **Plugins** by
 choosing **Return A FX** (to **D**) as the destination: any stock effect or VST3
 effect works there, with up to eight per return and no instrument slot. Sends,
-return strips and return FX are saved with the project (format v13; older
+return strips and return FX are saved with the project (format v15; older
 projects open with every send off and the returns at 0 dB with no effects),
 are undoable, and are included in WAV export.
 
@@ -1115,3 +1115,31 @@ the unfinished take remains recoverable. Recovery chooses a new sibling filename
 when needed. Keep unfinished WAVs and journals together until recovery succeeds;
 never remove original source recordings to make space automatically. The
 tempo-warp renderer also streams from disk with no one-minute input cap.
+
+### Full Channel Rack piano-roll notes
+
+Open a rack channel with **Open in piano roll** or **Ctrl+P**. Editing now stores a full note sequence instead of converting it back to steps: lengths, fractional starts, overlapping notes, chords, velocity, chance and MIDI pitches 0-127 are retained. This works with the rack's existing sample channels; playback ends each note with a short release, and samples still end naturally if they are shorter than the note. Sustaining samples by looping, synth channels and VST3 instrument channels are later milestones.
+
+A melodic row displays a miniature note preview; clicking it opens Piano Roll. Drum rows retain gate/nudge/ratchet step sequencing. Step painting and row step tools do not overwrite melodic rows. **Clear this channel (notes and steps)** explicitly removes its notes and returns the row to step mode. Duplicate, move, delete, undo, pattern copies and save/open retain melodic data. Shortening a pattern is refused if it would cut an existing note; move/shorten those notes first. The initial import of a legacy drum row uses one-step notes, as before. Keep a row in step mode for gate/nudge/ratchet programming; the legacy import does not translate those controls into melodic notes.
+
+Projects with melodic rack rows use format 13; older projects still load as step rows. The sample player has 64 voices and a fixed scheduling queue, with no callback allocation. Song/WAV-export scheduling uses the same note path, clips note endings to region boundaries, and plays future fractional note-ons after a partial-step trim/seek. It does not chase notes whose starts have already passed.
+
+### Channel Rack built-in synth instruments
+
+Use **+ Channel > Built-in synth** and choose one of Alien Studio's 12 factory sounds (Lead, Bass, Pluck, Sub Bass, Acid Bass, Soft Pad, Strings, Brass, Square Lead, Organ, Electric Keys or Bell). A new instrument opens its empty piano roll. Draw long notes or chords; the synth sustains and uses its preset's release envelope when each note ends. Overlapping notes of the same pitch release independently. The rack has a shared 64-voice pool across samples and synths.
+
+Change the preset with **channel menu > Sound > Built-in synth**. Pan, volume, mute/solo and Output routing use the rack's existing controls. Choosing a drum, loading a sample, or choosing Silent switches the sound source; the channel's note data stays intact. Instrument selection, duplication and edits support undo/redo. Project format 14 saves the preset; older channels load as sample channels. Song playback and WAV export use the same synth path.
+
+Clicking a channel name gives a timed preview. Piano-roll key/chord previews can sustain until released; stop, app deactivation and panic release voices. On step-mode synth rows, full gate means one step (or one ratchet interval); sample full gate still means play the sample to its end. Live hardware MIDI and the global typing/on-screen keyboard keep their existing Session routing in this milestone. VST3 rack instruments, custom synth-patch editing and per-instrument MIDI input routing remain later work.
+
+### Live MIDI for Session instruments
+
+In **Plugins**, scan/select a VST3 instrument, choose a destination track and click **Use instrument**. Set **Live MIDI** to that track to play it from a hardware controller, the typing keyboard or the on-screen piano while stopped or playing. The same selector also plays Session built-in synths and drum kits. **Standalone synth** restores the separate live synth. The Drums input selector shares this route; plugin destination and live destination are independent.
+
+Hardware note channels, velocity, CC messages and pitch bend reach the selected VST3 instrument. Recording continues to monitor the armed recording track. Changing the live destination releases the previous instrument, and device reset/panic releases hardware notes. This route is a current-session control, not saved project data. Channel Rack VST3 slots and direct live input to Channel Rack channels remain a separate integration step.
+
+### Chord progression builder
+
+In Piano Roll, choose **Chord progression** in the processing tools list and click **Edit...**. Set a tonic MIDI note (48 = C3), Major or Natural minor, and four scale degrees. The initial 1-5-6-4 sequence becomes I-V-vi-IV in major; each triad's quality comes from the chosen scale. Change individual degrees to write your own sequence.
+
+**Steps / chord** uses sixteenth notes: 16 steps is one 4/4 bar. Apply inserts all four chords at the insertion cursor and selects their notes for further editing, strumming or arpeggiation. Existing notes remain. The sequence must fit inside the current loop and note limit; failures leave the clip unchanged. Undo/redo treats insertion as one edit. Use the normal transport to hear the inserted sequence. This tool does not copy another DAW's UI or include third-party chord content.

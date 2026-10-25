@@ -169,7 +169,7 @@ static void projectFormat() {
     require(alien::parseSessionProject(json, back, error), "and parses");
     require(back.trackSettings[1].send == project.trackSettings[1].send && back.trackSettings[1].sendPre == project.trackSettings[1].sendPre
             && back.returns == project.returns && back.returnPlugins == project.returnPlugins, "sends, return strips and return FX round-trip");
-    require(juce::JSON::parse(json).getProperty("version", 0) == juce::var(13), "projects are written as version 13");
+    require(juce::JSON::parse(json).getProperty("version", 0) == juce::var(15), "projects are written as version 15");
     {   // Version 12 and older: no returns and no sends.
         auto old = juce::JSON::parse(json);
         old.getDynamicObject()->setProperty("version", 12);

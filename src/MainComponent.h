@@ -62,7 +62,7 @@ public:
         drumPanel.onLoad = [this](int t, int p, const juce::File& f) { controller.loadDrum(f, t, p); };
         drumPanel.onClear = [this](int t, int p) { controller.clearDrum(t, p); refreshExtraViews(); };
         drumPanel.onHit = [this](int t, int p) { engine.drumAuditions[t].push(alien::drumBaseNote + p, 0.8f); };
-        drumPanel.onRoute = [this](int t) { engine.liveDrumTrack.store(t); };
+        drumPanel.onRoute = [this](int t) { releaseNotes(); engine.liveDrumTrack.store(t); refreshPlugins(); };
         wireTimeline();
         audioTools.onRecord = [this] { chooseRecording(); };
         audioTools.onSettings = [this] { showAudioSettings(); };
@@ -87,6 +87,7 @@ public:
         pluginPanel.setPreflightEnabled(preflight->enabled());
         pluginHost.preflight = [this](const juce::PluginDescription& description) { return preflight->verify(description); };
         scanDatabase.load(alien::scan::ScanDatabase::defaultFile());
+        pluginPanel.onLiveInput = [this](int track) { releaseNotes(); engine.liveDrumTrack.store(track); drumPanel.setLiveInput(track); };
         pluginPanel.onTarget = [this](int) { refreshPlugins(); };
         pluginPanel.onAdd = [this](bool instrument, int choice) { addPlugin(instrument,choice); };
         pluginPanel.onAction = [this](int op,int slot) { pluginAction(op,slot); };
@@ -448,15 +449,8 @@ private:
         pianoRoll.onEditCommitted = [this] {
             if (suppressPianoRollCommit) return;
             if (rollTarget.rack) {
-                // The rack already has the edit (one undo step per gesture). Show the notes as the steps hold them.
+                // The stored note sequence is authoritative; do not reload a lossy step conversion.
                 ++rollGesture;
-                if (rollFit.moved || rollFit.merged || rollFit.clamped) {
-                    statusBar.setProjectStatus(rollFit.merged ? "A step holds one note, so the last note placed on each step was kept."
-                                               : rollFit.clamped ? "Rack steps reach two octaves either side of middle C and stop at the pattern's end."
-                                               : "Rack notes sit on whole steps and last one step.", {});
-                    rollFit = {};
-                    loadSelectedClip();
-                }
                 return;
             }
             const auto& d = controller.document();
@@ -464,7 +458,7 @@ private:
         };
         pianoRoll.onAudition = [this](int note, float velocity) {
             if (rollTarget.rack) {
-                if (velocity > 0) controller.previewRackChannel(rollTarget.channel, velocity, note - alien::rack::channelRootPitch);
+                controller.previewRackChannel(rollTarget.channel, velocity, note - alien::rack::channelRootPitch, true);
                 return;
             }
             if (velocity > 0) keyboardState.noteOn(3, note, velocity);
@@ -1154,6 +1148,8 @@ private:
     }
     void refreshPlugins() {
         juce::StringArray names; for(const auto& t:controller.document().tracks) names.add(t.name);
+        pluginPanel.refreshLiveInput(names,engine.liveDrumTrack.load());
+        drumPanel.setLiveInput(engine.liveDrumTrack.load());
         const int t=pluginTarget();
         const auto& d=controller.document();
         pluginPanel.refresh(names,alien::PluginRuntime::isReturn(t)?d.returns[static_cast<std::size_t>(t-alien::PluginRuntime::returnBase)].plugins

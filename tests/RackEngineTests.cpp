@@ -712,8 +712,107 @@ static void realTimeSafetyTests() {
     check(made == 0, "the audio path made no heap allocations (" + std::to_string(made) + ")");
 }
 
+static void melodicPlayback() {
+    PianoRollPattern notes; notes.loopSteps = 16;
+    notes.add(60, 0.25, 4, 1); notes.add(64, 0.25, 2, 1); notes.add(67, 1.5, 3, 1);
+    auto setup = [&](Rig& rig) {
+        rig.on(0, 0); // Dormant steps must not also trigger.
+        rig.project.setChannelNotes(0, 0, notes); rig.setClip(0, dc(48000 * 4)); rig.publish();
+    };
+    Rig a; setup(a); a.run(40000, true, 120, 4, 257);
+    near(peakOf(a.master(), 0, 1500), 0, 0, "fractional notes do not fire at their enclosing step");
+    near(a.master()[1500], 2 * kCenter, 0.0001, "both chord notes start at sample 1500");
+    near(a.master()[9000], 3 * kCenter, 0.0001, "later note overlaps the chord");
+    near(a.master()[13499], 3 * kCenter, 0.0001, "short chord note holds its full length");
+    check(a.master()[13500] < a.master()[13499], "short chord note releases independently after its exact duration");
+    check(peakOf(a.master(), 29000, 40000) < 0.001, "long notes release without waiting for sample end");
+    Rig b; setup(b); b.run(40000, true, 120, 4, 1);
+    check(a.master() == b.master(), "melodic playback is independent of callback size");
+    Rig cancel; setup(cancel); cancel.run(100, true);
+    PianoRollPattern empty; empty.loopSteps = 16;
+    cancel.project.setChannelNotes(0, 0, empty); cancel.publish(); cancel.run(10000, true);
+    near(peakOf(cancel.master(), 0, cancel.length()), 0, 0, "replaced notes cancel pending fractional hits");
+    Rig stopped; setup(stopped); stopped.run(100, true); stopped.run(10000, false);
+    near(peakOf(stopped.master(), 0, stopped.length()), 0, 0, "stop cancels queued melodic notes");
+    Rig muted; setup(muted); muted.run(2000, true);
+    auto channel = muted.project.channels[0]; channel.mute = true; muted.project.setChannel(0, channel); muted.publish(); muted.run(8000, true);
+    check(peakOf(muted.master(), 5000, 10000) < 0.001, "muting releases active melodic voices");
+    Rig timeline; setup(timeline);
+    std::array<std::vector<float>, RackPlayer::busCount> left, right;
+    std::array<float*, RackPlayer::busCount> pl{}, pr{};
+    for (std::size_t bus = 0; bus < pl.size(); ++bus) { left[bus].resize(12000); right[bus].resize(12000); pl[bus] = left[bus].data(); pr[bus] = right[bus].data(); }
+    RackPlayer::TimelineHit hit {0, 0, 0, 6000};
+    const auto before = allocations;
+    timeline.player.processTimeline(*timeline.snap, timeline.clips, true, &hit, 1, 120, 4, 12000, pl.data(), pr.data());
+    const auto after = allocations;
+    check(before == after, "melodic timeline scheduling and rendering allocate nothing");
+    near(left[RackPlayer::masterBus][1500], 2 * kCenter, 0.0001, "Song path plays fractional chords");
+    check(peakOf(left[RackPlayer::masterBus], 8500, 12000) < 0.001, "trimmed Song region limits note lengths");
+    for (std::size_t bus = 0; bus < pl.size(); ++bus) { std::fill(left[bus].begin(), left[bus].end(), 0); std::fill(right[bus].begin(), right[bus].end(), 0); }
+    timeline.player.prepare(48000);
+    hit = {0, 0, 0, 5000, 1000};
+    timeline.player.processTimeline(*timeline.snap, timeline.clips, true, &hit, 1, 120, 4, 12000, pl.data(), pr.data());
+    near(peakOf(left[RackPlayer::masterBus], 0, 500), 0, 0, "trim into a partial step waits for the note onset");
+    near(left[RackPlayer::masterBus][500], 2 * kCenter, 0.0001, "fractional chord ahead of a trim point still plays");
+}
+
+static void synthChannels() {
+    const auto setup = [](Rig& rig) {
+        rig.project.setInstrumentPreset(0, 9); // Organ: sustaining, with a 60 ms release.
+        PianoRollPattern notes; notes.loopSteps = 16;
+        notes.add(60, 0, 8, 1); notes.add(60, 1, 2, 1);
+        rig.project.setChannelNotes(0, 0, notes); rig.publish();
+    };
+    Rig a; setup(a); a.run(24000, true, 120, 4, 257);
+    check(peakOf(a.master(), 1000, 5000) > 0.01 && a.player.activeVoices() == 1,
+          "same-pitch overlaps release independently and the longer synth note sustains");
+    a.run(32000, true);
+    check(a.player.activeVoices() == 0 && peakOf(a.master(), 54000, 56000) == 0, "note ends include the preset release, then exact silence");
+    Rig b; setup(b); b.run(24000, true, 120, 4, 1);
+    check(std::equal(b.master().begin(), b.master().end(), a.master().begin()), "synth output is callback-size independent");
+    Rig preview; preview.project.setInstrumentPreset(0, 9); preview.publish();
+    preview.player.audition(*preview.snap, 0, 1, nullptr, 0, true); preview.run(30000, false);
+    check(preview.player.activeVoices() == 1, "held piano-roll audition sustains beyond the timed preview");
+    preview.player.audition(*preview.snap, 0, 0, nullptr, 0, true); preview.run(4000, false);
+    check(!preview.player.busy(), "preview note-off releases its synth voice");
+    for (int preset = 0; preset < alien::presetCount; ++preset) {
+        Rig rig; rig.project.setInstrumentPreset(0, preset); rig.publish();
+        rig.player.audition(*rig.snap, 0, 1, nullptr); rig.run(96000, false);
+        check(peakOf(rig.master(), 0, 24000) > 0.001 && !rig.player.busy(), "every synth preset sounds without a sample and timed preview ends");
+    }
+    Rig stop; setup(stop); stop.run(5000, true); stop.run(4000, false);
+    check(!stop.player.busy(), "transport stop releases synths without a stuck sustain");
+    Rig mute; setup(mute); mute.run(5000, true);
+    auto settings = mute.project.channels[0]; settings.mute = true; mute.project.setChannel(0, settings); mute.publish(); mute.run(4000, true);
+    check(!mute.player.busy(), "mute releases synth voices");
+    Rig change; change.project.setInstrumentPreset(0, 9); change.publish();
+    change.player.audition(*change.snap, 0, 1, nullptr, 0, true); change.run(5000, false);
+    change.project.setSample(0, ""); change.publish(); change.run(4000, false);
+    check(!change.player.busy(), "switching a held synth to sample/silent releases the old instrument");
+    Rig steps; steps.project.setInstrumentPreset(0, 9); steps.on(0, 0); steps.publish(); steps.run(12000, true);
+    check(!steps.player.busy() && peakOf(steps.master(), 500, 5000) > 0.01, "synth step hits get finite one-step gates");
+    Rig route; setup(route); settings = route.project.channels[0]; settings.output = 2; settings.pan = 1;
+    route.project.setChannel(0, settings); route.publish(); route.run(512, false); route.run(12000, true);
+    check(peakOf(route.right[2], 512, 12000) > 0.01 && peakOf(route.left[2], 512, 12000) < 0.000001
+          && peakOf(route.master(), 512, 12000) == 0, "synths use the channel pan and selected mixer bus");
+    std::array<std::array<float, 512>, RackPlayer::busCount> left{}, right{};
+    std::array<float*, RackPlayer::busCount> pl{}, pr{};
+    for (std::size_t bus = 0; bus < pl.size(); ++bus) { pl[bus] = left[bus].data(); pr[bus] = right[bus].data(); }
+    Rig rt; setup(rt);
+    const auto before = allocations;
+    for (int block = 0; block < 150; ++block) {
+        rt.player.process(*rt.snap, rt.clips, block < 130, 120, 4, 512, pl.data(), pr.data());
+        if (block == 10) rt.player.audition(*rt.snap, 0, 1, nullptr, 12, true);
+        if (block == 20) rt.player.audition(*rt.snap, 0, 0, nullptr, 12, true);
+    }
+    const auto after = allocations;
+    check(before == after, "synth start, render, note-off and transport stop allocate no memory on the audio thread");
+}
+
 int main() {
+    synthChannels();
     clockTests();
+    melodicPlayback();
     timingTests();
     voiceTests();
     stealingTests();

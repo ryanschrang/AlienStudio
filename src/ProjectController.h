@@ -1068,8 +1068,8 @@ public:
     }
     // Channel Rack ------------------------------------------------------------
     const rack::Project& channelRack() const noexcept { return doc.channelRack; }
-    // The sound each rack channel plays, for a render on another thread (null where a channel is silent or its
-    // file is missing). Loaded files are added to `keepAlive`, which must outlive the render.
+    // Sample assets for a render on another thread (null for synth channels, silent channels or missing files).
+    // Synth presets travel in the rack snapshot. Loaded files in `keepAlive` must outlive the render.
     std::array<const SessionAudioClip*, rack::maxChannels> rackClipsForExport(std::vector<std::shared_ptr<const SessionAudioClip>>& keepAlive) const {
         std::array<const SessionAudioClip*, rack::maxChannels> clips{};
         for (int c = 0; c < doc.channelRack.channelCount; ++c) {
@@ -1110,17 +1110,28 @@ public:
     // not an undo step, and the engine does not need to hear about it.
     bool setRackNameColumnWidth(int width) { return doc.channelRack.setNameColumnWidth(width); }
     // Sounds a channel now, whatever the transport is doing (clicking its name).
-    void previewRackChannel(int channel, float velocity = 1.0f, int pitch = 0) {
+    void previewRackChannel(int channel, float velocity = 1.0f, int pitch = 0, bool held = false) {
         if (doc.channelRack.validChannel(channel))
-            engine.rackAuditions.push(ToneEngine::rackAuditionEvent(channel, std::clamp(pitch, rack::minStepPitch, rack::maxStepPitch)), velocity);
+            engine.rackAuditions.push(ToneEngine::rackAuditionEvent(channel, std::clamp(pitch, -rack::channelRootPitch, 127 - rack::channelRootPitch), held), velocity);
     }
-    // The channel's steps in `pattern`, rewritten from piano-roll notes (see RackChannelNotes.h). Edits with the same
+    // Full piano-roll notes for this channel, without conversion to steps. Edits with the same
     // coalesceKey made in quick succession are one undo step, so a whole drag in the piano roll is one.
     bool setRackChannelNotes(int pattern, int channel, const PianoRollPattern& notes, const juce::String& coalesceKey = {},
                              rack::ChannelNotesFit* fit = nullptr) {
         if (!doc.channelRack.validPattern(pattern) || !doc.channelRack.validChannel(channel)) return false;
-        const auto row = rack::stepsFromNotes(notes, doc.channelRack.pattern(pattern), channel, fit);
-        return editRack("Edit channel notes", [&](rack::Project& p) { return p.pasteRow(pattern, channel, row); }, coalesceKey);
+        if (fit) *fit = {};
+        if (!notes.valid() || notes.loopSteps != doc.channelRack.pattern(pattern).length) return false;
+        const auto existing = rack::channelNotes(doc.channelRack.pattern(pattern), channel);
+        if (rack::Pattern::sameNotes(existing, notes)) return false;
+        return editRack("Edit channel notes", [&](rack::Project& p) { return p.setChannelNotes(pattern, channel, notes); }, coalesceKey);
+    }
+    bool setRackSynth(int channel, int preset) {
+        if (preset < 0 || preset >= alien::presetCount) return false;
+        return editRack("Change channel instrument", [&](rack::Project& p) {
+            const bool changed = p.setInstrumentPreset(channel, preset);
+            if (changed) p.renameChannel(channel, alien::presetNames[static_cast<std::size_t>(preset)]);
+            return changed;
+        });
     }
     // Gives a channel one of the built-in drum sounds and names it after the sound.
     bool setRackBuiltin(int channel, const juce::String& soundId) {

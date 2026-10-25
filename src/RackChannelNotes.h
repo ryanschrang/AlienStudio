@@ -1,10 +1,7 @@
 #pragma once
-// A Channel Rack channel shown as notes in the piano roll (FL Studio's "channel piano roll").
-// Each lit step is a note one step long: the step's pitch is the note's distance from
-// channelRootPitch, its velocity and chance are the note's. Editing the notes rewrites the steps:
-// a note sits on the step it starts nearest to, keeps the step's pan, and is held to the
-// steps' pitch range. A step holds one hit, so of several notes on one step the last one placed
-// wins, and note lengths are not kept (steps have no length yet).
+// Channel Rack piano-roll adapter. Full note rows are authoritative. Legacy
+// step rows are imported on their first edit; stepsFromNotes remains an explicit
+// lossy conversion helper and is not used when committing piano-roll edits.
 #include "PianoRollSequence.h"
 #include "RackModel.h"
 #include <algorithm>
@@ -19,6 +16,7 @@ inline PianoRollPattern channelNotes(const Pattern& pattern, int channel) {
     PianoRollPattern notes;
     notes.loopSteps = pattern.length;
     if (channel < 0 || channel >= maxChannels) return notes;
+    if (pattern.notes[static_cast<std::size_t>(channel)]) return *pattern.notes[static_cast<std::size_t>(channel)];
     const auto& row = pattern.steps[static_cast<std::size_t>(channel)];
     for (int s = 0; s < pattern.length; ++s) {
         const auto& step = row[static_cast<std::size_t>(s)];

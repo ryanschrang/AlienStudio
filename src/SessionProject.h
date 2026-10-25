@@ -23,7 +23,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 13;
+inline constexpr int sessionProjectFormatVersion = 15;
 
 struct SessionProjectClip {
     SharedPianoRoll pattern;   // shared with the document; empty clips share nothing at all
@@ -41,7 +41,7 @@ struct SessionProjectData {
     alien::timeline::Timeline timeline;   // Absent before version 8: the old bar-based arrangement, converted on load.
     std::vector<PluginRackState> plugins;
     PluginRackState masterPlugins;
-    // Return tracks A-D and their FX. Absent before version 13: unity, centred, no FX (and every send off).
+    // Return tracks A-D and their FX. Absent before version 15: unity, centred, no FX (and every send off).
     std::array<ReturnSettings, maxReturns> returns{};
     ReturnRacks returnPlugins{};
     rack::Project channelRack = rack::Project::createDefault(); // Absent before version 7: the starting rack.
@@ -512,7 +512,7 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
             if (input.isInt()) track.input = static_cast<int>(input);
             if (stereoInput.isBool()) track.stereoInput = static_cast<bool>(stereoInput);
             if (monitor.isInt()) track.monitor = static_cast<int>(monitor);
-            // Sends are optional (absent before version 13: all off); when present there is one [level, pre] per return.
+            // Sends are optional (absent before version 15: all off); when present there is one [level, pre] per return.
             if (object->hasProperty("sends")) {
                 const auto sendsValue = object->getProperty("sends");
                 const auto* sends = sendsValue.getArray();

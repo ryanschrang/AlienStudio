@@ -94,8 +94,13 @@ public:
     alien::rack::SnapshotMailbox rackMailbox;
     alien::rack::RackPlayer::SampleTable rackSamples{};
     NoteQueue rackAuditions;
-    // A rack audition names a channel, and optionally a pitch in semitones (-24..24) to play it at.
-    static constexpr int rackAuditionEvent(int channel, int pitch = 0) noexcept { return pitch == 0 ? channel : channel | ((pitch + 25) << 8); }
+    // Rack preview pitch is relative to C4 (-60..67); retain the original packing for drum-range previews.
+    static constexpr int rackPreviewHeld = 1 << 25;
+    static constexpr int rackAuditionEvent(int channel, int pitch = 0, bool held = false) noexcept {
+        pitch = std::clamp(pitch, -60, 67);
+        const int encoded = pitch == 0 ? channel : (pitch >= -24 && pitch <= 24 ? channel | ((pitch + 25) << 8) : channel | ((pitch + 61) << 8) | (1 << 24));
+        return encoded | (held ? rackPreviewHeld : 0);
+    }
     std::atomic<int> rackStep{-1}; // step of the selected pattern that started last, or -1
 
     ToneEngine() noexcept {
@@ -248,10 +253,13 @@ private:
                 drumSamplers[t].setSample(pad, drumKits[t].samples[static_cast<std::size_t>(pad)].load());
         }
         const int requestedRoute = std::clamp(liveDrumTrack.load(), -1, static_cast<int>(sessionTracks) - 1);
-        const int route = requestedRoute >= 0 && (instrumentModes[static_cast<std::size_t>(requestedRoute)] == 1 || plugins->hasInstrument(static_cast<std::size_t>(requestedRoute))) ? requestedRoute : -1;
+        const int route = requestedRoute;
         if (route != currentLiveDrumTrack) {
+            resetMidiControllers();
             midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
             stopMidiDrums();
+            if (currentLiveDrumTrack >= 0) releaseMonitor(static_cast<std::size_t>(currentLiveDrumTrack));
+            synth.allSoundOff(0);
             for (int channel = 1; channel <= 16; ++channel) synth.allSoundOff(channel + 8);
             currentLiveDrumTrack = route;
         }
@@ -265,10 +273,11 @@ private:
         {   // Previews from the Channel Rack screen (sound whatever the transport is doing).
             NoteQueue::Event preview{};
             for (int n = 0; n < 64 && rackAuditions.pop(preview); ++n) {
-                const int channel = preview.note & 0xff, pitch = preview.note >> 8 == 0 ? 0 : (preview.note >> 8) - 25;
+                const int encoded = preview.note & ~rackPreviewHeld;
+                const int channel = encoded & 0xff, pitch = (encoded & (1 << 24)) != 0 ? ((encoded >> 8) & 0xffff) - 61 : encoded >> 8 == 0 ? 0 : (encoded >> 8) - 25;
                 if (!panic && preview.note >= 0 && channel < alien::rack::maxChannels)
                     rackPlayer.audition(*rackSnapshot, channel, preview.velocity,
-                                        rackSamples[static_cast<std::size_t>(channel)].load(std::memory_order_relaxed), pitch);
+                                        rackSamples[static_cast<std::size_t>(channel)].load(std::memory_order_relaxed), pitch, (preview.note & rackPreviewHeld) != 0);
             }
             if (rackAuditions.panic.exchange(false)) rackPlayer.stop();
         }
@@ -901,18 +910,27 @@ private:
         // The first step whose hit has not happened yet.
         const double content = std::max(0.0, timelineTick - static_cast<double>(region->start)) + static_cast<double>(region->offset);
         lane.nextStep = std::max<std::int64_t>(0, static_cast<std::int64_t>(std::floor(content / alien::timeline::ticksPerStep)) - 1);
-        while (rackStepTick(lane.nextStep) < content - 1.0e-6) ++lane.nextStep;
+        const auto* pattern = rackSnapshot->pattern(lane.source);
+        const bool hasNotes = pattern && std::any_of(pattern->notes.begin(), pattern->notes.end(), [](const auto& row) { return row != nullptr; });
+        if (hasNotes) {
+            while (rackStepTick(lane.nextStep) + alien::timeline::ticksPerStep <= content - 1.0e-6) ++lane.nextStep;
+        }
+        else while (rackStepTick(lane.nextStep) < content - 1.0e-6) ++lane.nextStep;
     }
     void fireRackSteps(int sample) noexcept {
         for (auto& lane : rackLaneState) {
             if (!lane.active) continue;
             const double content = timelineTick - static_cast<double>(lane.start) + static_cast<double>(lane.offset);
+            const auto noteEnd = song->timeline.loopEnabled && loopArmed ? std::min(lane.end, song->timeline.loopEnd) : lane.end;
             for (int guard = 0; guard < 4 && content >= rackStepTick(lane.nextStep) - 1.0e-9; ++guard) {
                 const double hitTick = static_cast<double>(lane.start - lane.offset) + rackStepTick(lane.nextStep);
                 if (hitTick >= static_cast<double>(lane.end)) break;    // swing pushed it past the end of the region
                 const auto* pattern = rackSnapshot->pattern(lane.source);
                 if (pattern != nullptr && rackHitCount < static_cast<int>(rackHits.size()))
-                    rackHits[static_cast<std::size_t>(rackHitCount++)] = {sample, lane.source, static_cast<int>(lane.nextStep % pattern->length)};
+                    rackHits[static_cast<std::size_t>(rackHitCount++)] = {sample, lane.source, static_cast<int>(lane.nextStep % pattern->length),
+                        std::max<std::int64_t>(1, static_cast<std::int64_t>(std::ceil((static_cast<double>(noteEnd) - timelineTick) / timelineRate))),
+                        timelineTick - hitTick > timelineRate + 1.0e-8
+                            ? std::max<std::int64_t>(0, std::llround((timelineTick - hitTick) / timelineRate)) : 0};
                 ++lane.nextStep;
             }
         }
@@ -1091,8 +1109,10 @@ private:
         const int wanted = recording.phase.load(std::memory_order_relaxed) != alien::RecordControls::idle
                                && validRecordingTarget(target, scene) ? target : -1;
         if (wanted == monitorTrack) return;
+        resetMidiControllers();
         midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); }); // releases through the old route
         if (monitorTrack >= 0) releaseMonitor(static_cast<std::size_t>(monitorTrack));
+        else if (currentLiveDrumTrack >= 0) releaseMonitor(static_cast<std::size_t>(currentLiveDrumTrack));
         else synth.allSoundOff(0);
         monitorTrack = wanted;
     }
@@ -1103,7 +1123,7 @@ private:
             for (int note = 0; note < 128; ++note) trackSynths[track].noteOff(note, source);
     }
     void routeToTrack(std::size_t track, int note, float velocity, int source) noexcept {
-        if (plugins->hasInstrument(track)) { plugins->note(track, note, velocity, velocity > 0); return; }
+        if (plugins->hasInstrument(track)) { plugins->note(track, note, velocity, velocity > 0, source == 64 ? 1 : source - 64); return; }
         if (instrumentModes[track] == 1) { if (velocity > 0) drumSamplers[track].noteOn(note, velocity, source - 56); return; }
         if (velocity > 0) trackSynths[track].noteOn(note, velocity, source);
         else trackSynths[track].noteOff(note, source);
@@ -1112,6 +1132,7 @@ private:
     void keyboardNote(int note, float velocity) noexcept {
         captureNote(note, velocity);
         if (monitorTrack >= 0) { routeToTrack(static_cast<std::size_t>(monitorTrack), note, velocity, 64); return; }
+        if (currentLiveDrumTrack >= 0) { routeToTrack(static_cast<std::size_t>(currentLiveDrumTrack), note, velocity, 64); return; }
         if (velocity > 0) synth.noteOn(note, velocity);
         else synth.noteOff(note);
     }
@@ -1125,14 +1146,14 @@ private:
         }
         if (currentLiveDrumTrack >= 0 && plugins->hasInstrument(static_cast<std::size_t>(currentLiveDrumTrack))) {
             const auto track = static_cast<std::size_t>(currentLiveDrumTrack);
-            if (note < 0) for (int n=0;n<128;++n) plugins->note(track,n,0,false);
-            else plugins->note(track,note,velocity,velocity>0);
+            if (note < 0) plugins->silence(track,channel);
+            else plugins->note(track,note,velocity,velocity>0,channel);
             return;
         }
         if (currentLiveDrumTrack >= 0) {
-            auto& sampler = drumSamplers[static_cast<std::size_t>(currentLiveDrumTrack)];
-            if (note < 0) sampler.stop(channel + 8);
-            else sampler.noteOn(note, velocity, channel + 8);
+            const auto track = static_cast<std::size_t>(currentLiveDrumTrack);
+            if (note < 0) releaseMonitor(track);
+            else routeToTrack(track, note, velocity, 64 + channel);
             return;
         }
         const int source = channel + 8; // Reserve source channels 2..5 for four Session tracks.
@@ -1147,8 +1168,8 @@ private:
                 if(controller==128) plugins->pitchWheel(track,midiChannel,value);
                 else plugins->controller(track,midiChannel,controller,value);
             } else if(instrumentModes[track]==0) {
-                if(controller==128) trackSynths[track].setPitchWheel(channel+9,value);
-                else if(controller==1) trackSynths[track].setModulation(channel+9,value);
+                if(controller==128) trackSynths[track].setPitchWheel(channel+65,value);
+                else if(controller==1) trackSynths[track].setModulation(channel+65,value);
             }
         };
         if(monitorTrack>=0) {apply(static_cast<std::size_t>(monitorTrack));return;}
@@ -1160,11 +1181,12 @@ private:
         for(int channel=0;channel<16;++channel) {
             synth.setPitchWheel(channel+9,8192); synth.setModulation(channel+9,0);
             for(std::size_t track=0;track<sessionTracks;++track) {
-                trackSynths[track].setPitchWheel(channel+9,8192);
-                trackSynths[track].setModulation(channel+9,0);
+                trackSynths[track].setPitchWheel(channel+65,8192);
+                trackSynths[track].setModulation(channel+65,0);
                 if(plugins->hasInstrument(track)) {
                     plugins->pitchWheel(track,channel+1,8192);
                     plugins->controller(track,channel+1,1,0);
+                    plugins->controller(track,channel+1,64,0);
                 }
             }
         }

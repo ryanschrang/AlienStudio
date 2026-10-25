@@ -847,7 +847,7 @@ static void patternBankAndToolbar() {
     shown.reset();
     clickButton(*addButton);
     items = entries(shown.menu);
-    require(shown.shown && items.size() == builtinSounds.size() + 1, "the + Channel menu lists every drum and a sampler");
+    require(shown.shown && items.size() == builtinSounds.size() + alien::presets.size() + 1, "the + Channel menu lists drums, synth presets and a sampler");
     for (std::size_t i = 0; i < builtinSounds.size(); ++i)
         require(entry(items, ChannelRackView::addSoundBase + static_cast<int>(i))->text == builtinSounds[i].name, "in the order of the built-in sounds");
     shown.done(ChannelRackView::addSoundBase + 6);
@@ -967,6 +967,31 @@ static void snapshots() {
     ui::StudioLookAndFeel look;
     juce::LookAndFeel::setDefaultLookAndFeel(&look);
     const char* directory = std::getenv("ALIEN_SNAPSHOT_DIR");
+    {
+        Rig rig(1180, 480); rig.view.addChannelCommand(ChannelRackView::addSynthBase + 9);
+        PianoRollPattern notes; notes.loopSteps = 16;
+        for (const int root : {48, 53, 55, 48}) {
+            const double start = static_cast<double>(notes.count / 3) * 4;
+            notes.add(root, start, 3.75); notes.add(root + 4, start, 3.75); notes.add(root + 7, start, 3.75);
+        }
+        rig.controller.setRackChannelNotes(0, 4, notes);
+        rig.view.refresh(); rig.grid.selectChannel(4);
+        writePng(rig.view.createComponentSnapshot(rig.view.getLocalBounds(), true, 1.0f), directory, "rack-synth-channel.png");
+    }
+    {
+        Rig rig(1180, 480);
+        PianoRollPattern notes; notes.loopSteps = 16;
+        for (int root : {48, 53, 55, 48}) {
+            const double start = static_cast<double>(notes.count / 3) * 4;
+            notes.add(root, start, 3.75); notes.add(root + 4, start, 3.75); notes.add(root + 7, start, 3.75);
+        }
+        rig.controller.setRackChannelNotes(0, 1, notes);
+        rig.controller.editRack("Fixture drums", [](Project& p) { for (int n : {0, 4, 8, 12}) p.setStepOn(0, 0, n, true); return true; });
+        rig.view.refresh(); rig.grid.selectChannel(1);
+        const auto image = rig.view.createComponentSnapshot(rig.view.getLocalBounds(), true, 1.0f);
+        require(hasDetail(image), "melodic rack preview draws");
+        writePng(image, directory, "rack-melodic-notes.png");
+    }
     for (const int length : {16, 32, 64}) {
         Rig rig(length == 64 ? 1000 : 1280, 720);
         rig.controller.editRack("Busy", [&](Project& p) {
@@ -1148,14 +1173,25 @@ static void channelPianoRollChecks() {
     // Through the controller: one undo step per gesture key.
     auto edited = rack::channelNotes(rig.rack().pattern(rig.rack().selectedPattern), 1);
     edited.add(channelRootPitch + 5, 2.0, 1.0);
-    require(c.setRackChannelNotes(rig.rack().selectedPattern, 1, edited, "gesture-1") && rig.step(1, 2).on && rig.step(1, 2).pitch == 5,
-            "the controller writes the notes into the channel's steps");
+    require(c.setRackChannelNotes(rig.rack().selectedPattern, 1, edited, "gesture-1") && rig.rack().isNoteChannel(0, 1) && rack::channelNotes(rig.rack().pattern(0), 1).count == edited.count,
+            "the controller stores the channel note sequence");
     edited.add(channelRootPitch + 1, 3.0, 1.0);
-    require(c.setRackChannelNotes(rig.rack().selectedPattern, 1, edited, "gesture-1") && rig.step(1, 3).on, "a second change in the same gesture");
-    require(c.undoLabel() == "Edit channel notes" && c.undo() && !rig.step(1, 2).on && !rig.step(1, 3).on, "one gesture is one undo step");
+    require(c.setRackChannelNotes(rig.rack().selectedPattern, 1, edited, "gesture-1") && rack::channelNotes(rig.rack().pattern(0), 1).count == edited.count, "a second change in the same gesture");
+    require(c.undoLabel() == "Edit channel notes" && c.undo() && !rig.rack().isNoteChannel(0, 1) && !rig.step(1, 2).on && !rig.step(1, 3).on, "one gesture is one undo step");
     require(!c.setRackChannelNotes(rig.rack().selectedPattern, 1, rack::channelNotes(rig.rack().pattern(rig.rack().selectedPattern), 1)),
             "notes that change nothing make no undo step");
     require(!c.setRackChannelNotes(rig.rack().selectedPattern, 99, edited) && !c.setRackChannelNotes(99, 1, edited), "invalid targets are refused");
+
+    auto melodic = rack::channelNotes(rig.rack().pattern(0), 1);
+    melodic.add(36, 0.25, 8); melodic.add(60, 0.25, 4); melodic.add(67, 0.25, 6);
+    require(c.setRackChannelNotes(0, 1, melodic, "chord") && rack::Pattern::sameNotes(rack::channelNotes(rig.rack().pattern(0), 1), melodic), "controller preserves long overlapping chords");
+    int openedMelody = -1;
+    rig.grid.onOpenPianoRoll = [&](int channel) { openedMelody = channel; };
+    const auto saved = rig.rack();
+    rig.grid.beginStroke(1, 0, false);
+    require(openedMelody == 1 && rig.rack() == saved, "clicking melodic row opens piano roll without rewriting notes");
+    rig.grid.onOpenPianoRoll = {};
+    require(c.undo() && !rig.rack().isNoteChannel(0, 1) && c.redo() && rig.rack().isNoteChannel(0, 1), "melodic mode and notes undo and redo together");
 
     // Auditions can carry a pitch; a plain channel number still auditions at the step's pitch 0.
     require(ToneEngine::rackAuditionEvent(3) == 3 && ToneEngine::rackAuditionEvent(15, -24) == (15 | (1 << 8))
@@ -1363,8 +1399,30 @@ static void nameColumnChecks() {
     std::cout << "PASS: resizable name column\n";
 }
 
+static void synthChannelChecks() {
+    Rig rig;
+    auto& view = rig.view; auto& grid = rig.grid;
+    const auto items = entries(view.addChannelMenu());
+    for (int preset = 0; preset < alien::presetCount; ++preset)
+        require(entry(items, ChannelRackView::addSynthBase + preset) && entry(items, ChannelRackView::addSynthBase + preset)->text == alien::presetNames[static_cast<std::size_t>(preset)], "all built-in synth sounds are discoverable");
+    int opened = -1; grid.onOpenPianoRoll = [&](int channel) { opened = channel; };
+    view.addChannelCommand(ChannelRackView::addSynthBase + 9);
+    require(rig.rack().channelCount == 5 && rig.rack().channels[4].instrumentPreset == 9 && rig.rack().info[4].sample.empty()
+            && rig.rack().isNoteChannel(0, 4) && grid.selectedChannel() == 4 && opened == 4, "adding a synth selects it and opens its empty piano roll");
+    require(rig.controller.undo() && rig.rack().channelCount == 4 && rig.controller.redo() && rig.rack().channels[4].instrumentPreset == 9, "adding an instrument is a single undoable edit");
+    view.refresh();
+    const auto menu = entries(grid.channelMenu(4));
+    require(entry(menu, ChannelRackGrid::synthBase + 9)->ticked && !entry(menu, ChannelRackGrid::cmdSilent)->ticked, "synth preset is checked and does not appear silent");
+    grid.runChannelCommand(4, ChannelRackGrid::synthBase + 5);
+    require(rig.rack().channels[4].instrumentPreset == 5 && rig.rack().isNoteChannel(0, 4), "changing presets keeps the note sequence");
+    grid.runChannelCommand(4, ChannelRackGrid::builtinBase);
+    require(!rig.rack().channels[4].isSynth() && rig.rack().info[4].sample == "builtin:kick", "choosing a drum switches the instrument source back to samples");
+    grid.onOpenPianoRoll = {};
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    synthChannelChecks();
     nameColumnChecks();
     channelPianoRollChecks();
     multiSelectChecks();

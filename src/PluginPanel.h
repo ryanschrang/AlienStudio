@@ -16,18 +16,21 @@ public:
     // Choice ids: stock effects are stockBase + catalog index; scanned VST3 plugins are index + 1.
     static constexpr int stockBase = 1000;
     PluginPanel() {
-        for (auto* c:std::array<juce::Component*,13>{&target,&available,&slot,&scan,&cancelScan,&addInstrument,&addEffect,&open,&bypass,&up,&down,&remove,&status}) addAndMakeVisible(c);
+        for (auto* c:std::array<juce::Component*,14>{&target,&available,&slot,&liveInput,&scan,&cancelScan,&addInstrument,&addEffect,&open,&bypass,&up,&down,&remove,&status}) addAndMakeVisible(c);
         cancelScan.setVisible(false);
         scan.setButtonText("Scan VST3..."); cancelScan.setButtonText("Cancel scan"); addInstrument.setButtonText("Use instrument"); addEffect.setButtonText("Add FX");
         open.setButtonText("Open editor"); bypass.setButtonText("Bypass / enable"); up.setButtonText("Move FX up"); down.setButtonText("Move FX down"); remove.setButtonText("Remove");
         available.setTextWhenNothingSelected("Choose a stock effect or a scanned VST3 plugin");
         target.setName("Plugin destination track, return or master"); available.setName("Stock effects and scanned VST3 plugins"); slot.setName("Instrument or FX slot");
+        liveInput.setName("Live MIDI destination");
+        liveInput.setTooltip("Hardware MIDI, typing keyboard and on-screen piano. Recording uses its armed track.");
+        liveInput.onChange=[this]{if(onLiveInput)onLiveInput(liveInput.getSelectedId()-2);};
         target.onChange=[this]{if(onTarget)onTarget(target.getSelectedId()-1);};
         scan.onClick=[this]{showScanMenu();}; cancelScan.onClick=[this]{if(onCancelScan)onCancelScan();};
         addInstrument.onClick=[this]{if(onAdd)onAdd(true,available.getSelectedId());};
         addEffect.onClick=[this]{if(onAdd)onAdd(false,available.getSelectedId());};
         open.onClick=[this]{action(0);}; bypass.onClick=[this]{action(1);}; remove.onClick=[this]{action(2);}; up.onClick=[this]{action(3);}; down.onClick=[this]{action(4);};
-        setStatus("Pick a destination and add one of Alien Studio's stock effects (EQ, compressor, reverb, delay, limiter), or scan a 64-bit .vst3 bundle for an instrument or FX. MIDI routing is selected in Drums.");
+        setStatus("Pick a destination and add one of Alien Studio's stock effects (EQ, compressor, reverb, delay, limiter), or scan a 64-bit .vst3 bundle for an instrument or FX. Choose a Live MIDI destination below to play an instrument with your MIDI controller or piano keyboard.");
     }
     std::function<void(ScanCommand)> onScanCommand;
     std::function<void()> onCancelScan;
@@ -35,6 +38,13 @@ public:
     // Arguments: destination (a track index, maxSessionTracks for Master FX, or a return's rack index after it) and slot (-1 instrument, 0.. FX).
     std::function<juce::String(int,int)> health;
     std::function<void(int)> onTarget;
+    std::function<void(int)> onLiveInput;
+    void refreshLiveInput(const juce::StringArray& names, int selected) {
+        liveInput.clear(juce::dontSendNotification);
+        liveInput.addItem("Live MIDI: standalone synth",1);
+        for(int i=0;i<names.size();++i) liveInput.addItem("Live MIDI: "+names[i],i+2);
+        liveInput.setSelectedId(selected>=0 && selected<names.size()?selected+2:1,juce::dontSendNotification);
+    }
     std::function<void(bool,int)> onAdd;
     std::function<void(int,int)> onAction;
     int destination() const { return target.getSelectedId()-1; }
@@ -91,6 +101,7 @@ public:
     void resized() override {
         auto r=getLocalBounds().reduced(20);auto row=r.removeFromTop(32);
         target.setBounds(row.removeFromLeft(190)); row.removeFromLeft(12); scan.setBounds(row.removeFromLeft(140)); row.removeFromLeft(8); cancelScan.setBounds(row.removeFromLeft(130));
+        r.removeFromTop(12);liveInput.setBounds(r.removeFromTop(30));
         r.removeFromTop(12);available.setBounds(r.removeFromTop(30));r.removeFromTop(12);row=r.removeFromTop(32);
         addInstrument.setBounds(row.removeFromLeft(150));row.removeFromLeft(10);addEffect.setBounds(row.removeFromLeft(120));
         r.removeFromTop(20);slot.setBounds(r.removeFromTop(30));r.removeFromTop(12);row=r.removeFromTop(32);
@@ -101,7 +112,7 @@ private:
     juce::String problem(int where,int index) const{if(!health)return {};const auto text=health(where,index);return text.isEmpty()?juce::String():"  ["+text+"]";}
     static juce::String name(const PluginState& p){auto xml=juce::parseXML(p.descriptionXml);return (xml?xml->getStringAttribute("name"):"Empty")+(p.bypass?" [bypassed]":"");}
     void action(int op){if(onAction && slot.getSelectedId()>0)onAction(op,slot.getSelectedId()-2);}
-    juce::ComboBox target,available,slot;
+    juce::ComboBox target,available,slot,liveInput;
     juce::TextButton scan,cancelScan,addInstrument,addEffect,open,bypass,up,down,remove;
     juce::Label status;
     bool scanning{},preflightEnabled{true};
