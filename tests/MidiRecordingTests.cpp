@@ -297,7 +297,11 @@ void menuTests() {
 // --- The engine ----------------------------------------------------------------
 
 struct Rig {
-    ToneEngine engine;
+    // Debug builds reserve separate stack slots for the many rigs in each test.
+    // Keep the production-sized engine off Windows' default 1 MiB thread stack,
+    // just as ControllerRig does below. Allocation still precedes callback checks.
+    std::unique_ptr<ToneEngine> engineStorage{std::make_unique<ToneEngine>()};
+    ToneEngine& engine{*engineStorage};
     std::array<float, 1024> left{}, right{};
     long long total = 0; // samples rendered
     Rig() { engine.prepare(48000); engine.patternMode.store(1); }
@@ -321,6 +325,7 @@ struct Rig {
     }
     int phase() const { return engine.recording.phase.load(); }
 };
+static_assert(sizeof(Rig) < 16 * 1024, "Keep MIDI recording fixtures small enough for the Windows test stack");
 
 void queueClip(ToneEngine& e, int track, int scene, const PianoRollPattern& pattern = {}) {
     e.requestedPianoRollClip[static_cast<std::size_t>(track)].store(scene);
