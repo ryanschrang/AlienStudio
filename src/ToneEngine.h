@@ -244,10 +244,13 @@ private:
                 drumSamplers[t].setSample(pad, drumKits[t].samples[static_cast<std::size_t>(pad)].load());
         }
         const int requestedRoute = std::clamp(liveDrumTrack.load(), -1, static_cast<int>(sessionTracks) - 1);
-        const int route = requestedRoute >= 0 && (instrumentModes[static_cast<std::size_t>(requestedRoute)] == 1 || plugins->hasInstrument(static_cast<std::size_t>(requestedRoute))) ? requestedRoute : -1;
+        const int route = requestedRoute;
         if (route != currentLiveDrumTrack) {
+            resetMidiControllers();
             midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
             stopMidiDrums();
+            if (currentLiveDrumTrack >= 0) releaseMonitor(static_cast<std::size_t>(currentLiveDrumTrack));
+            synth.allSoundOff(0);
             for (int channel = 1; channel <= 16; ++channel) synth.allSoundOff(channel + 8);
             currentLiveDrumTrack = route;
         }
@@ -1078,8 +1081,10 @@ private:
         const int wanted = recording.phase.load(std::memory_order_relaxed) != alien::RecordControls::idle
                                && validRecordingTarget(target, scene) ? target : -1;
         if (wanted == monitorTrack) return;
+        resetMidiControllers();
         midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); }); // releases through the old route
         if (monitorTrack >= 0) releaseMonitor(static_cast<std::size_t>(monitorTrack));
+        else if (currentLiveDrumTrack >= 0) releaseMonitor(static_cast<std::size_t>(currentLiveDrumTrack));
         else synth.allSoundOff(0);
         monitorTrack = wanted;
     }
@@ -1090,7 +1095,7 @@ private:
             for (int note = 0; note < 128; ++note) trackSynths[track].noteOff(note, source);
     }
     void routeToTrack(std::size_t track, int note, float velocity, int source) noexcept {
-        if (plugins->hasInstrument(track)) { plugins->note(track, note, velocity, velocity > 0); return; }
+        if (plugins->hasInstrument(track)) { plugins->note(track, note, velocity, velocity > 0, source == 64 ? 1 : source - 64); return; }
         if (instrumentModes[track] == 1) { if (velocity > 0) drumSamplers[track].noteOn(note, velocity, source - 56); return; }
         if (velocity > 0) trackSynths[track].noteOn(note, velocity, source);
         else trackSynths[track].noteOff(note, source);
@@ -1099,6 +1104,7 @@ private:
     void keyboardNote(int note, float velocity) noexcept {
         captureNote(note, velocity);
         if (monitorTrack >= 0) { routeToTrack(static_cast<std::size_t>(monitorTrack), note, velocity, 64); return; }
+        if (currentLiveDrumTrack >= 0) { routeToTrack(static_cast<std::size_t>(currentLiveDrumTrack), note, velocity, 64); return; }
         if (velocity > 0) synth.noteOn(note, velocity);
         else synth.noteOff(note);
     }
@@ -1112,14 +1118,14 @@ private:
         }
         if (currentLiveDrumTrack >= 0 && plugins->hasInstrument(static_cast<std::size_t>(currentLiveDrumTrack))) {
             const auto track = static_cast<std::size_t>(currentLiveDrumTrack);
-            if (note < 0) for (int n=0;n<128;++n) plugins->note(track,n,0,false);
-            else plugins->note(track,note,velocity,velocity>0);
+            if (note < 0) plugins->silence(track,channel);
+            else plugins->note(track,note,velocity,velocity>0,channel);
             return;
         }
         if (currentLiveDrumTrack >= 0) {
-            auto& sampler = drumSamplers[static_cast<std::size_t>(currentLiveDrumTrack)];
-            if (note < 0) sampler.stop(channel + 8);
-            else sampler.noteOn(note, velocity, channel + 8);
+            const auto track = static_cast<std::size_t>(currentLiveDrumTrack);
+            if (note < 0) releaseMonitor(track);
+            else routeToTrack(track, note, velocity, 64 + channel);
             return;
         }
         const int source = channel + 8; // Reserve source channels 2..5 for four Session tracks.
@@ -1134,8 +1140,8 @@ private:
                 if(controller==128) plugins->pitchWheel(track,midiChannel,value);
                 else plugins->controller(track,midiChannel,controller,value);
             } else if(instrumentModes[track]==0) {
-                if(controller==128) trackSynths[track].setPitchWheel(channel+9,value);
-                else if(controller==1) trackSynths[track].setModulation(channel+9,value);
+                if(controller==128) trackSynths[track].setPitchWheel(channel+65,value);
+                else if(controller==1) trackSynths[track].setModulation(channel+65,value);
             }
         };
         if(monitorTrack>=0) {apply(static_cast<std::size_t>(monitorTrack));return;}
@@ -1147,11 +1153,12 @@ private:
         for(int channel=0;channel<16;++channel) {
             synth.setPitchWheel(channel+9,8192); synth.setModulation(channel+9,0);
             for(std::size_t track=0;track<sessionTracks;++track) {
-                trackSynths[track].setPitchWheel(channel+9,8192);
-                trackSynths[track].setModulation(channel+9,0);
+                trackSynths[track].setPitchWheel(channel+65,8192);
+                trackSynths[track].setModulation(channel+65,0);
                 if(plugins->hasInstrument(track)) {
                     plugins->pitchWheel(track,channel+1,8192);
                     plugins->controller(track,channel+1,1,0);
+                    plugins->controller(track,channel+1,64,0);
                 }
             }
         }

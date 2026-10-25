@@ -1108,6 +1108,12 @@ Change the preset with **channel menu > Sound > Built-in synth**. Pan, volume, m
 
 Clicking a channel name gives a timed preview. Piano-roll key/chord previews can sustain until released; stop, app deactivation and panic release voices. On step-mode synth rows, full gate means one step (or one ratchet interval); sample full gate still means play the sample to its end. Live hardware MIDI and the global typing/on-screen keyboard keep their existing Session routing in this milestone. VST3 rack instruments, custom synth-patch editing and per-instrument MIDI input routing remain later work.
 
+### Live MIDI for Session instruments
+
+In **Plugins**, scan/select a VST3 instrument, choose a destination track and click **Use instrument**. Set **Live MIDI** to that track to play it from a hardware controller, the typing keyboard or the on-screen piano while stopped or playing. The same selector also plays Session built-in synths and drum kits. **Standalone synth** restores the separate live synth. The Drums input selector shares this route; plugin destination and live destination are independent.
+
+Hardware note channels, velocity, CC messages and pitch bend reach the selected VST3 instrument. Recording continues to monitor the armed recording track. Changing the live destination releases the previous instrument, and device reset/panic releases hardware notes. This route is a current-session control, not saved project data. Channel Rack VST3 slots and direct live input to Channel Rack channels remain a separate integration step.
+
 ### Chord progression builder
 
 In Piano Roll, choose **Chord progression** in the processing tools list and click **Edit...**. Set a tonic MIDI note (48 = C3), Major or Natural minor, and four scale degrees. The initial 1-5-6-4 sequence becomes I-V-vi-IV in major; each triad's quality comes from the chosen scale. Change individual degrees to write your own sequence.

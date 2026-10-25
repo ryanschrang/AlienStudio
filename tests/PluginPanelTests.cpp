@@ -27,9 +27,17 @@ int main() {
     juce::ScopedJuceInitialiser_GUI juceInit;
     PluginPanel panel; panel.setSize(900, 400);
     auto boxes = combos(panel);
-    check(boxes.size() == 3, "the panel has a destination, a plugin and a slot chooser");
+    check(boxes.size() == 4, "the panel has a destination, a plugin and a slot chooser");
     auto& slot = *boxes[2];
     const juce::StringArray tracks{"Track 1", "Track 2"};
+    int liveRoute=-99;
+    panel.onLiveInput=[&](int value){liveRoute=value;};
+    panel.refreshLiveInput(tracks,1);
+    check(boxes[3]->getSelectedId()==3 && liveRoute==-99,"route refresh is silent and preserves track");
+    boxes[3]->setSelectedId(2,juce::dontSendNotification); boxes[3]->onChange();
+    check(liveRoute==0,"live input selects track zero");
+    boxes[3]->setSelectedId(1,juce::dontSendNotification); boxes[3]->onChange();
+    check(liveRoute==-1,"live input returns to standalone synth");
     PluginRackState rack; rack.instrument = vst3("Big Synth"); rack.effects = {vst3("Verb"), vst3("Comp", true), vst3("Delay")};
     juce::KnownPluginList list;
 

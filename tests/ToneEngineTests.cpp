@@ -578,6 +578,15 @@ static void drumTrackIntegrationTests() {
     require(offline.render(512) == 0, "changing MIDI route stops previous drum");
     e.midi.push(token, 0x90, 60, 100); require(offline.render(512) > 0, "live synth route still works");
     e.liveDrumTrack.store(0); require(offline.render(512) == 0, "changing from synth to kit clears old MIDI synth");
+    e.liveDrumTrack.store(1); offline.render(512);
+    e.notes.push(60,1);
+    require(offline.render(512)>0,"typing piano plays selected Session synth");
+    e.notes.push(60,0); offline.render(48000);
+    require(offline.render(512)==0,"selected Session synth releases typing note");
+    e.midi.push(token,0x90,60,100);
+    require(offline.render(512)>0,"hardware MIDI plays selected Session synth");
+    e.liveDrumTrack.store(-1); offline.render(48000);
+    require(offline.render(512)==0,"changing live route releases Session synth");
     e.drumAuditions[0].push(36, 1); offline.render(256);
     e.drumKits[0].samples[0].store(nullptr);
     require(offline.render(512) == 0, "clearing a pad stops retained sample playback");
