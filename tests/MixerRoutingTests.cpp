@@ -2,6 +2,8 @@
 // delay compensation through the returns, no allocation while mixing, the project format,
 // undo, and the mixer and plugin panels.
 #include "ToneEngine.h"
+#include "WavExport.h"
+#include <limits>
 #include "PluginHost.h"
 #include "PluginPanel.h"
 #include "ProjectController.h"
@@ -275,8 +277,47 @@ static void undoAndPanels() {
     require(returns == saved, "and its saved state survives a snapshot");
 }
 
+static void stemCaptureTiming() {
+    Rig rig; rig.returnEffect(0,1.0f,4);
+    rig.track().send[0].store(0.5f); rig.track().send[1].store(0.5f);
+    rig.engine->stemCapture=std::make_unique<alien::StemCapture>();
+    rig.engine->stemCapture->prepare();
+    float* outputs[]{rig.left.data(),rig.right.data()};
+    const auto before=allocations;
+    rig.engine->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,512,{});
+    require(allocations == before, "capturing stems allocates nothing on audio callback");
+    const auto& buses=rig.engine->stemCapture->buses;
+    for (int i=0;i<512;++i) {
+        float sum=0; for (const auto& bus : buses) sum+=bus.getSample(0,i);
+        require(approx(sum,rig.left[static_cast<std::size_t>(i)]), "captured buses reconstruct the pre-master mix");
+    }
+    const auto first=[&](int bus) { int i=0; while(i<512 && std::abs(buses[static_cast<std::size_t>(bus)].getSample(0,i))<1e-7f) ++i; return i; };
+    require(first(0)==4 && first(alien::StemCapture::returnBase)==4 && first(alien::StemCapture::returnBase+1)==4,
+        "dry track, delayed return and immediate return stems align");
+}
+
+static void stemPluginFailure() {
+    auto project=std::make_unique<alien::SessionProjectData>();
+    auto song=std::make_unique<alien::ArrangementPlayback>(); song->timeline.setLengthBars(1);
+    alien::timeline::Region region; region.row=0; region.source=0;
+    require(song->timeline.place(region), "failure fixture region"); project->timeline=song->timeline;
+    auto engine=std::make_unique<ToneEngine>();
+    auto& master=engine->plugins->racks[alien::PluginRuntime::masterIndex];
+    master.effectCount=1; master.effects[0].processor=std::make_unique<TestProcessor>(false,0.5f);
+    auto& bad=engine->plugins->racks[alien::PluginRuntime::returnIndex(0)];
+    bad.effectCount=1; bad.effects[0].processor=std::make_unique<TestProcessor>(false,std::numeric_limits<float>::quiet_NaN());
+    const auto folder=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("AlienFaultStems","",false);
+    alien::WavExportOptions options; options.stems=true;
+    alien::DrumSamplePointers drums{}; std::atomic<bool> stop{false}; juce::String error;
+    require(!alien::exportArrangementWav(folder,*project,*song,drums,stop,error,engine.get(),options)
+        && error.containsIgnoreCase("plugin failed") && !folder.exists(), "plugin failure never publishes partial stems");
+    require(!master.effects[0].bypass, "export restores the supplied engine's master bypass state");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    stemPluginFailure();
+    stemCaptureTiming();
     sendLevels();
     returnStrips();
     delayCompensation();

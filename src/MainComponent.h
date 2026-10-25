@@ -358,6 +358,7 @@ private:
     // the transport, and double-clicking a clip opens what it plays.
     void wireTimeline() {
         timelineView.onExport = [this](std::int64_t from, std::int64_t to) { chooseWavExport(from, to); };
+        timelineView.onExportStems = [this](std::int64_t from, std::int64_t to) { chooseStemExport(from, to); };
         timelineView.onTitleChanged = [this] { if (tabs.getCurrentTabIndex() == 5) updateEditorTitle(); };
         auto& canvas = timelineView.timelineCanvas();
         // The audio callback receives only the enabled inputs, in order; a track's input counts among those.
@@ -1089,12 +1090,23 @@ private:
         exportFileChooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
             [safe, from, to](const juce::FileChooser& chooser) { if (safe && chooser.getResult() != juce::File{}) safe->exportWav(chooser.getResult().withFileExtension("wav"), from, to); });
     }
-    void exportWav(juce::File file, std::int64_t from = 0, std::int64_t to = -1) {
+    void chooseStemExport(std::int64_t from, std::int64_t to) {
+        if (exportCancellation) { exportCancellation->store(true); return; }
+        if (projectBusy || controller.isBusy()) return;
+        exportFileChooser = std::make_unique<juce::FileChooser>("Choose parent folder for stems", juce::File{}, "*");
+        juce::Component::SafePointer<MainComponent> safe(this);
+        exportFileChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+            [safe, from, to](const juce::FileChooser& chooser) {
+                if (safe && chooser.getResult().isDirectory())
+                    safe->exportWav(chooser.getResult().getNonexistentChildFile("Alien Studio stems", "", false), from, to, true);
+            });
+    }
+    void exportWav(juce::File file, std::int64_t from = 0, std::int64_t to = -1, bool stems = false) {
         if (projectBusy || controller.isBusy()) return;
         snapshotPlugins();
         auto song = controller.captureArrangement();
         alien::WavExportOptions options;
-        options.fromTick = from; options.toTick = to;
+        options.fromTick = from; options.toTick = to; options.stems = stems;
         auto keepAlive = std::make_shared<std::vector<std::shared_ptr<const alien::SessionAudioClip>>>();
         options.rackClips = controller.rackClipsForExport(*keepAlive);
         auto project = std::make_shared<alien::SessionProjectData>(alien::toProjectData(controller.document()));
@@ -1102,13 +1114,13 @@ private:
         renderEngine->prepare(48000);
         // Kept until the export ends: a plugin that fails during the render is reported through it.
         auto renderHost = std::make_shared<alien::PluginHost>(*renderEngine->plugins, hostLogFile());
-        { const auto errors=renderHost->restore(pluginStates(),controller.document().masterPlugins,controller.returnRacks(),48000);
+        { const auto errors=renderHost->restore(pluginStates(),stems ? alien::PluginRackState{} : controller.document().masterPlugins,controller.returnRacks(),48000);
           if(errors.isNotEmpty()){ timelineView.setStatus("Export stopped: " + errors);return; } }
         auto assets = controller.document();
         alien::DrumSamplePointers drums{};
         for (int t = 0; t < assets.trackCount(); ++t) for (int p = 0; p < alien::drumPadCount; ++p) drums[t][p] = assets.tracks[t].drumAssets[p].get();
         exportCancellation = std::make_shared<std::atomic<bool>>(false); auto cancel = exportCancellation;
-        setProjectBusy(true); timelineView.setExporting(true); timelineView.setStatus("Exporting WAV. Click Cancel export to stop.");
+        setProjectBusy(true); timelineView.setExporting(true); timelineView.setStatus(stems ? "Exporting stems. Click Cancel export to stop." : "Exporting WAV. Click Cancel export to stop.");
         juce::Component::SafePointer<MainComponent> safe(this);
         // The engine and host are handed to the message thread when the render ends, so the plugins are destroyed there (plugins expect that).
         std::function<juce::ThreadPoolJob::JobStatus()> job = [safe, file, song, project, assets, drums, cancel, renderEngine, renderHost, options, keepAlive]() mutable {

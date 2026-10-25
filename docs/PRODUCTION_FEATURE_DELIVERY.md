@@ -38,3 +38,24 @@ Verify stem sums against the corresponding mix, long files and portability.
 Main: 80e2fff. #78 merged. #82 merged into the former #78 branch after its main
 merge, so synth/MIDI work remains outside main. #84 owns sends/returns. Recheck
 before shared-code changes. Separate branches can still need conflict resolution.
+
+## Stem export increment (based on main 2b2fef1)
+
+Sends/returns from #84 are now on main; take-comp PR #88 remains separate.
+Song's export menu now offers whole-song and loop-range stems. An offline-only
+capture object records post-track-mixer buses, post-return-mixer buses, and the
+direct-to-master Channel Rack bus in one render. Dry captures receive the same
+return latency compensation as the mix. Every WAV has the same aligned start
+and duration. Master FX/gain/final limiting are excluded, and PCM clipping can
+prevent exact reconstruction for hot individual stems. Plugin tails retain the
+host's existing 30-second cap.
+
+Output is staged in a generated sibling directory and published only after all
+writers finish. Cancellation, plugin faults, read errors and write errors discard
+the staging directory; existing destinations are refused. No project-format
+change is required. Tests cover stem sums, alignment, callback allocations,
+master exclusion, names, folder collision, cancellation and source/plugin errors.
+
+Next: freeze/unfreeze needs a separately persisted original track state and a
+pre-fader render path, with bypass/substitution that does not apply FX or
+volume/pan automation twice. It is not implemented by this stem increment.

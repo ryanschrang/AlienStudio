@@ -14,6 +14,7 @@
 #include "Arrangement.h"
 #include "AudioCapture.h"
 #include "PluginRuntime.h"
+#include "StemCapture.h"
 #include "MidiRecording.h"
 #include "SongRecording.h"
 #include "RackEngine.h"
@@ -55,6 +56,7 @@ public:
     std::atomic<int> bpm{120}, currentStep{-1}, preset{0};
     std::array<alien::TrackControls, sessionTracks> tracks;
     std::array<alien::ReturnControls, alien::maxReturns> returns;
+    std::unique_ptr<alien::StemCapture> stemCapture; // Idle offline engine only; never set on live engine.
     alien::MasterControls masterControls;
     // Record, count-in and metronome state shared with the GUI, and the delay the
     // audio device reports between rendering a sample and hearing it.
@@ -144,6 +146,7 @@ public:
         sampleRate = std::isfinite(rate) && rate > 0 ? rate : 44100.0;
         plugins->prepare(sampleRate);
         for (auto& buffer : clipBuffers) buffer.setSize(2, alien::PluginRuntime::blockSize);
+        if (stemCapture) stemCapture->prepare();
         for (std::size_t track = 0; track < sessionTracks; ++track)
             rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
         stopClipPlayers();
@@ -196,6 +199,7 @@ private:
         const int modeNow = patternMode.load();
         plugins->begin(samples, bpm.load(), playNow, modeNow == 2 ? timelineTick / alien::timeline::ticksPerBeat : transportBeat);
         for (auto& b : clipBuffers) b.clear();
+        if (stemCapture) stemCapture->clear();
         // A new snapshot is only a pointer swap. While the song plays, an edit
         // never restarts it: every lane re-checks what should be sounding at the
         // playhead and changes only what differs (a moved, trimmed or deleted
@@ -448,6 +452,10 @@ private:
             for (const auto& ramp : sendRamps[t]) sending[t] = sending[t] || !ramp.idle();
         for (int i = 0; i < samples; ++i) {
             float left = plugins->live.getSample(0,i), right = plugins->live.getSample(1,i);
+            if (stemCapture) {
+                stemCapture->buses[alien::StemCapture::directBus].setSample(0,i,left);
+                stemCapture->buses[alien::StemCapture::directBus].setSample(1,i,right);
+            }
             for (std::size_t t = 0; t < sessionTracks; ++t) {
                 float l = plugins->tracks[t].getSample(0,i), r = plugins->tracks[t].getSample(1,i);
                 const float preLeft = l, preRight = r;
@@ -464,6 +472,7 @@ private:
                 }
                 if (automated) trackMixers[t].processAutomated(l, r, settings, anySolo);
                 else trackMixers[t].process(l,r);
+                if (stemCapture) { stemCapture->buses[t].setSample(0,i,l); stemCapture->buses[t].setSample(1,i,r); }
                 peaks[t] = std::max(peaks[t], std::max(std::abs(l), std::abs(r)));
                 left += l; right += r;
                 if (!sending[t]) continue;
@@ -482,10 +491,15 @@ private:
             for (std::size_t k = 0; k < static_cast<std::size_t>(alien::maxReturns); ++k) {
                 float l = plugins->returns[k].getSample(0, i), r = plugins->returns[k].getSample(1, i);
                 returnMixers[k].process(l, r);
+                if (stemCapture) {
+                    stemCapture->buses[alien::StemCapture::returnBase + k].setSample(0,i,l);
+                    stemCapture->buses[alien::StemCapture::returnBase + k].setSample(1,i,r);
+                }
                 returnPeaks[k] = std::max(returnPeaks[k], std::max(std::abs(l), std::abs(r)));
                 plugins->master.addSample(0, i, l); plugins->master.addSample(1, i, r);
             }
         for (std::size_t k = 0; k < static_cast<std::size_t>(alien::maxReturns); ++k) returns[k].peak.store(returnPeaks[k], std::memory_order_relaxed);
+        if (stemCapture) stemCapture->alignDry(samples,plugins->returnLatency());
         plugins->processMaster(samples);
         const float masterTarget = alien::sanitizedMasterGain(masterControls.gain.load(std::memory_order_relaxed));
         float masterPeak = 0.0f;

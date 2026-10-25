@@ -1526,7 +1526,7 @@ static void playbackChecks() {
     auto* exportButton = childNamed<juce::TextButton>(rig.view, "Export WAV");
     require(exportButton != nullptr, "the toolbar has Export WAV");
     clickButton(*exportButton);
-    require(rig.viewMenu.shown && rig.viewMenu.items().size() == 2, "it offers the whole song or the loop");
+    require(rig.viewMenu.shown && rig.viewMenu.items().size() == 4, "it offers stereo and stem exports for song and loop");
     require(rig.viewMenu.items()[0].enabled && rig.viewMenu.items()[0].text.contains("16 bars"), "the whole song, with its length");
     rig.viewMenu.done(1);
     c.setLoopRange(2 * bar, 4 * bar);
@@ -1535,11 +1535,17 @@ static void playbackChecks() {
     require(rig.viewMenu.items()[1].text.contains("bars 3 to 4"), "the loop entry names its bars");
     rig.viewMenu.done(2);
     require(rig.exports.size() == 2 && rig.exports[0] == std::make_pair<std::int64_t, std::int64_t>(0, -1) && rig.exports[1] == std::make_pair(2 * bar, 4 * bar), "the choices reach the exporter");
+    std::vector<std::pair<std::int64_t,std::int64_t>> stems;
+    rig.view.onExportStems = [&](std::int64_t from, std::int64_t to) { stems.emplace_back(from,to); };
+    rig.viewMenu.done(3); rig.viewMenu.done(4);
+    require(stems.size()==2 && stems[0]==std::make_pair<std::int64_t,std::int64_t>(0,-1)
+        && stems[1]==std::make_pair(2*bar,4*bar), "stem choices reach exporter with correct range");
     // With nothing on the timeline the export entries are off.
     Rig empty;
     auto* emptyExport = childNamed<juce::TextButton>(empty.view, "Export WAV");
     clickButton(*emptyExport);
     require(empty.viewMenu.shown && !empty.viewMenu.items()[0].enabled && !empty.viewMenu.items()[1].enabled, "an empty timeline cannot be exported");
+    require(!empty.viewMenu.items()[2].enabled && !empty.viewMenu.items()[3].enabled, "empty song cannot export stems");
     std::cout << "PASS: playback from any position\n";
 }
 

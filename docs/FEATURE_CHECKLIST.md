@@ -70,7 +70,7 @@ Draft work below is not available in main until this PR is merged.
 | PLUG-02 | Recursive VST3 scanning with scan logs, crash containment, editor failure reporting, compatibility check tool | Implemented in this PR; Windows CI, MSVC fault trapping and real plugins pending | FaultGuardTests, PluginFaultTests, PluginScanTests, PluginCheckTests, PluginPanelTests, PluginEndToEndTests (Linux, real VST3 test plugin). NOT RUN: Windows, Valhalla Supermassive and every commercial plugin (docs/PLUGIN_COMPATIBILITY.md). Not contained: heap corruption, plugin threads, hangs during playback |
 | AUTO-01 | Mixer/plugin automation and tempo/time-signature maps | Planned: milestone 6 | Sample-accurate automation and project persistence |
 | WARP-03 | Interactive warp markers and transient analysis | Planned: milestone 6 | Preserve pitch/stereo alignment |
-| FINISH-01 | Freeze, stems and reliable effect tails | Planned: milestone 7 | Offline/live equivalence and portable media |
+| FINISH-01 | Freeze, stems and reliable effect tails | Stem export implemented on feature branch; freeze/unfreeze pending | Aligned post-track and return files before master processing; single render, staged publication, cancellation/failure cleanup. DeterministicStreamedExportTests, MixerRoutingTests and TimelineViewTests; hardware/listening remains pending. |
 
 ## Completion rule
 
