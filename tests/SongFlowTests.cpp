@@ -160,13 +160,17 @@ static void layout() {
     std::cout << "PASS: the top bar fits from 960 to 1920 pixels\n";
 }
 
-int main() {
+#include "ApplicationToolbarTests.h"
+
+int main(int argc,char** argv) {
     juce::ScopedJuceInitialiser_GUI gui;
     viewModes();
     viewSwitch();
     moreListContents();
     songModeSwitch();
     layout();
+    applicationToolbarChecks();
+    if(argc>1)renderToolbarPreview(juce::File::getCurrentWorkingDirectory().getChildFile(argv[1]));
     std::cout << "All Song flow tests passed\n";
     return 0;
 }
