@@ -444,6 +444,134 @@ static void limiterTests() {
     }
 }
 
+static void filterTests() {
+    using Mode = FilterMode;
+    const double fc = 1000.0;
+    // Second-order shapes.
+    const auto lp = designFilter(Mode::lowPass, fc, MultimodeFilter::butterworthQ, rate);
+    near(biquadMagnitudeDb(lp, 1.0, rate), 0.0, 0.01, "low-pass passes DC at unity");
+    near(biquadMagnitudeDb(lp, fc, rate), -3.0103, 0.02, "Butterworth low-pass is -3 dB at the cutoff");
+    check(biquadMagnitudeDb(lp, 2.0 * fc, rate) < -11.5 && biquadMagnitudeDb(lp, 2.0 * fc, rate) > -13.0, "12 dB/oct one octave above the cutoff");
+    const auto hp = designFilter(Mode::highPass, fc, MultimodeFilter::butterworthQ, rate);
+    near(biquadMagnitudeDb(hp, 20000.0, rate), 0.0, 0.1, "high-pass passes highs at unity");
+    near(biquadMagnitudeDb(hp, fc, rate), -3.0103, 0.02, "high-pass is -3 dB at the cutoff");
+    check(biquadMagnitudeDb(hp, 20.0, rate) < -60.0, "high-pass removes 20 Hz");
+    const auto bp = designFilter(Mode::bandPass, fc, 2.0, rate);
+    near(biquadMagnitudeDb(bp, fc, rate), 0.0, 0.01, "band-pass is 0 dB at its centre");
+    check(biquadMagnitudeDb(bp, fc / 8.0, rate) < -20.0 && biquadMagnitudeDb(bp, fc * 8.0, rate) < -20.0, "band-pass rejects both sides");
+    const auto notch = designFilter(Mode::notch, fc, 2.0, rate);
+    check(biquadMagnitudeDb(notch, fc, rate) < -60.0, "notch removes its centre");
+    near(biquadMagnitudeDb(notch, fc / 10.0, rate), 0.0, 0.2, "notch leaves distant frequencies alone");
+    // Resonance: a high-Q low-pass peaks by about the Q (in dB) near the cutoff.
+    const auto resonant = designFilter(Mode::lowPass, fc, 4.0, rate);
+    near(biquadMagnitudeDb(resonant, fc, rate), 20.0 * std::log10(4.0), 0.2, "resonance lifts the cutoff by the Q");
+
+    // 24 dB/oct: default resonance is an exact fourth-order Butterworth.
+    MultimodeFilter::Settings steep; steep.steep = true; steep.frequency = fc;
+    const auto q = MultimodeFilter::stageQ(true, MultimodeFilter::butterworthQ);
+    near(q[0], MultimodeFilter::fourthOrderQ[0], 1e-12, "first steep stage keeps the Butterworth Q");
+    near(q[1], MultimodeFilter::fourthOrderQ[1], 1e-12, "second steep stage too, at the default resonance");
+    near(MultimodeFilter::responseDb(steep, fc, rate), -3.0103, 0.02, "24 dB/oct Butterworth is -3 dB at the cutoff");
+    const double octave = MultimodeFilter::responseDb(steep, 2.0 * fc, rate);
+    check(octave < -23.0 && octave > -25.5, "24 dB/oct one octave above the cutoff (" + std::to_string(octave) + ")");
+    MultimodeFilter::Settings gentle = steep; gentle.steep = false;
+    check(MultimodeFilter::responseDb(steep, 8.0 * fc, rate) < MultimodeFilter::responseDb(gentle, 8.0 * fc, rate) - 30.0, "steep slope removes far more");
+
+    auto steadyPeak = [](const std::vector<float>& x) { return peakOf(x, static_cast<int>(x.size()) / 2, static_cast<int>(x.size())); };
+    // Processing: a low-pass keeps the bass and removes the treble.
+    {
+        MultimodeFilter f; f.prepare(rate);
+        MultimodeFilter::Settings s; s.frequency = fc;
+        auto low = sine(100.0, 0.5, 9600), lowR = low;
+        f.process(low.data(), lowR.data(), 9600, s);
+        near(steadyPeak(low), 0.5, 0.01, "100 Hz passes a 1 kHz low-pass");
+        MultimodeFilter g; g.prepare(rate);
+        auto high = sine(10000.0, 0.5, 9600), highR = high;
+        g.process(high.data(), highR.data(), 9600, s);
+        check(steadyPeak(high) < 0.5 * dbToGain(-35.0), "10 kHz is removed by a 1 kHz low-pass");
+    }
+    // Mix 0 is exact pass-through; output gain applies to the dry path too.
+    {
+        MultimodeFilter f; f.prepare(rate);
+        MultimodeFilter::Settings s; s.mix = 0.0;
+        const auto input = noise(4096, 0.7, 3);
+        auto l = input, r = input;
+        f.process(l.data(), r.data(), 4096, s);
+        check(l == input && r == input, "mix 0 is bit-exact pass-through");
+        MultimodeFilter g; g.prepare(rate);
+        s.outputDb = 6.0;
+        auto a = input, b = input;
+        g.process(a.data(), b.data(), 4096, s);
+        near(a[1000] / input[1000], dbToGain(6.0), 1e-5, "output level is applied");
+    }
+    // Switching mode fades out, switches with clean state and fades back in: no click.
+    {
+        MultimodeFilter f; f.prepare(rate);
+        MultimodeFilter::Settings s; s.frequency = 5000.0;
+        auto l = sine(100.0, 0.5, 24000), r = l;
+        f.process(l.data(), r.data(), 12000, s);
+        s.mode = Mode::highPass;
+        f.process(l.data() + 12000, r.data() + 12000, 200, s);
+        check(f.activeMode() == Mode::highPass, "the switch completes within a few milliseconds");
+        f.process(l.data() + 12200, r.data() + 12200, 11800, s);
+        double jump = 0;
+        for (int i = 11000; i < 13000; ++i) jump = std::max(jump, static_cast<double>(std::abs(l[static_cast<std::size_t>(i)] - l[static_cast<std::size_t>(i - 1)])));
+        check(jump < 0.02, "switching low-pass to high-pass does not click (largest step " + std::to_string(jump) + ")");
+        check(peakOf(l, 18000, 24000) < 0.5 * dbToGain(-50.0), "after the switch the 100 Hz tone is removed by the high-pass");
+        MultimodeFilter g; g.prepare(rate);
+        MultimodeFilter::Settings t; t.frequency = 300.0;
+        auto a = sine(100.0, 0.5, 24000), b = a;
+        g.process(a.data(), b.data(), 12000, t);
+        t.steep = true;
+        g.process(a.data() + 12000, b.data() + 12000, 12000, t);
+        jump = 0;
+        for (int i = 11000; i < 13000; ++i) jump = std::max(jump, static_cast<double>(std::abs(a[static_cast<std::size_t>(i)] - a[static_cast<std::size_t>(i - 1)])));
+        check(g.activeSteep() && jump < 0.02, "changing the slope does not click (largest step " + std::to_string(jump) + ")");
+    }
+    // Settled settings: the block size makes no difference.
+    {
+        MultimodeFilter::Settings s; s.mode = Mode::bandPass; s.frequency = 700.0; s.resonance = 3.0; s.mix = 0.8; s.outputDb = -2.0; s.steep = true;
+        const auto input = noise(9000, 0.5, 9);
+        std::vector<float> reference;
+        for (int block : {9000, 512, 37, 1}) {
+            MultimodeFilter f; f.prepare(rate);
+            auto l = input, r = input;
+            for (int pos = 0; pos < 9000; pos += block) { const int n = std::min(block, 9000 - pos); f.process(l.data() + pos, r.data() + pos, n, s); }
+            if (reference.empty()) { reference = l; continue; }
+            double worst = 0;
+            for (std::size_t i = 0; i < l.size(); ++i) worst = std::max(worst, static_cast<double>(std::abs(l[i] - reference[i])));
+            check(worst < 1e-6, "block size " + std::to_string(block) + " sounds the same (" + std::to_string(worst) + ")");
+        }
+    }
+    // Moving the cutoff glides and stays finite, even sweeping hard at high resonance.
+    {
+        MultimodeFilter f; f.prepare(rate);
+        MultimodeFilter::Settings s; s.resonance = 10.0; s.steep = true;
+        auto l = noise(48000, 0.5, 4), r = l;
+        bool finiteAll = true; double biggest = 0;
+        for (int pos = 0, step = 0; pos < 48000; pos += 256, ++step) {
+            s.frequency = step % 2 ? 20.0 : 18000.0;
+            f.process(l.data() + pos, r.data() + pos, std::min(256, 48000 - pos), s);
+        }
+        for (float v : l) { finiteAll = finiteAll && finite(v); biggest = std::max(biggest, static_cast<double>(std::abs(v))); }
+        check(finiteAll && biggest < 100.0, "hard cutoff sweeps at high resonance stay finite and bounded (" + std::to_string(biggest) + ")");
+    }
+    // Tail: more resonance and lower cutoff ring longer, and the reported tail covers the ringing.
+    check(filterTailSeconds(200.0, 10.0, false) > filterTailSeconds(200.0, 0.7, false), "resonance lengthens the tail");
+    check(filterTailSeconds(100.0, 5.0, false) > filterTailSeconds(5000.0, 5.0, false), "a lower cutoff rings longer");
+    check(filterTailSeconds(20.0, 10.0, true) <= 5.0 && filterTailSeconds(20000.0, 0.5, false) >= 0.05, "tail stays within 50 ms and 5 s");
+    {
+        MultimodeFilter f; f.prepare(rate);
+        MultimodeFilter::Settings s; s.frequency = 200.0; s.resonance = 10.0;
+        const int tail = static_cast<int>(filterTailSeconds(200.0, 10.0, false) * rate);
+        std::vector<float> l(static_cast<std::size_t>(tail + 4800), 0.0f), r = l;
+        l[0] = r[0] = 1.0f;
+        f.process(l.data(), r.data(), static_cast<int>(l.size()), s);
+        const double ring = peakOf(l, 0, 4800), after = peakOf(l, tail, tail + 4800);
+        check(after < ring * 1.0e-3, "the ringing has fallen 60 dB by the end of the reported tail");
+    }
+}
+
 // Amplitude of the component at `frequency` in x[from, from + n), from a Hann-windowed DFT bin.
 static double toneAmplitude(const std::vector<float>& x, int from, int n, double frequency, double sampleRate = rate) {
     double re = 0, im = 0, windowSum = 0;
@@ -608,8 +736,9 @@ int main() {
     delayTests();
     slidingMinimumTests();
     limiterTests();
+    filterTests();
     saturatorTests();
     if (failures) { std::fprintf(stderr, "%d check(s) failed\n", failures); return 1; }
-    std::puts("PASS: stock DSP (EQ, compressor, delay, limiter, saturator)");
+    std::puts("PASS: stock DSP (EQ, compressor, delay, limiter, filter, saturator)");
     return 0;
 }

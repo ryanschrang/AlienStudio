@@ -16,12 +16,13 @@ namespace alien::stock {
 inline constexpr const char* formatName = "AlienStock";
 
 struct Info { const char* id; const char* name; const char* summary; };
-inline constexpr std::array<Info, 6> catalog{{
+inline constexpr std::array<Info, 7> catalog{{
     {"eq", "Alien EQ", "Four-band equaliser with low and high shelves and two bells"},
     {"compressor", "Alien Compressor", "Stereo-linked compressor with soft knee and parallel mix"},
     {"reverb", "Alien Reverb", "Stereo room reverb with pre-delay"},
     {"delay", "Alien Delay", "Stereo delay with tempo sync, ping-pong and tone"},
     {"limiter", "Alien Limiter", "Look-ahead peak limiter that never passes its ceiling"},
+    {"filter", "Alien Filter", "Resonant low-pass, high-pass, band-pass and notch filter, 12 or 24 dB/oct"},
     {"saturator", "Alien Saturator", "Oversampled soft, warm or hard saturation with tone and mix"},
 }};
 
@@ -47,6 +48,12 @@ inline constexpr const char *time = "time", *sync = "sync", *division = "divisio
 }
 namespace limiter {
 inline constexpr const char *gain = "gain", *ceiling = "ceiling", *release = "release";
+}
+namespace filter {
+inline constexpr const char *mode = "mode", *slope = "slope", *cutoff = "cutoff", *resonance = "resonance",
+    *mix = "mix", *output = "output";
+inline const juce::StringArray& modeNames() { static const juce::StringArray n{"Low-pass", "High-pass", "Band-pass", "Notch"}; return n; }
+inline const juce::StringArray& slopeNames() { static const juce::StringArray n{"12 dB/oct", "24 dB/oct"}; return n; }
 }
 
 using Layout = juce::AudioProcessorValueTreeState::ParameterLayout;
@@ -251,7 +258,7 @@ private:
 
 class SaturatorEffect final : public Effect {
 public:
-    SaturatorEffect() : Effect(catalog[5], layout()) {
+    SaturatorEffect() : Effect(catalog[6], layout()) {
         drive = raw(saturator::drive); character = raw(saturator::character); tone = raw(saturator::tone);
         mix = raw(saturator::mix); output = raw(saturator::output);
         setLatencySamples(dsp::Saturator::latency); // fixed: the oversampling filters
@@ -464,6 +471,51 @@ private:
     dsp::Limiter engine;
 };
 
+// ---- Filter -------------------------------------------------------------------
+
+class FilterEffect final : public Effect {
+public:
+    FilterEffect() : Effect(catalog[5], layout()) {
+        mode = raw(filter::mode); slope = raw(filter::slope); cutoff = raw(filter::cutoff); resonance = raw(filter::resonance);
+        mix = raw(filter::mix); output = raw(filter::output);
+    }
+    void prepareToPlay(double sampleRate, int) override { rate = sampleRate; engine.prepare(sampleRate); prepared = true; }
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
+        juce::ScopedNoDenormals noDenormals;
+        if (!prepared || buffer.getNumChannels() < 2) return;
+        float* left = buffer.getWritePointer(0);
+        float* right = buffer.getWritePointer(1);
+        sanitise(left, right, buffer.getNumSamples());
+        engine.process(left, right, buffer.getNumSamples(), settings());
+    }
+    // A resonant filter rings on after its input stops; the tail follows cutoff and resonance.
+    double getTailLengthSeconds() const override {
+        const auto s = settings();
+        return dsp::filterTailSeconds(s.frequency, s.resonance, s.steep);
+    }
+    dsp::MultimodeFilter::Settings settings() const noexcept {
+        dsp::MultimodeFilter::Settings s;
+        s.mode = static_cast<dsp::FilterMode>(std::clamp(static_cast<int>(value(mode) + 0.5), 0, 3));
+        s.steep = value(slope) > 0.5;
+        s.frequency = value(cutoff); s.resonance = value(resonance); s.mix = value(mix); s.outputDb = value(output);
+        return s;
+    }
+
+private:
+    static Layout layout() {
+        Layout l;
+        l.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{filter::mode, 1}, "Mode", filter::modeNames(), 0));
+        l.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{filter::slope, 1}, "Slope", filter::slopeNames(), 0));
+        l.add(floatParameter(filter::cutoff, "Cutoff", {20, 20000, 1000}, 1000, frequencyFormat()));
+        l.add(floatParameter(filter::resonance, "Resonance (Q)", {0.5f, 10, 1.5f}, 0.7071f, plainFormat()));
+        l.add(floatParameter(filter::mix, "Mix", {0, 1, 0}, 1, percentFormat()));
+        l.add(floatParameter(filter::output, "Output", {-12, 12, 0}, 0, dbFormat()));
+        return l;
+    }
+    std::atomic<float> *mode{}, *slope{}, *cutoff{}, *resonance{}, *mix{}, *output{};
+    dsp::MultimodeFilter engine;
+};
+
 // ---- Catalogue and project-file identity -----------------------------------------
 
 inline std::unique_ptr<Effect> create(const juce::String& id) {
@@ -472,7 +524,8 @@ inline std::unique_ptr<Effect> create(const juce::String& id) {
     if (id == catalog[2].id) return std::make_unique<ReverbEffect>();
     if (id == catalog[3].id) return std::make_unique<DelayEffect>();
     if (id == catalog[4].id) return std::make_unique<LimiterEffect>();
-    if (id == catalog[5].id) return std::make_unique<SaturatorEffect>();
+    if (id == catalog[5].id) return std::make_unique<FilterEffect>();
+    if (id == catalog[6].id) return std::make_unique<SaturatorEffect>();
     return {};
 }
 

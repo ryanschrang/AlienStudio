@@ -606,6 +606,145 @@ private:
     float lastKey{-1.0f};
 };
 
+// ---- Filter ------------------------------------------------------------------------------
+
+namespace filtermap {
+inline constexpr double topDb = 18.0, bottomDb = -42.0;
+inline float gainToY(double db, float height) { return height * static_cast<float>((topDb - std::clamp(db, bottomDb, topDb)) / (topDb - bottomDb)); }
+} // namespace filtermap
+
+// Response curve with one handle at the cutoff: drag sideways for the cutoff, up and down
+// for the resonance (the mouse wheel also changes it); double-click resets both.
+class FilterCurve final : public juce::Component {
+public:
+    explicit FilterCurve(FilterEffect& e)
+        : filterEffect(e), cutoff(e.parameters.getParameter(filter::cutoff)), resonance(e.parameters.getParameter(filter::resonance)) {}
+    // Response of the filtered path at one frequency, in dB.
+    double responseDb(double hz) const {
+        return dsp::MultimodeFilter::responseDb(filterEffect.settings(), hz, filterEffect.currentSampleRate());
+    }
+    juce::Point<float> handlePosition() const {
+        const double hz = filterEffect.settings().frequency;
+        return {eqmap::frequencyToX(hz, static_cast<float>(getWidth())), filtermap::gainToY(responseDb(hz), static_cast<float>(getHeight()))};
+    }
+    // Sets the cutoff and resonance together (what dragging the handle does).
+    void moveHandle(double hz, double q) {
+        set(cutoff, hz); set(resonance, q);
+        repaint();
+    }
+    void paint(juce::Graphics& g) override {
+        using namespace ui::colours;
+        const auto area = getLocalBounds().toFloat();
+        const float w = area.getWidth(), h = area.getHeight();
+        g.setColour(inset);
+        g.fillRoundedRectangle(area, 6.0f);
+        g.setFont(ui::monoFont(10.0f));
+        for (double hz : {50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0}) {
+            const float x = eqmap::frequencyToX(hz, w);
+            g.setColour(line);
+            g.drawVerticalLine(juce::roundToInt(x), 0.0f, h);
+            g.setColour(textFaint);
+            g.drawText(hz >= 1000.0 ? juce::String(static_cast<int>(hz / 1000.0)) + "k" : juce::String(static_cast<int>(hz)),
+                       juce::Rectangle<float>(x + 3.0f, h - 14.0f, 40.0f, 12.0f), juce::Justification::left);
+        }
+        for (double db : {-36.0, -24.0, -12.0, 0.0, 12.0}) {
+            const float y = filtermap::gainToY(db, h);
+            g.setColour(db == 0.0 ? lineStrong : line);
+            g.drawHorizontalLine(juce::roundToInt(y), 0.0f, w);
+            g.setColour(textFaint);
+            g.drawText((db > 0 ? "+" : "") + juce::String(static_cast<int>(db)), juce::Rectangle<float>(3.0f, y - 12.0f, 28.0f, 12.0f), juce::Justification::left);
+        }
+        juce::Path curve;
+        for (int x = 0; x <= getWidth(); x += 2) {
+            const float y = filtermap::gainToY(responseDb(eqmap::xToFrequency(static_cast<float>(x), w)), h);
+            if (x == 0) curve.startNewSubPath(0.0f, y); else curve.lineTo(static_cast<float>(x), y);
+        }
+        juce::Path fill(curve);
+        fill.lineTo(w, h); fill.lineTo(0.0f, h); fill.closeSubPath();
+        g.setColour(accent.withAlpha(0.14f));
+        g.fillPath(fill);
+        g.setColour(accent);
+        g.strokePath(curve, juce::PathStrokeType(2.0f, juce::PathStrokeType::curved));
+        const auto p = handlePosition();
+        g.setColour(juce::Colours::black.withAlpha(0.5f));
+        g.fillEllipse(juce::Rectangle<float>(16.0f, 16.0f).withCentre(p.translated(0.0f, 1.0f)));
+        g.setColour(accent.withMultipliedBrightness(dragging ? 1.3f : 1.0f));
+        g.fillEllipse(juce::Rectangle<float>(14.0f, 14.0f).withCentre(p));
+        g.setColour(textDim);
+        g.drawText(filter::modeNames()[static_cast<int>(filterEffect.settings().mode)] + "  " + formatFrequency(static_cast<float>(filterEffect.settings().frequency)),
+                   area.reduced(10.0f, 6.0f).toNearestInt(), juce::Justification::topRight);
+    }
+    void mouseDown(const juce::MouseEvent& e) override {
+        dragging = true;
+        startResonance = resonance->getValue();
+        cutoff->beginChangeGesture(); resonance->beginChangeGesture();
+        mouseDrag(e);
+    }
+    void mouseDrag(const juce::MouseEvent& e) override {
+        if (!dragging) return;
+        const float up = static_cast<float>(e.getDistanceFromDragStartY()) / static_cast<float>(std::max(1, getHeight()));
+        cutoff->setValueNotifyingHost(cutoff->convertTo0to1(static_cast<float>(eqmap::xToFrequency(e.position.x, static_cast<float>(getWidth())))));
+        resonance->setValueNotifyingHost(std::clamp(startResonance - up, 0.0f, 1.0f));
+        repaint();
+    }
+    void mouseUp(const juce::MouseEvent&) override {
+        if (dragging) { cutoff->endChangeGesture(); resonance->endChangeGesture(); }
+        dragging = false;
+        repaint();
+    }
+    void mouseDoubleClick(const juce::MouseEvent&) override {
+        for (auto* p : {cutoff, resonance}) { p->beginChangeGesture(); p->setValueNotifyingHost(p->getDefaultValue()); p->endChangeGesture(); }
+    }
+    void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails& wheel) override {
+        resonance->beginChangeGesture();
+        resonance->setValueNotifyingHost(std::clamp(resonance->getValue() + wheel.deltaY * 0.15f, 0.0f, 1.0f));
+        resonance->endChangeGesture();
+    }
+    juce::Colour accent{juce::Colour(0xff4fe0b6)};
+private:
+    static void set(juce::RangedAudioParameter* p, double v) { p->beginChangeGesture(); p->setValueNotifyingHost(p->convertTo0to1(static_cast<float>(v))); p->endChangeGesture(); }
+    FilterEffect& filterEffect;
+    juce::RangedAudioParameter *cutoff, *resonance;
+    float startResonance{};
+    bool dragging{false};
+};
+
+class FilterEditor final : public EffectEditor {
+public:
+    explicit FilterEditor(FilterEffect& e) : EffectEditor(e, juce::Colour(0xff4fe0b6), 560, 390), curve(e) {
+        addAndMakeVisible(curve);
+        addKnob(filter::cutoff, "Cutoff"); addKnob(filter::resonance, "Resonance"); addKnob(filter::mix, "Mix"); addKnob(filter::output, "Level");
+        mode.addItemList(filter::modeNames(), 1); slope.addItemList(filter::slopeNames(), 1);
+        mode.setTitle("Filter mode"); slope.setTitle("Filter slope");
+        addAndMakeVisible(mode); addAndMakeVisible(slope);
+        modeAttachment = std::make_unique<Attachments::ComboBoxAttachment>(e.parameters, filter::mode, mode);
+        slopeAttachment = std::make_unique<Attachments::ComboBoxAttachment>(e.parameters, filter::slope, slope);
+        finishSetup();
+    }
+    FilterCurve& response() { return curve; }
+    juce::ComboBox& modeBox() { return mode; }
+    juce::ComboBox& slopeBox() { return slope; }
+    void resized() override {
+        auto area = content();
+        curve.setBounds(area.removeFromTop(170));
+        area.removeFromTop(12);
+        auto row = area.removeFromTop(28);
+        mode.setBounds(row.removeFromLeft(150)); row.removeFromLeft(12); slope.setBounds(row.removeFromLeft(130));
+        area.removeFromTop(8);
+        layoutKnobs(area, 0, 4, area.getWidth() / 4);
+    }
+    void tick() override {
+        const auto s = static_cast<FilterEffect&>(effect).settings();
+        const double key = s.frequency + s.resonance * 1.0e5 + static_cast<int>(s.mode) * 1.0e7 + (s.steep ? 1.0e8 : 0.0);
+        if (key != lastKey) { lastKey = key; curve.repaint(); }
+    }
+private:
+    FilterCurve curve;
+    juce::ComboBox mode, slope;
+    std::unique_ptr<Attachments::ComboBoxAttachment> modeAttachment, slopeAttachment;
+    double lastKey{-1.0};
+};
+
 // ---- Registration ----------------------------------------------------------------------
 
 inline juce::AudioProcessorEditor* makeEditor(Effect& effect) {
@@ -615,7 +754,8 @@ inline juce::AudioProcessorEditor* makeEditor(Effect& effect) {
     if (id == catalog[2].id) return new ReverbEditor(static_cast<ReverbEffect&>(effect));
     if (id == catalog[3].id) return new DelayEditor(static_cast<DelayEffect&>(effect));
     if (id == catalog[4].id) return new LimiterEditor(static_cast<LimiterEffect&>(effect));
-    if (id == catalog[5].id) return new SaturatorEditor(static_cast<SaturatorEffect&>(effect));
+    if (id == catalog[5].id) return new FilterEditor(static_cast<FilterEffect&>(effect));
+    if (id == catalog[6].id) return new SaturatorEditor(static_cast<SaturatorEffect&>(effect));
     return nullptr;
 }
 // Including this header installs the editors; without it the host shows its generic one.

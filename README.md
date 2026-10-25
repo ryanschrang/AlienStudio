@@ -4,7 +4,7 @@
 
 Alien Studio is an **independent, original application**, not affiliated with or endorsed by any of those products. We aim to learn from broadly useful workflows without copying proprietary code, artwork, branding, or protected assets.
 
-> **Project status:** Integrated early DAW prototype with up to 16 tracks/32 scenes, 12 built-in sounds, drum sample kits/browser, an arrangement timeline (Session clips and Channel Rack patterns with snap, zoom, selection, loop ranges and markers) with WAV export, disk-streamed audio recording and offline tempo matching, six built-in stock effects (EQ, compressor, saturator, reverb, delay, limiter), an FL Studio-style Channel Rack with a pattern bank, plus initial stereo VST3 instrument/FX hosting. Project v8 unifies these features with saving, portable media collection, undo/redo and recovery. Native Windows device, plugin and listening checks remain required; see [the checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
+> **Project status:** Integrated early DAW prototype with up to 16 tracks/32 scenes, 12 built-in sounds, drum sample kits/browser, an arrangement timeline (Session clips and Channel Rack patterns with snap, zoom, selection, loop ranges and markers) with WAV export, disk-streamed audio recording and offline tempo matching, seven built-in stock effects (EQ, compressor, saturator, reverb, delay, limiter, filter), an FL Studio-style Channel Rack with a pattern bank, plus initial stereo VST3 instrument/FX hosting. Project v8 unifies these features with saving, portable media collection, undo/redo and recovery. Native Windows device, plugin and listening checks remain required; see [the checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
 
 ## Product vision: three connected workspaces
 
@@ -726,7 +726,7 @@ pitch bend, mod wheel, sustain and other controllers are not stored. The take is
 kept in memory until it ends and is written to the project (and autosave) only then,
 so a crash in the middle of a take loses that take.
 
-### Stock effects: EQ, compressor, saturator, reverb, delay, limiter
+### Stock effects: EQ, compressor, saturator, reverb, delay, limiter, filter
 
 Open **More... > Plugins**, pick a destination (a track or **Master FX**), choose one of the
 **[stock FX]** entries at the top of the list and press **Add FX**. They need no scanning and
@@ -743,6 +743,7 @@ up/down), **Bypass / enable**, **Remove**, undo/redo, saving, Save portable, and
 | **Alien Reverb** | Size, damping, width, pre-delay, mix | A classic room (Freeverb-style) reverb. Its reported tail follows Size and pre-delay, so exported WAVs include the decay. |
 | **Alien Delay** | Time, tempo sync and division, feedback, ping-pong, tone, mix | With **Tempo sync** the time follows the project tempo (1/16 to one bar); ping-pong bounces the repeats left and right; Tone darkens the repeats (set to Open for none). Up to 2 s free, 4 s when synced. |
 | **Alien Limiter** | Gain, ceiling, release | A 2 ms look-ahead limiter. The output never exceeds the ceiling (measured on sample peaks; it is not an inter-sample/true-peak limiter). The look-ahead is reported as latency and the host delays every other track to match. |
+| **Alien Filter** | Mode (low-pass, high-pass, band-pass, notch), slope (12 or 24 dB/oct), cutoff, resonance, mix, output level | Drag the handle on the curve sideways for the cutoff and up or down for the resonance (or use the mouse wheel); double-click it to reset both. At the default resonance (0.71) both slopes are Butterworth: -3 dB at the cutoff. Changing mode or slope fades the filtered sound out and back in over a few milliseconds, so it never clicks. The reported tail follows cutoff and resonance, so a ringing filter is not cut off in WAV export. Mix at 0 % is bit-exact pass-through. |
 
 All controls are ordinary host parameters: they can be typed ("1.5k", "250 ms", "-6"),
 double-clicked to reset, and are what the upcoming automation lanes will drive. Their

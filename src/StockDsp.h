@@ -177,6 +177,130 @@ private:
     bool snapNext{true};
 };
 
+// ---- Filter -----------------------------------------------------------------
+
+enum class FilterMode { lowPass, highPass, bandPass, notch };
+
+// RBJ audio-EQ-cookbook low-pass, high-pass, band-pass (0 dB at the centre) and notch.
+inline BiquadCoefficients designFilter(FilterMode mode, double frequency, double q, double sampleRate) noexcept {
+    const double f = std::clamp(frequency, 10.0, sampleRate * 0.45);
+    const double w = 2.0 * pi * f / sampleRate, cw = std::cos(w), sw = std::sin(w);
+    const double alpha = sw / (2.0 * std::max(q, 0.05));
+    double b0, b1, b2;
+    switch (mode) {
+        case FilterMode::lowPass: b0 = (1 - cw) / 2; b1 = 1 - cw; b2 = b0; break;
+        case FilterMode::highPass: b0 = (1 + cw) / 2; b1 = -(1 + cw); b2 = b0; break;
+        case FilterMode::bandPass: b0 = alpha; b1 = 0; b2 = -alpha; break;
+        default: b0 = 1; b1 = -2 * cw; b2 = 1; break;
+    }
+    const double a0 = 1 + alpha;
+    return {b0 / a0, b1 / a0, b2 / a0, -2 * cw / a0, (1 - alpha) / a0};
+}
+
+// Resonant multimode filter: 12 dB/oct (one biquad) or 24 dB/oct (two in series), with a
+// dry/wet mix and an output trim. At 24 dB/oct the first stage keeps the fourth-order
+// Butterworth Q and the second carries the resonance, so the default resonance (0.707)
+// is an exact Butterworth response at either slope. Cutoff and resonance glide; a mode
+// or slope change fades the filtered signal out over 3 ms, switches with cleared state
+// and fades back in, so switching never clicks.
+class MultimodeFilter {
+public:
+    static constexpr int chunk = 32;
+    static constexpr double butterworthQ = 0.7071067811865476, switchMs = 3.0;
+    static constexpr std::array<double, 2> fourthOrderQ{0.5411961001461970, 1.3065629648763766};
+    struct Settings {
+        FilterMode mode{FilterMode::lowPass};
+        bool steep{false};
+        double frequency{1000}, resonance{butterworthQ}, mix{1}, outputDb{0};
+    };
+
+    // The Q of each stage for a resonance setting.
+    static std::array<double, 2> stageQ(bool steep, double resonance) noexcept {
+        const double r = std::max(resonance, 0.05);
+        if (!steep) return {r, r};
+        return {fourthOrderQ[0], fourthOrderQ[1] * r / butterworthQ};
+    }
+    // Response of the filtered path (before mix and output) at one frequency, in dB.
+    static double responseDb(const Settings& s, double hz, double sampleRate) noexcept {
+        const auto q = stageQ(s.steep, s.resonance);
+        double db = biquadMagnitudeDb(designFilter(s.mode, s.frequency, q[0], sampleRate), hz, sampleRate);
+        if (s.steep) db += biquadMagnitudeDb(designFilter(s.mode, s.frequency, q[1], sampleRate), hz, sampleRate);
+        return db;
+    }
+
+    void prepare(double sampleRate) noexcept {
+        rate = sampleRate;
+        frequency.configure(rate, 25.0); resonance.configure(rate, 25.0); mix.configure(rate, 25.0); output.configure(rate, 25.0);
+        fadeStep = 1.0 / std::max(1.0, switchMs * 0.001 * rate);
+        reset();
+    }
+    void reset() noexcept { clearState(); snapNext = true; }
+    // The mode and slope currently heard (they change only after the switching fade).
+    FilterMode activeMode() const noexcept { return mode; }
+    bool activeSteep() const noexcept { return steep; }
+
+    void process(float* left, float* right, int count, const Settings& settings) noexcept {
+        if (snapNext) {
+            frequency.reset(std::log(clampedFrequency(settings.frequency))); resonance.reset(clampedResonance(settings.resonance));
+            mix.reset(std::clamp(settings.mix, 0.0, 1.0)); output.reset(settings.outputDb);
+            mode = settings.mode; steep = settings.steep; fade = 1.0;
+            redesign(); snapNext = false;
+        }
+        frequency.setTarget(std::log(clampedFrequency(settings.frequency))); resonance.setTarget(clampedResonance(settings.resonance));
+        mix.setTarget(std::clamp(settings.mix, 0.0, 1.0)); output.setTarget(settings.outputDb);
+        for (int done = 0; done < count;) {
+            const int length = std::min(chunk, count - done);
+            const bool moved = !frequency.settled() || !resonance.settled();
+            frequency.advance(length); resonance.advance(length);
+            if (moved) redesign();
+            const double mixFrom = mix.value(), gainFrom = dbToGain(output.value());
+            mix.advance(length); output.advance(length);
+            const double mixTo = mix.value(), gainTo = dbToGain(output.value());
+            for (int i = 0; i < length; ++i) {
+                if (mode != settings.mode || steep != settings.steep) {
+                    fade -= fadeStep;
+                    if (fade <= 0.0) { fade = 0.0; mode = settings.mode; steep = settings.steep; clearState(); redesign(); }
+                } else if (fade < 1.0) {
+                    fade = std::min(1.0, fade + fadeStep);
+                }
+                const double t = length > 1 ? static_cast<double>(i + 1) / length : 1.0;
+                const double m = mixFrom + (mixTo - mixFrom) * t, g = gainFrom + (gainTo - gainFrom) * t;
+                const double dryLeft = left[done + i], dryRight = right[done + i];
+                double wetLeft = state[0][0].process(coeffs[0], dryLeft), wetRight = state[1][0].process(coeffs[0], dryRight);
+                if (steep) { wetLeft = state[0][1].process(coeffs[1], wetLeft); wetRight = state[1][1].process(coeffs[1], wetRight); }
+                left[done + i] = static_cast<float>((dryLeft * (1.0 - m) + wetLeft * m * fade) * g);
+                right[done + i] = static_cast<float>((dryRight * (1.0 - m) + wetRight * m * fade) * g);
+            }
+            done += length;
+        }
+    }
+
+private:
+    double clampedFrequency(double hz) const noexcept { return std::clamp(hz, 10.0, rate * 0.45); }
+    static double clampedResonance(double q) noexcept { return std::clamp(q, 0.1, 20.0); }
+    void clearState() noexcept { for (auto& c : state) for (auto& s : c) s = {}; }
+    void redesign() noexcept {
+        const auto q = stageQ(steep, resonance.value());
+        const double hz = std::exp(frequency.value());
+        coeffs[0] = designFilter(mode, hz, q[0], rate);
+        coeffs[1] = designFilter(mode, hz, q[1], rate);
+    }
+    double rate{44100}, fadeStep{0.01}, fade{1.0};
+    Smoother frequency, resonance, mix, output;
+    FilterMode mode{FilterMode::lowPass};
+    bool steep{false}, snapNext{true};
+    std::array<BiquadCoefficients, 2> coeffs{};
+    std::array<std::array<BiquadState, 2>, 2> state{};
+};
+
+// How long a resonant filter keeps ringing after its input stops: the envelope of a
+// two-pole resonance decays with time constant 2Q / w0, and falls 60 dB in ln(1000) of them.
+inline double filterTailSeconds(double frequency, double resonance, bool steep) noexcept {
+    const auto q = MultimodeFilter::stageQ(steep, resonance);
+    const double w0 = 2.0 * pi * std::max(frequency, 10.0);
+    return std::clamp(std::log(1000.0) * 2.0 * std::max(q[0], q[1]) / w0, 0.05, 5.0);
+}
+
 // ---- Compressor -------------------------------------------------------------
 
 // Static curve (Giannoulis et al.): how many dB the level is pulled down.
