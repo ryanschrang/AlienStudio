@@ -95,7 +95,7 @@ inline void drawCard(juce::Graphics& g, juce::Rectangle<float> r, juce::Colour f
 }
 
 enum class Glyph { none, play, stop, plus, minus, open, save, collect, devices, edit,
-                   waveform, learn, close, chevronDown, undo, redo, newDocument, record, metronome, piano };
+                   waveform, learn, close, chevronDown, undo, redo, newDocument, record, metronome, piano, detach };
 
 inline void drawGlyph(juce::Graphics& g, Glyph glyph, juce::Rectangle<float> r, juce::Colour colour) {
     const float s = juce::jmin(r.getWidth(), r.getHeight());
@@ -107,6 +107,12 @@ inline void drawGlyph(juce::Graphics& g, Glyph glyph, juce::Rectangle<float> r, 
     juce::Path p;
     switch (glyph) {
     case Glyph::none: return;
+    case Glyph::detach:
+        p.startNewSubPath(x+s*.8f,y+s*.6f);p.lineTo(x+s*.8f,y+s*.88f);p.lineTo(x+s*.12f,y+s*.88f);
+        p.lineTo(x+s*.12f,y+s*.2f);p.lineTo(x+s*.4f,y+s*.2f);
+        p.startNewSubPath(x+s*.43f,y+s*.57f);p.lineTo(x+s*.87f,y+s*.13f);
+        p.startNewSubPath(x+s*.58f,y+s*.13f);p.lineTo(x+s*.87f,y+s*.13f);p.lineTo(x+s*.87f,y+s*.42f);
+        g.strokePath(p,juce::PathStrokeType(stroke*.8f));return;
     case Glyph::piano: {
         // Original five-key keyboard symbol; vector geometry stays crisp at any DPI.
         const auto keys=r.reduced(s*.08f,s*.2f);

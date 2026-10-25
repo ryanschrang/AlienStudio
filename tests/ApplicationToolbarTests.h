@@ -17,6 +17,7 @@ static void applicationToolbarChecks() {
     require(entry(0,Menu::save).isEnabled,"save available while idle");
     require(!entry(0,Menu::exportSong).isEnabled,"empty song cannot be exported from menu");
     require(!entry(1,Menu::undo).isEnabled,"empty undo disabled");
+    require(entry(2,Menu::detachView).isEnabled&&!entry(2,Menu::dockView).isEnabled&&!entry(2,Menu::dockAllViews).isEnabled,"only Detach is available for docked view");
     state.undoLabel="Move clip";state.redoLabel="Delete marker";
     require(entry(1,Menu::undo).text=="Undo Move clip"&&entry(1,Menu::undo).isEnabled,"undo shows current project operation");
     require(entry(1,Menu::redo).text=="Redo Delete marker","redo shows current project operation");
@@ -26,6 +27,7 @@ static void applicationToolbarChecks() {
     require(entry(2,Menu::viewBase+5).isTicked&&!entry(2,Menu::viewBase+2).isTicked,"View reflects active Song tab");
     require(entry(3,Menu::metronome).isTicked&&entry(3,Menu::songMode).isTicked,"transport toggles reflect live state");
     state.deviceView=true;state.keyboardVisible=false;
+    require(!entry(2,Menu::detachView).isEnabled,"Devices page is not a detachable editor tab");
     require(entry(2,Menu::devices).isTicked&&!entry(2,Menu::viewBase+5).isTicked&&!entry(2,Menu::keyboard).isTicked,"devices and hidden keyboard reflected independently");
     state.playing=true;state.recording=true;
     require(entry(3,Menu::playStop).text=="Stop playback"&&entry(3,Menu::record).text=="Stop recording","transport command labels match playback and recording");
@@ -38,6 +40,8 @@ static void applicationToolbarChecks() {
     toolbar.menuItemSelected(Menu::audioSettings,4);toolbar.menuItemSelected(999999,0);
     require(commands.empty(),"stale/unknown menu commands are rejected at selection time");
     state={};state.hasSong=true;state.hasLoop=true;state.undoLabel="Edit";state.redoLabel="Edit";
+    state.viewDetached=true;state.hasDetachedViews=true;
+    require(entry(2,Menu::detachView).text=="Show detached view"&&entry(2,Menu::dockView).isEnabled&&entry(2,Menu::dockAllViews).isEnabled,"View menu exposes raise and docking actions for detached windows");
     std::set<int> ids;
     for(int index=0;index<6;++index) {
         auto menu=toolbar.getMenuForIndex(index,{});
@@ -49,7 +53,7 @@ static void applicationToolbarChecks() {
             require(commands.size()==before+1&&commands.back()==item.itemID,"every listed action reaches callback with its own ID");
         }}
     }
-    require(ids.size()==32,"all application commands and nine views are reachable");
+    require(ids.size()==35,"all application commands and nine views are reachable");
     for(int index:{-1,6,99})require(toolbar.getMenuForIndex(index,{}).getNumItems()==0,"invalid menu index is empty");
     for(int width:{960,1180,1280,1920}) {
         toolbar.setSize(width,Menu::height);
