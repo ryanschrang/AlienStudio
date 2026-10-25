@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <type_traits>
 
 namespace alien {
@@ -131,6 +132,33 @@ private:
     std::uint32_t nextId{};
 };
 static_assert(std::is_trivially_copyable_v<PianoRollPattern>);
+
+// The empty clip. It is constant-initialised, so reading it never runs a constructor
+// or takes an initialisation guard, and the audio thread may use it.
+inline const PianoRollPattern& emptyPianoRoll() noexcept {
+    static constinit const PianoRollPattern empty{};
+    return empty;
+}
+
+// A clip's notes as a shared, immutable pattern. Copying one copies a pointer,
+// so a song snapshot or a project's save data refers to the notes the document
+// already holds instead of carrying a 32 KiB copy of every clip. Empty (null)
+// reads as emptyPianoRoll(). Assigning a pattern makes one shared copy, so that
+// and destruction belong on the message thread; reading never allocates.
+class SharedPianoRoll {
+public:
+    SharedPianoRoll() = default;
+    SharedPianoRoll(std::shared_ptr<const PianoRollPattern> notes) noexcept : pointer(std::move(notes)) {}
+    SharedPianoRoll& operator=(std::shared_ptr<const PianoRollPattern> notes) noexcept { pointer = std::move(notes); return *this; }
+    SharedPianoRoll& operator=(const PianoRollPattern& notes) { pointer = std::make_shared<const PianoRollPattern>(notes); return *this; }
+    const PianoRollPattern& get() const noexcept { return pointer != nullptr ? *pointer : emptyPianoRoll(); }
+    operator const PianoRollPattern&() const noexcept { return get(); }
+    const PianoRollPattern* operator->() const noexcept { return &get(); }
+    const PianoRollPattern& operator*() const noexcept { return get(); }
+    const std::shared_ptr<const PianoRollPattern>& shared() const noexcept { return pointer; }
+private:
+    std::shared_ptr<const PianoRollPattern> pointer;
+};
 
 // One GUI producer, one audio consumer. Each owns a buffer; the third is
 // exchanged atomically. The producer can overwrite an unread snapshot, but the

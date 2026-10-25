@@ -32,7 +32,7 @@ int main(int argc, char** argv) {
             std::size_t count = 0;
             for (const auto& scene : project.clips) for (const auto& clip : scene) {
                 require(clip.audioFilePath.isEmpty(), "production/live fixtures require no external media or plugins");
-                count += clip.pattern.count;
+                count += clip.pattern->count;
             }
             require(count > 0, "musical fixture contains playable notes");
         }

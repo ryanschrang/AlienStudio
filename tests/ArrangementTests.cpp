@@ -108,6 +108,17 @@ static void rackAndRangeExportTests() {
 
 int main() {
     mailboxTests();
+    // Clips point at shared notes, so a song snapshot stays small (it was 16 MiB of copied notes).
+    static_assert(sizeof(alien::ArrangementPlayback) < 64 * 1024, "a song snapshot holds pointers, not notes");
+    {
+        alien::SharedPianoRoll none;
+        check(none.shared() == nullptr && none->count == 0 && none->valid() && &none.get() == &alien::emptyPianoRoll(),
+              "an empty shared clip reads as the one empty pattern");
+        alien::PianoRollPattern p; p.add(60, 0, 1);
+        alien::SharedPianoRoll one; one = p;
+        const alien::SharedPianoRoll copy = one;
+        check(one->count == 1 && copy.shared() == one.shared(), "assigning a pattern stores it once; copies share it");
+    }
     alien::timeline::Timeline a; a.setLengthBars(3);
     check(a.placeBars(0,0,0,1),"add region");
     check(a.placeBars(0,1,2,1),"gap accepted");
@@ -117,7 +128,7 @@ int main() {
     check(alien::parseSessionProject(alien::serializeSessionProject(*project),*restored,error)
         && restored->timeline.regions.size()==2 && restored->timeline.regions[1].start==2*alien::timeline::ticksPerBar,"timeline roundtrip");
     auto song=std::make_unique<alien::ArrangementPlayback>(); song->timeline=a;
-    song->clips[0][0].pattern.add(69,0,16,0.8f); song->clips[1][0].pattern.add(60,0,16,0.8f);
+    { alien::PianoRollPattern a69, c60; a69.add(69,0,16,0.8f); c60.add(60,0,16,0.8f); song->clips[0][0].pattern = a69; song->clips[1][0].pattern = c60; }
     auto engine=std::make_unique<ToneEngine>(); engine->prepare(48000);engine->patternMode.store(2);
     engine->arrangementMailbox.publish(*song);engine->playing.store(true);
     std::array<float,257> left{},right{}; std::array<double,3> energy{}; double lateGap=0;

@@ -738,7 +738,7 @@ private:
             }
             audioClipMode[track] = true;
         } else {
-            lane.midi = rolls[track].startAt(clip.pattern, region.source,
+            lane.midi = rolls[track].startAt(*clip.pattern, region.source,
                 (static_cast<double>(region.offset) + into) / alien::timeline::ticksPerStep, send);
         }
     }
@@ -817,7 +817,7 @@ private:
             // Edited notes join the clip that is playing; a different loop length changes what the position means, so that restarts.
             if (lane.midi) {
                 auto send = [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); };
-                if (clip.pattern.loopSteps == rolls[track].loopLengthSteps()) rolls[track].updatePattern(clip.pattern, send);
+                if (clip.pattern->loopSteps == rolls[track].loopLengthSteps()) rolls[track].updatePattern(*clip.pattern, send);
                 else { clearTrack(track, false); startTrackRegion(track, *region); }
             }
             return;

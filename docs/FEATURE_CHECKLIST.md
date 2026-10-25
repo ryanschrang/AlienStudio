@@ -45,6 +45,7 @@ Draft work below is not available in main until this PR is merged.
 | PROD-02 | Piano-roll notes, velocity/probability, processing, undo | Implemented | Piano-roll tests; not MIDI performance recording |
 | PROD-03 | Eight-pad drum sample kits and sequencing | Implemented | DrumSamplerTests; representative project uses built-in synths |
 | LIVE-01 | Session grid up to 16 tracks / 32 scenes | Implemented | Session project/controller tests |
+| LIVE-03 | Shared clip storage (groundwork for raising the Session limits) | Implemented on feature branch | The song snapshot and the save/load data point at the document's immutable clip notes (SharedPianoRoll) instead of copying a 32 KiB pattern per clip: a snapshot drops from about 16 MiB to a few KiB, and empty clips with the default loop keep no notes at all. No format or behaviour change. ArrangementTests (snapshot size, SharedPianoRoll), ProjectControllerTests (sharing to and from save data, live snapshot shares notes). Next: raise tracks/scenes/notes; the per-track engine buffers (pattern copies in the scheduler and mailboxes) still grow with the note limit |
 | LIVE-02 | Beat/bar launch, scene launch and MIDI CC mapping | Implemented | Session/MIDI tests; hardware live checks pending |
 | MIX-01 | Per-track volume, pan, mute/solo and meters | Implemented | TrackMixer tests; no general bus/send routing yet |
 | FILE-01 | Versioned projects, portable audio collection | Implemented | SessionProjectTests; project v6 |

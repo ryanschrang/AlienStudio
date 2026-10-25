@@ -240,11 +240,15 @@ int main() {
     source.stepVelocities = {1, 8, 16, 24, 32, 40, 48, 56,
         64, 72, 80, 88, 96, 104, 112, 127};
     auto& midi = source.clips[1][2];
-    midi.pattern.loopSteps = 128;
-    require(midi.pattern.add(67, 7.25, 2.5, 0.63f, 0.42f) != 0,
+    alien::PianoRollPattern midiNotes;
+    midiNotes.loopSteps = 128;
+    require(midiNotes.add(67, 7.25, 2.5, 0.63f, 0.42f) != 0,
         "test pattern contains a valid note");
+    midi.pattern = midiNotes;
     auto& audio = source.clips[3][1];
-    audio.pattern.add(48, 0.0, 4.0);
+    alien::PianoRollPattern audioNotes;
+    audioNotes.add(48, 0.0, 4.0);
+    audio.pattern = audioNotes;
     audio.audioFilePath = "C:\\Music\\Ambient \"take\".mp3";
     alien::timeline::Region edited;
     edited.row = 1; edited.source = 3; edited.start = 0; edited.length = alien::timeline::ticksPerBar;
@@ -322,7 +326,7 @@ int main() {
         olderTrack->setProperty("armed", true); olderTrack->setProperty("input", alien::maxTrackInputs);
         require(!alien::parseSessionProject(juce::JSON::toString(older), reloaded, error), "an input past the last one is rejected");
     }
-    const auto& restoredMidi = restored.clips[1][2].pattern;
+    const alien::PianoRollPattern& restoredMidi = restored.clips[1][2].pattern;
     require(restoredMidi.loopSteps == 128 && restoredMidi.count == 1
         && restoredMidi.notes[0].pitch == 67 && restoredMidi.notes[0].startStep == 7.25
         && restoredMidi.notes[0].lengthSteps == 2.5
@@ -330,7 +334,7 @@ int main() {
         && std::abs(restoredMidi.notes[0].probability - 0.42f) < 1.0e-6f,
         "MIDI timing, pitch, velocity, probability and loop length round-trip");
     require(restored.clips[3][1].audioFilePath == audio.audioFilePath
-        && restored.clips[3][1].pattern.count == 1,
+        && restored.clips[3][1].pattern->count == 1,
         "audio source reference and the clip's underlying MIDI pattern round-trip");
 
     const auto projectFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
@@ -342,9 +346,9 @@ int main() {
         "saved project file can be reopened with audio references intact");
     projectFile.deleteFile();
 
-    const auto unchanged = restored.clips[1][2].pattern.notes[0].pitch;
+    const auto unchanged = restored.clips[1][2].pattern->notes[0].pitch;
     require(!alien::parseSessionProject("{ broken", restored, error)
-        && error.isNotEmpty() && restored.clips[1][2].pattern.notes[0].pitch == unchanged,
+        && error.isNotEmpty() && restored.clips[1][2].pattern->notes[0].pitch == unchanged,
         "malformed JSON fails without partially mutating the current project");
     require(!alien::parseSessionProject("{\"format\":\"AlienStudioSession\",\"version\":99}",
         restored, error) && error.contains("version"), "unknown project versions are rejected");

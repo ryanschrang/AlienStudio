@@ -823,13 +823,13 @@ public:
         song->timeline = doc.timeline;
         for (int s = 0; s < doc.sceneCount(); ++s) for (int t = 0; t < doc.trackCount(); ++t) {
             // An offline audio clip stays silent; it must not fall back to playing stray notes.
-            if (!doc.clip(t, s).audioOffline()) song->clips[s][t].pattern = doc.clip(t, s).notes();
+            if (!doc.clip(t, s).audioOffline()) song->clips[s][t].pattern = doc.clip(t, s).pattern;   // shared, not copied
             song->clips[s][t].audio = doc.clip(t, s).audio.get();
         }
         return song;
     }
     // What the engine currently holds. Commits that do not touch the song (mixer,
-    // tempo, names, plugin state) must not rebuild and re-send a 16 MiB snapshot.
+    // tempo, names, plugin state) must not rebuild, validate and re-send a snapshot.
     // Shared pointers keep every compared clip alive, so an address can never be
     // reused by a different clip while it is being compared.
     struct PublishedSong {
