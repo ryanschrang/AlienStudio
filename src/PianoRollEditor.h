@@ -5,6 +5,7 @@
 #include "PianoRollProcessing.h"
 #include "PianoRollClipboard.h"
 #include "PianoRollChordStamp.h"
+#include "PianoRollProgression.h"
 #include "PianoRollScale.h"
 #include <cmath>
 #include <functional>
@@ -113,14 +114,29 @@ public:
         tools.addItem("Invert down", 8);
         tools.addItem("Reverse", 9);
         tools.addItem("Arpeggiate", 10);
+        tools.addItem("Chord progression", 11);
         tools.setSelectedId(1, juce::dontSendNotification);
         tools.setTooltip("Choose a note processing tool, then open its settings");
         tools.onChange = [this] {
             if (!panelOpen) return;
             const auto tool = tools.getSelectedId();
             if (tool >= 7 && tool <= 9) { closeToolPanel(); runImmediateTool(tool); }
-            else configureToolPanel();
+            else { configureToolPanel(); resized(); }
         };
+        addChildComponent(progressionMode);
+        progressionMode.setName("Progression scale");
+        progressionMode.addItem("Major", 1);
+        progressionMode.addItem("Natural minor", 2);
+        progressionMode.setSelectedId(1, juce::dontSendNotification);
+        progressionMode.setTooltip("Diatonic triads in the chosen scale; root MIDI note sets key and register");
+        for (std::size_t i = 0; i < progressionDegrees.size(); ++i) {
+            auto& degree = progressionDegrees[i];
+            addChildComponent(degree);
+            degree.setName("Progression chord " + juce::String(static_cast<int>(i + 1)));
+            for (int d = 1; d <= 7; ++d) degree.addItem("Degree " + juce::String(d), d);
+            degree.setSelectedId(progressionSettings.degrees[i], juce::dontSendNotification);
+            degree.setTooltip("Choose scale degree for chord " + juce::String(static_cast<int>(i + 1)));
+        }
         configureButton(toolButton, "Edit...", "Open piano roll processing settings");
         toolButton.onClick = [this] {
             const auto tool = tools.getSelectedId();
@@ -383,6 +399,13 @@ public:
             seedLabel.setBounds(282, 113, 72, 26);
             seed.setBounds(360, 113, 110, 26);
             previewChordButton.setBounds(480, 113, 88, 28);
+        } else if (tools.getSelectedId() == 11) {
+            const int available = getWidth() - 220;
+            const int modeWidth = juce::jmin(140, available / 4);
+            progressionMode.setBounds(16, 113, modeWidth, 26);
+            const int degreeWidth = (available - modeWidth - 24) / 4;
+            for (std::size_t i = 0; i < progressionDegrees.size(); ++i)
+                progressionDegrees[i].setBounds(24 + modeWidth + static_cast<int>(i) * degreeWidth, 113, degreeWidth - 6, 26);
         } else if (tools.getSelectedId() == 6) {
             scaleRootLabel.setBounds(16, 78, 54, 26);
             scaleRoot.setBounds(76, 78, 92, 26);
@@ -876,10 +899,11 @@ private:
         exampleButton.setEnabled(pattern.count == 0);
         undoButton.setEnabled(canUndo());
         redoButton.setEnabled(canRedo());
-        applyButton.setEnabled(tools.getSelectedId() == 5 || tools.getSelectedId() == 6 || selection.count != 0);
+        applyButton.setEnabled(tools.getSelectedId() == 5 || tools.getSelectedId() == 6 || tools.getSelectedId() == 11 || selection.count != 0);
         if (panelOpen)
             panelTitle.setText(tools.getSelectedId() == 5
                                ? "Chord stamp at step " + juce::String(insertionStep + 1.0, 3)
+                               : tools.getSelectedId() == 11 ? "Chord progression at step " + juce::String(insertionStep + 1.0, 3)
                                : tools.getSelectedId() == 6 ? "Scale highlighting and snapping"
                                : tools.getText() + " selected notes  |  "
                                  + juce::String(static_cast<int>(selection.count)) + " selected",
@@ -1123,11 +1147,13 @@ private:
         }
         const auto tool = tools.getSelectedId();
         panelTitle.setText(tool == 5 ? "Chord stamp at step " + juce::String(insertionStep + 1.0, 3)
+                                    : tool == 11 ? "Chord progression at step " + juce::String(insertionStep + 1.0, 3)
                                     : tool == 6 ? "Scale highlighting and snapping"
                                     : tool == 10 ? "Arpeggiate selected chords"
                                     : tools.getText() + " selected notes  |  " + juce::String(static_cast<int>(selection.count))
                                       + " selected", juce::dontSendNotification);
         panelHelp.setText(tool == 5 ? "Choose a voicing, preview it, then add the chord as one undoable edit."
+                                    : tool == 11 ? "Four diatonic triads. 16 steps = one bar. Inserts at the cursor; existing notes are kept. Undo removes all four."
                                     : tool == 6 ? "Changes apply immediately. Snap affects newly drawn notes and pitch moves; existing notes stay unchanged."
                                     : tool == 10 ? "Sequence notes sharing a start time. Rate and gate use the 240-tick sixteenth grid."
                                     : "240 ticks = one 1/16 note. Changes apply to selected notes only.",
@@ -1136,6 +1162,8 @@ private:
         seed.setVisible(tool == 1 || tool == 3 || tool == 5);
         seedLabel.setVisible(seed.isVisible());
         descending.setVisible(tool == 1 || tool == 10);
+        progressionMode.setVisible(tool == 11);
+        for (auto& degree : progressionDegrees) degree.setVisible(tool == 11);
         chordType.setVisible(tool == 5);
         chordTypeLabel.setVisible(tool == 5);
         previewChordButton.setVisible(tool == 5);
@@ -1182,6 +1210,13 @@ private:
             scaleType.setSelectedId(static_cast<int>(scaleSettings.type) + 1, juce::dontSendNotification);
             scaleHighlight.setToggleState(scaleSettings.highlight, juce::dontSendNotification);
             scaleSnap.setToggleState(scaleSettings.snap, juce::dontSendNotification);
+        } else if (tool == 11) {
+            configureParameter(0, "Tonic (MIDI)", "Progression tonic MIDI note", 0, 127, progressionSettings.tonic);
+            configureParameter(1, "Steps / chord", "Progression chord length steps", 1, 64, progressionSettings.chordSteps);
+            configureParameter(2, "Velocity", "Progression velocity", 1, 127, progressionSettings.velocity * 127.0f);
+            progressionMode.setSelectedId(progressionSettings.minor ? 2 : 1, juce::dontSendNotification);
+            for (std::size_t i = 0; i < progressionDegrees.size(); ++i)
+                progressionDegrees[i].setSelectedId(progressionSettings.degrees[i], juce::dontSendNotification);
         } else if (tool == 10) {
             configureParameter(0, "Rate (ticks)", "Arpeggiate rate ticks", 1, 3840, arpeggiateSettings.rateSteps * 240.0);
             configureParameter(1, "Gate (%)", "Arpeggiate gate percent", 5, 100, arpeggiateSettings.gate * 100.0);
@@ -1208,6 +1243,8 @@ private:
     void closeToolPanel() {
         releaseChordPreview(true);
         panelOpen = false;
+        progressionMode.setVisible(false);
+        for (auto& degree : progressionDegrees) degree.setVisible(false);
         for (auto* child : std::initializer_list<juce::Component*> { &panelTitle, &panelHelp, &applyButton,
                                                                  &cancelButton, &seed, &seedLabel, &descending,
                                                                  &chordType, &chordTypeLabel, &previewChordButton,
@@ -1229,6 +1266,32 @@ private:
             return;
         }
         beginEdit();
+        if (tools.getSelectedId() == 11) {
+            progressionSettings.tonic = static_cast<int>(parameters[0].getValue());
+            progressionSettings.chordSteps = parameters[1].getValue();
+            progressionSettings.velocity = static_cast<float>(parameters[2].getValue() / 127.0);
+            progressionSettings.minor = progressionMode.getSelectedId() == 2;
+            for (std::size_t i = 0; i < progressionDegrees.size(); ++i)
+                progressionSettings.degrees[i] = progressionDegrees[i].getSelectedId();
+            const auto result = insertProgression(pattern, insertionStep, progressionSettings);
+            if (result.changed()) {
+                selection = result.selection;
+                activeId = selection.ids[0];
+                changed();
+                endEdit();
+                closeToolPanel();
+            } else {
+                endEdit();
+                statusMessage = result.status == ChordStampStatus::outOfBounds
+                    ? "No changes: four chords do not fit after the cursor. Shorten Steps / chord or move the cursor."
+                    : result.status == ChordStampStatus::capacityExceeded
+                    ? "No changes: the progression exceeds the clip note limit."
+                    : "No changes: choose a lower tonic so every chord fits the MIDI range.";
+                panelHelp.setText(statusMessage, juce::dontSendNotification);
+                updateSelection();
+            }
+            return;
+        }
         if (tools.getSelectedId() == 5) {
             releaseChordPreview(true);
             chordSettings = currentChordSettings();
@@ -1397,6 +1460,9 @@ private:
     RandomizeSettings randomizeSettings;
     QuantizeSettings quantizeSettings;
     ArpeggiateSettings arpeggiateSettings;
+    ProgressionSettings progressionSettings;
+    juce::ComboBox progressionMode;
+    std::array<juce::ComboBox, 4> progressionDegrees;
     ChordStampSettings chordSettings;
     ScaleSettings scaleSettings;
     std::array<int, 4> previewedChordPitches {};
