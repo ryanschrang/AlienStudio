@@ -34,6 +34,10 @@ static Project busyRack() {
     p.setStepField(0, 0, 12, StepField::pitch, 7);
     p.setStepField(0, 0, 12, StepField::probability, 25);
     p.setStepField(0, 1, 5, StepField::velocity, 77);        // drawn, but the step is off: kept
+    p.setStepField(0, 0, 4, StepField::gate, 35);
+    p.setStepField(0, 0, 8, StepField::nudge, 60);
+    p.setStepField(0, 0, 12, StepField::ratchet, 3);
+    p.setStepField(0, 1, 6, StepField::ratchet, 4);           // also kept on a step that is off
     p.setStepOn(0, 2, 15, true);
     p.addPattern(0);                                          // a copy, selected
     p.setPatternLength(1, 32);
@@ -42,6 +46,9 @@ static Project busyRack() {
     p.addPattern();
     p.setPatternLength(2, 64);
     p.setStepOn(2, 4, 63, true);
+    p.addPattern();
+    p.setPatternLength(3, 128);
+    p.setStepOn(3, 1, 127, true);
     p.selectPattern(1);
     p.setNameColumnWidth(201);
     return p;
@@ -63,6 +70,39 @@ static void roundTripAndValidation() {
             "non-ASCII names survive");
 
     require(back.channelRack.nameColumnWidth == 201, "the name column's width round-trips");
+    {
+        const auto& steps = back.channelRack.pattern(0).steps;
+        require(steps[0][4].gate == 35 && steps[0][8].nudge == 60 && steps[0][12].ratchet == 3 && steps[1][6].ratchet == 4 && !steps[1][6].on,
+                "gate, nudge and ratchet round-trip, also on a step that is off");
+        require(back.channelRack.pattern(3).length == 128 && back.channelRack.pattern(3).steps[1][127].on, "a 128-step pattern round-trips");
+        require(juce::JSON::parse(json).getProperty("version", 0) == juce::var(12), "projects are written as version 12");
+    }
+    {   // Steps saved before version 12 have seven values: gate, nudge and ratchet take their defaults.
+        auto copy = juce::JSON::parse(json);
+        copy.getDynamicObject()->setProperty("version", 11);
+        for (auto& pattern : *copy.getDynamicObject()->getProperty("channelRack").getDynamicObject()->getProperty("patterns").getArray())
+            for (auto& cell : *pattern.getDynamicObject()->getProperty("steps").getArray()) cell.getArray()->removeRange(7, 3);
+        alien::SessionProjectData older;
+        require(alien::parseSessionProject(juce::JSON::toString(copy), older, error), "a version 11 rack with seven-value steps opens");
+        auto expected = data.channelRack;
+        for (int pat = 0; pat < expected.patternCount; ++pat)
+            for (int c = 0; c < expected.channelCount; ++c)
+                for (int st = 0; st < maxSteps; ++st) {
+                    expected.setStepField(pat, c, st, StepField::gate, fullGate);
+                    expected.setStepField(pat, c, st, StepField::nudge, 0);
+                    expected.setStepField(pat, c, st, StepField::ratchet, 1);
+                }
+        require(older.channelRack == expected, "and its steps play the whole sample, on the grid, once");
+    }
+    {   // A full rack of 64 channels round-trips.
+        alien::SessionProjectData full;
+        while (full.channelRack.channelCount < maxChannels) full.channelRack.addChannel("Extra", "builtin:hat");
+        full.channelRack.setStepOn(0, maxChannels - 1, maxSteps - 1, true);
+        full.channelRack.setPatternLength(0, 128);
+        alien::SessionProjectData again;
+        require(alien::parseSessionProject(alien::serializeSessionProject(full), again, error) && again.channelRack == full.channelRack
+                && again.channelRack.channelCount == 64 && again.channelRack.pattern(0).steps[63][127].on, "64 channels and step 128 round-trip");
+    }
     {   // Projects saved before the name column could be resized open with the default width.
         auto copy = juce::JSON::parse(json);
         copy.getDynamicObject()->getProperty("channelRack").getDynamicObject()->removeProperty("nameColumnWidth");
@@ -110,12 +150,25 @@ static void roundTripAndValidation() {
     damage("text name column width", [&](auto* r) { r->setProperty("nameColumnWidth", "wide"); });
     damage("pattern length 17", [&](auto* r) { firstPattern(r)->setProperty("length", 17); });
     damage("no patterns", [&](auto* r) { r->getProperty("patterns").getArray()->clear(); });
-    damage("17 channels", [&](auto* r) { auto* a = r->getProperty("channels").getArray(); const auto first = a->getReference(0); while (a->size() < 17) a->add(first); });
+    damage("65 channels", [&](auto* r) { auto* a = r->getProperty("channels").getArray(); const auto first = a->getReference(0); while (a->size() < 65) a->add(first); });
+    damage("pattern length 256", [&](auto* r) { firstPattern(r)->setProperty("length", 256); });
     damage("65 patterns", [&](auto* r) { auto* a = r->getProperty("patterns").getArray(); const auto first = a->getReference(0); while (a->size() < 65) a->add(first); });
     damage("step on a missing channel", [&](auto* r) {
         auto* steps = firstPattern(r)->getProperty("steps").getArray(); steps->getReference(0).getArray()->set(0, 12); });
-    damage("step 64", [&](auto* r) {
-        auto* steps = firstPattern(r)->getProperty("steps").getArray(); steps->getReference(0).getArray()->set(1, 64); });
+    damage("step 129", [&](auto* r) {
+        auto* steps = firstPattern(r)->getProperty("steps").getArray(); steps->getReference(0).getArray()->set(1, maxSteps); });
+    auto damageCell = [&](const char* what, int index, juce::var value) {
+        damage(what, [&](auto* r) { firstPattern(r)->getProperty("steps").getArray()->getReference(0).getArray()->set(index, value); });
+    };
+    damageCell("gate 0", 7, 0);
+    damageCell("gate 101", 7, 101);
+    damageCell("nudge 101", 8, 101);
+    damageCell("negative nudge", 8, -1);
+    damageCell("ratchet 0", 9, 0);
+    damageCell("ratchet 5", 9, 5);
+    damageCell("text ratchet", 9, "twice");
+    damage("eight-value step record", [&](auto* r) {
+        firstPattern(r)->getProperty("steps").getArray()->getReference(0).getArray()->removeRange(8, 2); });
     damage("velocity 0", [&](auto* r) {
         auto* steps = firstPattern(r)->getProperty("steps").getArray(); steps->getReference(0).getArray()->set(3, 0); });
     damage("probability 101", [&](auto* r) {

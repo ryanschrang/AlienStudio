@@ -1,5 +1,5 @@
 // Channel Rack playback: step clock, swing, voices, pitch, pan, probability,
-// choke, mute/solo, routing, and real-time safety. No JUCE.
+// gate, nudge, ratchets, choke, mute/solo, routing, and real-time safety. No JUCE.
 #include "RackEngine.h"
 #include "RackModel.h"
 #include <cstdio>
@@ -597,6 +597,11 @@ static void independenceTests() {
                 rig.project.setStepField(0, c, s, StepField::pan, (s * 5) % 127 - 63);
                 rig.project.setStepField(0, c, s, StepField::pitch, (s * 3 + c) % 49 - 24);
                 rig.project.setStepField(0, c, s, StepField::probability, 40 + (s * 11) % 61);
+                if ((s + c) % 3 == 0) {
+                    rig.project.setStepField(0, c, s, StepField::gate, (s * 17) % 100 + 1);
+                    rig.project.setStepField(0, c, s, StepField::nudge, (s * 29 + c) % 101);
+                    rig.project.setStepField(0, c, s, StepField::ratchet, 1 + (s + c) % 4);
+                }
             }
         }
     };
@@ -609,9 +614,91 @@ static void independenceTests() {
     }
 }
 
+// Gate, nudge and ratchets. At 120 BPM and 48 kHz a step is 6000 samples.
+static void stepTimingTests() {
+    auto set = [](Rig& rig, int c, int s, StepField f, int v) { rig.project.setStepField(0, c, s, f, v); };
+    {   // Nudge delays a step by a percent of a step, up to a whole step.
+        Rig rig; rig.setClip(0, dc(10)); rig.on(0, 0); rig.on(0, 4);
+        set(rig, 0, 0, StepField::nudge, 50); set(rig, 0, 4, StepField::nudge, 100);
+        rig.run(48000, true);
+        const auto hits = onsets(rig.master());
+        check(hits == std::vector<std::size_t>{3000, 30000}, "nudge 50% plays half a step late and 100% a whole step late");
+    }
+    {   // Ratchets split the step evenly; a nudge moves every hit.
+        Rig rig; rig.setClip(0, dc(10)); rig.on(0, 0); rig.on(0, 8);
+        set(rig, 0, 0, StepField::ratchet, 3);
+        set(rig, 0, 8, StepField::ratchet, 4); set(rig, 0, 8, StepField::nudge, 25);
+        rig.run(60000, true);
+        const auto hits = onsets(rig.master());
+        check(hits == std::vector<std::size_t>{0, 2000, 4000, 49500, 51000, 52500, 54000}, "three and four ratchet hits land evenly inside their steps");
+    }
+    {   // Gate: full plays the sample to its end, 50% releases it half a step in.
+        Rig full; full.setClip(0, dc(48000)); full.on(0, 0); full.run(6000, true);
+        check(full.master()[5990] > 0.6f, "a full gate keeps the sample playing");
+        Rig half; half.setClip(0, dc(48000)); half.on(0, 0); set(half, 0, 0, StepField::gate, 50); half.run(6000, true);
+        check(half.master()[2990] > 0.6f && std::abs(half.master()[4500]) < 0.001f, "a 50% gate releases the hit half a step in");
+    }
+    {   // With ratchets the gate is a share of the time between hits.
+        Rig rig; rig.setClip(0, dc(48000)); rig.on(0, 0);
+        set(rig, 0, 0, StepField::ratchet, 2); set(rig, 0, 0, StepField::gate, 50); rig.run(6000, true);
+        check(rig.master()[1400] > 0.6f && std::abs(rig.master()[2950]) < 0.01f && rig.master()[3010] > 0.6f,
+              "each of two ratchet hits is released a quarter of a step after it starts");
+    }
+    {   // One chance roll decides the whole step: all four hits or none.
+        Rig rig; rig.setClip(0, dc(10)); rig.on(0, 0); rig.on(0, 8);
+        for (int s : {0, 8}) { set(rig, 0, s, StepField::ratchet, 4); set(rig, 0, s, StepField::probability, 50); }
+        const double step = 48000.0 * 60.0 / (1000.0 * 4.0);   // 720 samples at 1000 BPM
+        rig.run(static_cast<int>(step * 16 * 20), true, 1000.0);
+        std::map<long long, int> perStep;
+        for (const auto at : onsets(rig.master())) ++perStep[static_cast<long long>(static_cast<double>(at) / step)];
+        bool whole = !perStep.empty() && perStep.size() < 40;
+        for (const auto& [index, count] : perStep) whole = whole && count == 4;
+        check(whole, "ratchets of a step that may miss play all together or not at all (" + std::to_string(perStep.size()) + " of 40 steps played)");
+    }
+    {   // Muting a channel drops its hits still waiting for their nudge.
+        Rig rig; rig.setClip(0, dc(10)); rig.on(0, 0); set(rig, 0, 0, StepField::nudge, 50);
+        rig.run(1000, true);
+        auto ch = rig.project.channels[0]; ch.mute = true; rig.project.setChannel(0, ch); rig.publish();
+        rig.run(5000, true);
+        check(onsets(rig.master()).empty() && rig.player.pendingHits() == 0, "a hit muted before its nudge time is not played");
+    }
+    {   // Stopping drops waiting hits, so nothing plays after the transport stops.
+        Rig rig; rig.setClip(0, dc(10)); rig.on(0, 0); set(rig, 0, 0, StepField::nudge, 80);
+        rig.run(1000, true);
+        rig.run(10000, false);
+        check(onsets(rig.master()).empty() && rig.player.pendingHits() == 0, "stop drops hits waiting for their nudge time");
+        Rig other; other.setClip(0, dc(10)); other.on(0, 0); set(other, 0, 0, StepField::ratchet, 4);
+        other.run(1000, true); other.player.stop(); other.run(10000, false);
+        check(onsets(other.master()).size() == 1 && other.player.pendingHits() == 0, "stop() drops the rest of a ratchet");
+    }
+    {   // The Song's timeline path: a hit due on sample 100 with half a step of nudge plays on sample 3100.
+        Rig rig; rig.setClip(0, dc(10)); rig.on(0, 0); set(rig, 0, 0, StepField::nudge, 50); set(rig, 0, 0, StepField::ratchet, 2); rig.publish();
+        std::array<std::vector<float>, RackPlayer::busCount> bl, br; std::array<float*, RackPlayer::busCount> pl{}, pr{};
+        for (std::size_t b = 0; b < bl.size(); ++b) { bl[b].assign(8000, 0.0f); br[b].assign(8000, 0.0f); pl[b] = bl[b].data(); pr[b] = br[b].data(); }
+        const RackPlayer::TimelineHit hit{100, 0, 0};
+        rig.player.processTimeline(*rig.snap, rig.clips, true, &hit, 1, 120.0, 4, 8000, pl.data(), pr.data());
+        check(onsets(bl[RackPlayer::masterBus]) == std::vector<std::size_t>{3100, 6100}, "timeline hits are nudged and ratcheted at the song's tempo");
+    }
+    {   // A full rack of nudged four-hit ratchets stays inside the fixed queue and voice pool.
+        Rig rig; rig.project.setPatternLength(0, 16);
+        while (rig.project.channelCount < maxChannels) rig.project.addChannel("x", "");
+        for (int c = 0; c < maxChannels; ++c) {
+            rig.setClip(c, dc(200));
+            for (int s = 0; s < 16; ++s) { rig.on(c, s); set(rig, c, s, StepField::ratchet, 4); set(rig, c, s, StepField::nudge, 100); }
+        }
+        int most = 0;
+        rig.publish();
+        for (int block = 0; block < 60; ++block) { rig.run(256, true, 1000.0); most = std::max(most, rig.player.pendingHits()); }
+        check(most > 0 && most <= RackPlayer::maxPending && rig.player.activeVoices() <= RackPlayer::voiceCount,
+              "the hit queue is bounded (" + std::to_string(most) + " waiting at most)");
+    }
+}
+
 static void realTimeSafetyTests() {
     Rig rig; rig.setClip(0, dc(48000)); rig.setClip(1, makeClip(2000, 44100.0, [](std::size_t i) { return std::sin(0.1f * static_cast<float>(i)); }));
-    for (int s = 0; s < 16; ++s) { rig.on(0, s); rig.on(1, s); rig.project.setStepField(0, 1, s, StepField::pitch, s - 8); rig.project.setStepField(0, 1, s, StepField::probability, 60); }
+    for (int s = 0; s < 16; ++s) { rig.on(0, s); rig.on(1, s); rig.project.setStepField(0, 1, s, StepField::pitch, s - 8); rig.project.setStepField(0, 1, s, StepField::probability, 60);
+                              rig.project.setStepField(0, 1, s, StepField::ratchet, 1 + s % 4); rig.project.setStepField(0, 1, s, StepField::nudge, (s * 13) % 101);
+                              rig.project.setStepField(0, 0, s, StepField::gate, 10 + s * 5); }
     rig.project.setSwing(0.4f); rig.publish();
     std::array<std::vector<float>, RackPlayer::busCount> bl, br; std::array<float*, RackPlayer::busCount> pl{}, pr{};
     for (std::size_t b = 0; b < bl.size(); ++b) { bl[b].assign(512, 0.0f); br[b].assign(512, 0.0f); pl[b] = bl[b].data(); pr[b] = br[b].data(); }
@@ -636,8 +723,9 @@ int main() {
     auditionTests();
     stopTests();
     independenceTests();
+    stepTimingTests();
     realTimeSafetyTests();
     if (failures) { std::fprintf(stderr, "%d check(s) failed\n", failures); return 1; }
-    std::puts("PASS: channel rack engine (clock, swing, voices, pitch, pan, probability, choke, routing)");
+    std::puts("PASS: channel rack engine (clock, swing, voices, pitch, pan, probability, gate, nudge, ratchets, choke, routing)");
     return 0;
 }

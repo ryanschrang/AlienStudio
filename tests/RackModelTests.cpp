@@ -6,6 +6,7 @@
 #include <map>
 #include <vector>
 #include <cstdlib>
+#include <initializer_list>
 #include <set>
 #include <string>
 #include <thread>
@@ -58,8 +59,8 @@ static void stepTests() {
     p.setStepField(0, 2, 0, StepField::pan, 999); check(p.pattern(0).steps[2][0].pan == 63, "pan clamps at +63");
     p.setStepField(0, 2, 0, StepField::pitch, -99); check(p.pattern(0).steps[2][0].pitch == -24, "pitch clamps at -24 semitones");
     p.setStepField(0, 2, 0, StepField::probability, 250); check(p.pattern(0).steps[2][0].probability == 100, "probability clamps at 100");
-    check(p.setStepOn(0, 3, 63, true) && p.pattern(0).steps[3][63].on, "the last step is step 64");
-    check(!p.setStepOn(0, 3, 64, true) && !p.setStepOn(0, 3, -1, true) && !p.setStepOn(0, 4, 0, true) && !p.setStepOn(1, 0, 0, true) && !p.setStepOn(-1, 0, 0, true),
+    check(p.setStepOn(0, 3, 127, true) && p.pattern(0).steps[3][127].on, "the last step is step 128");
+    check(!p.setStepOn(0, 3, 128, true) && !p.setStepOn(0, 3, -1, true) && !p.setStepOn(0, 4, 0, true) && !p.setStepOn(1, 0, 0, true) && !p.setStepOn(-1, 0, 0, true),
           "addresses outside the rack are refused");
     Step bad; bad.velocity = 0;
     check(!p.setStep(0, 0, 0, bad), "an invalid step is refused");
@@ -68,7 +69,35 @@ static void stepTests() {
         const auto field = static_cast<StepField>(f);
         Step s; setField(s, field, fieldDefault(field));
         check(getField(s, field) == fieldDefault(field) && fieldMinimum(field) <= fieldDefault(field) && fieldDefault(field) <= fieldMaximum(field), "field defaults sit inside their ranges");
+        check(getField(Step{}, field) == fieldDefault(field), "a fresh step holds every field's default");
     }
+}
+
+// Gate, nudge and ratchet: ranges, clamping, and that they travel with the step.
+static void stepTimingTests() {
+    auto p = Project::createDefault();
+    const Step fresh;
+    check(fresh.gate == fullGate && fresh.nudge == 0 && fresh.ratchet == 1, "a new step plays the whole sample, on the grid, once");
+    check(p.setStepOn(0, 1, 2, true), "turn a step on");
+    p.setStepField(0, 1, 2, StepField::gate, 0); check(p.pattern(0).steps[1][2].gate == 1, "gate clamps at 1%");
+    p.setStepField(0, 1, 2, StepField::gate, 250); check(p.pattern(0).steps[1][2].gate == fullGate, "gate clamps at full");
+    p.setStepField(0, 1, 2, StepField::nudge, -10); check(p.pattern(0).steps[1][2].nudge == 0, "nudge never plays early");
+    p.setStepField(0, 1, 2, StepField::nudge, 101); check(p.pattern(0).steps[1][2].nudge == maxNudge, "nudge clamps at one step");
+    p.setStepField(0, 1, 2, StepField::ratchet, 0); check(p.pattern(0).steps[1][2].ratchet == 1, "ratchet clamps at one hit");
+    p.setStepField(0, 1, 2, StepField::ratchet, 9); check(p.pattern(0).steps[1][2].ratchet == maxRatchet, "ratchet clamps at four hits");
+    p.setStepField(0, 1, 2, StepField::gate, 40); p.setStepField(0, 1, 2, StepField::nudge, 25); p.setStepField(0, 1, 2, StepField::ratchet, 3);
+    check(p.setStepOn(0, 1, 2, false) && p.setStepOn(0, 1, 2, true), "off and on again");
+    const auto kept = p.pattern(0).steps[1][2];
+    check(kept.gate == 40 && kept.nudge == 25 && kept.ratchet == 3, "turning a step off and on keeps its gate, nudge and ratchet");
+    check(p.rotateRow(0, 1, 1) && p.pattern(0).steps[1][3] == kept && p.reverseRow(0, 1) && p.pattern(0).steps[1][12].ratchet == 3,
+          "row tools move gate, nudge and ratchet with the step");
+    using Breaker = void (*)(Step&);
+    for (Breaker bad : std::initializer_list<Breaker>{[](Step& s) { s.gate = 0; }, [](Step& s) { s.gate = 101; }, [](Step& s) { s.nudge = 101; },
+                     [](Step& s) { s.ratchet = 0; }, [](Step& s) { s.ratchet = 5; }}) {
+        Step s; s.on = true; bad(s);
+        check(!s.valid() && !p.setStep(0, 0, 0, s), "an out-of-range gate, nudge or ratchet is refused");
+    }
+    check(p.valid(), "the project stays valid");
 }
 
 static void copyOnWriteTests() {
@@ -118,8 +147,9 @@ static void patternTests() {
     auto q = Project::createDefault();
     q.setStepOn(0, 0, 40, true); q.setStepOn(0, 0, 3, true);
     check(q.setPatternLength(0, 32) && q.pattern(0).length == 32 && !q.setPatternLength(0, 32), "length 32");
-    check(q.setPatternLength(0, 64) && q.setPatternLength(0, 16) && q.pattern(0).length == 16, "lengths 64 and 16");
-    check(!q.setPatternLength(0, 24) && !q.setPatternLength(0, 0) && !q.setPatternLength(0, 128) && !q.setPatternLength(5, 16), "only 16, 32 and 64 steps exist");
+    check(q.setPatternLength(0, 64) && q.setPatternLength(0, 128) && q.pattern(0).length == 128 && q.setPatternLength(0, 16) && q.pattern(0).length == 16,
+          "lengths 64, 128 and 16");
+    check(!q.setPatternLength(0, 24) && !q.setPatternLength(0, 0) && !q.setPatternLength(0, 256) && !q.setPatternLength(5, 16), "only 16, 32, 64 and 128 steps exist");
     check(q.pattern(0).steps[0][40].on, "steps past the end are kept when a pattern is shortened");
     check(q.clearChannelSteps(0, 0) && q.pattern(0).empty() && !q.clearChannelSteps(0, 0), "clearing one channel's steps");
     q.setStepOn(0, 1, 2, true); q.setStepOn(0, 3, 2, true);
@@ -171,7 +201,7 @@ static void channelTests() {
     // Capacity.
     auto full = Project::createDefault();
     while (full.channelCount < maxChannels) check(full.addChannel("x", ""), "adding channels");
-    check(!full.addChannel("x", "") && full.valid(), "no more than 16 channels");
+    check(full.channelCount == 64 && !full.addChannel("x", "") && full.valid(), "no more than 64 channels");
     // Track bookkeeping.
     auto r = Project::createDefault();
     for (int i = 0; i < 4; ++i) { Channel o = r.channels[static_cast<std::size_t>(i)]; o.output = static_cast<std::int8_t>(i - 1); r.setChannel(i, o); }   // master, 0, 1, 2
@@ -203,7 +233,7 @@ static void validationTests() {
     { auto q = p; auto bad = std::make_shared<Pattern>(); bad->length = 20; q.patterns[0] = bad; check(!q.valid(), "a 20-step pattern is invalid"); }
     { auto q = p; auto bad = std::make_shared<Pattern>(); bad->steps[0][0].velocity = 0; q.patterns[0] = bad; check(!q.valid(), "velocity 0 is invalid"); }
     { auto q = p; auto bad = std::make_shared<Pattern>(); bad->steps[15][63].probability = 101; q.patterns[0] = bad; check(!q.valid(), "probability 101 is invalid"); }
-    { auto q = p; q.channelCount = 17; check(!q.valid(), "17 channels is invalid"); }
+    { auto q = p; q.channelCount = maxChannels + 1; check(!q.valid(), "65 channels is invalid"); }
     { auto q = p; q.info[10].name = "ghost"; check(!q.valid(), "data past the last channel is invalid"); }
     { auto q = p; q.channels[0].volume = -0.1f; check(!q.valid(), "negative volume is invalid"); }
     { auto q = p; q.info[0].name = std::string(100, 'x'); check(!q.valid(), "an over-long name is invalid"); }
@@ -360,14 +390,16 @@ static void patternSelectionTests() {
 static void fullRackTests() {
     auto full = Project::createDefault();
     while (full.channelCount < maxChannels) full.addChannel("x", "");
-    full.setStepOn(0, 0, 0, true); full.setStepOn(0, 15, 3, true);
+    constexpr int last = maxChannels - 1;
+    full.setStepOn(0, 0, 0, true); full.setStepOn(0, last, 3, true); full.setStepOn(0, last, maxSteps - 1, true);
     full.addPattern(0);
-    check(full.removeChannel(0) && full.channelCount == 15, "removing a channel from a full rack");
+    check(full.removeChannel(0) && full.channelCount == last, "removing a channel from a full rack");
     for (int pat = 0; pat < 2; ++pat) {
-        check(full.pattern(pat).steps[14][3].on, "the last channel's steps moved up (pattern " + std::to_string(pat + 1) + ")");
-        check(full.pattern(pat).steps[15] == std::array<Step, maxSteps>{}, "and the vacated last row is empty (pattern " + std::to_string(pat + 1) + ")");
+        check(full.pattern(pat).steps[last - 1][3].on && full.pattern(pat).steps[last - 1][maxSteps - 1].on,
+              "the last channel's steps moved up (pattern " + std::to_string(pat + 1) + ")");
+        check(full.pattern(pat).steps[last] == std::array<Step, maxSteps>{}, "and the vacated last row is empty (pattern " + std::to_string(pat + 1) + ")");
     }
-    check(full.addChannel("new", "") && full.pattern(0).steps[15] == std::array<Step, maxSteps>{} && full.pattern(1).steps[15] == std::array<Step, maxSteps>{},
+    check(full.addChannel("new", "") && full.pattern(0).steps[last] == std::array<Step, maxSteps>{} && full.pattern(1).steps[last] == std::array<Step, maxSteps>{},
           "a channel added afterwards starts with no steps");
     check(full.valid(), "the rack is valid");
 }
@@ -448,6 +480,7 @@ int main() {
     writeSemanticsTests();
     patternSelectionTests();
     fullRackTests();
+    stepTimingTests();
     utf8CutTests();
     displayNameTests();
     if (failures) { std::fprintf(stderr, "%d check(s) failed\n", failures); return 1; }

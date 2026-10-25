@@ -19,11 +19,12 @@ Tracks can be armed and recorded onto the Song with count-in, punch and latency 
 Planned, not implemented. Each item is its own branch and pull request, with tests and the Windows
 checks it needs; order may change as work lands.
 
-1. **Finish the Channel Rack "Next" items.** Multi-channel selection (#67) and opening a channel
-   straight into the piano roll (#68, the first step towards channels that play notes) have
-   landed; resizable name columns are in review.
-2. **Step sequencer v2, together with raising the limits.** Both change the saved pattern data, so
-   they share one project format version and one migration:
+1. **Finish the Channel Rack "Next" items.** Done: multi-channel selection (#67), opening a channel
+   straight into the piano roll (#68) and resizable name columns (#71).
+2. **Step sequencer v2, together with raising the limits.** Part 1 is in review: project format 12
+   adds per-step gate, nudge and ratchets, and the rack grows to 64 channels and 128 steps. The
+   Session limits did not need a format change after all (tracks, scenes and notes are already
+   variable-length lists in the file); they need new clip storage instead (see *Limits*). The rest:
    - *Per-step expression:* gate (note length), micro-timing nudge, ratchets/retriggers (2-4 hits
      inside a step) and trigger conditions (every Nth pass, first pass only, fill, not first) on
      top of the existing velocity, pan, pitch and chance.
@@ -36,11 +37,13 @@ checks it needs; order may change as work lands.
      its own piano roll and scale-aware pitch steps (FL Studio's channel piano roll).
    - *Sampler controls per channel:* envelope, sample start, reverse, filter and fine tune, also
      drawable per step as graph-editor lanes.
-   - *Limits:* more rack channels and steps (beyond 16 and 64), more notes per clip than 1,024,
-     more tracks/scenes than 16/32, and MIDI scene mapping beyond scenes 1-4. These are fixed
-     capacities in the engine (pre-allocated per track, a 32-bit scene-launch mask, fixed-size
-     clip snapshots, tests that hold whole engines on a small stack), so memory, scheduling cost
-     and real-time safety need their own tests.
+   - *Limits:* rack channels and steps are raised (64 and 128). Still to do: more notes per clip
+     than 1,024, more tracks/scenes than 16/32, and MIDI scene mapping beyond scenes 1-4. Every
+     clip holds a fixed 1,024-note array (32 KiB), and the song snapshot copies one per track and
+     scene (about 16 MiB, three of them in flight), so raising them as they are to, say, 64 tracks,
+     128 scenes and 4,096 notes would make each snapshot about 1 GiB. Clips need shared,
+     immutable, right-sized note storage (as rack patterns already have) before the limits can
+     rise; memory, scheduling cost and real-time safety need their own tests.
    - *Ableton-style extras, later:* a 4x4 pad view of the same channels, note repeat, per-pad
      effects and sends (sends depend on MIX-02 bus routing), A/B pattern variations, pattern
      chaining and "split by channel" when placing a pattern on the Song.

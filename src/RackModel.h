@@ -21,10 +21,14 @@
 
 namespace alien::rack {
 
-inline constexpr int maxChannels = 16;
+inline constexpr int maxChannels = 64;
 inline constexpr int maxPatterns = 64;
-inline constexpr int maxSteps = 64;
+inline constexpr int maxSteps = 128;
 inline constexpr int defaultVelocity = 100;
+// Per-step timing: gate is the percent of a step (or of one ratchet hit's share of it) a hit sounds for
+// before it is released, 100 meaning the whole sample; nudge delays the step's hits by a percent of a
+// step (FL's "shift"); ratchet plays the step 1-4 times, evenly spaced inside it.
+inline constexpr int fullGate = 100, maxNudge = 100, maxRatchet = 4;
 inline constexpr int masterOutput = -1;     // Channel::output: straight to the master bus
 inline constexpr int maxOutputTrack = 15;   // Channel::output: a Session track index
 inline constexpr int maxChokeGroup = 8;
@@ -34,7 +38,7 @@ inline constexpr int maxSampleBytes = 1024;
 inline constexpr int defaultNameColumn = 118, minNameColumn = 64, maxNameColumn = 320;
 inline constexpr float defaultChannelVolume = 0.8f; // unity gain; the fader goes up to 1.0 (+1.9 dB)
 
-inline bool validLength(int length) noexcept { return length == 16 || length == 32 || length == 64; }
+inline bool validLength(int length) noexcept { return length == 16 || length == 32 || length == 64 || length == 128; }
 
 // One cell of the grid. A step that is off keeps its values, so turning it back
 // on restores what you had drawn in the graph editor.
@@ -44,34 +48,42 @@ struct Step {
     std::int8_t pan{0};                      // -63..63 (hard left .. hard right)
     std::int8_t pitch{0};                    // -24..24 semitones
     std::uint8_t probability{100};           // 0..100 percent chance that the step plays
+    std::uint8_t gate{fullGate};             // 1..100 (see fullGate)
+    std::uint8_t nudge{0};                   // 0..maxNudge percent of a step later
+    std::uint8_t ratchet{1};                 // 1..maxRatchet hits
     bool operator==(const Step&) const = default;
     bool valid() const noexcept {
         return velocity >= 1 && velocity <= 127 && pan >= -63 && pan <= 63
-            && pitch >= -24 && pitch <= 24 && probability <= 100;
+            && pitch >= -24 && pitch <= 24 && probability <= 100
+            && gate >= 1 && gate <= fullGate && nudge <= maxNudge && ratchet >= 1 && ratchet <= maxRatchet;
     }
 };
 
 // The properties the graph editor can draw, in the order of its tabs.
-enum class StepField { velocity, pan, pitch, probability };
-inline constexpr int stepFieldCount = 4;
+enum class StepField { velocity, pan, pitch, probability, gate, nudge, ratchet };
+inline constexpr int stepFieldCount = 7;
 inline int fieldMinimum(StepField f) noexcept {
     switch (f) { case StepField::velocity: return 1; case StepField::pan: return -63;
-                 case StepField::pitch: return -24; case StepField::probability: return 0; }
+                 case StepField::pitch: return -24; case StepField::probability: return 0;
+                 case StepField::gate: return 1; case StepField::nudge: return 0; case StepField::ratchet: return 1; }
     return 0;
 }
 inline int fieldMaximum(StepField f) noexcept {
     switch (f) { case StepField::velocity: return 127; case StepField::pan: return 63;
-                 case StepField::pitch: return 24; case StepField::probability: return 100; }
+                 case StepField::pitch: return 24; case StepField::probability: return 100;
+                 case StepField::gate: return fullGate; case StepField::nudge: return maxNudge; case StepField::ratchet: return maxRatchet; }
     return 0;
 }
 inline int fieldDefault(StepField f) noexcept {
     switch (f) { case StepField::velocity: return defaultVelocity; case StepField::pan: return 0;
-                 case StepField::pitch: return 0; case StepField::probability: return 100; }
+                 case StepField::pitch: return 0; case StepField::probability: return 100;
+                 case StepField::gate: return fullGate; case StepField::nudge: return 0; case StepField::ratchet: return 1; }
     return 0;
 }
 inline int getField(const Step& s, StepField f) noexcept {
     switch (f) { case StepField::velocity: return s.velocity; case StepField::pan: return s.pan;
-                 case StepField::pitch: return s.pitch; case StepField::probability: return s.probability; }
+                 case StepField::pitch: return s.pitch; case StepField::probability: return s.probability;
+                 case StepField::gate: return s.gate; case StepField::nudge: return s.nudge; case StepField::ratchet: return s.ratchet; }
     return 0;
 }
 inline void setField(Step& s, StepField f, int value) noexcept {
@@ -81,11 +93,15 @@ inline void setField(Step& s, StepField f, int value) noexcept {
     case StepField::pan: s.pan = static_cast<std::int8_t>(value); break;
     case StepField::pitch: s.pitch = static_cast<std::int8_t>(value); break;
     case StepField::probability: s.probability = static_cast<std::uint8_t>(value); break;
+    case StepField::gate: s.gate = static_cast<std::uint8_t>(value); break;
+    case StepField::nudge: s.nudge = static_cast<std::uint8_t>(value); break;
+    case StepField::ratchet: s.ratchet = static_cast<std::uint8_t>(value); break;
     }
 }
 
 // All channels' steps for one pattern. Steps past `length` are kept (switching
-// 64 -> 16 -> 64 loses nothing) but are not played.
+// 64 -> 16 -> 64 loses nothing) but are not played. About 64 KiB, so patterns are
+// only ever made with make_shared (see Project::edit), never on a stack.
 struct Pattern {
     std::array<std::array<Step, maxSteps>, maxChannels> steps{};
     int length{16};
@@ -310,7 +326,7 @@ struct Project {
         edit(pat, [&](Pattern& p) { p.steps[static_cast<std::size_t>(channel)][static_cast<std::size_t>(step)] = value; });
         return true;
     }
-    // Turning a step on or off leaves its velocity, pan, pitch and probability alone.
+    // Turning a step on or off leaves its velocity, pan, pitch, probability, gate, nudge and ratchet alone.
     bool setStepOn(int pat, int channel, int step, bool on) {
         if (!validStep(pat, channel, step)) return false;
         auto s = pattern(pat).steps[static_cast<std::size_t>(channel)][static_cast<std::size_t>(step)];

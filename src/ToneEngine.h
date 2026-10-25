@@ -490,7 +490,7 @@ private:
             left[b] = buses.left[b].data(); right[b] = buses.right[b].data();
         }
         if (timelineRunning)
-            rackPlayer.processTimeline(*rackSnapshot, rackSamples, true, rackHits.data(), rackHitCount, activeTracks.load(),
+            rackPlayer.processTimeline(*rackSnapshot, rackSamples, true, rackHits.data(), rackHitCount, bpm.load(), activeTracks.load(),
                                        samples, left.data(), right.data());
         else
             rackPlayer.process(*rackSnapshot, rackSamples, running, bpm.load(), activeTracks.load(), samples, left.data(), right.data());

@@ -101,7 +101,7 @@ public:
     void refresh() {
         selected = clampRow(selected);
         anchor = clampRow(anchor);
-        marked &= project().channelCount >= 32 ? ~0u : (1u << project().channelCount) - 1u;
+        marked &= project().channelCount >= 64 ? ~std::uint64_t{0} : (std::uint64_t{1} << project().channelCount) - 1u;
         marked |= bit(selected);
         scrollX = juce::jlimit(0, maxScroll(), scrollX);
         scrollY = juce::jlimit(0, maxScrollY(), scrollY);
@@ -905,14 +905,14 @@ private:
         g.drawText(text, box, juce::Justification::centred);
     }
 
-    static_assert(rack::maxChannels <= 32, "the selection is a 32-bit mask");
-    static std::uint32_t bit(int row) noexcept { return row >= 0 && row < 32 ? 1u << static_cast<unsigned>(row) : 0u; }
+    static_assert(rack::maxChannels <= 64, "the selection is a 64-bit mask");
+    static std::uint64_t bit(int row) noexcept { return row >= 0 && row < 64 ? std::uint64_t{1} << static_cast<unsigned>(row) : 0u; }
     int clampRow(int row) const noexcept { return project().channelCount > 0 ? juce::jlimit(0, project().channelCount - 1, row) : 0; }
 
     std::optional<rack::Project::StepRow> rowClipboard;
     ProjectController& controller;
     int selected{}, anchor{}, playhead{-1}, scrollX{}, scrollY{};
-    std::uint32_t marked{1};   // the selected channels, one bit per row; always includes `selected`
+    std::uint64_t marked{1};   // the selected channels, one bit per row; always includes `selected`
     std::vector<std::pair<int, float>> knobStarts;   // each knob target and its value when the drag began
     Drag drag{Drag::none};
     bool paintValue{};
@@ -932,7 +932,8 @@ class ChannelRackGraph final : public juce::Component {
 public:
     ChannelRackGraph(ProjectController& projectController, ChannelRackGrid& rackGrid) : controller(projectController), grid(rackGrid) {
         setName("Step graph editor");
-        const char* names[]{"Velocity", "Pan", "Pitch", "Chance"};
+        const char* names[]{"Velocity", "Pan", "Pitch", "Chance", "Gate", "Nudge", "Ratchet"};
+        static_assert(std::size(names) == rack::stepFieldCount);
         for (int i = 0; i < rack::stepFieldCount; ++i) {
             auto& button = fieldButtons[static_cast<std::size_t>(i)];
             addAndMakeVisible(button);
@@ -942,7 +943,7 @@ public:
             button.setRadioGroupId(2002);
             button.setColour(juce::TextButton::buttonOnColourId, ui::colours::accent);
             button.setColour(juce::TextButton::textColourOnId, ui::colours::accentInk);
-            button.setTooltip(juce::String("Draw each step's ") + juce::String(names[i]).toLowerCase());
+            button.setTooltip(fieldTooltip(static_cast<rack::StepField>(i)));
             button.onClick = [this, i] { setField(static_cast<rack::StepField>(i)); };
         }
         fieldButtons[0].setToggleState(true, juce::dontSendNotification);
@@ -983,9 +984,21 @@ public:
 
     void resized() override {
         const int w = grid.headerWidth() - 20;
-        const int bw = (w - 6) / 2;
+        const int bw = (w - 3 * 4) / 4;
         for (int i = 0; i < rack::stepFieldCount; ++i)
-            fieldButtons[static_cast<std::size_t>(i)].setBounds(10 + (i % 2) * (bw + 6), 34 + (i / 2) * 30, bw, 26);
+            fieldButtons[static_cast<std::size_t>(i)].setBounds(10 + (i % 4) * (bw + 4), 32 + (i / 4) * 28, bw, 24);
+    }
+
+    // What a step's value in the shown lane means, as the hover readout says it.
+    juce::String valueText(const rack::Step& step) const {
+        const int v = rack::getField(step, currentField);
+        switch (currentField) {
+        case rack::StepField::probability: return juce::String(v) + "%";
+        case rack::StepField::gate: return v >= rack::fullGate ? juce::String("full") : juce::String(v) + (step.ratchet > 1 ? "% of each hit" : "% of the step");
+        case rack::StepField::nudge: return v == 0 ? juce::String("on the grid") : juce::String(v) + "% of a step late";
+        case rack::StepField::ratchet: return v == 1 ? juce::String("1 hit") : juce::String(v) + " hits";
+        default: return juce::String(v);
+        }
     }
 
     void paint(juce::Graphics& g) override {
@@ -1002,7 +1015,7 @@ public:
         }
         g.setColour(col::textFaint);
         g.setFont(ui::font(10.5f));
-        g.drawFittedText("Drag across a row of bars to draw. Right-click a bar to reset it.", juce::Rectangle<int>(10, 96, grid.headerWidth() - 20, 40), juce::Justification::topLeft, 3);
+        g.drawFittedText("Drag across a row of bars to draw. Right-click a bar to reset it.", juce::Rectangle<int>(10, 90, grid.headerWidth() - 20, 40), juce::Justification::topLeft, 3);
         const auto area = plot();
         g.setColour(col::surface);
         g.fillRect(area);
@@ -1032,8 +1045,7 @@ public:
             if (step.on) {
                 g.setColour(col::text);
                 g.setFont(ui::monoFont(12.0f, true));
-                g.drawText(juce::String(fieldLabel()) + " " + juce::String(rack::getField(step, currentField)) + (currentField == rack::StepField::probability ? "%" : ""),
-                           area.withHeight(18).reduced(6, 0), juce::Justification::centredRight);
+                g.drawText(juce::String(fieldLabel()) + " " + valueText(step), area.withHeight(18).reduced(6, 0), juce::Justification::centredRight);
             }
         }
     }
@@ -1055,8 +1067,20 @@ public:
 
 private:
     const char* fieldLabel() const {
-        static const char* names[]{"velocity", "pan", "pitch", "chance"};
+        static const char* names[]{"velocity", "pan", "pitch", "chance", "gate", "nudge", "ratchet"};
         return names[static_cast<int>(currentField)];
+    }
+    static juce::String fieldTooltip(rack::StepField f) {
+        switch (f) {
+        case rack::StepField::velocity: return "Draw each step's velocity";
+        case rack::StepField::pan: return "Draw each step's pan";
+        case rack::StepField::pitch: return "Draw each step's pitch, in semitones";
+        case rack::StepField::probability: return "Draw each step's chance of playing";
+        case rack::StepField::gate: return "Draw how long each step sounds: the top plays the whole sample, lower cuts it off sooner";
+        case rack::StepField::nudge: return "Draw how late each step plays, up to one step after the grid";
+        case rack::StepField::ratchet: return "Draw how many times each step plays (1 to 4 hits inside the step)";
+        }
+        return {};
     }
     void setHover(int step) { if (hoverStep != step) { hoverStep = step; repaint(); } }
     void draw(const juce::MouseEvent& e) {
@@ -1128,6 +1152,7 @@ public:
         addAndMakeVisible(lengthBox); lengthBox.setName("Pattern length");
         lengthBox.setTooltip("Number of sixteenth-note steps in this pattern");
         lengthBox.addItem("16 steps (1 bar)", 16); lengthBox.addItem("32 steps (2 bars)", 32); lengthBox.addItem("64 steps (4 bars)", 64);
+        lengthBox.addItem("128 steps (8 bars)", 128);
         lengthBox.onChange = [this] {
             if (updating) return;
             const int length = lengthBox.getSelectedId();
