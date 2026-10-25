@@ -145,3 +145,11 @@ The editor shows the entire song. Format 10 saves automation; older projects ope
 - Miniature rack note previews open Piano Roll; step tools refuse melodic rows. Explicit channel clear returns to steps. Channel/pattern copies, move/delete, undo/redo and project format 13 retain notes.
 - Sample playback schedules note starts and independent releases without allocation. Song regions bound note endings; partial-step trim/seek keeps future note-ons. Sample looping, built-in synth channels and VST3 channels are not part of this milestone.
 - Windows listening, mouse/DPI checks and Debug/Release CI remain pending until recorded in the PR.
+
+## Channel Rack built-in synth channels (feature branch)
+
+- Add a built-in synth from + Channel, open its piano roll, and change among the 12 existing factory presets in the channel's Sound menu.
+- Sustained notes, independent same-pitch overlaps, preset release envelopes, mixer pan/volume/output, mute/solo and stop/panic. Fixed 64-voice pool shared with sample voices; no audio-callback allocation.
+- Timed channel-name previews and held piano-roll previews with note-off handling. Synth step rows have finite gates; sample sequencing retains its one-shot behavior.
+- Undo/redo, channel copies/movement/deletion, project format 14, legacy sample defaults, Song playback and deterministic WAV export.
+- VST3 rack instruments, patch editing and live MIDI/global keyboard routing into rack instruments remain pending. Hardware listening, manual DPI checks and CI results are recorded separately in the PR.

@@ -62,7 +62,7 @@ public:
         drumPanel.onLoad = [this](int t, int p, const juce::File& f) { controller.loadDrum(f, t, p); };
         drumPanel.onClear = [this](int t, int p) { controller.clearDrum(t, p); refreshExtraViews(); };
         drumPanel.onHit = [this](int t, int p) { engine.drumAuditions[t].push(alien::drumBaseNote + p, 0.8f); };
-        drumPanel.onRoute = [this](int t) { engine.liveDrumTrack.store(t); };
+        drumPanel.onRoute = [this](int t) { releaseNotes(); engine.liveDrumTrack.store(t); refreshPlugins(); };
         wireTimeline();
         audioTools.onRecord = [this] { chooseRecording(); };
         audioTools.onSettings = [this] { showAudioSettings(); };
@@ -87,6 +87,7 @@ public:
         pluginPanel.setPreflightEnabled(preflight->enabled());
         pluginHost.preflight = [this](const juce::PluginDescription& description) { return preflight->verify(description); };
         scanDatabase.load(alien::scan::ScanDatabase::defaultFile());
+        pluginPanel.onLiveInput = [this](int track) { releaseNotes(); engine.liveDrumTrack.store(track); drumPanel.setLiveInput(track); };
         pluginPanel.onTarget = [this](int) { refreshPlugins(); };
         pluginPanel.onAdd = [this](bool instrument, int choice) { addPlugin(instrument,choice); };
         pluginPanel.onAction = [this](int op,int slot) { pluginAction(op,slot); };
@@ -457,7 +458,7 @@ private:
         };
         pianoRoll.onAudition = [this](int note, float velocity) {
             if (rollTarget.rack) {
-                if (velocity > 0) controller.previewRackChannel(rollTarget.channel, velocity, note - alien::rack::channelRootPitch);
+                controller.previewRackChannel(rollTarget.channel, velocity, note - alien::rack::channelRootPitch, true);
                 return;
             }
             if (velocity > 0) keyboardState.noteOn(3, note, velocity);
@@ -1137,6 +1138,8 @@ private:
     }
     void refreshPlugins() {
         juce::StringArray names; for(const auto& t:controller.document().tracks) names.add(t.name);
+        pluginPanel.refreshLiveInput(names,engine.liveDrumTrack.load());
+        drumPanel.setLiveInput(engine.liveDrumTrack.load());
         const int t=pluginTarget();
         pluginPanel.refresh(names,t==alien::maxSessionTracks?controller.document().masterPlugins:controller.document().tracks[t].plugins,knownPlugins);
     }

@@ -1,6 +1,6 @@
 #pragma once
 // Channel Rack data model: a bank of step patterns shared by a set of sample
-// channels, in the style of FL Studio's channel rack. No JUCE and no audio
+// and synth channels, in the style of a compact channel rack. No JUCE and no audio
 // code, so every rule here is unit-testable in milliseconds.
 //
 // Threading: Project is a message-thread value type. Pattern contents are
@@ -9,6 +9,7 @@
 // what the audio thread reads; it is built on the message thread and never
 // changes afterwards.
 #include "PianoRollSequence.h"
+#include "SynthEngine.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -154,11 +155,14 @@ struct Channel {
     bool mute{false}, solo{false};
     std::int8_t output{masterOutput};    // masterOutput or a Session track index
     std::uint8_t chokeGroup{0};          // 0: none. Hits in a group cut off every other sound of the group.
+    int instrumentPreset{-1}; // -1: sample, otherwise an index in alien::presets
+    bool isSynth() const noexcept { return instrumentPreset >= 0; }
     bool operator==(const Channel&) const = default;
     bool valid() const noexcept {
         return std::isfinite(volume) && volume >= 0.0f && volume <= 1.0f
             && std::isfinite(pan) && pan >= -1.0f && pan <= 1.0f
-            && output >= masterOutput && output <= maxOutputTrack && chokeGroup <= maxChokeGroup;
+            && output >= masterOutput && output <= maxOutputTrack && chokeGroup <= maxChokeGroup
+            && instrumentPreset >= -1 && instrumentPreset < alien::presetCount;
     }
 };
 
@@ -453,8 +457,17 @@ struct Project {
         info[static_cast<std::size_t>(index)].name = std::move(name); return true;
     }
     bool setSample(int index, std::string sample) {
-        if (!validChannel(index) || sample.size() > maxSampleBytes || info[static_cast<std::size_t>(index)].sample == sample) return false;
-        info[static_cast<std::size_t>(index)].sample = std::move(sample); return true;
+        if (!validChannel(index) || sample.size() > maxSampleBytes) return false;
+        const auto c = static_cast<std::size_t>(index);
+        if (info[c].sample == sample && !channels[c].isSynth()) return false;
+        channels[c].instrumentPreset = -1;
+        info[c].sample = std::move(sample); return true;
+    }
+    bool setInstrumentPreset(int index, int preset) {
+        if (!validChannel(index) || preset < 0 || preset >= alien::presetCount) return false;
+        const auto c = static_cast<std::size_t>(index);
+        if (channels[c].instrumentPreset == preset && info[c].sample.empty()) return false;
+        channels[c].instrumentPreset = preset; info[c].sample.clear(); return true;
     }
     bool setSwing(float value) {
         if (!std::isfinite(value)) return false;
@@ -489,6 +502,7 @@ struct Project {
         for (int c = 0; c < maxChannels; ++c) {
             const auto i = static_cast<std::size_t>(c);
             if (!channels[i].valid() || info[i].name.size() > maxNameBytes || info[i].sample.size() > maxSampleBytes) return false;
+            if (channels[i].isSynth() && !info[i].sample.empty()) return false;
             if (c >= channelCount && !(channels[i] == Channel{} && info[i] == ChannelInfo{})) return false;
         }
         for (int p = 0; p < maxPatterns; ++p) {
