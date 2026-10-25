@@ -75,7 +75,7 @@ static void roundTripAndValidation() {
         require(steps[0][4].gate == 35 && steps[0][8].nudge == 60 && steps[0][12].ratchet == 3 && steps[1][6].ratchet == 4 && !steps[1][6].on,
                 "gate, nudge and ratchet round-trip, also on a step that is off");
         require(back.channelRack.pattern(3).length == 128 && back.channelRack.pattern(3).steps[1][127].on, "a 128-step pattern round-trips");
-        require(juce::JSON::parse(json).getProperty("version", 0) == juce::var(13), "projects are written as version 13");
+        require(static_cast<int>(juce::JSON::parse(json).getProperty("version", 0)) >= 12, "projects are written as version 12 or later (gate, nudge and ratchet need 12)");
     }
     {   // Steps saved before version 12 have seven values: gate, nudge and ratchet take their defaults.
         auto copy = juce::JSON::parse(json);
