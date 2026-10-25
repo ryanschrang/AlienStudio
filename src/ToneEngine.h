@@ -441,11 +441,14 @@ private:
         plugins->effectsAndAlign(samples);
         for (std::size_t r = 0; r < static_cast<std::size_t>(alien::maxReturns); ++r)
             returnMixers[r].setTarget(returns[r].snapshot().asTrack(), false);
-        // Send targets only change between blocks, so a track whose sends are all idle now
-        // stays silent to the returns for the whole block and skips the send loop.
+        // Skip idle manual sends, but keep tracks with send automation active even
+        // when their manual knobs are off and a curve starts at zero.
         std::array<bool, sessionTracks> sending{};
         for (std::size_t t = 0; t < sessionTracks; ++t)
             for (const auto& ramp : sendRamps[t]) sending[t] = sending[t] || !ramp.idle();
+        if (modeNow == 2) for (const auto& lane : song->timeline.automationLanes)
+            if (lane.enabled && !lane.points.empty() && alien::automation::sendIndex(lane.parameter) >= 0
+                && lane.track >= 0 && lane.track < static_cast<int>(sessionTracks)) sending[static_cast<std::size_t>(lane.track)] = true;
         for (int i = 0; i < samples; ++i) {
             float left = plugins->live.getSample(0,i), right = plugins->live.getSample(1,i);
             for (std::size_t t = 0; t < sessionTracks; ++t) {
@@ -453,13 +456,20 @@ private:
                 const float preLeft = l, preRight = r;
                 auto settings = tracks[t].snapshot();
                 bool automated = false;
+                std::array<bool, alien::maxReturns> automatedSends{};
                 const double automationTick = automationTicks[static_cast<std::size_t>(i)];
                 if (modeNow == 2 && automationTick >= 0.0) {
                     for (const auto& lane : song->timeline.automationLanes) {
                         if (lane.track != static_cast<int>(t) || !lane.enabled || lane.points.empty()) continue;
-                        automated = true;
-                        if (lane.parameter == alien::automation::Parameter::volume) settings.gain = lane.valueAt(automationTick, settings.gain);
-                        else settings.pan = lane.valueAt(automationTick, settings.pan);
+                        const int send = alien::automation::sendIndex(lane.parameter);
+                        if (send >= 0) {
+                            settings.send[static_cast<std::size_t>(send)] = lane.valueAt(automationTick, settings.send[static_cast<std::size_t>(send)]);
+                            automatedSends[static_cast<std::size_t>(send)] = true;
+                        } else if (lane.parameter == alien::automation::Parameter::volume) {
+                            automated = true; settings.gain = lane.valueAt(automationTick, settings.gain);
+                        } else if (lane.parameter == alien::automation::Parameter::pan) {
+                            automated = true; settings.pan = lane.valueAt(automationTick, settings.pan);
+                        }
                     }
                 }
                 if (automated) trackMixers[t].processAutomated(l, r, settings, anySolo);
@@ -468,7 +478,8 @@ private:
                 left += l; right += r;
                 if (!sending[t]) continue;
                 for (std::size_t k = 0; k < static_cast<std::size_t>(alien::maxReturns); ++k) {
-                    const float level = sendRamps[t][k].next();
+                    const float gate = sendPre[t][k] && (settings.mute || (anySolo && !settings.solo)) ? 0.0f : 1.0f;
+                    const float level = automatedSends[k] ? sendRamps[t][k].automated(settings.send[k] * gate) : sendRamps[t][k].next();
                     if (level == 0.0f) continue;
                     plugins->returns[k].addSample(0, i, (sendPre[t][k] ? preLeft : l) * level);
                     plugins->returns[k].addSample(1, i, (sendPre[t][k] ? preRight : r) * level);

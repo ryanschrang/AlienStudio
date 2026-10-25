@@ -1746,9 +1746,10 @@ public:
         addAndMakeVisible(enableButton); addAndMakeVisible(hint);
         trackBox.setName("Automation track"); parameterBox.setName("Automation parameter");
         parameterBox.addItem("Volume", 1); parameterBox.addItem("Pan", 2); parameterBox.setSelectedId(1);
+        for (int r = 0; r < maxReturns; ++r) parameterBox.addItem("Send " + juce::String::charToString(static_cast<juce::juce_wchar>('A' + r)), 3 + r);
         curveBox.setName("Automation interpolation");
         curveBox.addItem("Linear", 1); curveBox.addItem("Hold", 2); curveBox.setSelectedId(1);
-        enableButton.setButtonText("Read"); enableButton.setClickingTogglesState(true);
+        enableButton.setButtonText("Read"); enableButton.setName("Automation read"); enableButton.setClickingTogglesState(true);
         enableButton.setTooltip("Enable playback of this automation lane");
         hint.setText("Click to add; drag to move; right-click a point to delete. Values are absolute.", juce::dontSendNotification);
         hint.setColour(juce::Label::textColourId, ui::colours::textDim); hint.setFont(ui::font(11.0f));
@@ -1826,7 +1827,7 @@ public:
     void mouseUp(const juce::MouseEvent&) override { if (preview) finish("Edit automation point"); }
 private:
     int selectedTrack() const { return std::max(0, trackBox.getSelectedId() - 1); }
-    automation::Parameter selectedParameter() const { return parameterBox.getSelectedId() == 2 ? automation::Parameter::pan : automation::Parameter::volume; }
+    automation::Parameter selectedParameter() const { return static_cast<automation::Parameter>(std::clamp(parameterBox.getSelectedId() - 1, 0, automation::parametersPerTrack - 1)); }
     const automation::Lane* find(const timeline::Timeline& t) const {
         for (const auto& lane : t.automationLanes) if (lane.track == selectedTrack() && lane.parameter == selectedParameter()) return &lane;
         return nullptr;
@@ -1838,15 +1839,15 @@ private:
     }
     juce::Rectangle<float> plot() const { return getLocalBounds().withTrimmedTop(34).reduced(12, 8).toFloat(); }
     float xFor(std::int64_t tick) const { const auto a = plot(); return a.getX() + a.getWidth() * static_cast<float>(static_cast<double>(tick) / controller.timeline().length()); }
-    float yFor(float value) const { const auto a = plot(); const float low = selectedParameter() == automation::Parameter::volume ? 0.0f : -1.0f; return a.getBottom() - (value - low) * 0.5f * a.getHeight(); }
+    float yFor(float value) const { const auto a = plot(); const float low = automation::minimum(selectedParameter()); return a.getBottom() - (value - low) / (automation::maximum(selectedParameter()) - low) * a.getHeight(); }
     void updatePoint(juce::Point<float> position) {
         auto* lane = editable(*preview); const auto a = plot();
         if (a.getWidth() <= 0 || a.getHeight() <= 0) return;
         if (activeTick >= 0) std::erase_if(lane->points, [&](const automation::Point& p) { return p.tick == activeTick; });
         const double fraction = std::clamp(static_cast<double>((position.x - a.getX()) / a.getWidth()), 0.0, 1.0);
         activeTick = std::clamp<std::int64_t>(static_cast<std::int64_t>(std::llround(fraction * preview->length() / timeline::ticksPerStep)) * timeline::ticksPerStep, 0, preview->length());
-        const float low = selectedParameter() == automation::Parameter::volume ? 0.0f : -1.0f;
-        const float value = low + 2.0f * std::clamp((a.getBottom() - position.y) / a.getHeight(), 0.0f, 1.0f);
+        const float low = automation::minimum(selectedParameter());
+        const float value = low + (automation::maximum(selectedParameter()) - low) * std::clamp((a.getBottom() - position.y) / a.getHeight(), 0.0f, 1.0f);
         lane->put({activeTick, value, curveBox.getSelectedId() == 2 ? automation::Curve::hold : automation::Curve::linear});
     }
     void finish(const juce::String& label) {

@@ -32,5 +32,23 @@ int main() {
     check(l == 0.125f && r == 0.25f, "automation applies the exact sample without extra smoothing");
     settings.mute = true; l = r = 1; mixer.processAutomated(l, r, settings, false);
     check(l == 0 && r == 0, "mute still overrides automation");
+    for (int k = 0; k < 4; ++k) {
+        const auto parameter = static_cast<Parameter>(2 + k);
+        Lane send{0, parameter, true, {}};
+        check(sendIndex(parameter) == k && send.put({0, 0.0f}) && send.put({100, 1.0f}), "send targets and endpoints");
+        check(!send.put({50, -0.1f}) && !send.put({50, 1.1f}), "send bounds rejected");
+        check(send.valueAt(25, 0) == 0.25f, "send interpolation");
+        t.automationLanes.push_back(send);
+    }
+    t.automationLanes.push_back({0, Parameter::pan, true, {{0, 0}}});
+    check(t.valid(), "all six parameters fit on a track");
+    auto invalid = t; invalid.automationLanes.back().parameter = static_cast<Parameter>(6);
+    check(!invalid.valid() && !validValue(static_cast<Parameter>(6), 0), "unknown target rejected even with a valid value");
+    alien::SendRamp ramp; ramp.prepare(48000); ramp.setTarget(0.25f);
+    check(ramp.automated(1) == 1, "automation applies without smoothing");
+    const float firstManual = ramp.next();
+    check(firstManual < 1 && firstManual > 0.25f, "read bypass glides from automation toward manual");
+    for (int i = 0; i < 10000; ++i) ramp.next();
+    check(std::abs(ramp.next() - 0.25f) < 0.00001f, "manual target remains intact");
     std::puts("Automation tests passed");
 }

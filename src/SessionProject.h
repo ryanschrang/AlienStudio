@@ -372,7 +372,7 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
     const auto automationValue = object->getProperty("automation");
     if (requireAutomation || !automationValue.isVoid()) {
         const auto* lanes = automationValue.getArray();
-        if (lanes == nullptr || lanes->size() > maxSessionTracks * 2) { error = "Invalid automation lanes."; return false; }
+        if (lanes == nullptr || lanes->size() > maxSessionTracks * automation::parametersPerTrack) { error = "Invalid automation lanes."; return false; }
         for (const auto& value : *lanes) {
             const auto* o = value.getDynamicObject();
             if (o == nullptr || !o->getProperty("track").isInt() || !o->getProperty("parameter").isInt()
