@@ -94,7 +94,12 @@ public:
     alien::rack::RackPlayer::SampleTable rackSamples{};
     NoteQueue rackAuditions;
     // Rack preview pitch is relative to C4 (-60..67); retain the original packing for drum-range previews.
-    static constexpr int rackAuditionEvent(int channel, int pitch = 0) noexcept { return pitch == 0 ? channel : (pitch >= -24 && pitch <= 24 ? channel | ((pitch + 25) << 8) : channel | ((pitch + 61) << 8) | (1 << 24)); }
+    static constexpr int rackPreviewHeld = 1 << 25;
+    static constexpr int rackAuditionEvent(int channel, int pitch = 0, bool held = false) noexcept {
+        pitch = std::clamp(pitch, -60, 67);
+        const int encoded = pitch == 0 ? channel : (pitch >= -24 && pitch <= 24 ? channel | ((pitch + 25) << 8) : channel | ((pitch + 61) << 8) | (1 << 24));
+        return encoded | (held ? rackPreviewHeld : 0);
+    }
     std::atomic<int> rackStep{-1}; // step of the selected pattern that started last, or -1
 
     ToneEngine() noexcept {
@@ -256,10 +261,11 @@ private:
         {   // Previews from the Channel Rack screen (sound whatever the transport is doing).
             NoteQueue::Event preview{};
             for (int n = 0; n < 64 && rackAuditions.pop(preview); ++n) {
-                const int channel = preview.note & 0xff, pitch = (preview.note & (1 << 24)) != 0 ? ((preview.note >> 8) & 0xffff) - 61 : preview.note >> 8 == 0 ? 0 : (preview.note >> 8) - 25;
+                const int encoded = preview.note & ~rackPreviewHeld;
+                const int channel = encoded & 0xff, pitch = (encoded & (1 << 24)) != 0 ? ((encoded >> 8) & 0xffff) - 61 : encoded >> 8 == 0 ? 0 : (encoded >> 8) - 25;
                 if (!panic && preview.note >= 0 && channel < alien::rack::maxChannels)
                     rackPlayer.audition(*rackSnapshot, channel, preview.velocity,
-                                        rackSamples[static_cast<std::size_t>(channel)].load(std::memory_order_relaxed), pitch);
+                                        rackSamples[static_cast<std::size_t>(channel)].load(std::memory_order_relaxed), pitch, (preview.note & rackPreviewHeld) != 0);
             }
             if (rackAuditions.panic.exchange(false)) rackPlayer.stop();
         }

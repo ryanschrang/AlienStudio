@@ -457,7 +457,7 @@ private:
         };
         pianoRoll.onAudition = [this](int note, float velocity) {
             if (rollTarget.rack) {
-                if (velocity > 0) controller.previewRackChannel(rollTarget.channel, velocity, note - alien::rack::channelRootPitch);
+                controller.previewRackChannel(rollTarget.channel, velocity, note - alien::rack::channelRootPitch, true);
                 return;
             }
             if (velocity > 0) keyboardState.noteOn(3, note, velocity);

@@ -3,6 +3,7 @@
 // samples and relinking. No audio device or window is needed.
 #include "ProjectController.h"
 #include "AudioFileWrite.h"
+#include "WavExport.h"
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -75,7 +76,7 @@ static void roundTripAndValidation() {
         require(steps[0][4].gate == 35 && steps[0][8].nudge == 60 && steps[0][12].ratchet == 3 && steps[1][6].ratchet == 4 && !steps[1][6].on,
                 "gate, nudge and ratchet round-trip, also on a step that is off");
         require(back.channelRack.pattern(3).length == 128 && back.channelRack.pattern(3).steps[1][127].on, "a 128-step pattern round-trips");
-        require(juce::JSON::parse(json).getProperty("version", 0) == juce::var(13), "projects are written as version 13");
+        require(juce::JSON::parse(json).getProperty("version", 0) == juce::var(14), "projects are written as version 14");
     }
     {   // Steps saved before version 12 have seven values: gate, nudge and ratchet take their defaults.
         auto copy = juce::JSON::parse(json);
@@ -642,8 +643,62 @@ static void melodicPersistence() {
     require(rackFromVar(legacy, output, error) && !output.isNoteChannel(0, 0), "older racks without noteRows retain step mode");
 }
 
+static void synthPersistence() {
+    alien::SessionProjectData data;
+    data.channelRack.setInstrumentPreset(0, 9);
+    alien::PianoRollPattern notes; notes.loopSteps = 16; notes.add(60, 0.25, 12);
+    data.channelRack.setChannelNotes(0, 0, notes);
+    alien::SessionProjectData loaded; juce::String error;
+    require(alien::parseSessionProject(alien::serializeSessionProject(data), loaded, error)
+            && loaded.channelRack == data.channelRack, "synth preset and its long notes survive project serialization");
+    auto malformed = rackToVar(data.channelRack);
+    auto* channel = malformed.getDynamicObject()->getProperty("channels").getArray()->getReference(0).getDynamicObject();
+    channel->setProperty("instrumentPreset", alien::presetCount);
+    Project output = loaded.channelRack;
+    require(!rackFromVar(malformed, output, error) && output == loaded.channelRack, "unknown synth preset rejects the rack atomically");
+    channel->setProperty("instrumentPreset", 9); channel->setProperty("sample", "missing.wav");
+    require(!rackFromVar(malformed, output, error), "ambiguous sample plus synth source is rejected");
+    auto legacy = rackToVar(Project::createDefault());
+    for (auto& value : *legacy.getDynamicObject()->getProperty("channels").getArray()) value.getDynamicObject()->removeProperty("instrumentPreset");
+    require(rackFromVar(legacy, output, error) && !output.channels[0].isSynth(), "older channels default to sample mode");
+    ToneEngine engine; engine.prepare(48000); alien::ProjectController controller(engine); controller.pushDocumentToEngine();
+    require(controller.setRackSynth(0, 9) && !controller.rackChannelOffline(0), "controller publishes a synth without reporting missing media");
+    require(controller.undo() && !controller.channelRack().channels[0].isSynth() && controller.redo()
+            && controller.channelRack().channels[0].instrumentPreset == 9, "instrument selection is one undoable edit");
+}
+
+static void synthExport() {
+    auto project = std::make_unique<alien::SessionProjectData>();
+    project->channelRack.setInstrumentPreset(0, 9);
+    alien::PianoRollPattern notes; notes.loopSteps = 16;
+    for (int pitch : {60, 64, 67}) notes.add(pitch, 0.25, 8);
+    project->channelRack.setChannelNotes(0, 0, notes);
+    auto song = std::make_unique<alien::ArrangementPlayback>(); song->timeline.setLengthBars(1);
+    alien::timeline::Region region; region.row = alien::timeline::rackRowBase; region.source = 0; region.start = 0; region.length = alien::timeline::ticksPerBar;
+    require(song->timeline.place(region), "place a synth chord for export"); project->timeline = song->timeline;
+    const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("AlienRackSynthExport", "", false);
+    require(root.createDirectory().wasOk(), "create synth export fixture directory");
+    const auto first = root.getChildFile("chord-512.wav"), second = root.getChildFile("chord-257.wav");
+    alien::DrumSamplePointers drums{}; std::atomic<bool> cancelled{false}; juce::String error;
+    alien::WavExportOptions options;
+    require(alien::exportArrangementWav(first, *project, *song, drums, cancelled, error, nullptr, options), "export synth chord without sample pointers");
+    options.blockFrames = 257;
+    require(alien::exportArrangementWav(second, *project, *song, drums, cancelled, error, nullptr, options), "export synth chord with an awkward block size");
+    juce::MemoryBlock a, b; first.loadFileAsData(a); second.loadFileAsData(b);
+    require(a.getSize() > 1000 && a == b, "synth WAV export is bit-identical across callback sizes");
+    juce::WavAudioFormat format;
+    std::unique_ptr<juce::AudioFormatReader> reader(format.createReaderFor(first.createInputStream().release(), true));
+    require(reader && reader->lengthInSamples == 96000 && reader->numChannels == 2, "synth export has the requested song duration and stereo channels");
+    juce::AudioBuffer<float> audio(2, 96000); reader->read(&audio, 0, 96000, 0, true, true);
+    require(audio.getMagnitude(0, 0, 1500) == 0 && audio.getMagnitude(0, 3000, 40000) > 0.001f
+            && audio.getMagnitude(0, 60000, 36000) == 0, "export retains fractional onset, sustained chord and note release");
+    reader.reset(); first.deleteFile(); second.deleteFile(); root.deleteFile();
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    synthExport();
+    synthPersistence();
     melodicPersistence();
     roundTripAndValidation();
     controllerEditsAndUndo();

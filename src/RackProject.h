@@ -47,6 +47,7 @@ inline juce::var rackToVar(const Project& project) {
         channel->setProperty("solo", project.channels[i].solo);
         channel->setProperty("output", static_cast<int>(project.channels[i].output));
         channel->setProperty("chokeGroup", static_cast<int>(project.channels[i].chokeGroup));
+        channel->setProperty("instrumentPreset", project.channels[i].instrumentPreset);
         channels.add(value);
     }
     object->setProperty("channels", juce::var(channels));
@@ -130,6 +131,10 @@ inline bool rackFromVar(const juce::var& value, Project& out, juce::String& erro
             || !detail::integerIn(channel->getProperty("output"), masterOutput, maxOutputTrack, output)
             || !detail::integerIn(channel->getProperty("chokeGroup"), 0, maxChokeGroup, choke))
             return fail("A Channel Rack channel has missing or out-of-range values.");
+        if (channel->hasProperty("instrumentPreset")
+            && !detail::integerIn(channel->getProperty("instrumentPreset"), -1, alien::presetCount - 1, settings.instrumentPreset))
+            return fail("Invalid Channel Rack instrument preset.");
+        if (settings.isSynth() && !sample.toString().isEmpty()) return fail("A synth channel cannot also name a sample.");
         settings.mute = static_cast<bool>(mute); settings.solo = static_cast<bool>(solo);
         settings.output = static_cast<std::int8_t>(output); settings.chokeGroup = static_cast<std::uint8_t>(choke);
         const auto sampleText = sample.toString().toStdString();
