@@ -79,7 +79,7 @@ static bool allFinite(const std::vector<float>& x) { for (float v : x) if (!dsp:
 
 // ---------------------------------------------------------------------------
 static void catalogueTests() {
-    check(stock::catalog.size() == 5, "five stock effects");
+    check(stock::catalog.size() == 6, "six stock effects");
     std::set<juce::String> names, ids;
     for (const auto& info : stock::catalog) {
         auto e = stock::create(info.id);
@@ -96,7 +96,7 @@ static void catalogueTests() {
         check(PluginState{xml->toString(), {}, false}.valid(), std::string("description is a valid rack entry: ") + info.id);
         check(e->hasEditor(), std::string("has an editor: ") + info.id);
     }
-    check(names.size() == 5 && ids.size() == 5, "names and ids are unique");
+    check(names.size() == 6 && ids.size() == 6, "names and ids are unique");
     check(stock::create("nonsense") == nullptr && stock::create("") == nullptr, "unknown ids create nothing");
     juce::PluginDescription vst; vst.pluginFormatName = "VST3";
     check(!stock::isStock(vst), "a VST3 is not a stock effect");
@@ -363,6 +363,27 @@ static void allocationTests() {
     }
 }
 
+static void saturatorEffectTests() {
+    auto e = make("saturator");
+    auto& sat = static_cast<stock::SaturatorEffect&>(*e);
+    check(e->getLatencySamples() == dsp::Saturator::latency, "the saturator reports its oversampling latency");
+    check(sat.settings().curve == dsp::SaturationCurve::soft && std::abs(sat.settings().driveDb - 6.0) < 1e-4 && sat.settings().toneHz >= 19999.0,
+          "starts soft, +6 dB drive, tone open");
+    setParam(*e, stock::saturator::character, 2.0);
+    check(sat.settings().curve == dsp::SaturationCurve::hard, "the character parameter selects hard");
+    auto* tone = e->parameters.getParameter(stock::saturator::tone);
+    check(tone->getText(1.0f, 32) == "Open", "open tone text");
+    checkNear(tone->convertFrom0to1(tone->getValueForText("3k")), 3000.0, 2.0, "typed tone");
+    auto* drive = e->parameters.getParameter(stock::saturator::drive);
+    check(drive->getText(drive->convertTo0to1(12.0f), 32) == "12.0 dB", "drive text");
+    // In a rack, latency compensation lines a saturated track up with a dry one.
+    setParam(*e, stock::saturator::mix, 0.0);
+    std::vector<float> l(2048, 0.0f), r(2048, 0.0f);
+    l[100] = r[100] = 1.0f;
+    process(*e, l, r);
+    check(l[static_cast<std::size_t>(100 + dsp::Saturator::latency)] == 1.0f, "a click comes out exactly the reported latency later");
+}
+
 // ---------------------------------------------------------------------------
 static void stateTests() {
     std::mt19937 gen(11); std::uniform_real_distribution<float> unit(0.0f, 1.0f);
@@ -591,6 +612,22 @@ static void editorTests() {
         curve.moveBand(0, 10.0, 99.0); // beyond the limits: clamped
         check(getParam(*e, stock::eq::lowFreq) >= 20.0 && getParam(*e, stock::eq::lowGain) <= 18.0, "dragging beyond the edge is clamped");
     }
+    // Saturator shape display and character menu.
+    {
+        auto e = make("saturator");
+        std::unique_ptr<juce::AudioProcessorEditor> editor(e->createEditorIfNeeded());
+        auto* satEditor = dynamic_cast<stock::SaturatorEditor*>(editor.get());
+        check(satEditor != nullptr, "saturator editor type");
+        auto& shape = satEditor->display();
+        checkNear(shape.outputFor(0.25), std::tanh(0.25 * dsp::dbToGain(6.0)), 1e-6, "the display shows the soft curve at the current drive");
+        satEditor->characterBox().setSelectedId(3, juce::sendNotificationSync);
+        check(static_cast<stock::SaturatorEffect&>(*e).settings().curve == dsp::SaturationCurve::hard, "the character menu selects hard");
+        checkNear(shape.outputFor(0.9), 1.0, 1e-9, "...and the display follows it");
+        setParam(*e, stock::saturator::character, 1.0);
+        check(satEditor->characterBox().getSelectedId() == 2, "changing the parameter (automation, undo) moves the menu");
+        check(editor->getLocalBounds().contains(satEditor->characterBox().getBounds()) && !satEditor->characterBox().getBounds().isEmpty(),
+              "the character menu is laid out inside the editor");
+    }
     juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
 }
 
@@ -603,6 +640,7 @@ int main() {
     reverbPreDelayTailTest();
     robustnessTests();
     allocationTests();
+    saturatorEffectTests();
     stateTests();
     hostTests();
     editorTests();

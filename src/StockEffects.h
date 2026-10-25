@@ -16,12 +16,13 @@ namespace alien::stock {
 inline constexpr const char* formatName = "AlienStock";
 
 struct Info { const char* id; const char* name; const char* summary; };
-inline constexpr std::array<Info, 5> catalog{{
+inline constexpr std::array<Info, 6> catalog{{
     {"eq", "Alien EQ", "Four-band equaliser with low and high shelves and two bells"},
     {"compressor", "Alien Compressor", "Stereo-linked compressor with soft knee and parallel mix"},
     {"reverb", "Alien Reverb", "Stereo room reverb with pre-delay"},
     {"delay", "Alien Delay", "Stereo delay with tempo sync, ping-pong and tone"},
     {"limiter", "Alien Limiter", "Look-ahead peak limiter that never passes its ceiling"},
+    {"saturator", "Alien Saturator", "Oversampled soft, warm or hard saturation with tone and mix"},
 }};
 
 // Parameter identifiers, shared by the processors and their editors.
@@ -32,6 +33,10 @@ inline constexpr const char *lowFreq = "lowFreq", *lowGain = "lowGain", *m1Freq 
 namespace comp {
 inline constexpr const char *threshold = "threshold", *ratio = "ratio", *attack = "attack", *release = "release",
     *knee = "knee", *makeup = "makeup", *mix = "mix";
+}
+namespace saturator {
+inline constexpr const char *drive = "drive", *character = "character", *tone = "tone", *mix = "mix", *output = "output";
+inline const juce::StringArray& characterNames() { static const juce::StringArray n{"Soft", "Warm", "Hard"}; return n; }
 }
 namespace reverb {
 inline constexpr const char *size = "size", *damping = "damping", *width = "width", *preDelay = "preDelay", *mix = "mix";
@@ -242,6 +247,52 @@ private:
     dsp::Compressor compressor;
 };
 
+// ---- Saturator ----------------------------------------------------------------
+
+class SaturatorEffect final : public Effect {
+public:
+    SaturatorEffect() : Effect(catalog[5], layout()) {
+        drive = raw(saturator::drive); character = raw(saturator::character); tone = raw(saturator::tone);
+        mix = raw(saturator::mix); output = raw(saturator::output);
+        setLatencySamples(dsp::Saturator::latency); // fixed: the oversampling filters
+    }
+    void prepareToPlay(double sampleRate, int) override {
+        rate = sampleRate; engine.prepare(sampleRate);
+        setLatencySamples(dsp::Saturator::latency); // the host delays every other track to match
+        prepared = true;
+    }
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
+        juce::ScopedNoDenormals noDenormals;
+        if (!prepared || buffer.getNumChannels() < 2) return;
+        float* left = buffer.getWritePointer(0);
+        float* right = buffer.getWritePointer(1);
+        sanitise(left, right, buffer.getNumSamples());
+        engine.process(left, right, buffer.getNumSamples(), settings());
+    }
+    double getTailLengthSeconds() const override { return 0.01; }
+    dsp::Saturator::Settings settings() const noexcept {
+        dsp::Saturator::Settings s;
+        s.curve = static_cast<dsp::SaturationCurve>(std::clamp(static_cast<int>(value(character) + 0.5), 0, 2));
+        s.driveDb = value(drive); s.toneHz = value(tone); s.mix = value(mix); s.outputDb = value(output);
+        return s;
+    }
+
+private:
+    static Layout layout() {
+        Layout l;
+        l.add(floatParameter(saturator::drive, "Drive", {0, 36, 12}, 6, dbFormat()));
+        l.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{saturator::character, 1}, "Character", saturator::characterNames(), 0));
+        l.add(floatParameter(saturator::tone, "Tone", {500, 20000, 4000}, 20000,
+            Format{[](float v, int) { return v >= 19999.0f ? juce::String("Open") : formatFrequency(v); },
+                   [](const juce::String& t) { return t.containsIgnoreCase("open") ? 20000.0f : parseFrequency(t); }}));
+        l.add(floatParameter(saturator::mix, "Mix", {0, 1, 0}, 1, percentFormat()));
+        l.add(floatParameter(saturator::output, "Output", {-24, 12, 0}, 0, dbFormat()));
+        return l;
+    }
+    std::atomic<float> *drive{}, *character{}, *tone{}, *mix{}, *output{};
+    dsp::Saturator engine;
+};
+
 // ---- Reverb -------------------------------------------------------------------
 
 class ReverbEffect final : public Effect {
@@ -421,6 +472,7 @@ inline std::unique_ptr<Effect> create(const juce::String& id) {
     if (id == catalog[2].id) return std::make_unique<ReverbEffect>();
     if (id == catalog[3].id) return std::make_unique<DelayEffect>();
     if (id == catalog[4].id) return std::make_unique<LimiterEffect>();
+    if (id == catalog[5].id) return std::make_unique<SaturatorEffect>();
     return {};
 }
 

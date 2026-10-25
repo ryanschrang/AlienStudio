@@ -444,6 +444,160 @@ static void limiterTests() {
     }
 }
 
+// Amplitude of the component at `frequency` in x[from, from + n), from a Hann-windowed DFT bin.
+static double toneAmplitude(const std::vector<float>& x, int from, int n, double frequency, double sampleRate = rate) {
+    double re = 0, im = 0, windowSum = 0;
+    for (int i = 0; i < n; ++i) {
+        const double w = 0.5 - 0.5 * std::cos(2.0 * pi * i / (n - 1)), phase = 2.0 * pi * frequency * i / sampleRate;
+        re += w * x[static_cast<std::size_t>(from + i)] * std::cos(phase);
+        im -= w * x[static_cast<std::size_t>(from + i)] * std::sin(phase);
+        windowSum += w;
+    }
+    return 2.0 * std::sqrt(re * re + im * im) / windowSum;
+}
+
+static void saturatorTests() {
+    using Curve = SaturationCurve;
+    // Oversampling filter: flat in the audio band, at least 80 dB down where aliases would come from.
+    {
+        Oversampler4x o;
+        double ripple = 0, stop = -300;
+        for (double f = 0.001; f <= 0.38; f += 0.001) ripple = std::max(ripple, std::abs(o.responseDb(f)));
+        for (double f = 0.52; f <= 2.0; f += 0.001) stop = std::max(stop, o.responseDb(f));
+        check(ripple < 0.01, "oversampling is flat to 0.38 of the rate (worst " + std::to_string(ripple) + " dB)");
+        check(stop < -80.0, "oversampling rejects aliases by 80 dB (worst " + std::to_string(stop) + " dB)");
+        near(o.responseDb(0.0), 0.0, 1e-9, "unity at DC");
+    }
+    // Curves: unit small-signal gain, silence stays silent, and their characteristic shapes.
+    for (Curve c : {Curve::soft, Curve::warm, Curve::hard}) {
+        near(saturate(c, 0.0), 0.0, 1e-15, "a curve keeps silence silent");
+        near((saturate(c, 1e-6) - saturate(c, -1e-6)) / 2e-6, 1.0, 1e-6, "a curve has unit gain for small signals");
+    }
+    near(0.2913126124515909, std::tanh(0.3), 1e-15, "warm curve offset constant");
+    near(0.9151369618266292, 1.0 - std::tanh(0.3) * std::tanh(0.3), 1e-15, "warm curve slope constant");
+    check(std::abs(saturate(Curve::warm, 0.8)) != std::abs(saturate(Curve::warm, -0.8)), "warm is asymmetric");
+    near(saturate(Curve::soft, 0.8), -saturate(Curve::soft, -0.8), 1e-15, "soft is symmetric");
+    check(saturate(Curve::hard, 3.0) == 1.0 && saturate(Curve::hard, -3.0) == -1.0, "hard clips at +/-1");
+
+    auto run = [](Saturator::Settings s, std::vector<float> l, int block = 512) {
+        Saturator sat; sat.prepare(rate);
+        auto r = l;
+        for (int pos = 0; pos < static_cast<int>(l.size()); pos += block) {
+            const int n = std::min(block, static_cast<int>(l.size()) - pos);
+            sat.process(l.data() + pos, r.data() + pos, n, s);
+        }
+        return l;
+    };
+    // Latency: at low level the saturator is clean and exactly `latency` samples late.
+    {
+        Saturator::Settings s; s.driveDb = 0.0;
+        const double a = 0.001;
+        const auto input = sine(1000.0, a, 9600);
+        const auto out = run(s, input);
+        auto errorAt = [&](int delay) {
+            double worst = 0;
+            for (int i = 4800; i < 9600; ++i) worst = std::max(worst, std::abs(static_cast<double>(out[static_cast<std::size_t>(i)] - input[static_cast<std::size_t>(i - delay)])));
+            return worst;
+        };
+        check(errorAt(Saturator::latency) < 0.01 * a, "a quiet signal comes out clean, exactly " + std::to_string(Saturator::latency) + " samples late");
+        check(errorAt(Saturator::latency - 1) > 0.05 * a && errorAt(Saturator::latency + 1) > 0.05 * a, "...not a sample more or less");
+    }
+    // Mix 0 is the dry signal delayed by the latency, bit-exact; mix 50 % lines the two up (no comb filtering).
+    {
+        Saturator::Settings s; s.mix = 0.0; s.driveDb = 24.0;
+        const auto input = noise(4800, 0.7, 2);
+        const auto out = run(s, input);
+        bool exact = true;
+        for (int i = 0; i < 4800; ++i) exact = exact && out[static_cast<std::size_t>(i)] == (i < Saturator::latency ? 0.0f : input[static_cast<std::size_t>(i - Saturator::latency)]);
+        check(exact, "mix 0 is the dry signal delayed by the latency, bit-exact");
+        Saturator::Settings half; half.mix = 0.5; half.driveDb = 0.0;
+        const auto quiet = sine(3000.0, 0.001, 9600);
+        const auto blended = run(half, quiet);
+        near(peakOf(blended, 4800, 9600), 0.001, 0.00002, "dry and wet line up at 50 % mix (no comb filtering)");
+    }
+    // Aliasing: a driven 7 kHz tone. Its 5th and 7th harmonics (35 and 49 kHz) would fold to
+    // 13 kHz and 1 kHz at 48 kHz; oversampled they are removed. A naive curve shows them.
+    {
+        Saturator::Settings s; s.driveDb = 12.0;
+        const auto input = sine(7000.0, 0.5, 24000);
+        const auto out = run(s, input);
+        const double fundamental = toneAmplitude(out, 9600, 14400, 7000.0);
+        const double alias13 = gainToDb(toneAmplitude(out, 9600, 14400, 13000.0) / fundamental);
+        const double alias1 = gainToDb(toneAmplitude(out, 9600, 14400, 1000.0) / fundamental);
+        std::vector<float> naive(input.size());
+        for (std::size_t i = 0; i < input.size(); ++i) naive[i] = static_cast<float>(std::tanh(input[i] * dbToGain(12.0)));
+        const double naiveFundamental = toneAmplitude(naive, 9600, 14400, 7000.0);
+        const double naive13 = gainToDb(toneAmplitude(naive, 9600, 14400, 13000.0) / naiveFundamental);
+        check(naive13 > -50.0, "without oversampling the 13 kHz alias is audible (" + std::to_string(naive13) + " dB)");
+        check(alias13 < -80.0 && alias1 < -80.0, "oversampled, the aliases are gone (13 kHz " + std::to_string(alias13) + " dB, 1 kHz " + std::to_string(alias1) + " dB)");
+    }
+    // Harmonics: drive adds odd harmonics; only the warm curve adds even ones.
+    {
+        auto harmonics = [&](Curve c, double driveDb) {
+            Saturator::Settings s; s.curve = c; s.driveDb = driveDb;
+            const auto out = run(s, sine(1000.0, 0.5, 24000));
+            const double f = toneAmplitude(out, 9600, 14400, 1000.0);
+            return std::pair<double, double>{gainToDb(toneAmplitude(out, 9600, 14400, 2000.0) / f), gainToDb(toneAmplitude(out, 9600, 14400, 3000.0) / f)};
+        };
+        const auto light = harmonics(Curve::soft, 0.0), heavy = harmonics(Curve::soft, 18.0), warm = harmonics(Curve::warm, 12.0);
+        check(heavy.second > light.second + 20.0, "more drive, more 3rd harmonic");
+        check(light.first < -90.0 && heavy.first < -90.0, "soft adds no even harmonics");
+        check(warm.first > -40.0, "warm adds a 2nd harmonic (" + std::to_string(warm.first) + " dB)");
+    }
+    // Hard clipping a tone gives a square wave at the clip level; removing its harmonics above
+    // the audio band leaves the usual band-limited overshoot (about 9 %), not more.
+    {
+        Saturator::Settings s; s.curve = Curve::hard; s.driveDb = 36.0;
+        const auto out = run(s, sine(100.0, 0.9, 9600));
+        const double top = peakOf(out, 4800, 9600);
+        check(top > 0.95 && top < 1.2, "hard clipping a tone stays near the clip level (" + std::to_string(top) + ")");
+    }
+    // The warm curve's DC is removed.
+    {
+        Saturator::Settings s; s.curve = Curve::warm; s.driveDb = 18.0;
+        const auto out = run(s, sine(200.0, 0.8, 96000));
+        double mean = 0; for (int i = 48000; i < 96000; ++i) mean += out[static_cast<std::size_t>(i)];
+        mean /= 48000.0;
+        check(std::abs(mean) < 0.002, "no DC offset from the asymmetric curve (" + std::to_string(mean) + ")");
+    }
+    // Tone darkens the result.
+    {
+        Saturator::Settings open; open.driveDb = 12.0;
+        Saturator::Settings dark = open; dark.toneHz = 1000.0;
+        const auto input = sine(5000.0, 0.5, 24000);
+        const double bright = toneAmplitude(run(open, input), 9600, 14400, 5000.0), dull = toneAmplitude(run(dark, input), 9600, 14400, 5000.0);
+        check(gainToDb(dull / bright) < -12.0, "a 1 kHz tone setting darkens a 5 kHz signal");
+    }
+    // Changing character crossfades: no click.
+    {
+        Saturator sat; sat.prepare(rate);
+        Saturator::Settings s; s.driveDb = 6.0;
+        auto l = sine(100.0, 0.5, 24000), r = l;
+        // Switch at a peak of the tone (sample 12120 of a 480-sample period), where the curves differ most.
+        sat.process(l.data(), r.data(), 12120 - Saturator::latency, s);
+        s.curve = Curve::hard;
+        sat.process(l.data() + 12120 - Saturator::latency, r.data() + 12120 - Saturator::latency, 11880 + Saturator::latency, s);
+        double jump = 0;
+        for (int i = 11000; i < 13500; ++i) jump = std::max(jump, static_cast<double>(std::abs(l[static_cast<std::size_t>(i)] - l[static_cast<std::size_t>(i - 1)])));
+        check(sat.activeCurve() == Curve::hard && jump < 0.03, "switching soft to hard does not click (largest step " + std::to_string(jump) + ")");
+        double sideJump = 0;
+        for (int i = 11000; i < 13500; ++i) sideJump = std::max(sideJump, static_cast<double>(std::abs(r[static_cast<std::size_t>(i)] - r[static_cast<std::size_t>(i - 1)])));
+        check(sideJump < 0.03, "...on both channels");
+    }
+    // Settled settings: the block size makes no difference.
+    {
+        Saturator::Settings s; s.curve = Curve::warm; s.driveDb = 15.0; s.toneHz = 6000.0; s.mix = 0.7; s.outputDb = -3.0;
+        const auto input = noise(9000, 0.5, 9);
+        const auto reference = run(s, input, 9000);
+        for (int block : {512, 37, 1}) {
+            const auto out = run(s, input, block);
+            double worst = 0;
+            for (std::size_t i = 0; i < out.size(); ++i) worst = std::max(worst, static_cast<double>(std::abs(out[i] - reference[i])));
+            check(worst < 1e-6, "saturator block size " + std::to_string(block) + " sounds the same (" + std::to_string(worst) + ")");
+        }
+    }
+}
+
 int main() {
     smootherTests();
     biquadTests();
@@ -454,7 +608,8 @@ int main() {
     delayTests();
     slidingMinimumTests();
     limiterTests();
+    saturatorTests();
     if (failures) { std::fprintf(stderr, "%d check(s) failed\n", failures); return 1; }
-    std::puts("PASS: stock DSP (EQ, compressor, delay, limiter)");
+    std::puts("PASS: stock DSP (EQ, compressor, delay, limiter, saturator)");
     return 0;
 }

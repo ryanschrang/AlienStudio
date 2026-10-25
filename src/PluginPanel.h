@@ -30,7 +30,7 @@ public:
         addInstrument.onClick=[this]{if(onAdd)onAdd(true,available.getSelectedId());};
         addEffect.onClick=[this]{if(onAdd)onAdd(false,available.getSelectedId());};
         open.onClick=[this]{action(0);}; bypass.onClick=[this]{action(1);}; remove.onClick=[this]{action(2);}; up.onClick=[this]{action(3);}; down.onClick=[this]{action(4);};
-        setStatus("Pick a destination and add one of Alien Studio's stock effects (EQ, compressor, reverb, delay, limiter), or scan a 64-bit .vst3 bundle for an instrument or FX. Choose a Live MIDI destination below to play an instrument with your MIDI controller or piano keyboard.");
+        setStatus("Pick a destination and add one of Alien Studio's stock effects (EQ, compressor, saturator, reverb, delay, limiter), or scan a 64-bit .vst3 bundle for an instrument or FX. Choose a Live MIDI destination below to play an instrument with your MIDI controller or piano keyboard.");
     }
     std::function<void(ScanCommand)> onScanCommand;
     std::function<void()> onCancelScan;

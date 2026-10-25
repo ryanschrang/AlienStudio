@@ -374,6 +374,82 @@ private:
     ReductionMeter meter;
 };
 
+// ---- Saturator ---------------------------------------------------------------------
+
+// The curve as heard: input level (-1..1) against output for the current drive and character.
+class ShapeDisplay final : public juce::Component {
+public:
+    explicit ShapeDisplay(SaturatorEffect& e) : saturatorEffect(e) {}
+    // Output for one input level (before tone, mix and output level), as drawn.
+    double outputFor(double input) const {
+        const auto s = saturatorEffect.settings();
+        return dsp::saturate(s.curve, input * dsp::dbToGain(s.driveDb));
+    }
+    void paint(juce::Graphics& g) override {
+        using namespace ui::colours;
+        const auto area = getLocalBounds().toFloat();
+        g.setColour(inset);
+        g.fillRoundedRectangle(area, 6.0f);
+        const float w = area.getWidth(), h = area.getHeight();
+        const auto toX = [&](double v) { return static_cast<float>((v + 1.0) * 0.5) * w; };
+        const auto toY = [&](double v) { return h - static_cast<float>((std::clamp(v, -1.2, 1.2) + 1.2) / 2.4) * h; };
+        g.setColour(line);
+        g.drawVerticalLine(juce::roundToInt(toX(0.0)), 0.0f, h);
+        g.drawHorizontalLine(juce::roundToInt(toY(0.0)), 0.0f, w);
+        g.setColour(lineStrong);
+        g.drawLine(toX(-1.0), toY(-1.0), toX(1.0), toY(1.0), 1.0f); // clean, for comparison
+        juce::Path curve;
+        for (int i = 0; i <= 200; ++i) {
+            const double in = -1.0 + i * 0.01;
+            if (i == 0) curve.startNewSubPath(toX(in), toY(outputFor(in))); else curve.lineTo(toX(in), toY(outputFor(in)));
+        }
+        g.setColour(accent);
+        g.strokePath(curve, juce::PathStrokeType(2.0f));
+        ui::drawCaption(g, "In -> out", getLocalBounds().reduced(8, 4).removeFromTop(14), textFaint);
+        g.setColour(textDim);
+        g.setFont(ui::monoFont(11.0f));
+        const auto s = saturatorEffect.settings();
+        g.drawText(saturator::characterNames()[static_cast<int>(s.curve)] + "  +" + juce::String(s.driveDb, 1) + " dB",
+                   area.reduced(10.0f, 6.0f).toNearestInt(), juce::Justification::topRight);
+    }
+    juce::Colour accent{juce::Colour(0xffffb547)};
+private:
+    SaturatorEffect& saturatorEffect;
+};
+
+class SaturatorEditor final : public EffectEditor {
+public:
+    explicit SaturatorEditor(SaturatorEffect& e) : EffectEditor(e, juce::Colour(0xffffb547), 560, 380), shape(e) {
+        addAndMakeVisible(shape);
+        addKnob(saturator::drive, "Drive"); addKnob(saturator::tone, "Tone"); addKnob(saturator::mix, "Mix"); addKnob(saturator::output, "Level");
+        character.addItemList(saturator::characterNames(), 1);
+        character.setTitle("Saturation character");
+        addAndMakeVisible(character);
+        characterAttachment = std::make_unique<Attachments::ComboBoxAttachment>(e.parameters, saturator::character, character);
+        finishSetup();
+    }
+    ShapeDisplay& display() { return shape; }
+    juce::ComboBox& characterBox() { return character; }
+    void resized() override {
+        auto area = content();
+        shape.setBounds(area.removeFromTop(160));
+        area.removeFromTop(12);
+        character.setBounds(area.removeFromTop(28).removeFromLeft(150));
+        area.removeFromTop(8);
+        layoutKnobs(area, 0, 4, area.getWidth() / 4);
+    }
+    void tick() override {
+        const auto s = static_cast<SaturatorEffect&>(effect).settings();
+        const double key = s.driveDb + static_cast<int>(s.curve) * 1000.0;
+        if (key != lastKey) { lastKey = key; shape.repaint(); }
+    }
+private:
+    ShapeDisplay shape;
+    juce::ComboBox character;
+    std::unique_ptr<Attachments::ComboBoxAttachment> characterAttachment;
+    double lastKey{-1.0};
+};
+
 class LimiterEditor final : public EffectEditor {
 public:
     explicit LimiterEditor(LimiterEffect& e) : EffectEditor(e, juce::Colour(0xffff6f9f), 460, 300), meter(18.0) {
@@ -539,6 +615,7 @@ inline juce::AudioProcessorEditor* makeEditor(Effect& effect) {
     if (id == catalog[2].id) return new ReverbEditor(static_cast<ReverbEffect&>(effect));
     if (id == catalog[3].id) return new DelayEditor(static_cast<DelayEffect&>(effect));
     if (id == catalog[4].id) return new LimiterEditor(static_cast<LimiterEffect&>(effect));
+    if (id == catalog[5].id) return new SaturatorEditor(static_cast<SaturatorEffect&>(effect));
     return nullptr;
 }
 // Including this header installs the editors; without it the host shows its generic one.
