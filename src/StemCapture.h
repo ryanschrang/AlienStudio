@@ -4,6 +4,7 @@ namespace alien {
 // Offline-only capture. Allocate and prepare before rendering, never on callback.
 struct StemCapture {
     static constexpr int returnBase = maxSessionTracks, directBus = maxSessionTracks + maxReturns;
+    int freezeTrack{-1}; // >=0: capture this track before fader/pan/automation.
     std::array<juce::AudioBuffer<float>, directBus + 1> buses;
     struct Delay {
         std::vector<float> left, right;

@@ -81,3 +81,21 @@ to add a take. Automatic loop splitting, waveform lane gestures, grouped
 multitrack comp selection and listening/physical recording validation remain.
 The synth/MIDI recovery (#87) and automation model (#86) are now on main;
 automation UI/host scheduling remain unfinished, and #84 still owns mixer sends.
+
+## Session track freeze increment
+
+Based on validated stem-export head 63bc373 (#89); implemented separately so its
+branch remains unchanged. Session tracks render one post-FX/pre-fader float32 WAV.
+Frozen source placements are archived, the rendered cache replaces the active
+track regions, native instances unload, and built-in voices/track FX suspend.
+Fader, pan, sends and automation continue after the cache. Undo/unfreeze restores
+original clips/settings; tempo changes unfreeze before applying the new tempo.
+
+Format 16 stores the archive, rendered Session scene and original song length.
+Scene/track reorder maintains references. Source scenes/cache cells are protected
+from deletion/replacement until unfreeze. Portable save/relink use ordinary Session
+media handling. Cancellation/failure leaves originals intact. Session-only scope:
+tracks receiving Channel Rack channels and cross-track clip groups must be unrouted
+or ungrouped first. Cache files remain for undo. Tail rendering uses declared
+plugin tails and factory/sample releases, capped at 30 seconds. Manual native
+plugin, listening, device and interruption checks are separate from automated tests.

@@ -23,7 +23,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 15;
+inline constexpr int sessionProjectFormatVersion = 16;
 
 struct SessionProjectClip {
     SharedPianoRoll pattern;   // shared with the document; empty clips share nothing at all
@@ -101,7 +101,18 @@ struct SessionProjectData {
         for (const auto& r : returns) if (!r.valid()) return false;
         for (const auto& pluginRack : returnPlugins) if (!pluginRack.valid() || !pluginRack.instrument.descriptionXml.isEmpty()) return false;
         if (!channelRack.valid()) return false;
-        for (const auto& track : trackSettings) if (!track.valid()) return false;
+        for (const auto& scene : clips) if (static_cast<int>(scene.size()) != tracks) return false;
+        for (std::size_t t=0;t<trackSettings.size();++t) {
+            const auto& track=trackSettings[t]; if (!track.valid()) return false;
+            if (track.frozen()) {
+                if (track.freezeScene>=scenes || clips[static_cast<std::size_t>(track.freezeScene)][t].audioFilePath.isEmpty()) return false;
+                int cache=0, original=0;
+                for(const auto& region:timeline.regions) if(region.row==static_cast<int>(t)) { if(region.source!=track.freezeScene)return false; ++cache; }
+                for(const auto& region:timeline.frozenOriginals) original+=region.row==static_cast<int>(t);
+                if(cache!=1 || original==0 || timeline.freezeBaseLengthBars==0)return false;
+            }
+        }
+        for(const auto& region:timeline.frozenOriginals) if(!trackSettings[static_cast<std::size_t>(region.row)].frozen())return false;
         for (const int colour : trackColours) if (colour < 0 || colour > 255) return false;
         for (const auto& scene : clips) {
             if (static_cast<int>(scene.size()) != tracks) return false;
@@ -167,6 +178,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
         object->setProperty("pan", track.pan);
         object->setProperty("mute", track.mute);
         object->setProperty("solo", track.solo);
+        object->setProperty("freezeScene",track.freezeScene);
         object->setProperty("armed", track.armed); object->setProperty("input", track.input);
         object->setProperty("stereoInput", track.stereoInput); object->setProperty("monitor", track.monitor);
         juce::Array<juce::var> sends;   // [level, pre-fader] for each return
@@ -206,6 +218,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     {
         auto timelineValue = juce::var(new juce::DynamicObject());
         auto* timelineObject = timelineValue.getDynamicObject();
+        timelineObject->setProperty("freezeBaseLengthBars",project.timeline.freezeBaseLengthBars);
         timelineObject->setProperty("lengthBars", project.timeline.lengthBars);
         timelineObject->setProperty("loopEnabled", project.timeline.loopEnabled);
         timelineObject->setProperty("loopStart", static_cast<int>(project.timeline.loopStart));
@@ -215,6 +228,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
         juce::Array<juce::var> regions;
         auto savedRegions = project.timeline.regions;
         savedRegions.insert(savedRegions.end(), project.timeline.takes.begin(), project.timeline.takes.end());
+        savedRegions.insert(savedRegions.end(),project.timeline.frozenOriginals.begin(),project.timeline.frozenOriginals.end());
         for (std::size_t savedIndex = 0; savedIndex < savedRegions.size(); ++savedIndex) {
             const auto& r = savedRegions[savedIndex];
             auto value = juce::var(new juce::DynamicObject());
@@ -232,7 +246,8 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
             object->setProperty("fadeOut", static_cast<int>(r.fadeOut)); object->setProperty("loopSource", r.loopSource);
             object->setProperty("reversed", r.reversed); object->setProperty("crossfade", static_cast<int>(r.crossfade));
             object->setProperty("muted", r.muted); object->setProperty("group", group);
-            if (savedIndex >= project.timeline.regions.size()) object->setProperty("take", true);
+            if (savedIndex >= project.timeline.regions.size()+project.timeline.takes.size()) object->setProperty("frozenOriginal",true);
+            else if (savedIndex >= project.timeline.regions.size()) object->setProperty("take", true);
             regions.add(value);
         }
         timelineObject->setProperty("regions", juce::var(regions));
@@ -307,12 +322,15 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
     }
     timeline::Timeline parsed;
     parsed.lengthBars = static_cast<int>(length);
+    const auto base=object->getProperty("freezeBaseLengthBars");
+    if(!base.isVoid() && !base.isInt()){error="Invalid freeze length.";return false;}
+    if(base.isInt())parsed.freezeBaseLengthBars=static_cast<int>(base);
     parsed.loopStart = static_cast<int>(loopStart); parsed.loopEnd = static_cast<int>(loopEnd);
     parsed.loopEnabled = static_cast<bool>(loopEnabled);
     const auto regionsValue = object->getProperty("regions"), markersValue = object->getProperty("markers");
     const auto* regions = regionsValue.getArray();
     const auto* markers = markersValue.getArray();
-    if (regions == nullptr || markers == nullptr || regions->size() > static_cast<int>(timeline::maxRegions + timeline::maxTakes)
+    if (regions == nullptr || markers == nullptr || regions->size() > static_cast<int>(2 * timeline::maxRegions + timeline::maxTakes)
         || markers->size() > static_cast<int>(timeline::maxMarkers)) {
         error = "The project's timeline has too many regions or markers."; return false;
     }
@@ -354,7 +372,10 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
         }
         const auto take = r->getProperty("take");
         if (!take.isVoid() && !take.isBool()) { error = "Invalid recording take flag."; return false; }
-        if (static_cast<bool>(take)) parsed.takes.push_back(region);
+        const auto frozen=r->getProperty("frozenOriginal");
+        if((!frozen.isVoid() && !frozen.isBool()) || (static_cast<bool>(take) && static_cast<bool>(frozen))) {error="Invalid frozen clip.";return false;}
+        if(static_cast<bool>(frozen))parsed.frozenOriginals.push_back(region);
+        else if (static_cast<bool>(take)) parsed.takes.push_back(region);
         else parsed.regions.push_back(region);
     }
     for (const auto& item : *markers) {
@@ -508,6 +529,9 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
                 if (!instrument.isInt()) { error = "Invalid instrument type."; return false; }
                 track.instrument = static_cast<int>(instrument);
             }
+            const auto frozenScene=object->getProperty("freezeScene");
+            if(!frozenScene.isVoid() && !frozenScene.isInt()){error="Invalid frozen track.";return false;}
+            if(frozenScene.isInt())track.freezeScene=static_cast<int>(frozenScene);
             // Recording settings are optional: projects saved before them have none (not armed, input 1, monitoring automatic).
             const auto armed = object->getProperty("armed"), input = object->getProperty("input"),
                 stereoInput = object->getProperty("stereoInput"), monitor = object->getProperty("monitor");

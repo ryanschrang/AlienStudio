@@ -627,7 +627,23 @@ static void equalityTests() {
     b = a; put(b, 1, 0, 0, bar); check(!a.playbackEquals(b), "another region changes the sound");
 }
 
+static void freezeModelChecks() {
+    alien::timeline::Timeline t;
+    alien::timeline::Region a;a.row=0;a.source=0;a.length=3840;
+    if(!t.place(a))std::abort();a.row=1;if(!t.place(a))std::abort();
+    const auto before=t;const auto original=*t.regionAt(0,0);
+    if(!t.freezeTrack(0,2,5000,2.0) || t.frozenOriginals.size()!=1 || t.regionAt(0,0)->gain!=2.0)std::abort();
+    auto frozen=t;
+    if(t.freezeTrack(0,3,5000) || !(t==frozen))std::abort();
+    t.tracksSwapped(0,1);if(t.frozenOriginals[0].row!=1)std::abort();
+    t.scenesSwapped(0,1);if(t.frozenOriginals[0].source!=1)std::abort();
+    t.scenesSwapped(0,1);t.tracksSwapped(0,1);
+    if(!t.unfreezeTrack(0) || *t.find(original.id)!=original || !t.frozenOriginals.empty())std::abort();
+    if(t.regions.size()!=before.regions.size())std::abort();
+}
+
 int main() {
+    freezeModelChecks();
     constantsAndDefaults();
     placementTests();
     validityTests();

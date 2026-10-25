@@ -68,6 +68,7 @@ public:
     // coalesceKey made in quick succession become one undo step.
     void commit(const juce::String& label, int focusTrack = -1, int focusScene = -1,
                 const juce::String& coalesceKey = {}) {
+        for(int t=0;t<doc.trackCount();++t)engine.tracks[static_cast<std::size_t>(t)].freezeScene.store(doc.tracks[static_cast<std::size_t>(t)].settings.freezeScene);
         const auto previous = history.currentId();
         history.record(doc, label, focusTrack, focusScene, coalesceKey);
         if (history.currentId() != previous) publishArrangement();
@@ -328,10 +329,13 @@ public:
 
     bool deleteScene(int scene) {
         if (busy) return false;
+        for(const auto& track:doc.tracks)if(track.settings.freezeScene==scene)return false;
+        for(const auto& region:doc.timeline.frozenOriginals)if(region.source==scene)return false;
         if (beforeStructureEdit) beforeStructureEdit();
         if (doc.sceneCount() <= 1 || scene < 0 || scene >= doc.sceneCount()) return false;
         stopEverySlot();
         doc.timeline.sceneDeleted(scene);
+        for(auto& track:doc.tracks)if(track.settings.freezeScene>scene)--track.settings.freezeScene;
         doc.scenes.erase(doc.scenes.begin() + scene);
         doc.clips.erase(doc.clips.begin() + scene);
         if (doc.selectedScene > scene) --doc.selectedScene;
@@ -346,6 +350,7 @@ public:
         if (scene < 0 || scene >= doc.sceneCount() || target < 0 || target >= doc.sceneCount()) return false;
         stopEverySlot();
         doc.timeline.scenesSwapped(scene, target);
+        for(auto& track:doc.tracks){auto& frozen=track.settings.freezeScene;if(frozen==scene)frozen=target;else if(frozen==target)frozen=scene;}
         std::swap(doc.scenes[static_cast<std::size_t>(scene)], doc.scenes[static_cast<std::size_t>(target)]);
         std::swap(doc.clips[static_cast<std::size_t>(scene)], doc.clips[static_cast<std::size_t>(target)]);
         if (doc.selectedScene == scene) doc.selectedScene = target;
@@ -371,12 +376,19 @@ public:
     }
     void trackSettingsEdited(int track) {
         if (track < 0 || track >= doc.trackCount() || track >= static_cast<int>(engine.tracks.size())) return;
-        doc.tracks[static_cast<std::size_t>(track)].settings = engine.tracks[static_cast<std::size_t>(track)].snapshot();
+        auto next=engine.tracks[static_cast<std::size_t>(track)].snapshot();
+        const auto& previous=doc.tracks[static_cast<std::size_t>(track)].settings;
+        if(previous.frozen()) {
+            next.preset=previous.preset;next.instrument=previous.instrument;next.freezeScene=previous.freezeScene;
+            engine.tracks[static_cast<std::size_t>(track)].preset.store(previous.preset);
+            engine.tracks[static_cast<std::size_t>(track)].instrument.store(previous.instrument);
+        }
+        doc.tracks[static_cast<std::size_t>(track)].settings=next;
     }
 
     // A track's recording settings (arm, input, monitoring). The engine hears the change at once; it is one undo step.
     bool editTrackRecording(int track, const juce::String& label, const std::function<void(TrackSettings&)>& change) {
-        if (busy || track < 0 || track >= doc.trackCount() || track >= static_cast<int>(engine.tracks.size())) return false;
+        if (busy || isTrackFrozen(track) || track < 0 || track >= doc.trackCount() || track >= static_cast<int>(engine.tracks.size())) return false;
         auto& settings = doc.tracks[static_cast<std::size_t>(track)].settings;
         auto next = settings;
         change(next);
@@ -425,6 +437,7 @@ public:
 
     void publishClip(int track, int scene) {
         if (!doc.isValidCell(track, scene)) return;
+        if(isTrackFrozen(track) && scene!=doc.tracks[static_cast<std::size_t>(track)].settings.freezeScene){publishStop(static_cast<std::size_t>(track));return;}
         const auto& clip = doc.clip(track, scene);
         const auto index = static_cast<std::size_t>(track);
         engine.requestedPianoRollClip[index].store(scene);
@@ -459,6 +472,7 @@ public:
         if (engine.patternMode.load() != 1)
             return {false, "Open the Piano Roll or Session view to record."};
         const int track = doc.selectedTrack, scene = doc.selectedScene;
+        if(isTrackFrozen(track))return {false,"Unfreeze the track before recording."};
         if (!doc.isValidCell(track, scene)) return {false, "Select a clip to record into."};
         const auto& clip = doc.clip(track, scene);
         if (clip.isAudioClip()) return {false, "This clip holds audio. Choose an empty or MIDI clip to record into."};
@@ -553,12 +567,14 @@ public:
         if (engine.recording.active()) return {false, "The previous take is still finishing. Try again in a moment."};
         if (engine.patternMode.load() != 2) return {false, "Open the Song view (or turn on Song mode) to record onto the timeline."};
         std::vector<int> armed;
-        bool anyArmed = false;
+        bool anyArmed = false, frozenArmed=false;
         for (int t = 0; t < doc.trackCount() && t < maxSessionTracks; ++t) {
             const auto& s = doc.tracks[static_cast<std::size_t>(t)].settings;
             anyArmed = anyArmed || s.armed;
-            if (s.armed && s.input + (s.stereoInput ? 1 : 0) < deviceInputs) armed.push_back(t);
+            frozenArmed=frozenArmed || (s.armed && s.frozen());
+            if (s.armed && !s.frozen() && s.input + (s.stereoInput ? 1 : 0) < deviceInputs) armed.push_back(t);
         }
+        if(armed.empty() && frozenArmed)return {false,"Unfreeze an armed track before recording."};
         if (armed.empty())
             return {false, anyArmed ? "The armed tracks' inputs are not enabled. Turn them on in Audio settings."
                                     : "Arm a track in the Song view (the button on its header) to record onto it."};
@@ -648,8 +664,21 @@ public:
         engine.stepVelocities[static_cast<std::size_t>(step)].store(doc.steps.velocity[static_cast<std::size_t>(step)]);
     }
     void setBpm(int bpm) {
+        const bool unfreezing=juce::jlimit(60,200,bpm)!=doc.bpm && anyFrozenTrack();
+        if(unfreezing) {
+            for(int t=0;t<doc.trackCount();++t)if(isTrackFrozen(t)) {
+                const auto scene=doc.tracks[static_cast<std::size_t>(t)].settings.freezeScene;
+                doc.timeline.unfreezeTrack(t);doc.tracks[static_cast<std::size_t>(t)].settings.freezeScene=-1;
+                if(doc.isValidCell(t,scene))doc.clip(t,scene)=SessionClip{};
+            }
+            doc.timeline.lengthBars=std::max(doc.timeline.freezeBaseLengthBars,doc.timeline.minLengthBars());
+            doc.timeline.freezeBaseLengthBars=0;
+            pushDocumentToEngine();
+            status("Tracks unfrozen for tempo change.",{});
+        }
         doc.bpm = juce::jlimit(60, 200, bpm);
         engine.bpm.store(doc.bpm);
+        if(unfreezing && onDocumentRestored)onDocumentRestored();
     }
     void setLivePreset(int preset) {
         doc.livePreset = preset;
@@ -663,7 +692,7 @@ public:
     // Called by the piano roll as notes change. Editing a clip that is not
     // playing queues it to launch, so changes are heard straight away.
     void setClipPattern(int track, int scene, const PianoRollPattern& pattern, bool publishToEngine) {
-        if (!doc.isValidCell(track, scene)) return;
+        if (!doc.isValidCell(track, scene) || isTrackFrozen(track)) return;
         if (take.active && track == take.track && scene == take.scene) return; // the take owns this clip until it ends
         auto& clip = doc.clip(track, scene);
         // Re-loading a clip into the editor reports identical notes; keep the
@@ -678,7 +707,7 @@ public:
     }
 
     bool removeAudio(int track, int scene) {
-        if (!doc.isValidCell(track, scene)) return false;
+        if (!doc.isValidCell(track, scene) || isTrackFrozen(track)) return false;
         auto& clip = doc.clip(track, scene);
         if (!clip.isAudioClip()) return false; // a loaded clip, or an offline reference
         clip.audio.reset();
@@ -824,6 +853,7 @@ public:
     }
 
     void importAudio(const juce::File& file, int track, int scene) {
+        if(isTrackFrozen(track)){importStatus("Unfreeze the track before replacing its audio.",{});return;}
         if (busy || !doc.isValidCell(track, scene)) return;
         setBusy(true);
         importStatus(ui8("Loading audio\xe2\x80\xa6"), file.getFullPathName());
@@ -900,6 +930,14 @@ public:
         next.tempo = doc.bpm;
         if (!edit(next) || !next.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount) || next == doc.timeline)
             return false;
+        if(next.frozenOriginals!=doc.timeline.frozenOriginals)return false;
+        for(int track=0;track<doc.trackCount();++track)if(isTrackFrozen(track)) {
+            std::vector<timeline::Region> before,after;
+            for(const auto& region:doc.timeline.regions)if(region.row==track)before.push_back(region);
+            for(const auto& region:next.regions)if(region.row==track)after.push_back(region);
+            if(before!=after)return false;
+        }
+        if(anyFrozenTrack() && next.lengthBars!=doc.timeline.lengthBars)next.freezeBaseLengthBars=next.lengthBars;
         doc.timeline = std::move(next);
         commit(label, -1, -1, coalesceKey);
         return true;
@@ -936,7 +974,7 @@ public:
     // when the track does not exist, the project is busy, or there is no room for another scene.
     bool placeNewClip(int row, std::int64_t start, std::uint32_t* idOut = nullptr, int* sceneOut = nullptr, bool* sceneAddedOut = nullptr) {
         using namespace alien::timeline;
-        if (busy || isPatternRow(row) || row < 0 || row >= doc.trackCount() || start < 0) return false;
+        if (busy || isTrackFrozen(row) || isPatternRow(row) || row < 0 || row >= doc.trackCount() || start < 0) return false;
         const auto usedByTimeline = [&](int scene) {
             for (const auto& r : doc.timeline.takes) if (r.row == row && r.source == scene) return true;
             for (const auto& r : doc.timeline.regions) if (r.row == row && r.source == scene) return true;
@@ -999,7 +1037,7 @@ public:
         std::vector<std::pair<int, int>> cells;
         for (const auto& take : takes) {
             const int row = take.track;
-            if (row < 0 || row >= doc.trackCount() || !take.clip || !take.placement.valid) return fail();
+            if (isTrackFrozen(row) || row < 0 || row >= doc.trackCount() || !take.clip || !take.placement.valid) return fail();
             const auto usedByTimeline = [&](int scene) {
                 for (const auto& r : next.takes) if (r.row == row && r.source == scene) return true;
                 for (const auto& r : next.regions) if (r.row == row && r.source == scene) return true;
@@ -1038,6 +1076,67 @@ public:
             || !doc.clip(found->row, found->source).isAudioClip()) return false;
         return editTimeline("Comp recording take", [=](timeline::Timeline& t) { return t.compTake(id, from, to); });
     }
+    bool isTrackFrozen(int track) const noexcept {
+        return track>=0 && track<doc.trackCount() && doc.tracks[static_cast<std::size_t>(track)].settings.frozen();
+    }
+    bool anyFrozenTrack() const noexcept {
+        for(const auto& track:doc.tracks) if(track.settings.frozen())return true;
+        return false;
+    }
+    std::int64_t freezeEndTick(int track) const noexcept {
+        std::int64_t end=0; for(const auto& region:doc.timeline.regions)if(region.row==track)end=std::max(end,region.end());
+        return end;
+    }
+    juce::String freezeRefusal(int track) const {
+        if(busy || isRecording())return "Finish the current operation before freezing.";
+        if(track<0 || track>=doc.trackCount())return "Choose a Session track.";
+        if(isTrackFrozen(track))return "Track is already frozen.";
+        if(freezeEndTick(track)==0)return "Place this track's clips in Song before freezing.";
+        for(int c=0;c<doc.channelRack.channelCount;++c)if(doc.channelRack.channels[static_cast<std::size_t>(c)].output==track)
+            return "Freeze currently supports Session tracks without Channel Rack inputs. Reroute those channels first.";
+        for(const auto& region:doc.timeline.regions)if(region.row==track) {
+            if(doc.clip(track,region.source).audioOffline())return "Relink missing audio before freezing.";
+            if(region.group!=0)for(const auto& other:doc.timeline.regions)if(other.group==region.group && other.row!=track)
+                return "Ungroup clips shared with other tracks before freezing.";
+        }
+        return {};
+    }
+    // Called only after the worker has rendered/imported a fresh cache. One undo transaction.
+    bool installFrozenTrack(int track,const juce::File& file,std::shared_ptr<SessionAudioClip> audio,
+                            const timeline::Timeline& expected) {
+        if(freezeRefusal(track).isNotEmpty() || doc.timeline!=expected || !audio || !audio->valid())return false;
+        const auto saved=doc; const auto retainedBefore=retained.size(); const auto bytesBefore=retainedBytes;
+        auto fail=[&] { doc=saved; retained.resize(retainedBefore);retainedBytes=bytesBefore;return false; };
+        int scene=-1;
+        for(int i=0;i<doc.sceneCount() && scene<0;++i)if(doc.clip(track,i).isEmpty()) {
+            bool used=false;
+            for(const auto* regions:{&doc.timeline.regions,&doc.timeline.takes,&doc.timeline.frozenOriginals})
+                for(const auto& region:*regions)used=used || (region.row==track && region.source==i);
+            if(!used)scene=i;
+        }
+        if(scene<0){if(!insertScene(doc.sceneCount(),nullptr))return fail();scene=doc.sceneCount()-1;}
+        if(!retain(audio))return fail();
+        auto& cache=doc.clip(track,scene);cache.audio=audio;cache.audioFilePath=file.getFullPathName();cache.audioFileName=file.getFileName();
+        if(!anyFrozenTrack())doc.timeline.freezeBaseLengthBars=doc.timeline.lengthBars;
+        const double ticks=static_cast<double>(audio->frames)*doc.bpm*timeline::ticksPerBeat/(60.0*audio->sampleRate);
+        if(!std::isfinite(ticks) || ticks<1 || ticks>timeline::maxLength || !doc.timeline.freezeTrack(track,scene,static_cast<std::int64_t>(std::ceil(ticks)),1.0/ToneEngine::audioClipLevel))return fail();
+        doc.tracks[static_cast<std::size_t>(track)].settings.freezeScene=scene;
+        if(!toProjectData(doc).valid())return fail();
+        pushDocumentToEngine();commit("Freeze track");if(onDocumentRestored)onDocumentRestored();return true;
+    }
+    bool unfreezeTrack(int track) {
+        if(busy || isRecording() || !isTrackFrozen(track))return false;
+        const int scene=doc.tracks[static_cast<std::size_t>(track)].settings.freezeScene;
+        if(!doc.timeline.unfreezeTrack(track))return false;
+        doc.tracks[static_cast<std::size_t>(track)].settings.freezeScene=-1;
+        if(doc.isValidCell(track,scene))doc.clip(track,scene)=SessionClip{};
+        if(!anyFrozenTrack()) {
+            doc.timeline.lengthBars=std::max(doc.timeline.freezeBaseLengthBars,doc.timeline.minLengthBars());
+            doc.timeline.freezeBaseLengthBars=0;
+        }
+        pushDocumentToEngine();commit("Unfreeze track");if(onDocumentRestored)onDocumentRestored();return true;
+    }
+
     // Deleting a pattern renumbers the ones after it, and the timeline must follow.
     bool deleteRackPattern(int index) {
         auto next = doc.channelRack;
@@ -1049,12 +1148,14 @@ public:
         return true;
     }
     void clearDrum(int track, int pad) {
+        if(isTrackFrozen(track))return;
         if (track < 0 || track >= doc.trackCount() || pad < 0 || pad >= drumPadCount) return;
         doc.tracks[track].drumPaths[pad].clear();
         doc.tracks[track].drumAssets[pad].reset();
         pushDocumentToEngine(); commit("Clear drum pad");
     }
     void loadDrum(const juce::File& file, int track, int pad) {
+        if(isTrackFrozen(track)){importStatus("Unfreeze the track before changing its samples.",{});return;}
         if (busy || track < 0 || track >= doc.trackCount() || pad < 0 || pad >= drumPadCount) return;
         const auto trackId = doc.tracks[track].id;
         setBusy(true);
@@ -1105,6 +1206,7 @@ public:
                   const juce::String& coalesceKey = {}) {
         auto next = doc.channelRack;
         if (!edit(next) || !next.valid() || next == doc.channelRack) return false;
+        for(int c=0;c<next.channelCount;++c)if(isTrackFrozen(next.channels[static_cast<std::size_t>(c)].output))return false;
         const bool content = !next.sameContent(doc.channelRack);
         const bool fewerPatterns = next.patternCount < doc.channelRack.patternCount;
         doc.channelRack = std::move(next);
@@ -1192,7 +1294,7 @@ public:
     }
 
     bool installAudio(const juce::File& file, int track, int scene, std::shared_ptr<SessionAudioClip> clip) {
-        if (!doc.isValidCell(track, scene) || !clip) return false;
+        if (!doc.isValidCell(track, scene) || !clip || isTrackFrozen(track)) return false;
         const auto bytes = clip->decodedBytes();
         if (bytes > maxSessionAudioBytes - retainedBytes) return false;
         finishImport(file, track, scene, {clip, {}});
@@ -1547,7 +1649,7 @@ private:
 
     void finishImport(const juce::File& file, int track, int scene, const AudioClipImportResult& result) {
         if (!result.clip) { importStatus(result.error, result.error); return; }
-        if (!doc.isValidCell(track, scene)) return;
+        if (!doc.isValidCell(track, scene) || isTrackFrozen(track)) return;
         if (!retain(result.clip)) {
             importStatus("Session audio storage is full (512 MiB limit)", "Session audio storage is full (512 MiB limit)");
             return;
@@ -1707,6 +1809,7 @@ private:
         const auto name = copyFrom != nullptr ? doc.scenes[static_cast<std::size_t>(index - 1)].name + " copy"
                                               : doc.nextSceneName();
         doc.timeline.sceneInserted(index);
+        for(auto& track:doc.tracks)if(track.settings.freezeScene>=index)++track.settings.freezeScene;
         doc.scenes.insert(doc.scenes.begin() + index, SessionScene{name});
         doc.clips.insert(doc.clips.begin() + index, clips);
         if (doc.selectedScene >= index && index < doc.sceneCount() - 1) ++doc.selectedScene;

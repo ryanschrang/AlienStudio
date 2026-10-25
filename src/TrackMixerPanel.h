@@ -156,6 +156,7 @@ public:
     void refreshSettings() {
         const auto s = controls.snapshot();
         preset.setSelectedId(s.instrument == 1 ? 100 : s.preset + 1, juce::dontSendNotification);
+        preset.setEnabled(!s.frozen());
         gain.setValue(s.gain * 100, juce::dontSendNotification);
         pan.setValue(s.pan * 100, juce::dontSendNotification);
         mute.setToggleState(s.mute, juce::dontSendNotification);

@@ -116,6 +116,8 @@ struct Timeline {
     bool loopEnabled{false};
     std::int64_t loopStart{0}, loopEnd{4 * ticksPerBar};
     std::vector<Region> regions;
+    std::vector<Region> frozenOriginals; // Original arranged clips, silent until unfreeze.
+    int freezeBaseLengthBars{};
     std::vector<Region> takes; // Preserved recording passes, not played directly.
     std::vector<Marker> markers;   // ascending by tick
     std::vector<automation::Lane> automationLanes;
@@ -164,6 +166,7 @@ struct Timeline {
         std::int64_t end = 0;
         for (const auto& r : regions) end = std::max(end, r.end());
         for (const auto& r : takes) end = std::max(end, r.end());
+        for (const auto& r : frozenOriginals) end = std::max(end, r.end());
         for (const auto& m : markers) end = std::max(end, m.tick);
         for (const auto& lane : automationLanes) if (!lane.points.empty()) end = std::max(end, lane.points.back().tick);
         return end;
@@ -176,6 +179,12 @@ struct Timeline {
     // ---- whole-timeline rules -----------------------------------------------------
     bool valid(int tracks = maxSessionTracks, int scenes = maxSessionScenes, int patterns = rack::maxPatterns) const {
         if (lengthBars < 1 || lengthBars > maxBars || regions.size() > maxRegions || markers.size() > maxMarkers) return false;
+        if (freezeBaseLengthBars < 0 || freezeBaseLengthBars > maxBars || frozenOriginals.size() > maxRegions) return false;
+        if (!frozenOriginals.empty()) {
+            for (const auto& r : frozenOriginals) if (r.isPattern()) return false;
+            auto original = *this; original.regions = frozenOriginals; original.frozenOriginals.clear();
+            if (!original.valid(tracks,scenes,patterns)) return false;
+        }
         if (takes.size() > maxTakes) return false;
         for (std::size_t i = 0; i < takes.size(); ++i) {
             const auto& r = takes[i];
@@ -230,7 +239,7 @@ struct Timeline {
     // Same song, whatever the tempo bookkeeping.
     bool operator==(const Timeline& o) const noexcept {
         return lengthBars == o.lengthBars && loopEnabled == o.loopEnabled && loopStart == o.loopStart
-            && loopEnd == o.loopEnd && regions == o.regions && takes == o.takes && markers == o.markers && automationLanes == o.automationLanes;
+            && loopEnd == o.loopEnd && regions == o.regions && frozenOriginals == o.frozenOriginals && freezeBaseLengthBars == o.freezeBaseLengthBars && takes == o.takes && markers == o.markers && automationLanes == o.automationLanes;
     }
     // Would the audio engine play these two identically? Names, colours, ids and
     // groups do not change the sound, so editing them must not republish the song.
@@ -260,6 +269,34 @@ struct Timeline {
         if (idOut != nullptr) *idOut = r.id;
         return true;
     }
+    bool freezeTrack(int row, int scene, std::int64_t renderedTicks, double cacheGain=1.0) {
+        if (!isTrackRow(row) || scene < 0 || scene >= maxSessionScenes || renderedTicks < 1 || renderedTicks > maxLength) return false;
+        if (std::any_of(frozenOriginals.begin(),frozenOriginals.end(),[=](const Region& r){return r.row==row;})) return false;
+        Timeline next=*this;
+        for (const auto& r : regions) if (r.row==row) {
+            // Cross-track groups must be ungrouped first; don't silently lose their structure.
+            if (r.group != 0 && std::any_of(regions.begin(),regions.end(),[&](const Region& other){return other.group==r.group && other.row!=row;})) return false;
+            next.frozenOriginals.push_back(r);
+        }
+        if (next.frozenOriginals == frozenOriginals) return false;
+        std::erase_if(next.regions,[=](const Region& r){return r.row==row;});
+        Region cached; cached.row=row; cached.source=scene; cached.length=renderedTicks;cached.gain=cacheGain;
+        if (!next.place(cached)) return false;
+        return adopt(std::move(next));
+    }
+    bool unfreezeTrack(int row) {
+        Timeline next=*this;
+        bool found=false;
+        for (const auto& r : frozenOriginals) if (r.row==row) { next.regions.push_back(r); found=true; }
+        if (!found) return false;
+        // Remove only the active cache, not the originals just appended.
+        std::erase_if(next.regions,[&](const Region& r){
+            return r.row==row && std::none_of(frozenOriginals.begin(),frozenOriginals.end(),[&](const Region& original){return original.id==r.id;});
+        });
+        std::erase_if(next.frozenOriginals,[=](const Region& r){return r.row==row;});
+        return adopt(std::move(next));
+    }
+
     // Retain the unedited pass and place its active copy atomically.
     bool recordTake(Region region) {
         if (takes.size() >= maxTakes || region.isPattern() || region.start < 0 || region.start > maxLength
@@ -605,6 +642,8 @@ struct Timeline {
 
     // ---- keeping references right when the project changes shape ----------------------------
     void trackDeleted(int track) {
+        std::erase_if(frozenOriginals,[=](const Region& r){return r.row==track;});
+        for(auto& r:frozenOriginals) if(r.row>track)--r.row;
         std::erase_if(takes, [=](const Region& r) { return r.row == track; });
         for (auto& r : takes) if (r.row > track) --r.row;
         std::erase_if(automationLanes, [=](const automation::Lane& lane) { return lane.track == track; });
@@ -614,11 +653,14 @@ struct Timeline {
         tidyGroups();
     }
     void tracksSwapped(int a, int b) {
+        for(auto& r:frozenOriginals){if(r.row==a)r.row=b;else if(r.row==b)r.row=a;}
         for (auto& r : takes) { if (r.row == a) r.row = b; else if (r.row == b) r.row = a; }
         for (auto& lane : automationLanes) { if (lane.track == a) lane.track = b; else if (lane.track == b) lane.track = a; }
         for (auto& r : regions) if (!r.isPattern()) { if (r.row == a) r.row = b; else if (r.row == b) r.row = a; }
     }
     void sceneDeleted(int scene) {
+        std::erase_if(frozenOriginals,[=](const Region& r){return r.source==scene;});
+        for(auto& r:frozenOriginals)if(r.source>scene)--r.source;
         std::erase_if(takes, [=](const Region& r) { return r.source == scene; });
         for (auto& r : takes) if (r.source > scene) --r.source;
         std::erase_if(regions, [&](const Region& r) { return !r.isPattern() && r.source == scene; });
@@ -626,10 +668,12 @@ struct Timeline {
         tidyGroups();
     }
     void scenesSwapped(int a, int b) {
+        for(auto& r:frozenOriginals){if(r.source==a)r.source=b;else if(r.source==b)r.source=a;}
         for (auto& r : takes) { if (r.source == a) r.source = b; else if (r.source == b) r.source = a; }
         for (auto& r : regions) if (!r.isPattern()) { if (r.source == a) r.source = b; else if (r.source == b) r.source = a; }
     }
     void sceneInserted(int index) {
+        for(auto& r:frozenOriginals)if(r.source>=index)++r.source;
         for (auto& r : takes) if (r.source >= index) ++r.source;
         for (auto& r : regions) if (!r.isPattern() && r.source >= index) ++r.source;
     }

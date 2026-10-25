@@ -209,6 +209,8 @@ public:
         if (brokenEditors.count(entry.processor.get())!=0) return "editor crashed";
         return {};
     }
+    // Message thread, with the device callback detached, before an offline snapshot.
+    void closeEditorWindows() { closeEditors(); }
     const DiagnosticLog& diagnosticLog() const noexcept { return log; }
     std::atomic<bool> changed{};
 private:

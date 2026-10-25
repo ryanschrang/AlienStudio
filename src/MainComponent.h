@@ -359,6 +359,8 @@ private:
     void wireTimeline() {
         timelineView.onExport = [this](std::int64_t from, std::int64_t to) { chooseWavExport(from, to); };
         timelineView.onExportStems = [this](std::int64_t from, std::int64_t to) { chooseStemExport(from, to); };
+        timelineView.onFreezeTrack=[this](int track){startTrackFreeze(track);};
+        timelineView.onUnfreezeTrack=[this](int track){if(controller.unfreezeTrack(track)){refreshExtraViews();timelineView.setStatus("Track unfrozen; original clips and saved settings restored.");}};
         timelineView.onTitleChanged = [this] { if (tabs.getCurrentTabIndex() == 5) updateEditorTitle(); };
         auto& canvas = timelineView.timelineCanvas();
         // The audio callback receives only the enabled inputs, in order; a track's input counts among those.
@@ -546,6 +548,7 @@ private:
             const auto& rack = controller.channelRack();
             pianoRoll.setPattern(alien::rack::channelNotes(rack.pattern(rack.selectedPattern), rollTarget.channel));
         } else pianoRoll.setPattern(controller.document().selectedClip().notes());
+        pianoRoll.setEnabled(rollTarget.rack || !controller.isTrackFrozen(controller.document().selectedTrack));
         loadingClip = false;
         sessionView.refreshSelectedClip();
         updateEditorTitle();
@@ -651,6 +654,7 @@ private:
         if (rollTarget.rack) { rollTarget = {}; loadSelectedClip(); }   // "Clear clip" is about the Session clip
         const auto& d = controller.document();
         const int track = d.selectedTrack, scene = d.selectedScene;
+        if(controller.isTrackFrozen(track)){timelineView.setStatus("Unfreeze the track before editing its source clips.");return;}
         controller.removeAudio(track, scene);
         // The selected clip is the one loaded in the piano roll, so this clears
         // it and republishes it through onChange; one undo step covers both.
@@ -1090,6 +1094,51 @@ private:
         exportFileChooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
             [safe, from, to](const juce::FileChooser& chooser) { if (safe && chooser.getResult() != juce::File{}) safe->exportWav(chooser.getResult().withFileExtension("wav"), from, to); });
     }
+    void startTrackFreeze(int track) {
+        if(exportCancellation || projectBusy || controller.isBusy())return;
+        const auto refusal=controller.freezeRefusal(track);
+        if(refusal.isNotEmpty()){timelineView.setStatus(refusal);return;}
+        snapshotPlugins(SnapshotReason::always,true);
+        const auto folder=juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("Alien Studio/FreezeAudio");
+        if(!folder.createDirectory().wasOk()){timelineView.setStatus("Cannot create the freeze audio folder.");return;}
+        const auto file=folder.getChildFile("Freeze-"+juce::Uuid().toString()+".wav");
+        auto song=controller.captureArrangement();auto assets=controller.document();
+        auto expected=std::make_shared<alien::timeline::Timeline>(controller.timeline());
+        const auto trackId=assets.tracks[static_cast<std::size_t>(track)].id;
+        auto project=std::make_shared<alien::SessionProjectData>(alien::toProjectData(assets));
+        alien::WavExportOptions options;options.freezeTrack=track;options.toTick=controller.freezeEndTick(track);
+        auto renderEngine=std::make_shared<ToneEngine>();renderEngine->prepare(48000);
+        auto renderHost=std::make_shared<alien::PluginHost>(*renderEngine->plugins,hostLogFile());
+        std::vector<alien::PluginRackState> racks(static_cast<std::size_t>(assets.trackCount()));
+        racks[static_cast<std::size_t>(track)]=assets.tracks[static_cast<std::size_t>(track)].plugins;
+        const auto errors=renderHost->restore(racks,{},alien::ReturnRacks{},48000);
+        if(errors.isNotEmpty()){timelineView.setStatus("Freeze stopped: "+errors);return;}
+        alien::DrumSamplePointers drums{};
+        for(int t=0;t<assets.trackCount();++t)for(int p=0;p<alien::drumPadCount;++p)drums[t][p]=assets.tracks[t].drumAssets[p].get();
+        exportCancellation=std::make_shared<std::atomic<bool>>(false);auto cancel=exportCancellation;
+        setProjectBusy(true);timelineView.setExporting(true);timelineView.setStatus("Freezing track. Cancel export stops this operation.");
+        juce::Component::SafePointer<MainComponent> safe(this);
+        std::function<juce::ThreadPoolJob::JobStatus()> job=[safe,track,trackId,file,song,project,assets,expected,options,drums,cancel,renderEngine,renderHost]()mutable{
+            juce::String error;
+            const bool rendered=alien::exportArrangementWav(file,*project,*song,drums,*cancel,error,renderEngine.get(),options);
+            auto result=std::make_shared<alien::AudioClipImportResult>();
+            if(rendered && !cancel->load())*result=alien::importSessionAudioClip(file);
+            juce::MessageManager::callAsync([safe,track,trackId,file,expected,cancel,result,error,engine=std::move(renderEngine),host=std::move(renderHost)]{
+                if(!safe){file.deleteFile();return;}
+                safe->exportCancellation.reset();safe->setProjectBusy(false);safe->timelineView.setExporting(false);
+                const auto& doc=safe->controller.document();
+                const bool current=track>=0 && track<doc.trackCount() && doc.tracks[static_cast<std::size_t>(track)].id==trackId;
+                if(cancel->load() || !current || !result->clip || !safe->controller.installFrozenTrack(track,file,result->clip,*expected)){
+                    file.deleteFile();
+                    safe->timelineView.setStatus(cancel->load()?"Freeze cancelled; original track unchanged."
+                        :error.isNotEmpty()?error:result->error.isNotEmpty()?result->error:"Could not install frozen audio (project changed, scene or memory limit). Original track unchanged.");
+                }else{safe->refreshExtraViews();safe->timelineView.setStatus("Track frozen. Fader, pan, sends and automation remain live; right-click the track header to unfreeze.");}
+            });
+            return juce::ThreadPoolJob::jobHasFinished;
+        };
+        audioWorkPool.addJob(std::move(job));
+    }
+
     void chooseStemExport(std::int64_t from, std::int64_t to) {
         if (exportCancellation) { exportCancellation->store(true); return; }
         if (projectBusy || controller.isBusy()) return;
@@ -1114,7 +1163,9 @@ private:
         renderEngine->prepare(48000);
         // Kept until the export ends: a plugin that fails during the render is reported through it.
         auto renderHost = std::make_shared<alien::PluginHost>(*renderEngine->plugins, hostLogFile());
-        { const auto errors=renderHost->restore(pluginStates(),stems ? alien::PluginRackState{} : controller.document().masterPlugins,controller.returnRacks(),48000);
+        auto exportRacks=pluginStates();
+        for(std::size_t t=0;t<exportRacks.size();++t)if(controller.isTrackFrozen(static_cast<int>(t)))exportRacks[t]={};
+        { const auto errors=renderHost->restore(exportRacks,stems ? alien::PluginRackState{} : controller.document().masterPlugins,controller.returnRacks(),48000);
           if(errors.isNotEmpty()){ timelineView.setStatus("Export stopped: " + errors);return; } }
         auto assets = controller.document();
         alien::DrumSamplePointers drums{};
@@ -1184,7 +1235,7 @@ private:
         for (const auto& t : d.tracks) assigned = assigned || !t.plugins.instrument.descriptionXml.isEmpty() || !t.plugins.effects.empty();
         return assigned;
     }
-    void snapshotPlugins(SnapshotReason reason = SnapshotReason::save) {
+    void snapshotPlugins(SnapshotReason reason = SnapshotReason::save, bool closeEditors=false) {
         if (!pluginsAssigned()) { pluginHost.changed.store(false); return; }
         // Native parameters may have changed since the most recent timer tick.
         if (reason != SnapshotReason::always) {
@@ -1194,9 +1245,13 @@ private:
         }
         pluginHost.changed.store(false);
         auto tracks=pluginStates(); auto master=controller.document().masterPlugins; auto returns=controller.returnRacks();
+        const auto position=engine.timelinePosition.load();const bool playing=engine.playing.load();
         audio.removeAudioCallback(&engine);
+        if(closeEditors)pluginHost.closeEditorWindows();
         pluginHost.snapshot(tracks,master,returns);
+        for(std::size_t t=0;t<tracks.size();++t)if(controller.isTrackFrozen(static_cast<int>(t)))tracks[t]=controller.document().tracks[t].plugins;
         audio.addAudioCallback(&engine);
+        if(closeEditors && position>=0){engine.timelineSeek.store(position);engine.playing.store(playing);}
         controller.setPluginRacks(tracks,master,returns);
         loadedRacks = tracks; loadedMaster = master; loadedReturns = returns;
     }
@@ -1216,15 +1271,24 @@ private:
     // creating a document passes force=true so plugin state always matches the file.
     void restorePlugins(bool force = false) {
         const auto states = pluginStates(); const auto master = controller.document().masterPlugins; const auto returns = controller.returnRacks();
-        if (!force && returns == loadedReturns && sameRacks(states, master, loadedRacks, loadedMaster)) { refreshPlugins(); return; }
+        std::vector<int> frozen;
+        for(const auto& track:controller.document().tracks)frozen.push_back(track.settings.freezeScene);
+        if (!force && frozen==loadedFrozen && returns == loadedReturns && sameRacks(states, master, loadedRacks, loadedMaster)) { refreshPlugins(); return; }
+        const bool freezeChanged=frozen!=loadedFrozen;
+        const auto position=engine.timelinePosition.load();const bool playing=engine.playing.load();
         audio.removeAudioCallback(&engine);
-        auto errors=pluginHost.restore(states,master,returns,deviceRate());
+        auto runtimeStates=states;
+        for(std::size_t t=0;t<runtimeStates.size();++t)if(controller.isTrackFrozen(static_cast<int>(t)))runtimeStates[t]={};
+        auto errors=pluginHost.restore(runtimeStates,master,returns,deviceRate());
+        loadedFrozen=frozen;
         audio.addAudioCallback(&engine);
+        if(freezeChanged && position>=0){engine.timelineSeek.store(position);engine.playing.store(playing);}
         loadedRacks = states; loadedMaster = master; loadedReturns = returns;
         pluginPanel.setStatus(errors.isEmpty()?"Plugin racks restored. Select a slot to open its editor.":"Missing or unsupported plugins (saved state preserved):\n"+errors);
         refreshPlugins();
     }
     void addPlugin(bool instrument,int choice) {
+        if(controller.isTrackFrozen(pluginTarget())){pluginPanel.setStatus("Unfreeze the track before editing its instrument or effects.");return;}
         if(projectBusy || controller.isBusy()) return;
         juce::PluginDescription chosen;
         if(choice>=alien::PluginPanel::stockBase) {
@@ -1244,6 +1308,7 @@ private:
         controller.setPluginRacks(states,master,returns); restorePlugins();
     }
     void pluginAction(int op,int slot) {
+        if(controller.isTrackFrozen(pluginTarget())){pluginPanel.setStatus("Unfreeze the track before editing its instrument or effects.");return;}
         if(projectBusy || controller.isBusy())return;
         const int t=pluginTarget();
         if(op==0){const auto problem=pluginHost.openEditor(t,slot);if(problem.isNotEmpty()){pluginPanel.setStatus(problem);refreshPlugins();}return;}
@@ -1401,6 +1466,7 @@ private:
     std::unique_ptr<alien::Preflight> preflight;  // the safety check before a plugin is loaded into a project
     bool scanning{};
     std::shared_ptr<std::atomic<bool>> scanCancel;
+    std::vector<int> loadedFrozen;
     std::vector<alien::PluginRackState> loadedRacks; // Rack states the plugin host last loaded or captured.
     alien::PluginRackState loadedMaster;
     alien::ReturnRacks loadedReturns;
