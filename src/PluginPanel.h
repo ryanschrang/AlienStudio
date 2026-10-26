@@ -6,6 +6,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <array>
 #include <functional>
+#include <vector>
 
 namespace alien {
 // What the Scan menu can ask for.
@@ -16,7 +17,7 @@ public:
     // Choice ids: stock effects are stockBase + catalog index; scanned VST3 plugins are index + 1.
     static constexpr int stockBase = 1000;
     PluginPanel() {
-        for (auto* c:std::array<juce::Component*,14>{&target,&available,&slot,&liveInput,&scan,&cancelScan,&addInstrument,&addEffect,&open,&bypass,&up,&down,&remove,&status}) addAndMakeVisible(c);
+        for (auto* c:std::array<juce::Component*,15>{&target,&available,&slot,&liveInput,&scan,&cancelScan,&addInstrument,&addEffect,&open,&bypass,&sidechain,&up,&down,&remove,&status}) addAndMakeVisible(c);
         cancelScan.setVisible(false);
         scan.setButtonText("Scan VST3..."); cancelScan.setButtonText("Cancel scan"); addInstrument.setButtonText("Use instrument"); addEffect.setButtonText("Add FX");
         open.setButtonText("Open editor"); bypass.setButtonText("Bypass / enable"); up.setButtonText("Move FX up"); down.setButtonText("Move FX down"); remove.setButtonText("Remove");
@@ -30,6 +31,10 @@ public:
         addInstrument.onClick=[this]{if(onAdd)onAdd(true,available.getSelectedId());};
         addEffect.onClick=[this]{if(onAdd)onAdd(false,available.getSelectedId());};
         open.onClick=[this]{action(0);}; bypass.onClick=[this]{action(1);}; remove.onClick=[this]{action(2);}; up.onClick=[this]{action(3);}; down.onClick=[this]{action(4);};
+        sidechain.setButtonText("Sidechain..."); sidechain.setName("Sidechain source");
+        sidechain.setTooltip("Key this effect from another track: a compressor then ducks this sound whenever that track plays (for example a bass ducking to the kick).");
+        sidechain.onClick=[this]{showSidechainMenu();};
+        slot.onChange=[this]{updateSidechainButton();};
         setStatus("Pick a destination and add one of Alien Studio's stock effects (EQ, compressor, saturator, reverb, delay, limiter, filter), or scan a 64-bit .vst3 bundle for an instrument or FX. Choose a Live MIDI destination below to play an instrument with your MIDI controller or piano keyboard.");
     }
     std::function<void(ScanCommand)> onScanCommand;
@@ -47,6 +52,10 @@ public:
     }
     std::function<void(bool,int)> onAdd;
     std::function<void(int,int)> onAction;
+    // Whether the effect in (destination, effect index) has a sidechain input; and the choice of key:
+    // (effect index, Session track or -1 for none).
+    std::function<bool(int,int)> hasSidechainInput;
+    std::function<void(int,int)> onSidechain;
     int destination() const { return target.getSelectedId()-1; }
     // busNames: one per group bus slot, empty for a slot that is not in use.
     void refresh(const juce::StringArray& names, const PluginRackState& rack, const juce::KnownPluginList& list,
@@ -73,7 +82,25 @@ public:
         // A bus has no instrument row, so its first effect is id 2; a kept id of 1 would match no item.
         slot.setSelectedId(s>=(bus?2:1)&&s<=static_cast<int>(rack.effects.size()+1)?s:bus?(rack.effects.empty()?0:2):1,juce::dontSendNotification);
         addInstrument.setEnabled(!bus);
+        trackNames=names;
+        keyOf.clear(); for(const auto& effect:rack.effects) keyOf.push_back(effect.sidechain);
+        updateSidechainButton();
     }
+    // The menu of keys for the selected effect: Off, then every track except the effect's own.
+    void showSidechainMenu(){
+        const int index=slot.getSelectedId()-2;
+        if(index<0 || index>=static_cast<int>(keyOf.size()))return;
+        juce::PopupMenu menu;
+        const int current=keyOf[static_cast<std::size_t>(index)], where=destination();
+        menu.addItem(1,"Off",true,current<0);
+        for(int t=0;t<trackNames.size();++t)if(t!=where)menu.addItem(t+2,"Key from "+trackNames[t],true,current==t);
+        juce::Component::SafePointer<PluginPanel> safe(this);
+        const auto chosen=[safe,index](int id){if(safe&&id>0&&safe->onSidechain)safe->onSidechain(index,id-2);};
+        if(sidechainMenuLauncher){sidechainMenuLauncher(std::move(menu),chosen);return;}
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&sidechain),chosen);
+    }
+    // Tests replace the popup: they get the menu and the function to call with a choice.
+    std::function<void(juce::PopupMenu,std::function<void(int)>)> sidechainMenuLauncher;
     // While a scan runs, Scan is disabled and Cancel is offered.
     void setScanning(bool running){scanning=running;scan.setEnabled(!running);cancelScan.setVisible(running);resized();}
     bool isScanning() const{return scanning;}
@@ -109,15 +136,26 @@ public:
         r.removeFromTop(12);available.setBounds(r.removeFromTop(30));r.removeFromTop(12);row=r.removeFromTop(32);
         addInstrument.setBounds(row.removeFromLeft(150));row.removeFromLeft(10);addEffect.setBounds(row.removeFromLeft(120));
         r.removeFromTop(20);slot.setBounds(r.removeFromTop(30));r.removeFromTop(12);row=r.removeFromTop(32);
-        for(auto* b:{&open,&bypass,&up,&down,&remove}){b->setBounds(row.removeFromLeft(135));row.removeFromLeft(8);}
+        for(auto* b:{&open,&bypass,&sidechain,&up,&down,&remove}){b->setBounds(row.removeFromLeft(118));row.removeFromLeft(8);}
         r.removeFromTop(16);status.setBounds(r.removeFromTop(110));
     }
 private:
     juce::String problem(int where,int index) const{if(!health)return {};const auto text=health(where,index);return text.isEmpty()?juce::String():"  ["+text+"]";}
-    static juce::String name(const PluginState& p){auto xml=juce::parseXML(p.descriptionXml);return (xml?xml->getStringAttribute("name"):"Empty")+(p.bypass?" [bypassed]":"");}
+    juce::String name(const PluginState& p) const {
+        auto xml=juce::parseXML(p.descriptionXml);
+        auto text=(xml?xml->getStringAttribute("name"):"Empty")+(p.bypass?" [bypassed]":"");
+        if(p.sidechain>=0) text+=" [keyed by "+(p.sidechain<trackNames.size()?trackNames[p.sidechain]:"Track "+juce::String(p.sidechain+1))+"]";
+        return text;
+    }
+    void updateSidechainButton(){
+        const int index=slot.getSelectedId()-2;
+        sidechain.setEnabled(index>=0 && hasSidechainInput && hasSidechainInput(destination(),index));
+    }
     void action(int op){if(onAction && slot.getSelectedId()>0)onAction(op,slot.getSelectedId()-2);}
     juce::ComboBox target,available,slot,liveInput;
-    juce::TextButton scan,cancelScan,addInstrument,addEffect,open,bypass,up,down,remove;
+    juce::TextButton scan,cancelScan,addInstrument,addEffect,open,bypass,sidechain,up,down,remove;
+    juce::StringArray trackNames;
+    std::vector<int> keyOf;   // each effect's sidechain track, as last shown
     juce::Label status;
     bool scanning{},preflightEnabled{true};
 };

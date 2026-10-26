@@ -312,3 +312,9 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Record with a two-bar count-in starting in a 3/4 or 6/8 section: the count-in has that meter's beats and recording starts on the next downbeat.
 - Load a tempo-synced VST3 that shows bars or uses the time signature (an arpeggiator, a step LFO): it follows the meter changes.
 - Change a meter under existing clips: they keep their positions; snapping to bars and beats, Shift+arrow nudging and looping a bar use the new bar lengths. Save, reopen and undo restore everything.
+
+## Sidechain
+- Put a kick pattern on one track and a sustained bass or pad on another. On the bass track add the stock Compressor, then Plugins > Sidechain... > Key from the kick track. Play: the bass ducks on every kick and recovers between them; lower the threshold or raise the ratio to hear it more.
+- Move tracks and check the key follows the kick; delete the kick track and check the compressor is unkeyed (its slot no longer shows "keyed by").
+- Save, reopen and undo; export a WAV and compare it with playback.
+- Load a VST3 compressor or gate that has a sidechain input and key it from a track the same way; check it reacts (untested so far).

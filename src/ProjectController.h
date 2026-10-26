@@ -306,6 +306,7 @@ public:
         else if (route > track) engine.liveDrumTrack.store(route - 1);
         doc.timeline.trackDeleted(track);
         doc.channelRack.trackDeleted(track); // channels routed there fall back to the master bus
+        doc.sidechainTrackDeleted(track);    // effects keyed by it lose their key
         doc.tracks.erase(doc.tracks.begin() + track);
         for (auto& scene : doc.cells) scene.erase(scene.begin() + track);
         doc.prune();
@@ -326,6 +327,7 @@ public:
         else if (route == target) engine.liveDrumTrack.store(track);
         doc.timeline.tracksSwapped(track, target);
         doc.channelRack.tracksSwapped(track, target); // channel routes follow their tracks
+        doc.sidechainTracksSwapped(track, target);
         std::swap(doc.tracks[static_cast<std::size_t>(track)], doc.tracks[static_cast<std::size_t>(target)]);
         for (auto& scene : doc.cells)
             std::swap(scene[static_cast<std::size_t>(track)], scene[static_cast<std::size_t>(target)]);

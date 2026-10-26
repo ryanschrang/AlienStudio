@@ -115,8 +115,16 @@ public:
     const juce::String getName() const override { return info.name; }
     const Info& effectInfo() const noexcept { return info; }
     bool isBusesLayoutSupported(const BusesLayout& layouts) const override {
+        // An effect with a sidechain input takes it in stereo, or not at all.
+        for (int bus = 1; bus < layouts.inputBuses.size(); ++bus)
+            if (!layouts.inputBuses[bus].isDisabled() && layouts.inputBuses[bus] != juce::AudioChannelSet::stereo()) return false;
         return layouts.getMainInputChannelSet() == juce::AudioChannelSet::stereo()
             && layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
+    }
+    // The key the host gave this block (channels 2 and 3, when the sidechain input is on), or nulls.
+    std::pair<const float*, const float*> sidechainKey(const juce::AudioBuffer<float>& buffer) const {
+        if (getBusCount(true) < 2 || !getBus(true, 1)->isEnabled() || buffer.getNumChannels() < 4) return {nullptr, nullptr};
+        return {buffer.getReadPointer(2), buffer.getReadPointer(3)};
     }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
@@ -139,13 +147,18 @@ public:
     double currentSampleRate() const noexcept { return rate.load(); }
 
 protected:
-    Effect(const Info& effectInformation, Layout layout)
-        : juce::AudioProcessor(BusesProperties().withInput("Input", juce::AudioChannelSet::stereo(), true)
-                                                .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
+    // `sidechainInput`: a second, stereo input the host can switch on to key the effect from another track.
+    Effect(const Info& effectInformation, Layout layout, bool sidechainInput = false)
+        : juce::AudioProcessor(buses(sidechainInput)),
           parameters(*this, nullptr, juce::String("ALIEN_") + juce::String(effectInformation.id).toUpperCase(), std::move(layout)),
           info(effectInformation) {}
     double value(std::atomic<float>* p) const noexcept { return static_cast<double>(p->load(std::memory_order_relaxed)); }
     std::atomic<float>* raw(const char* id) const { return parameters.getRawParameterValue(id); }
+    static BusesProperties buses(bool sidechainInput) {
+        auto properties = BusesProperties().withInput("Input", juce::AudioChannelSet::stereo(), true)
+                                           .withOutput("Output", juce::AudioChannelSet::stereo(), true);
+        return sidechainInput ? properties.withInput("Sidechain", juce::AudioChannelSet::stereo(), false) : properties;
+    }
     // A NaN or infinity from upstream would poison feedback paths for good.
     static void sanitise(float* left, float* right, int count) noexcept {
         for (int i = 0; i < count; ++i) {
@@ -216,7 +229,7 @@ private:
 
 class CompressorEffect final : public Effect {
 public:
-    CompressorEffect() : Effect(catalog[1], layout()) {
+    CompressorEffect() : Effect(catalog[1], layout(), true) {
         threshold = raw(comp::threshold); ratio = raw(comp::ratio); attack = raw(comp::attack); release = raw(comp::release);
         knee = raw(comp::knee); makeup = raw(comp::makeup); mix = raw(comp::mix);
     }
@@ -227,7 +240,8 @@ public:
         float* left = buffer.getWritePointer(0);
         float* right = buffer.getWritePointer(1);
         sanitise(left, right, buffer.getNumSamples());
-        compressor.process(left, right, buffer.getNumSamples(), settings());
+        const auto key = sidechainKey(buffer);   // another track's signal, when the host keys it
+        compressor.process(left, right, buffer.getNumSamples(), settings(), key.first, key.second);
         reduction.store(static_cast<float>(compressor.lastBlockReductionDb()), std::memory_order_relaxed);
     }
     double getTailLengthSeconds() const override { return 0.0; }

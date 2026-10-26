@@ -91,6 +91,8 @@ public:
         pluginPanel.onTarget = [this](int) { refreshPlugins(); };
         pluginPanel.onAdd = [this](bool instrument, int choice) { addPlugin(instrument,choice); };
         pluginPanel.onAction = [this](int op,int slot) { pluginAction(op,slot); };
+        pluginPanel.hasSidechainInput = [this](int rack,int slot) { return pluginHost.hasSidechainInput(rack,slot); };
+        pluginPanel.onSidechain = [this](int slot,int track) { setSidechain(slot,track); };
         if (auto xml = juce::parseXML(pluginListFile())) knownPlugins.recreateFromXml(*xml);
         controller.onBeforeSnapshot = [this] { snapshotPlugins(SnapshotReason::save); };
         controller.onBeforeAutosaveSnapshot = [this] { snapshotPlugins(SnapshotReason::autosave); };
@@ -1364,6 +1366,20 @@ private:
             else { const int other=slot+(op==3?-1:1);if(other>=0 && other<static_cast<int>(rack.effects.size()))std::swap(rack.effects[slot],rack.effects[other]); }
         }
         controller.setPluginRacks(states,master,returns,buses);restorePlugins();
+    }
+
+    // Keys the effect in `slot` of the shown rack from Session track `track` (-1: no key).
+    void setSidechain(int slot,int track) {
+        const int t=pluginTarget();
+        if(controller.isTrackFrozen(t)){pluginPanel.setStatus("Unfreeze the track before editing its effects.");return;}
+        if(projectBusy || controller.isBusy() || track==t || track>=controller.document().trackCount())return;
+        snapshotPlugins(SnapshotReason::always);auto states=pluginStates();auto master=controller.document().masterPlugins;auto returns=controller.returnRacks();auto buses=controller.busRacks();
+        auto& rack=rackFor(t,states,master,returns,buses);
+        if(slot<0 || slot>=static_cast<int>(rack.effects.size()) || rack.effects[static_cast<std::size_t>(slot)].sidechain==track)return;
+        rack.effects[static_cast<std::size_t>(slot)].sidechain=track;
+        controller.setPluginRacks(states,master,returns,buses);restorePlugins();
+        pluginPanel.setStatus(track<0?"The effect hears only its own input again."
+            :"The effect is keyed by "+controller.document().tracks[static_cast<std::size_t>(track)].name+": it reacts to that track as it plays.");
     }
 
     // ---- plugin scanning -------------------------------------------------------------------------------

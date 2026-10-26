@@ -37,6 +37,7 @@ inline juce::String trackName(const juce::String& name) { return name.trim().sub
 inline void swapTracks(ProjectDocument& d, int a, int b) {
     d.timeline.tracksSwapped(a, b);
     d.channelRack.tracksSwapped(a, b);
+    d.sidechainTracksSwapped(a, b);
     std::swap(d.tracks[static_cast<std::size_t>(a)], d.tracks[static_cast<std::size_t>(b)]);
     for (auto& scene : d.cells) std::swap(scene[static_cast<std::size_t>(a)], scene[static_cast<std::size_t>(b)]);
     if (d.selectedTrack == a) d.selectedTrack = b;
@@ -100,6 +101,7 @@ inline juce::String applyTo(ProjectDocument& d, const Command& command) {
     } else if (const auto* c = std::get_if<DeleteTrack>(&command)) {
         d.timeline.trackDeleted(c->track);
         d.channelRack.trackDeleted(c->track);
+        d.sidechainTrackDeleted(c->track);
         d.tracks.erase(d.tracks.begin() + c->track);
         for (auto& scene : d.cells) scene.erase(scene.begin() + c->track);
         d.prune();
