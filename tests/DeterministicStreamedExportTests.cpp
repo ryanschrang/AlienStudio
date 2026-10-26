@@ -288,6 +288,21 @@ int main() {
         std::cerr << "scene mask " << mask << ": largest difference " << difference << '\n';
         check(difference < 3.0e-7, "streamed clips render like decoded ones, including where decoded and streamed clips meet");
     }
+    {   // Tempo changes: the export lasts as long as the tempo map says, and streamed clips still match decoded ones.
+        std::array<std::unique_ptr<Material>, 4> a, b;
+        auto decodedSong = busySong(a, 0), streamedSong = busySong(b, 0xF);
+        for (auto* song : {&decodedSong, &streamedSong}) {
+            check(song->playback->timeline.setTempoChange(ticksPerBar + 500, 70.0)
+                  && song->playback->timeline.setTempoChange(3 * ticksPerBar, 180.0), "tempo changes in the busy song");
+            finish(*song);
+        }
+        const auto decodedTempo = render(decodedSong), streamedTempo = render(streamedSong);
+        const auto changes = decodedSong.playback->timeline.tempoChanges;
+        const TempoMap map{changes, 133.0};
+        check(decodedTempo.frames == alien::exportFrameCount(map, 0, 5 * ticksPerBar, 48000.0) && decodedTempo.frames != decoded.frames,
+              "the export is as long as the song is with its tempo changes");
+        check(maxDifference(decodedTempo, streamedTempo) < 3.0e-7, "streamed clips across tempo changes render like decoded ones");
+    }
     {   // A part of the song, starting off the grid.
         alien::WavExportOptions range; range.fromTick = ticksPerBar + 777; range.toTick = 4 * ticksPerBar + 333;
         std::array<std::unique_ptr<Material>, 4> a, b;

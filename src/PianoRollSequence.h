@@ -220,6 +220,14 @@ public:
         sampleRate = std::isfinite(rate) && rate > 0 ? rate : 44100.0;
         bpm = std::isfinite(tempo) && tempo > 0 ? std::clamp(tempo, 1.0, 1000.0) : 120.0;
     }
+    // Timeline playback: the song's tempo changed part-way through a sixteenth. The
+    // rest of that sixteenth plays at the new tempo, keeping the position in the clip.
+    void retime(double tempo) noexcept {
+        const double before = intervalSamples;
+        setTiming(sampleRate, tempo);
+        intervalSamples = sampleRate * 60.0 / (bpm * 4.0);
+        if (running && before > 0.0) untilStep *= intervalSamples / before;
+    }
     // Starts `replacement` playing at once, `startStep` sixteenths into its loop
     // (past the loop length it wraps, and counts the passes so probabilistic notes
     // come out the same however the timeline was entered). Notes that cover that

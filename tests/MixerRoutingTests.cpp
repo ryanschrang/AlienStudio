@@ -362,6 +362,9 @@ static void freezeWorkflow() {
     c.setBpm(130);c.commit("Tempo");
     require(!c.anyFrozenTrack() && c.document().bpm==130 && c.timeline().frozenOriginals.empty(),"tempo change safely unfreezes");
     require(c.undo() && c.isTrackFrozen(0) && c.document().bpm==120,"tempo undo restores freeze state");
+    require(c.setTempoChange(alien::timeline::ticksPerBar,90.0) && !c.anyFrozenTrack() && c.timeline().tempoChanges.size()==1
+        && c.undoLabel()=="Tempo change","a tempo change on the song unfreezes too, in one undo step");
+    require(c.undo() && c.isTrackFrozen(0) && c.timeline().tempoChanges.empty(),"undoing it restores the freeze");
     require(alien::toProjectData(c.document()).valid(),"frozen controller state remains serializable");
     file.deleteFile();
 }

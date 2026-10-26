@@ -58,6 +58,16 @@ inline std::int64_t exportFrameCount(std::int64_t ticks, double bpm, double samp
         return std::numeric_limits<std::int64_t>::max();
     return static_cast<std::int64_t>(std::ceil(frames - 1.0e-9L));
 }
+// The same on a song with tempo changes: frames from tick `from` to tick `to`.
+inline std::int64_t exportFrameCount(const timeline::TempoMap& tempo, std::int64_t from, std::int64_t to, double sampleRate) noexcept {
+    if (to <= from || !std::isfinite(sampleRate) || sampleRate <= 0) return 0;
+    const long double frames = static_cast<long double>(tempo.secondsBetween(static_cast<double>(from), static_cast<double>(to)))
+        * static_cast<long double>(sampleRate);
+    if (!(frames >= 0.0L)) return 0;
+    if (frames >= static_cast<long double>(std::numeric_limits<std::int64_t>::max()))
+        return std::numeric_limits<std::int64_t>::max();
+    return static_cast<std::int64_t>(std::ceil(frames - 1.0e-9L));
+}
 
 // Worker-only render, with an isolated engine using exactly the live DSP path.
 // The caller retains all pointed-to sample assets until this function returns.
@@ -165,7 +175,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
             tailSeconds+=sourceTail;
         }
         tailSeconds=std::min(30.0,tailSeconds);
-        const auto tailTicks=static_cast<std::int64_t>(std::ceil(tailSeconds*project.bpm*timeline::ticksPerBeat/60.0));
+        const auto tailTicks=static_cast<std::int64_t>(std::ceil(song->timeline.tickAfter(static_cast<double>(to),tailSeconds)-static_cast<double>(to)));
         const auto end=to+tailTicks+timeline::ticksPerStep;
         if(end>timeline::maxLength){error="Frozen tail exceeds the supported song length.";return false;}
         song->timeline.lengthBars=std::max(song->timeline.lengthBars,static_cast<int>((end+timeline::ticksPerBar-1)/timeline::ticksPerBar));
@@ -214,7 +224,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     const auto latency = static_cast<std::int64_t>(engine->plugins->latencySamples()
         - (options.stems ? engine->plugins->rackLatency(engine->plugins->racks[PluginRuntime::masterIndex]) : 0));
     const auto tail = static_cast<std::int64_t>(std::ceil(tailSeconds * exportRate));
-    const auto frames = exportFrameCount(to - from, project.bpm, exportRate);
+    const auto frames = exportFrameCount(song->timeline.tempoMap(), from, to, exportRate);
     if (frames <= 0 || frames > std::numeric_limits<std::int64_t>::max() - latency - tail) {
         error="Export duration is too long."; return false;
     }

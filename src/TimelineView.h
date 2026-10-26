@@ -508,7 +508,7 @@ public:
             plan.row = item.a; plan.source = item.b;
             if (!d.isValidCell(plan.row, plan.source)) { plan.row = -1; plan.message = "That clip no longer exists."; return plan; }
         }
-        plan.length = controller.naturalLength(plan.row, plan.source);
+        plan.length = controller.naturalLength(plan.row, plan.source, plan.tick);
         plan.valid = plan.length > 0;
         if (plan.valid) {
             timeline::Region named; named.row = plan.row; named.source = plan.source;

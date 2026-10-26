@@ -2,6 +2,7 @@
 #include "PortableProject.h"
 #include <cmath>
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <utility>
@@ -244,6 +245,39 @@ static void automationFormatTests() {
     require(!alien::parseSessionProject(juce::JSON::toString(damaged), loaded, error), "unknown automation targets rejected");
 }
 
+static void tempoMapFormatTests() {
+    alien::SessionProjectData source;
+    source.bpm = 100;
+    require(source.timeline.setTempoChange(2 * 3840, 72.5) && source.timeline.setTempoChange(5 * 3840, 180.0), "fixture tempo changes");
+    alien::SessionProjectData loaded; juce::String error;
+    const auto json = alien::serializeSessionProject(source);
+    require(juce::JSON::parse(json).getProperty("version", 0) == juce::var(18), "tempo changes are written in format 18");
+    require(alien::parseSessionProject(json, loaded, error) && loaded.timeline.tempoChanges == source.timeline.tempoChanges
+        && loaded.bpm == 100, "tempo changes round-trip exactly, fractional tempos included");
+    const auto prior = loaded.timeline;
+    const auto damage = [&](const std::function<void(juce::Array<juce::var>&)>& change) {
+        auto broken = juce::JSON::parse(json);
+        auto* changes = broken.getProperty("timeline", {}).getDynamicObject()->getProperty("tempoChanges").getArray();
+        change(*changes);
+        return juce::JSON::toString(broken);
+    };
+    require(!alien::parseSessionProject(damage([](auto& c) { c.getReference(0).getDynamicObject()->setProperty("bpm", 20); }), loaded, error)
+        && loaded.timeline == prior, "an out-of-range tempo is rejected without changing the loaded project");
+    require(!alien::parseSessionProject(damage([](auto& c) { c.swap(0, 1); }), loaded, error), "changes out of order are rejected");
+    require(!alien::parseSessionProject(damage([](auto& c) { c.getReference(0).getDynamicObject()->setProperty("tick", 0); }), loaded, error),
+        "a change at tick 0 is rejected");
+    require(!alien::parseSessionProject(damage([](auto& c) { c.getReference(0).getDynamicObject()->setProperty("bpm", "fast"); }), loaded, error),
+        "a tempo that is not a number is rejected");
+    require(!alien::parseSessionProject(damage([](auto& c) { c.getReference(1).getDynamicObject()->setProperty("tick", 400 * 3840); }), loaded, error),
+        "a change past the end of the song is rejected");
+    alien::SessionProjectData oldSource;
+    auto old = juce::JSON::parse(alien::serializeSessionProject(oldSource));
+    old.getDynamicObject()->setProperty("version", 17);
+    old.getProperty("timeline", {}).getDynamicObject()->removeProperty("tempoChanges");
+    require(alien::parseSessionProject(juce::JSON::toString(old), loaded, error) && loaded.timeline.tempoChanges.empty(),
+        "version 17 projects open at the project tempo throughout");
+}
+
 static void takeFormatTests() {
     alien::SessionProjectData source;
     alien::timeline::Region take; take.row = 0; take.source = 1; take.length = 3840;
@@ -380,6 +414,7 @@ static void parameterPersistenceTests() {
 int main() {
     freezeFormatTests();
     takeFormatTests();
+    tempoMapFormatTests();
     automationFormatTests();
     recordingSettingsFormatTests();
     masterVolumeFormatTests();

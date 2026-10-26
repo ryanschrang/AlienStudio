@@ -8,6 +8,7 @@
 #include <iostream>
 #include <memory>
 #include <new>
+#include <tuple>
 #include <vector>
 
 // Song-view audio takes (REC-02): where a take lands on the timeline, what the engine captures (count-in,
@@ -60,6 +61,20 @@ void placementTests() {
     require(!placeTake(-1.0, 4800, rate, 120, 0).valid, "nothing captured: no placement");
     require(!placeTake(0.0, 0, rate, 120, 0).valid && !placeTake(0.0, 10, rate, 120, 0).valid, "no frames, or less than a tick: no placement");
     require(!placeTake(0.0, 4800, 0.0, 120, 0).valid && !placeTake(0.0, 4800, rate, 0, 0).valid, "an invalid rate or tempo: no placement");
+    // On a song with tempo changes the latency and the take's length are real time.
+    const std::vector<alien::timeline::TempoChange> none, slower{{3840, 60.0}};
+    const alien::timeline::TempoMap steady{none, 120.0}, map{slower, 120.0};
+    for (const auto& [first, frames, latency] : {std::tuple{0.0, 48000ull, 0.0}, std::tuple{3840.0, 48000ull, 480.0},
+                                                  std::tuple{1920.0, 48000ull, -480.0}, std::tuple{0.0, 48000ull, 480.0}}) {
+        const auto old = placeTake(first, frames, rate, 120, latency), mapped = placeTake(steady, first, frames, rate, latency);
+        require(old.valid == mapped.valid && old.start == mapped.start && old.length == mapped.length
+                && closeTo(old.audioOffset, mapped.audioOffset, 1.0e-9), "without tempo changes the map gives the same placement");
+    }
+    p = placeTake(map, 2880.0, 96000, rate, 0.0);   // half a second at 120 BPM, then a second and a half at 60
+    require(p.valid && p.start == 2880 && p.length == 960 + 1440 && p.audioOffset == 0.0, "a take across a tempo change covers the ticks of its seconds");
+    p = placeTake(map, 3888.0, 48000, rate, 4800.0);  // 0.1 s of latency reaches back across the change
+    require(p.valid && p.start == 3744 && p.length == 1008 && closeTo(p.audioOffset, 0.0, 1.0e-9),
+            "latency is measured along the tempo map");
     std::cout << "PASS: take placement\n";
 }
 

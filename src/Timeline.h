@@ -21,6 +21,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -53,6 +55,80 @@ inline double secondsForTicks(double ticks, double bpm) noexcept {
     const double tempo = std::isfinite(bpm) && bpm > 0.0 ? bpm : 120.0;
     return ticks * 60.0 / (tempo * static_cast<double>(ticksPerBeat));
 }
+// A tempo change on the song: from `tick` on, the song plays at `bpm` until the
+// next change. Before the first change it plays at the project tempo. Ticks stay
+// musical (960 to a quarter note); only their length in seconds changes.
+struct TempoChange {
+    std::int64_t tick{};
+    double bpm{120.0};
+    bool operator==(const TempoChange&) const = default;
+};
+inline constexpr std::size_t maxTempoChanges = 1024;
+inline constexpr double minTempo = 60.0, maxTempo = 200.0;   // the project tempo's range
+inline bool validTempo(double bpm) noexcept { return std::isfinite(bpm) && bpm >= minTempo && bpm <= maxTempo; }
+
+// Reads a tempo map: `changes` (ascending, as in Timeline::tempoChanges) after the
+// `base` tempo. Real-time safe: no allocation, one step per tempo change crossed.
+// The audio thread pairs a song snapshot's changes with the live project tempo.
+struct TempoMap {
+    const std::vector<TempoChange>& changes;
+    double base{120.0};
+
+    // The tempo that plays at `tick`; a change applies from its own tick on.
+    double tempoAt(double tick) const noexcept {
+        const auto after = firstAfter(tick);
+        return after == changes.begin() ? baseTempo() : std::prev(after)->bpm;
+    }
+    // The first tempo change after `tick`, or infinity.
+    double nextChange(double tick) const noexcept {
+        const auto after = firstAfter(tick);
+        return after == changes.end() ? std::numeric_limits<double>::infinity() : static_cast<double>(after->tick);
+    }
+    // Seconds from tick `from` to tick `to`; negative when `to` is earlier.
+    double secondsBetween(double from, double to) const noexcept {
+        if (to < from) return -secondsBetween(to, from);
+        auto it = firstAfter(from);
+        double bpm = it == changes.begin() ? baseTempo() : std::prev(it)->bpm;
+        double seconds = 0.0, at = from;
+        for (; it != changes.end() && static_cast<double>(it->tick) < to; ++it) {
+            seconds += secondsForTicks(static_cast<double>(it->tick) - at, bpm);
+            at = static_cast<double>(it->tick); bpm = it->bpm;
+        }
+        return seconds + secondsForTicks(to - at, bpm);
+    }
+    // The tick `seconds` after tick `from` (before it when negative). Before tick 0
+    // the base tempo continues.
+    double tickAfter(double from, double seconds) const noexcept {
+        if (!std::isfinite(seconds) || seconds == 0.0) return from;
+        if (seconds > 0.0) {
+            auto it = firstAfter(from);
+            double bpm = it == changes.begin() ? baseTempo() : std::prev(it)->bpm, at = from;
+            for (; it != changes.end(); ++it) {
+                const double span = secondsForTicks(static_cast<double>(it->tick) - at, bpm);
+                if (seconds <= span) break;
+                seconds -= span; at = static_cast<double>(it->tick); bpm = it->bpm;
+            }
+            return at + seconds * ticksPerSecond(bpm);
+        }
+        double left = -seconds, at = from;
+        auto it = std::lower_bound(changes.begin(), changes.end(), from,
+            [](const TempoChange& c, double t) { return static_cast<double>(c.tick) < t; });
+        while (it != changes.begin()) {
+            const auto previous = std::prev(it);
+            const double span = secondsForTicks(at - static_cast<double>(previous->tick), previous->bpm);
+            if (left <= span) return at - left * ticksPerSecond(previous->bpm);
+            left -= span; at = static_cast<double>(previous->tick); it = previous;
+        }
+        return at - left * ticksPerSecond(baseTempo());
+    }
+    static double ticksPerSecond(double bpm) noexcept { return bpm * static_cast<double>(ticksPerBeat) / 60.0; }
+private:
+    double baseTempo() const noexcept { return std::isfinite(base) && base > 0.0 ? base : 120.0; }
+    std::vector<TempoChange>::const_iterator firstAfter(double tick) const noexcept {
+        return std::upper_bound(changes.begin(), changes.end(), tick,
+            [](double t, const TempoChange& c) { return t < static_cast<double>(c.tick); });
+    }
+};
 
 struct Region {
     std::uint32_t id{};
@@ -125,12 +201,21 @@ struct Timeline {
     // Missing plugins retain their lanes; an orphan must never bind to a replacement.
     static constexpr std::size_t maxParameterLanes = 1024;
     std::vector<automation::ParameterLane> parameterLanes;
-    // Tempo used to turn a tick distance into audio seconds when an edit trims or
-    // splits an audio region. The owner keeps it equal to the song tempo; it is
-    // not part of the timeline's content.
+    // The tempo before the first tempo change. The owner keeps it equal to the
+    // project tempo; it is not part of the timeline's content.
     double tempo{120.0};
+    // Tempo changes, ascending by tick, each after tick 0 and inside the song.
+    std::vector<TempoChange> tempoChanges;
 
     std::int64_t length() const noexcept { return static_cast<std::int64_t>(lengthBars) * ticksPerBar; }
+
+    // ---- tempo map --------------------------------------------------------------
+    double baseTempo() const noexcept { return std::isfinite(tempo) && tempo > 0.0 ? tempo : 120.0; }
+    TempoMap tempoMap() const noexcept { return {tempoChanges, baseTempo()}; }
+    double tempoAt(double tick) const noexcept { return tempoMap().tempoAt(tick); }
+    double secondsBetween(double from, double to) const noexcept { return tempoMap().secondsBetween(from, to); }
+    double tickAfter(double from, double seconds) const noexcept { return tempoMap().tickAfter(from, seconds); }
+    double nextTempoChange(double tick) const noexcept { return tempoMap().nextChange(tick); }
 
     // ---- queries ----------------------------------------------------------------
     const Region* find(std::uint32_t id) const noexcept {
@@ -172,6 +257,7 @@ struct Timeline {
         for (const auto& r : takes) end = std::max(end, r.end());
         for (const auto& r : frozenOriginals) end = std::max(end, r.end());
         for (const auto& m : markers) end = std::max(end, m.tick);
+        for (const auto& c : tempoChanges) end = std::max(end, c.tick);
         for (const auto& lane : automationLanes) if (!lane.points.empty()) end = std::max(end, lane.points.back().tick);
         for (const auto& lane : parameterLanes) if (!lane.points.empty()) end = std::max(end, lane.points.back().tick);
         return end;
@@ -200,6 +286,11 @@ struct Timeline {
                 || r.fadeIn < 0 || r.fadeOut < 0 || r.crossfade < 0 || r.fadeIn > r.length
                 || r.fadeOut > r.length || r.crossfade > r.length || r.group != 0) return false;
             for (std::size_t j = 0; j < i; ++j) if (takes[j].id == r.id) return false;
+        }
+        if (tempoChanges.size() > maxTempoChanges) return false;
+        for (std::size_t i = 0; i < tempoChanges.size(); ++i) {
+            const auto& c = tempoChanges[i];
+            if (c.tick <= 0 || c.tick > length() || !validTempo(c.bpm) || (i > 0 && c.tick <= tempoChanges[i - 1].tick)) return false;
         }
         if (automationLanes.size() > static_cast<std::size_t>(tracks) * automation::parametersPerTrack) return false;
         for (std::size_t i = 0; i < automationLanes.size(); ++i) {
@@ -250,13 +341,15 @@ struct Timeline {
     // Same song, whatever the tempo bookkeeping.
     bool operator==(const Timeline& o) const noexcept {
         return lengthBars == o.lengthBars && loopEnabled == o.loopEnabled && loopStart == o.loopStart
-            && loopEnd == o.loopEnd && regions == o.regions && frozenOriginals == o.frozenOriginals && freezeBaseLengthBars == o.freezeBaseLengthBars && takes == o.takes && markers == o.markers && automationLanes == o.automationLanes && parameterLanes == o.parameterLanes;
+            && loopEnd == o.loopEnd && regions == o.regions && frozenOriginals == o.frozenOriginals && freezeBaseLengthBars == o.freezeBaseLengthBars && takes == o.takes && markers == o.markers && automationLanes == o.automationLanes && parameterLanes == o.parameterLanes
+            && tempoChanges == o.tempoChanges;
     }
     // Would the audio engine play these two identically? Names, colours, ids and
     // groups do not change the sound, so editing them must not republish the song.
     bool playbackEquals(const Timeline& o) const noexcept {
         if (lengthBars != o.lengthBars || loopEnabled != o.loopEnabled || loopStart != o.loopStart
-            || loopEnd != o.loopEnd || regions.size() != o.regions.size() || automationLanes != o.automationLanes || parameterLanes != o.parameterLanes) return false;
+            || loopEnd != o.loopEnd || regions.size() != o.regions.size() || automationLanes != o.automationLanes || parameterLanes != o.parameterLanes
+            || tempoChanges != o.tempoChanges) return false;
         for (std::size_t i = 0; i < regions.size(); ++i) {
             const auto& a = regions[i]; const auto& b = o.regions[i];
             if (a.row != b.row || a.source != b.source || a.start != b.start || a.length != b.length
@@ -325,13 +418,13 @@ struct Timeline {
             || found->reversed || found->loopSource) return false;
         Region piece = *found;
         const auto delta = from - piece.start;
-        piece.audioOffset += secondsForTicks(delta, tempo);
+        piece.audioOffset += secondsBetween(static_cast<double>(piece.start), static_cast<double>(from));
         piece.offset += delta; piece.start = from; piece.length = to - from;
         piece.muted = false; piece.group = 0; piece.crossfade = 0;
         // Five-millisecond edge fades avoid hard edits; users can refine/crossfade
         // the resulting ordinary audio clips with existing Song editing tools.
         const auto edge = std::min(piece.length / 2, std::max<std::int64_t>(1,
-            static_cast<std::int64_t>(std::llround(0.005 * tempo * ticksPerBeat / 60.0))));
+            static_cast<std::int64_t>(std::llround(tickAfter(static_cast<double>(from), 0.005) - static_cast<double>(from)))));
         piece.fadeIn = piece.fadeOut = edge;
         Timeline next = *this;
         next.carve(piece.row, from, to);
@@ -386,7 +479,8 @@ struct Timeline {
         Region* r = next.find(id);
         if (r == nullptr) return false;
         // Source that lies before the region's start, in ticks, for MIDI and for audio alike.
-        const auto audioRoom = static_cast<std::int64_t>(std::floor(r->audioOffset / secondsForTicks(1, tempo) + 1e-9));
+        const auto audioRoom = static_cast<std::int64_t>(std::floor(static_cast<double>(r->start)
+            - tickAfter(static_cast<double>(r->start), -r->audioOffset) + 1e-9));
         std::int64_t lowest = std::max<std::int64_t>(0, r->start - std::min(r->offset, audioRoom));
         for (const auto& o : next.regions)
             if (o.id != id && o.row == r->row && o.end() <= r->start) lowest = std::max(lowest, o.end());
@@ -493,7 +587,7 @@ struct Timeline {
         return adopt(std::move(next));
     }
     // Moves the source underneath the region without moving either edit boundary.
-    // Positive values move later into the source. Audio offsets follow the project tempo.
+    // Positive values move later into the source. Audio offsets follow the tempo map.
     bool slip(const Ids& ids, std::int64_t deltaTicks) {
         if (deltaTicks == 0) return false;
         Timeline next = *this;
@@ -502,7 +596,7 @@ struct Timeline {
             const auto applied = std::max(deltaTicks, -r.offset);
             if (applied == 0) continue;
             r.offset += applied;
-            r.audioOffset = std::max(0.0, r.audioOffset + secondsForTicks(applied, tempo));
+            r.audioOffset = std::max(0.0, r.audioOffset + secondsBetween(static_cast<double>(r.start), static_cast<double>(r.start + applied)));
             changed = true;
         }
         return changed && adopt(std::move(next));
@@ -641,6 +735,39 @@ struct Timeline {
         std::erase_if(markers, [&](const Marker& m) { return m.id == id; });
         return markers.size() != before;
     }
+    // Adds a tempo change at `tick`, or changes the one already there.
+    bool setTempoChange(std::int64_t tick, double bpm) {
+        if (tick <= 0 || tick > length() || !validTempo(bpm)) return false;
+        Timeline next = *this;
+        auto at = std::lower_bound(next.tempoChanges.begin(), next.tempoChanges.end(), tick,
+            [](const TempoChange& c, std::int64_t t) { return c.tick < t; });
+        if (at != next.tempoChanges.end() && at->tick == tick) {
+            if (at->bpm == bpm) return false;
+            at->bpm = bpm;
+        } else next.tempoChanges.insert(at, TempoChange{tick, bpm});
+        return adopt(std::move(next));
+    }
+    // Moves the change at `from` to `to`; one already at `to` is replaced.
+    bool moveTempoChange(std::int64_t from, std::int64_t to) {
+        const auto found = std::find_if(tempoChanges.begin(), tempoChanges.end(), [=](const TempoChange& c) { return c.tick == from; });
+        if (found == tempoChanges.end() || to <= 0 || to > length() || to == from) return false;
+        const double bpm = found->bpm;
+        Timeline next = *this;
+        std::erase_if(next.tempoChanges, [=](const TempoChange& c) { return c.tick == from || c.tick == to; });
+        next.tempoChanges.insert(std::lower_bound(next.tempoChanges.begin(), next.tempoChanges.end(), to,
+            [](const TempoChange& c, std::int64_t t) { return c.tick < t; }), TempoChange{to, bpm});
+        return adopt(std::move(next));
+    }
+    bool removeTempoChange(std::int64_t tick) {
+        const auto before = tempoChanges.size();
+        std::erase_if(tempoChanges, [=](const TempoChange& c) { return c.tick == tick; });
+        return tempoChanges.size() != before;
+    }
+    bool clearTempoChanges() {
+        if (tempoChanges.empty()) return false;
+        tempoChanges.clear();
+        return true;
+    }
     const Marker* markerAfter(std::int64_t tick) const noexcept {
         for (const auto& m : markers) if (m.tick > tick) return &m;
         return nullptr;
@@ -744,8 +871,8 @@ private:
     }
     // Takes the left `delta` ticks off a region (a negative delta gives them back).
     void trimLeftBy(Region& r, std::int64_t delta) const noexcept {
+        r.audioOffset = std::max(0.0, r.audioOffset + secondsBetween(static_cast<double>(r.start), static_cast<double>(r.start + delta)));
         r.start += delta; r.length -= delta; r.offset = std::max<std::int64_t>(0, r.offset + delta);
-        r.audioOffset = std::max(0.0, r.audioOffset + secondsForTicks(delta, tempo));
     }
     // Clears [from, to) on a row: regions inside it go, regions that overhang are
     // trimmed, and a region that spans it is cut in two around it.
