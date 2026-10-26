@@ -40,7 +40,7 @@ commit, automated test result and Windows listening result before promoting a st
 "Implemented" means code exists; it does not mean all hardware or plugin combinations pass.
 Every row and section below describes main unless it says otherwise. "Planned" rows are not
 started; the gap list from the FL Studio / Ableton Live / Logic Pro comparison is at the end.
-The current project format is 20 (18: song tempo changes, #104; 19: group buses, #106; 20: song time signatures, #114).
+The current project format is 21 (18: song tempo changes, #104; 19: group buses, #106; 20: song time signatures, #114; 21: effect sidechains).
 
 | ID | Capability | Status | Evidence / remaining acceptance |
 | --- | --- | --- | --- |
@@ -180,7 +180,7 @@ artwork stay original.
 | INST-09 | MPE instrument (Live Meld) | Planned | Needs MIDI-08 |
 | INST-10 | VST3 instruments as Channel Rack channels | Planned | Live MIDI and keyboard routing into rack instruments included |
 | MIX-03 | Group buses and output routing (track to bus to master) | Implemented (T1-05): up to eight group buses, each with volume, pan, mute, solo, meter and an eight-slot FX rack; each track's Output goes to the master or a bus; buses feed only the master (no loops); soloing a track keeps its bus audible and soloing a bus keeps its tracks audible; delay compensation across buses (bus stage before the returns); stems add one file per bus and mark tracks routed into one; freeze renders the track without its bus; mixer Add bus / rename / delete and Output menus; project format 19 (older projects: every track to the master). Windows listening and real-plugin latency checks pending | GroupBusTests (exact bus levels, pan, mute, solo across tracks and buses, missing-bus fallback, delay alignment with latent bus and return FX, no allocation, format round-trip/older files/damage, controller undo/redo, mixer and plugin panels, stem capture alignment and files, freeze) |
-| MIX-04 | Sidechain inputs for compressors, gates and VST3 plugins | Planned | Stock compressor first, then plugin sidechain buses |
+| MIX-04 | Sidechain inputs for compressors, gates and VST3 plugins | Part 1 implemented: the stock compressor can be keyed by any other Session track (Plugins > Sidechain...), the key being that track's signal before its own FX; the choice is saved with the effect (format 21), follows track moves and is removed when its track is deleted. The host switches on an effect's second input bus in stereo, so a VST3 effect with a sidechain bus can be keyed the same way, but that is untested with real plugins. Remaining: a stock gate (FX-01), choosing post-fader keys, keys from returns and buses | SidechainTests (detector, the compressor's sidechain bus, runtime ducking and release, no allocation, saving, damaged values, track moves and deletes, Plugins panel menu). Windows listening and real VST3 sidechain checks pending |
 | MIX-05 | Add, remove and rename returns; more than four | Planned | Needs a format bump (next free: 20) |
 | LIVE-04 | Raise Session track, scene and clip-note limits (toward FL's 500 mixer tracks) | Planned | Groundwork done in LIVE-03; per-track engine buffers still grow with the limits |
 | PROD-04 | Per-channel pattern length and rate, step trigger conditions | Planned | From the existing ROADMAP |

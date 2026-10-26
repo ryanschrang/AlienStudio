@@ -46,6 +46,7 @@ public:
         std::uint64_t instanceId{}; // assigned by the host off the audio thread
         Flag faulted;               // set by whichever thread saw the failure; cleared only by unloading the slot
         juce::String name;          // for reports; the host fills it in when it loads the plugin
+        int keyTrack{-1};           // the Session track keying this effect's sidechain input (set while the slot is loaded), or -1
     };
     struct Rack {
         Slot instrument;
@@ -193,6 +194,10 @@ public:
         }
     }
     void effectsAndAlign(int samples) {
+        // What each track plays before its own FX: the key any sidechain hears this block.
+        samples = std::min(samples, blockSize);
+        for (std::size_t t = 0; t < tracks.size(); ++t)
+            for (int c = 0; c < 2; ++c) std::memcpy(keys[t][static_cast<std::size_t>(c)].data(), tracks[t].getReadPointer(c), sizeof(float) * static_cast<std::size_t>(samples));
         int maximum = 0;
         for (std::size_t t = 0; t < tracks.size(); ++t) {
             auto& rack = racks[t];
@@ -307,13 +312,17 @@ private:
     // instrument that fails goes silent. Either way this block is clean and the slot is off.
     void process(Slot& slot,int rack,int index,juce::AudioBuffer<float>& buffer,juce::MidiBuffer& messages,int samples) {
         if (!slot.processor || slot.bypass || slot.faulted.get()) return;
-        if (slot.processor->getTotalNumOutputChannels()!=2 || slot.processor->getTotalNumInputChannels()>2) return;
+        // A keyed effect takes its sidechain as channels 2 and 3 (a copy, so it cannot spoil the key for another).
+        const bool keyed=index>=0 && slot.keyTrack>=0 && slot.keyTrack<maxSessionTracks && slot.processor->getTotalNumInputChannels()==4;
+        if (slot.processor->getTotalNumOutputChannels()!=2 || (slot.processor->getTotalNumInputChannels()>2 && !keyed)) return;
         samples=std::min(samples,blockSize);
         // Stack view, no heap or channel-pointer allocation for stereo buffers.
-        float* pointers[]{buffer.getWritePointer(0),buffer.getWritePointer(1)};
+        float* pointers[]{buffer.getWritePointer(0),buffer.getWritePointer(1),keyScratch[0].data(),keyScratch[1].data()};
         const bool effect=index>=0;
         if (effect) for (int c=0;c<2;++c) std::memcpy(dry[static_cast<std::size_t>(c)].data(),pointers[c],sizeof(float)*static_cast<std::size_t>(samples));
-        juce::AudioBuffer<float> view(pointers,2,samples);
+        if (keyed) for (int c=0;c<2;++c)
+            std::memcpy(keyScratch[static_cast<std::size_t>(c)].data(),keys[static_cast<std::size_t>(slot.keyTrack)][static_cast<std::size_t>(c)].data(),sizeof(float)*static_cast<std::size_t>(samples));
+        juce::AudioBuffer<float> view(pointers,keyed?4:2,samples);
         fault::Fault fault;
         const bool completed=fault::guarded([&]{ slot.processor->processBlock(view,messages); },fault);
         const bool producedGarbage=completed && !(alien::allFinite(pointers[0],samples) && alien::allFinite(pointers[1],samples));
@@ -326,6 +335,8 @@ private:
     }
     static std::atomic<std::size_t>& quarantineTally() { static std::atomic<std::size_t> tally{0}; return tally; }
     std::array<std::array<float,blockSize>,2> dry{};
+    std::array<std::array<std::array<float,blockSize>,2>,maxSessionTracks> keys{};   // each track before its FX, this block
+    std::array<std::array<float,blockSize>,2> keyScratch{};
     std::array<Delay,maxSessionTracks+1> delays;
     std::array<Delay,maxReturns> returnDelays;
     std::array<Delay,maxBuses> busDelays;

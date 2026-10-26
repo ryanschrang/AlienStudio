@@ -23,7 +23,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 20;   // 18: song tempo changes; 19: group buses; 20: song time signatures
+inline constexpr int sessionProjectFormatVersion = 21;   // 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains
 
 // A group bus slot. Slots keep their index while other buses come and go, so a track's output
 // (TrackSettings::output) and the bus's FX rack never need renumbering.
@@ -119,6 +119,15 @@ struct SessionProjectData {
             if (!buses[b].valid() || !pluginRack.valid() || !pluginRack.instrument.descriptionXml.isEmpty()
                 || (!buses[b].used && !pluginRack.effects.empty())) return false;
         }
+        // A sidechain listens to a track that exists.
+        const auto keysExist = [&](const PluginRackState& rack) {
+            for (const auto& effect : rack.effects) if (effect.sidechain >= tracks) return false;
+            return rack.instrument.sidechain == -1;
+        };
+        for (const auto& rack : plugins) if (!keysExist(rack)) return false;
+        if (!keysExist(masterPlugins)) return false;
+        for (const auto& rack : returnPlugins) if (!keysExist(rack)) return false;
+        for (const auto& rack : busPlugins) if (!keysExist(rack)) return false;
         // A track can only go to a bus that exists. Buses feed only the master, so there is no cycle to check.
         for (const auto& track : trackSettings)
             if (track.output >= 0 && (track.output >= maxBuses || !buses[static_cast<std::size_t>(track.output)].used)) return false;

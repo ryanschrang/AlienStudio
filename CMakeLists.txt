@@ -242,6 +242,14 @@ if(BUILD_TESTING)
         juce::juce_audio_formats juce::juce_audio_basics)
     add_test(NAME MixerRoutingTests COMMAND MixerRoutingTests)
 
+    # Sidechain inputs (MIX-04): the stock compressor keyed by another track.
+    add_executable(SidechainTests tests/SidechainTests.cpp)
+    target_include_directories(SidechainTests PRIVATE src)
+    target_compile_definitions(SidechainTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(SidechainTests PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_audio_devices
+        juce::juce_audio_formats juce::juce_audio_basics)
+    add_test(NAME SidechainTests COMMAND SidechainTests)
+
     # Group buses (MIX-03): track output routing, bus strips and FX, solo, delay compensation, format, undo, stems.
     add_executable(GroupBusTests tests/GroupBusTests.cpp)
     target_include_directories(GroupBusTests PRIVATE src)

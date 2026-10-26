@@ -331,14 +331,21 @@ public:
     // Largest gain reduction applied during the last block, in dB (>= 0).
     double lastBlockReductionDb() const noexcept { return lastReduction; }
 
-    void process(float* left, float* right, int count, const Settings& s) noexcept {
+    // `keyLeft`/`keyRight`, when given, are what the detector listens to (a sidechain); the gain
+    // reduction is still applied to left/right.
+    void process(float* left, float* right, int count, const Settings& s,
+                 const float* keyLeft = nullptr, const float* keyRight = nullptr) noexcept {
         const double attack = std::exp(-1.0 / (std::max(s.attackMs, 0.05) * 0.001 * rate));
         const double release = std::exp(-1.0 / (std::max(s.releaseMs, 0.5) * 0.001 * rate));
         const double mix = std::clamp(s.mix, 0.0, 1.0);
         double worst = 0;
         for (int i = 0; i < count; ++i) {
             const double l = left[i], r = right[i];
-            envelope = std::max(std::max(std::abs(l), std::abs(r)), envelope * fall);
+            double kl = keyLeft != nullptr ? static_cast<double>(keyLeft[i]) : l;
+            double kr = keyRight != nullptr ? static_cast<double>(keyRight[i]) : r;
+            if (!std::isfinite(kl)) kl = 0;   // a broken key must not poison the detector for good
+            if (!std::isfinite(kr)) kr = 0;
+            envelope = std::max(std::max(std::abs(kl), std::abs(kr)), envelope * fall);
             const double levelDb = envelope > 1.0e-6 ? gainToDb(envelope) : -120.0;
             const double wanted = compressorReductionDb(levelDb, s.thresholdDb, s.ratio, s.kneeDb);
             const double coefficient = wanted > reductionDb ? attack : release;

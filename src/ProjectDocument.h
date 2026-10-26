@@ -157,6 +157,19 @@ struct ProjectDocument {
         return trackCount() % 8;
     }
 
+    // Rewrites every effect's sidechain track with `map` (old track -> new track, or -1 for none),
+    // after tracks moved or one was deleted, so a key never lands on whatever takes a track's place.
+    template <class Map>
+    void remapSidechains(Map&& map) {
+        const auto rack = [&](PluginRackState& r) { for (auto& effect : r.effects) if (effect.sidechain >= 0) effect.sidechain = map(effect.sidechain); };
+        for (auto& track : tracks) rack(track.plugins);
+        rack(masterPlugins);
+        for (auto& r : returns) rack(r.plugins);
+        for (auto& bus : buses) rack(bus.plugins);
+    }
+    void sidechainTracksSwapped(int a, int b) { remapSidechains([=](int t) { return t == a ? b : t == b ? a : t; }); }
+    void sidechainTrackDeleted(int track) { remapSidechains([=](int t) { return t == track ? -1 : t > track ? t - 1 : t; }); }
+
     void clampSelection() noexcept {
         selectedTrack = juce::jlimit(0, juce::jmax(0, trackCount() - 1), selectedTrack);
         selectedScene = juce::jlimit(0, juce::jmax(0, sceneCount() - 1), selectedScene);

@@ -15,6 +15,9 @@ struct PluginState {
     juce::String descriptionXml, stateBase64;
     bool bypass{};
     std::uint64_t instanceId{};
+    // An effect with a sidechain input: the Session track whose signal (before its own FX) keys it,
+    // or -1 for none (the effect hears only its own input).
+    int sidechain{-1};
     PluginState() = default;
     PluginState(juce::String description, juce::String state, bool bypassed = false)
         : descriptionXml(std::move(description)), stateBase64(std::move(state)), bypass(bypassed) {
@@ -23,7 +26,8 @@ struct PluginState {
     }
     bool operator==(const PluginState&) const = default;
     bool valid() const {
-        return (descriptionXml.isEmpty() ? instanceId == 0 : instanceId != 0) && descriptionXml.length() <= 65536 && stateBase64.length() <= maxPluginStateChars
+        return (descriptionXml.isEmpty() ? instanceId == 0 && sidechain == -1 : instanceId != 0) && sidechain >= -1 && sidechain < maxSessionTracks
+            && descriptionXml.length() <= 65536 && stateBase64.length() <= maxPluginStateChars
             && (descriptionXml.isEmpty() ? stateBase64.isEmpty() : juce::parseXML(descriptionXml) != nullptr);
     }
 };
@@ -71,6 +75,7 @@ inline juce::var pluginToVar(const PluginState& p) {
     auto value = juce::var(new juce::DynamicObject()); auto* o = value.getDynamicObject();
     o->setProperty("description", p.descriptionXml); o->setProperty("state", p.stateBase64); o->setProperty("bypass", p.bypass);
     o->setProperty("instance", instanceIdString(p.instanceId));
+    if (p.sidechain >= 0) o->setProperty("sidechain", p.sidechain);
     return value;
 }
 inline juce::var rackToVar(const PluginRackState& rack) {
@@ -86,6 +91,11 @@ inline bool pluginFromVar(const juce::var& value, PluginState& p) {
     PluginState parsed{d.toString(), s.toString(), static_cast<bool>(b)};
     // Legacy states acquire an identity once, on load. Copies and undo preserve it.
     if (o->hasProperty("instance") && !parseInstanceId(o->getProperty("instance"), parsed.instanceId)) return false;
+    // Absent before project format 21: no sidechain.
+    if (o->hasProperty("sidechain")) {
+        if (!o->getProperty("sidechain").isInt()) return false;
+        parsed.sidechain = static_cast<int>(o->getProperty("sidechain"));
+    }
     if (!parsed.valid()) return false;
     p = std::move(parsed); return true;
 }
