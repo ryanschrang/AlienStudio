@@ -175,7 +175,7 @@ artwork stay original.
 | INST-08 | Preset browser for instruments (FL FLEX-style browsing) | Planned | Search and audition presets without opening each instrument |
 | INST-09 | MPE instrument (Live Meld) | Planned | Needs MIDI-08 |
 | INST-10 | VST3 instruments as Channel Rack channels | Planned | Live MIDI and keyboard routing into rack instruments included |
-| MIX-03 | Group buses and output routing (track to bus to master) | Planned | Latency compensation across buses; no feedback loops |
+| MIX-03 | Group buses and output routing (track to bus to master) | In progress (T1-05) | Latency compensation across buses; no feedback loops |
 | MIX-04 | Sidechain inputs for compressors, gates and VST3 plugins | Planned | Stock compressor first, then plugin sidechain buses |
 | MIX-05 | Add, remove and rename returns; more than four | Planned | Needs a format bump (next free: 16) |
 | LIVE-04 | Raise Session track, scene and clip-note limits (toward FL's 500 mixer tracks) | Planned | Groundwork done in LIVE-03; per-track engine buffers still grow with the limits |
