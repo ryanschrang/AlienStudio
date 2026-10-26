@@ -405,7 +405,7 @@ if(BUILD_TESTING)
     target_compile_definitions(DeterministicStreamedExportTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
     target_link_libraries(DeterministicStreamedExportTests PRIVATE juce::juce_audio_processors juce::juce_audio_devices juce::juce_audio_formats)
     add_test(NAME DeterministicStreamedExportTests COMMAND DeterministicStreamedExportTests)
-    set_tests_properties(DeterministicStreamedExportTests PROPERTIES TIMEOUT 180)
+    set_tests_properties(DeterministicStreamedExportTests PROPERTIES TIMEOUT 360)   # 162 s in a Debug build on CI runners
 endif()
 
 if(BUILD_TESTING)
