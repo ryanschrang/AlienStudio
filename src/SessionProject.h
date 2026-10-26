@@ -23,7 +23,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 19;   // 18: song tempo changes; 19: group buses
+inline constexpr int sessionProjectFormatVersion = 20;   // 18: song tempo changes; 19: group buses; 20: song time signatures
 
 // A group bus slot. Slots keep their index while other buses come and go, so a track's output
 // (TrackSettings::output) and the bus's FX rack never need renumbering.
@@ -356,6 +356,16 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
             tempoChanges.add(value);
         }
         timelineObject->setProperty("tempoChanges", juce::var(tempoChanges));
+
+        juce::Array<juce::var> meterChanges;
+        for (const auto& c : project.timeline.meterChanges) {
+            auto value = juce::var(new juce::DynamicObject());
+            value.getDynamicObject()->setProperty("bar", c.bar);
+            value.getDynamicObject()->setProperty("numerator", c.numerator);
+            value.getDynamicObject()->setProperty("denominator", c.denominator);
+            meterChanges.add(value);
+        }
+        timelineObject->setProperty("meterChanges", juce::var(meterChanges));
         rootObject->setProperty("timeline", timelineValue);
     }
     juce::Array<juce::var> scenes;
@@ -469,6 +479,20 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
         marker.name = m->getProperty("name").toString().toStdString();
         marker.colour = static_cast<std::uint8_t>(juce::jlimit(0, 255, static_cast<int>(m->getProperty("colour"))));
         parsed.markers.push_back(marker);
+    }
+    // Absent before version 20: 4/4 throughout. Validated with the rest of the timeline.
+    const auto meterValue = object->getProperty("meterChanges");
+    if (!meterValue.isVoid()) {
+        const auto* changes = meterValue.getArray();
+        if (changes == nullptr || changes->size() > static_cast<int>(timeline::maxMeterChanges)) { error = "Invalid time signature changes."; return false; }
+        for (const auto& item : *changes) {
+            const auto* c = item.getDynamicObject();
+            if (c == nullptr || !c->getProperty("bar").isInt() || !c->getProperty("numerator").isInt() || !c->getProperty("denominator").isInt()) {
+                error = "A time signature change is invalid."; return false;
+            }
+            parsed.meterChanges.push_back({static_cast<int>(c->getProperty("bar")), static_cast<int>(c->getProperty("numerator")),
+                                           static_cast<int>(c->getProperty("denominator"))});
+        }
     }
     // Absent before version 18: the project tempo throughout. Validated with the rest of the timeline.
     const auto tempoValue = object->getProperty("tempoChanges");

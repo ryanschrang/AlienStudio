@@ -130,6 +130,67 @@ private:
     }
 };
 
+// A time signature change on the song: from the start of bar `bar` (0 is the first bar) on, a bar
+// holds `numerator` beats of a 1/`denominator` note. Before the first change the song is in 4/4.
+// Bars move when the meter changes; ticks (960 to a quarter note) and so every clip, note and
+// tempo change stay where they are.
+struct MeterChange {
+    int bar{};
+    int numerator{4}, denominator{4};
+    bool operator==(const MeterChange&) const = default;
+};
+inline constexpr std::size_t maxMeterChanges = 1024;
+inline constexpr int maxMeterNumerator = 32;
+inline bool validMeter(int numerator, int denominator) noexcept {
+    return numerator >= 1 && numerator <= maxMeterNumerator && (denominator == 2 || denominator == 4 || denominator == 8 || denominator == 16);
+}
+struct Meter {
+    int numerator{4}, denominator{4};
+    std::int64_t beatTicks() const noexcept { return ticksPerBeat * 4 / denominator; }
+    std::int64_t barTicks() const noexcept { return beatTicks() * numerator; }
+    bool operator==(const Meter&) const = default;
+};
+// Reads the bars of a song from its meter changes (ascending by bar). No allocation; a query
+// walks the changes before the bar or tick it asks about.
+struct MeterMap {
+    const std::vector<MeterChange>& changes;
+    struct Bar { std::int64_t index{}, start{}; Meter meter; };
+
+    Meter meterAtBar(std::int64_t bar) const noexcept {
+        Meter m;
+        for (const auto& c : changes) { if (c.bar > bar) break; m = {c.numerator, c.denominator}; }
+        return m;
+    }
+    // The tick where bar `bar` starts (bars past the last change keep its meter).
+    std::int64_t tickOfBar(std::int64_t bar) const noexcept {
+        std::int64_t tick = 0, at = 0;
+        Meter m;
+        for (const auto& c : changes) {
+            if (c.bar >= bar) break;
+            tick += (c.bar - at) * m.barTicks(); at = c.bar; m = {c.numerator, c.denominator};
+        }
+        return tick + (bar - at) * m.barTicks();
+    }
+    // The bar that `tick` falls in (tick 0 and later).
+    Bar barAt(double tick) const noexcept {
+        std::int64_t start = 0, at = 0;
+        Meter m;
+        for (const auto& c : changes) {
+            const auto changeTick = start + (c.bar - at) * m.barTicks();
+            if (static_cast<double>(changeTick) > tick) break;
+            start = changeTick; at = c.bar; m = {c.numerator, c.denominator};
+        }
+        const auto whole = std::max<std::int64_t>(0, static_cast<std::int64_t>(std::floor((tick - static_cast<double>(start)) / static_cast<double>(m.barTicks()))));
+        return {at + whole, start + whole * m.barTicks(), m};
+    }
+    // How many bars it takes to reach `tick`: the bar it falls in, plus one unless it is that bar's start.
+    std::int64_t barsCovering(std::int64_t tick) const noexcept {
+        if (tick <= 0) return 0;
+        const auto b = barAt(static_cast<double>(tick));
+        return b.start == tick ? b.index : b.index + 1;
+    }
+};
+
 struct Region {
     std::uint32_t id{};
     std::uint32_t group{};            // 0: not grouped. Regions sharing a group move, copy and select together.
@@ -206,8 +267,12 @@ struct Timeline {
     double tempo{120.0};
     // Tempo changes, ascending by tick, each after tick 0 and inside the song.
     std::vector<TempoChange> tempoChanges;
+    // Time signature changes, ascending by bar, each inside the song.
+    std::vector<MeterChange> meterChanges;
 
-    std::int64_t length() const noexcept { return static_cast<std::int64_t>(lengthBars) * ticksPerBar; }
+    MeterMap meterMap() const noexcept { return {meterChanges}; }
+    std::int64_t length() const noexcept { return meterMap().tickOfBar(lengthBars); }
+    std::int64_t tickOfBar(std::int64_t bar) const noexcept { return meterMap().tickOfBar(bar); }
 
     // ---- tempo map --------------------------------------------------------------
     double baseTempo() const noexcept { return std::isfinite(tempo) && tempo > 0.0 ? tempo : 120.0; }
@@ -263,7 +328,9 @@ struct Timeline {
         return end;
     }
     int minLengthBars() const noexcept {
-        return static_cast<int>(std::max<std::int64_t>(1, (contentEnd() + ticksPerBar - 1) / ticksPerBar));
+        std::int64_t bars = std::max<std::int64_t>(1, meterMap().barsCovering(contentEnd()));
+        if (!meterChanges.empty()) bars = std::max<std::int64_t>(bars, meterChanges.back().bar + 1);
+        return static_cast<int>(std::min<std::int64_t>(bars, maxBars));
     }
     bool hasRegions() const noexcept { return !regions.empty(); }
 
@@ -286,6 +353,11 @@ struct Timeline {
                 || r.fadeIn < 0 || r.fadeOut < 0 || r.crossfade < 0 || r.fadeIn > r.length
                 || r.fadeOut > r.length || r.crossfade > r.length || r.group != 0) return false;
             for (std::size_t j = 0; j < i; ++j) if (takes[j].id == r.id) return false;
+        }
+        if (meterChanges.size() > maxMeterChanges || length() > maxLength) return false;
+        for (std::size_t i = 0; i < meterChanges.size(); ++i) {
+            const auto& c = meterChanges[i];
+            if (c.bar < 0 || c.bar >= lengthBars || !validMeter(c.numerator, c.denominator) || (i > 0 && c.bar <= meterChanges[i - 1].bar)) return false;
         }
         if (tempoChanges.size() > maxTempoChanges) return false;
         for (std::size_t i = 0; i < tempoChanges.size(); ++i) {
@@ -342,14 +414,14 @@ struct Timeline {
     bool operator==(const Timeline& o) const noexcept {
         return lengthBars == o.lengthBars && loopEnabled == o.loopEnabled && loopStart == o.loopStart
             && loopEnd == o.loopEnd && regions == o.regions && frozenOriginals == o.frozenOriginals && freezeBaseLengthBars == o.freezeBaseLengthBars && takes == o.takes && markers == o.markers && automationLanes == o.automationLanes && parameterLanes == o.parameterLanes
-            && tempoChanges == o.tempoChanges;
+            && tempoChanges == o.tempoChanges && meterChanges == o.meterChanges;
     }
     // Would the audio engine play these two identically? Names, colours, ids and
     // groups do not change the sound, so editing them must not republish the song.
     bool playbackEquals(const Timeline& o) const noexcept {
         if (lengthBars != o.lengthBars || loopEnabled != o.loopEnabled || loopStart != o.loopStart
             || loopEnd != o.loopEnd || regions.size() != o.regions.size() || automationLanes != o.automationLanes || parameterLanes != o.parameterLanes
-            || tempoChanges != o.tempoChanges) return false;
+            || tempoChanges != o.tempoChanges || meterChanges != o.meterChanges) return false;
         for (std::size_t i = 0; i < regions.size(); ++i) {
             const auto& a = regions[i]; const auto& b = o.regions[i];
             if (a.row != b.row || a.source != b.source || a.start != b.start || a.length != b.length
@@ -446,8 +518,8 @@ struct Timeline {
     bool placeBars(int track, int scene, int startBar, int lengthBarCount, std::uint32_t* idOut = nullptr) {
         Region r;
         r.row = track; r.source = scene;
-        r.start = static_cast<std::int64_t>(startBar) * ticksPerBar;
-        r.length = static_cast<std::int64_t>(lengthBarCount) * ticksPerBar;
+        r.start = tickOfBar(startBar);
+        r.length = tickOfBar(static_cast<std::int64_t>(startBar) + lengthBarCount) - r.start;
         return place(r, idOut);
     }
 
@@ -745,6 +817,47 @@ struct Timeline {
         std::erase_if(markers, [&](const Marker& m) { return m.id == id; });
         return markers.size() != before;
     }
+    // Sets the time signature from bar `bar` on (a change there already is replaced). A change that
+    // repeats the meter already in force there is refused: it would change nothing.
+    bool setMeterChange(int bar, int numerator, int denominator) {
+        if (bar < 0 || bar >= lengthBars || !validMeter(numerator, denominator)) return false;
+        Timeline next = *this;
+        auto at = std::lower_bound(next.meterChanges.begin(), next.meterChanges.end(), bar,
+            [](const MeterChange& c, int b) { return c.bar < b; });
+        if (at != next.meterChanges.end() && at->bar == bar) {
+            if (at->numerator == numerator && at->denominator == denominator) return false;
+            at->numerator = numerator; at->denominator = denominator;
+        } else {
+            if (meterMap().meterAtBar(bar) == Meter{numerator, denominator}) return false;
+            next.meterChanges.insert(at, MeterChange{bar, numerator, denominator});
+        }
+        next.fitToMeter();
+        return adopt(std::move(next));
+    }
+    bool removeMeterChange(int bar) {
+        Timeline next = *this;
+        const auto before = next.meterChanges.size();
+        std::erase_if(next.meterChanges, [=](const MeterChange& c) { return c.bar == bar; });
+        if (next.meterChanges.size() == before) return false;
+        next.fitToMeter();
+        return adopt(std::move(next));
+    }
+    bool clearMeterChanges() {
+        if (meterChanges.empty()) return false;
+        Timeline next = *this;
+        next.meterChanges.clear();
+        next.fitToMeter();
+        return adopt(std::move(next));
+    }
+    // After the bars changed length: the song keeps every clip, marker and change inside it (adding
+    // bars when its bars got shorter), and the loop stays inside the song.
+    void fitToMeter() noexcept {
+        lengthBars = std::max(lengthBars, minLengthBars());
+        if (loopEnd > length()) {
+            loopEnd = length();
+            if (loopEnd - loopStart < ticksPerStep) loopStart = 0;
+        }
+    }
     // Adds a tempo change at `tick`, or changes the one already there.
     bool setTempoChange(std::int64_t tick, double bpm) {
         if (tick <= 0 || tick > length() || !validTempo(bpm)) return false;
@@ -876,7 +989,9 @@ private:
     }
     bool ensureLength(std::int64_t endTick) noexcept {
         if (endTick > maxLength) return false;
-        lengthBars = std::max(lengthBars, static_cast<int>((endTick + ticksPerBar - 1) / ticksPerBar));
+        const auto bars = meterMap().barsCovering(endTick);
+        if (bars > maxBars) return false;
+        lengthBars = std::max(lengthBars, static_cast<int>(bars));
         return true;
     }
     // Takes the left `delta` ticks off a region (a negative delta gives them back).

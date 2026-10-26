@@ -194,6 +194,20 @@ void captureTests() {
         require(holdsInputFrom(sink, from, 2), "a stereo take holds both channels of its pair");
     }
     {
+        Rig rig;   // a count-in counts the bars of the song's meter: one bar of 3/4 is three beats
+        auto song = std::make_shared<alien::ArrangementPlayback>();
+        require(song->timeline.setMeterChange(0, 3, 4), "fixture: 3/4");
+        require(rig.engine.arrangementMailbox.publish(std::shared_ptr<const alien::ArrangementPlayback>(song)), "fixture: the song in 3/4");
+        rig.render(256);
+        alien::AudioCapture sink(rate, 1, 5);
+        rig.start(sink, 0, 1);
+        rig.render(3 * 24000 - 100, 333);
+        require(rig.phase() == alien::RecordControls::countIn && sink.frames.load() == 0, "still counting in after nearly three beats");
+        rig.render(100 + 4800, 333);
+        require(rig.phase() == alien::RecordControls::recording && sink.frames.load() == 4800, "recording begins after the third");
+        rig.engine.recording.stopRequested.store(true); rig.render(256); rig.ended(); rig.detach();
+    }
+    {
         Rig rig;   // punch: only the range between the punch-in and the punch-out is recorded
         alien::AudioCapture sink(rate, 1, 5);
         rig.start(sink, 0, 0, true, 1920, 3840);

@@ -1308,6 +1308,45 @@ static void tempoMapPlaybackTests() {
     }
 }
 
+// ---- time signatures --------------------------------------------------------------------------------------------
+// 4/4 for the first bar, 3/4 for the second, then 6/8 (eighth-note beats). At 120 BPM a quarter is 24000 frames.
+
+static void meterPlaybackTests() {
+    auto song = newSong(4);
+    require(song->timeline.setMeterChange(1, 3, 4) && song->timeline.setMeterChange(2, 6, 8), "4/4, 3/4, then 6/8");
+    // The click follows the song's bars: each bar's first beat is accented.
+    {
+        Rig rig; rig.engine.recording.metronome.store(true);
+        rig.publish(song); rig.seek(0); rig.play();
+        const long threeFour = barFrames, sixEight = barFrames + 3 * 24000;
+        rig.render(sixEight + 6 * 12000 + 2000);
+        std::vector<long> beats{0, 24000, 48000, 72000, threeFour, threeFour + 24000, threeFour + 48000};
+        for (int k = 0; k < 6; ++k) beats.push_back(sixEight + k * 12000);
+        const auto peak = [&](long at) { double p = 0; for (long i = at; i < at + 600; ++i) p = std::max(p, std::abs(static_cast<double>(rig.out[static_cast<std::size_t>(i)]))); return p; };
+        for (const long at : beats) {
+            const auto onset = rig.firstAbove(at - 200, at + 200);
+            require(onset >= at && onset <= at + 2, "a click on every beat of every bar, eighths in 6/8");
+        }
+        const double accented = peak(0), plain = peak(24000);
+        require(accented > plain * 1.2, "fixture: an accent is louder");
+        for (const long bar : {threeFour, sixEight}) require(std::abs(peak(bar) - accented) < 1.0e-3, "the first beat of each bar is accented");
+        for (const long beat : {threeFour + 48000, sixEight + 3 * 12000, sixEight + 5 * 12000})
+            require(std::abs(peak(beat) - plain) < 1.0e-3, "the other beats are not");
+    }
+    // Plug-ins hear the meter and where the bar began.
+    {
+        Rig rig; rig.publish(song); rig.seek(ticksPerBar + 960 + 100); rig.play(); rig.render(512);
+        const auto& info = rig.engine.plugins->playHead.info;
+        const auto signature = info.getTimeSignature();
+        require(signature && signature->numerator == 3 && signature->denominator == 4, "a plug-in in bar 2 is told 3/4");
+        require(info.getPpqPositionOfLastBarStart() && std::abs(*info.getPpqPositionOfLastBarStart() - 4.0) < 1.0e-9,
+                "and that the bar began on the fourth quarter note");
+        rig.seek(ticksPerBar + 3 * 960 + 5 * 480 + 10); rig.render(512);
+        require(info.getTimeSignature()->numerator == 6 && info.getTimeSignature()->denominator == 8
+                && std::abs(*info.getPpqPositionOfLastBarStart() - 7.0) < 1.0e-9, "and 6/8 in bar 3");
+    }
+}
+
 // ---- fades and crossfades ------------------------------------------------------------------------------------
 // Expected gains are computed from the tick of each output frame. The engine reads the playhead one sample on,
 // so a gain may differ by one frame's slope (about 4e-5 here): the tolerances allow that and nothing more.
@@ -1441,6 +1480,7 @@ int main() {
     timed("automation", automationPlaybackTests);
     timed("send automation", sendAutomationPlaybackTests);
     timed("tempo changes", tempoMapPlaybackTests);
+    timed("time signatures", meterPlaybackTests);
     timed("start from anywhere", startFromAnywhereTests);
     timed("loops", loopTests);
     timed("rack lanes", rackLaneTests);

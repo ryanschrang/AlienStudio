@@ -186,7 +186,7 @@ static void projectFormat() {
     project.busPlugins[2].effects.push_back({desc.createXml()->toString(), "YWJj", false});
     require(project.valid(), "a project with group buses is valid");
     const auto json = alien::serializeSessionProject(project);
-    require(juce::JSON::parse(json).getProperty("version", 0) == juce::var(19), "projects with buses are written as format 19");
+    require(static_cast<int>(juce::JSON::parse(json).getProperty("version", 0)) >= 19, "projects with buses are written as format 19 or later");
     alien::SessionProjectData back; juce::String error;
     require(alien::parseSessionProject(json, back, error), "and parse");
     require(back.buses == project.buses && back.busPlugins == project.busPlugins && back.trackSettings[0].output == 2

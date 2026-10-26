@@ -245,6 +245,36 @@ static void automationFormatTests() {
     require(!alien::parseSessionProject(juce::JSON::toString(damaged), loaded, error), "unknown automation targets rejected");
 }
 
+static void meterFormatTests() {
+    alien::SessionProjectData source;
+    require(source.timeline.setMeterChange(0, 6, 8) && source.timeline.setMeterChange(4, 3, 4), "fixture time signatures");
+    alien::SessionProjectData loaded; juce::String error;
+    const auto json = alien::serializeSessionProject(source);
+    require(static_cast<int>(juce::JSON::parse(json).getProperty("version", 0)) >= 20, "time signatures are written in format 20 or later");
+    require(alien::parseSessionProject(json, loaded, error) && loaded.timeline.meterChanges == source.timeline.meterChanges
+        && loaded.timeline.length() == source.timeline.length(), "time signatures round-trip");
+    const auto prior = loaded.timeline;
+    const auto damage = [&](const std::function<void(juce::Array<juce::var>&)>& change) {
+        auto broken = juce::JSON::parse(json);
+        auto* changes = broken.getProperty("timeline", {}).getDynamicObject()->getProperty("meterChanges").getArray();
+        change(*changes);
+        return juce::JSON::toString(broken);
+    };
+    require(!alien::parseSessionProject(damage([](auto& c) { c.getReference(1).getDynamicObject()->setProperty("denominator", 3); }), loaded, error)
+        && loaded.timeline == prior, "an impossible meter is rejected without changing the loaded project");
+    require(!alien::parseSessionProject(damage([](auto& c) { c.swap(0, 1); }), loaded, error), "changes out of order are rejected");
+    require(!alien::parseSessionProject(damage([](auto& c) { c.getReference(1).getDynamicObject()->setProperty("bar", 500); }), loaded, error),
+        "a change past the end of the song is rejected");
+    require(!alien::parseSessionProject(damage([](auto& c) { c.getReference(0).getDynamicObject()->setProperty("numerator", "six"); }), loaded, error),
+        "a numerator that is not a number is rejected");
+    alien::SessionProjectData oldSource;
+    auto old = juce::JSON::parse(alien::serializeSessionProject(oldSource));
+    old.getDynamicObject()->setProperty("version", 19);
+    old.getProperty("timeline", {}).getDynamicObject()->removeProperty("meterChanges");
+    require(alien::parseSessionProject(juce::JSON::toString(old), loaded, error) && loaded.timeline.meterChanges.empty(),
+        "version 19 projects open in 4/4 throughout");
+}
+
 static void tempoMapFormatTests() {
     alien::SessionProjectData source;
     source.bpm = 100;
@@ -415,6 +445,7 @@ int main() {
     freezeFormatTests();
     takeFormatTests();
     tempoMapFormatTests();
+    meterFormatTests();
     automationFormatTests();
     recordingSettingsFormatTests();
     masterVolumeFormatTests();

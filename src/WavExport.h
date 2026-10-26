@@ -189,7 +189,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         const auto tailTicks=static_cast<std::int64_t>(std::ceil(song->timeline.tickAfter(static_cast<double>(to),tailSeconds)-static_cast<double>(to)));
         const auto end=to+tailTicks+timeline::ticksPerStep;
         if(end>timeline::maxLength){error="Frozen tail exceeds the supported song length.";return false;}
-        song->timeline.lengthBars=std::max(song->timeline.lengthBars,static_cast<int>((end+timeline::ticksPerBar-1)/timeline::ticksPerBar));
+        song->timeline.lengthBars=std::max(song->timeline.lengthBars,static_cast<int>(song->timeline.meterMap().barsCovering(end)));
     }
     if(!engine->arrangementMailbox.publish(std::shared_ptr<const ArrangementPlayback>(song))) { error="Invalid song data.";return false; }
     for (std::size_t c = 0; c < options.rackClips.size(); ++c) engine->rackSamples[c].store(options.rackClips[c]);

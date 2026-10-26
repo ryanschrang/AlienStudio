@@ -620,6 +620,55 @@ static void loopPassTakeTests() {
     check(!t.recordTakes({passes[0], pattern}, 0) && t == before, "a pattern lane cannot hold a recorded pass");
 }
 
+static void meterTests() {
+    Timeline t;
+    check(t.meterChanges.empty() && t.tickOfBar(1) == bar && t.length() == 16 * bar && t.meterMap().meterAtBar(7) == Meter{4, 4},
+          "without changes the song is in 4/4");
+    const auto clip = put(t, 0, 0, 5 * bar, bar);
+    // 3/4 from bar 5 (index 4), 6/8 from bar 7 (index 6).
+    check(t.setMeterChange(4, 3, 4) && t.setMeterChange(6, 6, 8), "time signature changes are added");
+    const std::int64_t threeFour = 3 * 960, sixEight = 6 * 480;
+    check(t.tickOfBar(4) == 4 * bar && t.tickOfBar(5) == 4 * bar + threeFour && t.tickOfBar(6) == 4 * bar + 2 * threeFour
+          && t.tickOfBar(7) == 4 * bar + 2 * threeFour + sixEight, "bars follow their meter");
+    check(t.length() == 4 * bar + 2 * threeFour + 10 * sixEight, "so does the song's length in ticks");
+    const auto in = t.meterMap().barAt(static_cast<double>(4 * bar + threeFour + 10));
+    check(in.index == 5 && in.start == 4 * bar + threeFour && in.meter == Meter{3, 4} && in.meter.beatTicks() == 960,
+          "a tick knows its bar, where the bar starts and its meter");
+    const auto eighths = t.meterMap().barAt(static_cast<double>(t.tickOfBar(9)));
+    check(eighths.index == 9 && eighths.meter.beatTicks() == 480 && eighths.meter.barTicks() == sixEight, "6/8 beats are eighth notes");
+    check(t.meterMap().barsCovering(4 * bar) == 4 && t.meterMap().barsCovering(4 * bar + 1) == 5 && t.meterMap().barsCovering(0) == 0,
+          "the bars needed to reach a tick");
+    check(get(t, clip).start == 5 * bar && get(t, clip).length == bar, "clips keep their ticks when the meter changes");
+    // Editing.
+    check(t.setMeterChange(4, 5, 4) && t.meterChanges[0].numerator == 5, "setting a change at its bar replaces it");
+    check(!t.setMeterChange(4, 5, 4) && !t.setMeterChange(2, 4, 4) && !t.setMeterChange(8, 6, 8),
+          "a change to the meter already in force is refused");
+    check(!t.setMeterChange(3, 5, 3) && !t.setMeterChange(3, 0, 4) && !t.setMeterChange(3, 33, 4) && !t.setMeterChange(-1, 3, 4)
+          && !t.setMeterChange(t.lengthBars, 3, 4), "impossible meters and bars outside the song are refused");
+    check(t.setMeterChange(0, 7, 8) && t.tickOfBar(1) == 7 * 480, "the first bar can have its own meter");
+    check(t.minLengthBars() >= 7, "the song cannot be shortened below its last change");
+    check(t.removeMeterChange(0) && !t.removeMeterChange(0) && t.tickOfBar(1) == bar, "a change can be removed once");
+    Timeline placed;
+    check(placed.setMeterChange(2, 3, 4), "fixture: 3/4 from bar 3");
+    check(placed.placeBars(0, 0, 2, 2) && placed.regions.back().start == 2 * bar && placed.regions.back().length == 2 * threeFour,
+          "placing by bars uses the meter's bars");
+    Timeline shorter; check(shorter.setLengthBars(4), "fixture: a four-bar song");
+    const auto last = put(shorter, 1, 0, 3 * bar, bar);
+    check(shorter.setLoop(bar, 4 * bar) && shorter.setMeterChange(0, 3, 4) && get(shorter, last).end() == 4 * bar
+          && shorter.length() >= 4 * bar && shorter.lengthBars == 6 && shorter.loopEnd <= shorter.length() && shorter.valid(),
+          "shorter bars add bars, so every clip stays in the song, and the loop stays inside it");
+    Timeline longSong; longSong.lengthBars = maxBars;
+    check(!longSong.setMeterChange(0, 32, 4) && longSong.valid(), "a meter that would make the song longer than the engine supports is refused");
+    // Validation and equality.
+    Timeline bad = t; bad.meterChanges.push_back({1, 3, 4});
+    check(!bad.valid(), "changes out of order are invalid");
+    bad = t; bad.meterChanges[0].denominator = 3;
+    check(!bad.valid(), "an impossible meter is invalid");
+    Timeline other = t; other.meterChanges[0].numerator = 2;
+    check(!(other == t) && !other.playbackEquals(t), "the meter is part of the song and of what plays (the click)");
+    check(t.clearMeterChanges() && t.meterChanges.empty() && !t.clearMeterChanges() && t.valid(), "all changes can be cleared");
+}
+
 static void tempoMapTests() {
     Timeline t; t.tempo = 120.0;
     check(t.tempoChanges.empty() && t.tempoAt(0) == 120.0 && t.tempoAt(1.0e9) == 120.0, "no changes: the project tempo throughout");
@@ -758,6 +807,7 @@ int main() {
     nonDestructiveAudioEditTests();
     equalityTests();
     tempoMapTests();
+    meterTests();
     loopPassTakeTests();
     if (failures == 0) std::puts("TimelineTests passed");
     return failures == 0 ? 0 : 1;
