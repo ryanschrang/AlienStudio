@@ -1,6 +1,7 @@
 #pragma once
 #include "RecordingQueue.h"
 #include "SessionCapacity.h"
+#include "Timeline.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -60,6 +61,25 @@ inline TakePlacement placeTake(double firstTick, std::uint64_t frames, double sa
     p.length = last - p.start;
     if (p.length < 1) return p;
     p.audioOffset = std::max(0.0, (static_cast<double>(p.start) - played) / perSample / sampleRate);
+    p.valid = true;
+    return p;
+}
+
+// The same placement on a song with tempo changes: the latency and the take's
+// length are real time, so they cover more or fewer ticks where the tempo differs.
+inline TakePlacement placeTake(const timeline::TempoMap& tempo, double firstTick, std::uint64_t frames, double sampleRate,
+                               double latencySamples, std::int64_t notBefore = 0, std::int64_t notAfter = -1) noexcept {
+    TakePlacement p;
+    if (!(firstTick >= 0.0) || frames == 0 || !(sampleRate > 0.0) || !std::isfinite(latencySamples)) return p;
+    const double played = tempo.tickAfter(firstTick, -latencySamples / sampleRate);
+    const double end = tempo.tickAfter(played, static_cast<double>(frames) / sampleRate);
+    const double from = std::max({played, 0.0, static_cast<double>(std::max<std::int64_t>(0, notBefore))});
+    p.start = static_cast<std::int64_t>(std::ceil(from - 1.0e-6));
+    std::int64_t last = static_cast<std::int64_t>(std::floor(end + 1.0e-6));
+    if (notAfter >= 0) last = std::min(last, notAfter);
+    p.length = last - p.start;
+    if (p.length < 1) return p;
+    p.audioOffset = std::max(0.0, tempo.secondsBetween(played, static_cast<double>(p.start)));
     p.valid = true;
     return p;
 }

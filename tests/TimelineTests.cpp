@@ -597,6 +597,85 @@ static void nonDestructiveAudioEditTests() {
     check(!broken.valid(), "a negative crossfade is invalid");
 }
 
+static bool near(double a, double b, double tolerance = 1.0e-9) { return std::abs(a - b) <= tolerance; }
+
+static void tempoMapTests() {
+    Timeline t; t.tempo = 120.0;
+    check(t.tempoChanges.empty() && t.tempoAt(0) == 120.0 && t.tempoAt(1.0e9) == 120.0, "no changes: the project tempo throughout");
+    check(near(t.secondsBetween(0, bar), 2.0) && near(t.tickAfter(0, 2.0), static_cast<double>(bar)),
+          "without changes a 4/4 bar at 120 BPM is two seconds, both ways");
+    check(std::isinf(t.nextTempoChange(0)), "no next change");
+
+    // 120 BPM for two bars, 60 from bar 2, 180 from bar 4.
+    check(t.setTempoChange(2 * bar, 60.0) && t.setTempoChange(4 * bar, 180.0), "tempo changes are added");
+    check(t.tempoChanges.size() == 2 && t.tempoChanges[0].tick == 2 * bar && t.tempoChanges[1].tick == 4 * bar, "kept in order");
+    check(t.tempoAt(2 * bar - 1) == 120.0 && t.tempoAt(2 * bar) == 60.0 && t.tempoAt(4 * bar) == 180.0,
+          "a change applies from its own tick on");
+    check(t.nextTempoChange(0) == 2 * bar && t.nextTempoChange(2 * bar) == 4 * bar && std::isinf(t.nextTempoChange(4 * bar)),
+          "the next change is strictly after the tick asked about");
+    // 2 bars at 120 = 4 s, 2 bars at 60 = 8 s, 1 bar at 180 = 4/3 s.
+    check(near(t.secondsBetween(0, 5 * bar), 4.0 + 8.0 + 4.0 / 3.0), "seconds add up across every change");
+    check(near(t.secondsBetween(5 * bar, 0), -(4.0 + 8.0 + 4.0 / 3.0)), "backwards is negative");
+    check(near(t.secondsBetween(bar, 3 * bar), 2.0 + 4.0), "a span that starts and ends between changes");
+    check(near(t.tickAfter(0, 12.0), static_cast<double>(4 * bar)), "seconds land on a change exactly");
+    check(near(t.tickAfter(bar, 5.0), static_cast<double>(2 * bar + bar / 4 * 3)), "forward across a change");
+    check(near(t.tickAfter(5 * bar, -(4.0 / 3.0 + 8.0)), static_cast<double>(2 * bar)), "backward across changes");
+    check(near(t.tickAfter(0, -1.0), -static_cast<double>(bar) / 2.0), "before tick 0 the project tempo continues");
+    for (double tick : {0.0, 100.5, 7679.0, 7680.0, 9000.25, 15360.0, 20000.0})
+        for (double seconds : {0.001, 1.0, 3.9999, 7.5, 13.0})
+            check(near(t.secondsBetween(tick, t.tickAfter(tick, seconds)), seconds, 1.0e-9)
+                  && near(t.tickAfter(t.tickAfter(tick, seconds), -seconds), tick, 1.0e-6),
+                  "tickAfter and secondsBetween invert each other from " + std::to_string(tick));
+    const auto copy = t.tempoChanges;
+    const TempoMap live{copy, 90.0};
+    check(live.tempoAt(0) == 90.0 && near(live.secondsBetween(0, 2 * bar), 16.0 / 3.0) && live.tempoAt(2 * bar) == 60.0,
+          "a map read with another base tempo changes only the part before the first change");
+
+    // Editing.
+    check(t.setTempoChange(2 * bar, 70.0) && t.tempoChanges.size() == 2 && t.tempoAt(2 * bar) == 70.0, "setting an existing change replaces its tempo");
+    check(!t.setTempoChange(2 * bar, 70.0), "setting the same tempo again changes nothing");
+    check(!t.setTempoChange(0, 100.0) && !t.setTempoChange(-1, 100.0), "tick 0 belongs to the project tempo");
+    check(!t.setTempoChange(bar, 59.9) && !t.setTempoChange(bar, 200.1) && !t.setTempoChange(bar, std::nan("")),
+          "tempos outside 60-200 BPM are refused");
+    check(!t.setTempoChange(t.length() + 1, 100.0) && t.setTempoChange(t.length(), 100.0), "a change must be inside the song");
+    check(t.removeTempoChange(t.length()) && !t.removeTempoChange(t.length()), "a change can be removed once");
+    check(t.moveTempoChange(4 * bar, 3 * bar) && t.tempoAt(3 * bar) == 180.0 && t.tempoChanges.size() == 2, "a change can move");
+    check(t.moveTempoChange(3 * bar, 2 * bar) && t.tempoChanges.size() == 1 && t.tempoAt(2 * bar) == 180.0,
+          "moving onto another change replaces it");
+    check(!t.moveTempoChange(bar, 3 * bar) && !t.moveTempoChange(2 * bar, 0), "moving a missing change, or to tick 0, is refused");
+    check(t.minLengthBars() == 2 && t.setLengthBars(1) && t.lengthBars == 2, "the song cannot be shortened below a tempo change");
+
+    // Validation and equality.
+    Timeline bad = t; bad.tempoChanges.push_back({2 * bar, 100.0});
+    check(!bad.valid(), "two changes at one tick are invalid");
+    bad = t; bad.tempoChanges.insert(bad.tempoChanges.begin(), {3 * bar, 100.0});
+    check(!bad.valid(), "changes out of order are invalid");
+    bad = t; bad.tempoChanges[0].bpm = 10.0;
+    check(!bad.valid(), "an out-of-range tempo is invalid");
+    bad = t; bad.tempoChanges.assign(maxTempoChanges + 1, {});
+    for (std::size_t i = 0; i < bad.tempoChanges.size(); ++i) bad.tempoChanges[i] = {static_cast<std::int64_t>(i + 1), 120.0};
+    check(!bad.valid(), "more than the maximum number of changes is invalid");
+    Timeline other = t; other.tempoChanges[0].bpm = 100.0;
+    check(!(other == t) && !other.playbackEquals(t), "the tempo map is part of the song and of what plays");
+    other = t; other.tempo = 90.0;
+    check(other == t, "the project tempo copy is bookkeeping, not content");
+    check(t.clearTempoChanges() && t.tempoChanges.empty() && !t.clearTempoChanges(), "all changes can be cleared");
+
+    // Audio edits measure source seconds along the tempo map.
+    Timeline audio; audio.tempo = 120.0;
+    check(audio.setTempoChange(bar, 60.0), "fixture: 60 BPM from bar 1");
+    const auto clip = put(audio, 0, 0, 0, 2 * bar);
+    check(audio.trimStart(clip, bar + bar / 2) && near(get(audio, clip).audioOffset, 2.0 + 2.0),
+          "trimming across a change skips 2 s at 120 BPM and 2 s at 60 BPM of source");
+    check(audio.trimStart(clip, bar / 2) && near(get(audio, clip).audioOffset, 1.0),
+          "revealing it again gives the seconds back the same way");
+    Ids made;
+    check(audio.split({clip}, bar + bar / 4, &made) && made.size() == 1 && near(get(audio, made[0]).audioOffset, 1.0 + 1.0 + 1.0),
+          "the right half of a split starts at the source second under the cut");
+    check(audio.slip({clip}, bar / 2) && near(get(audio, clip).audioOffset, 1.0 + 1.0),
+          "slipping moves the source by the seconds that many ticks last where the clip starts");
+}
+
 static void equalityTests() {
     Timeline a;
     const auto id = put(a, 0, 0, 0, bar);
@@ -657,6 +736,7 @@ int main() {
     remapTests();
     nonDestructiveAudioEditTests();
     equalityTests();
+    tempoMapTests();
     if (failures == 0) std::puts("TimelineTests passed");
     return failures == 0 ? 0 : 1;
 }

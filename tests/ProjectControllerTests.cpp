@@ -312,6 +312,31 @@ static void arrangementPublishTests() {
     require(published() == base + 4, "undoing renames, tempo and mix does not republish");
 }
 
+static void tempoMapControllerTests() {
+    ToneEngine engine;
+    alien::ProjectController c(engine);
+    c.pushDocumentToEngine();
+    constexpr auto bar = alien::timeline::ticksPerBar;
+    const auto published = [&] { return engine.arrangementMailbox.publishedCount(); };
+    const auto base = published();
+    require(c.setTempoChange(2 * bar, 60.0) && c.undoLabel() == "Tempo change" && published() == base + 1,
+        "a tempo change is one undo step and republishes the song");
+    require(!c.setTempoChange(0, 90.0) && !c.setTempoChange(bar, 300.0) && !c.setTempoChange(2 * bar, 60.0),
+        "tick 0, out-of-range tempos and repeats are refused");
+    require(c.moveTempoChange(2 * bar, bar) && c.timeline().tempoAt(bar) == 60.0 && c.undoLabel() == "Move tempo change", "a change moves");
+    require(c.undo() && c.timeline().tempoAt(bar) == 120.0 && c.timeline().tempoAt(2 * bar) == 60.0, "and the move undoes");
+    require(c.removeTempoChange(2 * bar) && c.timeline().tempoChanges.empty(), "a change is removed");
+    require(c.undo() && c.timeline().tempoChanges.size() == 1, "and the removal undoes");
+    require(c.redo() && c.timeline().tempoChanges.empty() && c.undo(), "redo removes it again");
+    c.setBpm(100); c.commit("Tempo");
+    require(c.songTempo().tempoAt(0) == 100.0 && c.songTempo().tempoAt(2 * bar) == 60.0,
+        "the project tempo plays until the first change");
+    require(c.clearTempoChanges() && c.timeline().tempoChanges.empty() && !c.clearTempoChanges(), "all changes can be cleared");
+    alien::SessionProjectData saved = alien::toProjectData(c.document());
+    require(c.undo() && alien::toProjectData(c.document()).timeline.tempoChanges.size() == 1 && saved.timeline.tempoChanges.empty(),
+        "the tempo map is part of the saved project");
+}
+
 static void masterVolumeTests() {
     ToneEngine engine;
     alien::ProjectController c(engine);
@@ -606,6 +631,7 @@ int main() {
     missingAudioTests();
     timelineIntegrationTests();
     arrangementPublishTests();
+    tempoMapControllerTests();
     structureTests();
     fileFormatTests();
     undoTests();
