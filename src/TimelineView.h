@@ -516,6 +516,17 @@ public:
                     say("The tempo there is already " + tempoLabel(bpm) + ".");
             });
     }
+    // Gives one placement its own copy of what it plays (see ProjectController::makePlacementUnique).
+    bool makePlacementUnique(std::uint32_t id) {
+        if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return false; }
+        const int scenesBefore = controller.document().sceneCount();
+        if (!controller.makePlacementUnique(id)) { say("That placement already plays content of its own."); return false; }
+        afterEdit();
+        say("This placement now has its own copy: edit it without changing the others.");
+        if (const auto* r = committed().find(id); r != nullptr && onClipCreated)
+            onClipCreated(r->row, r->source, controller.document().sceneCount() != scenesBefore);
+        return true;
+    }
     bool removeTempoChange(std::int64_t tick) {
         return tempoEdit("Remove tempo change", [=](timeline::Timeline& t) { return t.removeTempoChange(tick); });
     }
@@ -676,7 +687,7 @@ public:
     // The items of the right-click menus.
     enum Command { cmdSplit = 1, cmdMute, cmdDuplicate, cmdCopy, cmdCut, cmdDelete, cmdGroup, cmdUngroup, cmdOpen, cmdPaste, cmdSelectAll, cmdAddMarker,
                    cmdSlipLeft, cmdSlipRight, cmdSourceLoop, cmdReverse, cmdNormalize, cmdFade, cmdCrossfade,
-                   cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdRemoveFades, cmdTempo, cmdRemoveTempo, cmdMeter, cmdRemoveMeter, cmdColourBase = 100,
+                   cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdRemoveFades, cmdTempo, cmdRemoveTempo, cmdMeter, cmdRemoveMeter, cmdMakeUnique, cmdColourBase = 100,
                    cmdArm = 200, cmdFreeze = 201, cmdUnfreeze = 202, cmdMonitorBase = 210, cmdInputMonoBase = 300, cmdInputStereoBase = 400 };
     juce::PopupMenu placeMenu(int row) const {
         juce::PopupMenu menu;
@@ -1323,6 +1334,7 @@ private:
             menu.addItem(cmdGroup, "Group", selected.size() > 1); menu.addItem(cmdUngroup, "Ungroup", anyGrouped);
             menu.addSeparator();
             menu.addItem(cmdOpen, r != nullptr && r->isPattern() ? "Open in Channel Rack" : "Open clip");
+            if (r != nullptr && !r->isPattern()) menu.addItem(cmdMakeUnique, "Make this placement unique", controller.placementShared(hit.region));
             launch(std::move(menu), area, [this, region = hit.region](int id) {
                 switch (id) {
                 case cmdSplit: splitAtCursor(); break; case cmdMute: toggleMuteSelection(); break;
@@ -1334,6 +1346,7 @@ private:
                 case cmdCut: cutSelection(); break; case cmdDelete: deleteSelection(); break;
                 case cmdGroup: groupSelection(); break; case cmdUngroup: ungroupSelection(); break;
                 case cmdOpen: if (const auto* r = committed().find(region); r != nullptr && onOpenSource) onOpenSource(r->row, r->source); break;
+                case cmdMakeUnique: makePlacementUnique(region); break;
                 default: break;
                 }
             });
