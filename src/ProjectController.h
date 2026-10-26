@@ -122,6 +122,10 @@ public:
         return false;
     }
 
+    // Put back a document captured earlier in the same edit, before it was committed
+    // (e.g. a command batch that failed part way). The history is not changed.
+    void revertTo(const ProjectDocument& state) { restore(state, {{}, state.selectedTrack, state.selectedScene}); }
+
     // Replace the song with an empty default project.
     void newProject() {
         abandonRecording();
@@ -317,6 +321,14 @@ public:
         const auto trimmed = name.trim().substring(0, 64);
         if (track < 0 || track >= doc.trackCount() || trimmed.isEmpty()) return false;
         doc.tracks[static_cast<std::size_t>(track)].name = trimmed;
+        return true;
+    }
+
+    // Number of colours in the track palette (ui::trackColour).
+    static constexpr int trackColourCount = 8;
+    bool setTrackColour(int track, int colour) {
+        if (busy || track < 0 || track >= doc.trackCount() || colour < 0 || colour >= trackColourCount) return false;
+        doc.tracks[static_cast<std::size_t>(track)].colour = colour;
         return true;
     }
 
