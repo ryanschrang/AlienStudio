@@ -1178,7 +1178,7 @@ lanes are not included in this increment.
 
 Right-click a Session track header in **Song** and choose **Freeze track (render
 audio)**. Freeze renders its arranged clips and track effects into a 48 kHz,
-32-bit floating-point cache, before fader, pan, sends and volume/pan automation.
+32-bit floating-point cache, before fader, pan, sends and their automation.
 These mixer controls and shared return effects remain live. Original instrument
 and effect instances unload while frozen; saved plugin settings and source clips
 are retained. Choose **Unfreeze track** to restore them. Both actions undo/redo.
@@ -1201,3 +1201,22 @@ Older projects open unfrozen; older app versions refuse format 16. **Save portab
 collects cached and original media. Missing caches can be relinked, or unfreeze can
 restore the original clips. Caches live in the application's FreezeAudio folder;
 unfreeze keeps the file for Undo, and does not delete original media.
+
+### Send automation
+
+In **Song > Automation**, choose a track and **Send A**, **Send B**, **Send C** or
+**Send D**. Click to add a point, drag to move it, and right-click a point to
+remove it. The top of the graph is unity (0 dB); the bottom is off. Linear and
+Hold curves use the Song playhead, including seeks and loop wraps. Each gesture
+is one undo step. **Read** disables the curve and glides back to the manual send
+knob, which automation never overwrites. Leaving Song playback also returns to
+the manual level.
+
+Sends use the mixer's existing pre/post-fader switch. Pre-fader sends ignore
+volume/pan but obey mute/solo; post-fader sends follow the processed track.
+WAV export uses the same curves, and frozen tracks keep their send curves live.
+Send automation is saved in the automation list introduced in format 15
+(parameter IDs 2–5). Earlier builds reject projects
+containing these unknown targets instead of silently dropping the curves;
+projects without send lanes remain compatible with the earlier format-15 parser.
+This does not automate return faders, pre/post switches or plugin parameters.

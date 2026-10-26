@@ -209,12 +209,27 @@ static void automationFormatTests() {
     alien::SessionProjectData source;
     source.timeline.automationLanes = {
         {1, alien::automation::Parameter::volume, true, {{0, 0.25f}, {960, 1.0f}}},
-        {2, alien::automation::Parameter::pan, false, {{240, -0.5f, alien::automation::Curve::hold}}}
+        {2, alien::automation::Parameter::pan, false, {{240, -0.5f, alien::automation::Curve::hold}}},
+        {1, alien::automation::Parameter::sendA, true, {{0, 0}, {960, 1}}},
+        {1, alien::automation::Parameter::sendB, false, {{0, 0.3f}}},
+        {1, alien::automation::Parameter::sendC, true, {{0, 0.4f, alien::automation::Curve::hold}}},
+        {1, alien::automation::Parameter::sendD, true, {{0, 0.5f}}}
     };
     const auto json = alien::serializeSessionProject(source);
     alien::SessionProjectData loaded; juce::String error;
     require(alien::parseSessionProject(json, loaded, error)
         && loaded.timeline.automationLanes == source.timeline.automationLanes, "automation lanes and curves round-trip");
+    const auto beforeDamage = loaded.timeline;
+    auto badSend = juce::JSON::parse(json);
+    auto* sendPoints = badSend.getDynamicObject()->getProperty("timeline").getDynamicObject()->getProperty("automation").getArray()->getReference(2).getDynamicObject()->getProperty("points").getArray();
+    sendPoints->getReference(0).getDynamicObject()->setProperty("value", 1.5);
+    require(!alien::parseSessionProject(juce::JSON::toString(badSend), loaded, error) && loaded.timeline == beforeDamage,
+        "invalid send value rejected without replacing the loaded song");
+    alien::SessionProjectData full;
+    for (int t = 0; t < full.trackCount(); ++t) for (int p = 0; p < alien::automation::parametersPerTrack; ++p)
+        full.timeline.automationLanes.push_back({t, static_cast<alien::automation::Parameter>(p), true, {{0, 0.5f}}});
+    require(alien::parseSessionProject(alien::serializeSessionProject(full), loaded, error)
+        && loaded.timeline.automationLanes == full.timeline.automationLanes, "all six lanes per track survive save and load");
     auto legacy = juce::JSON::parse(json);
     auto* timeline = legacy.getDynamicObject()->getProperty("timeline").getDynamicObject();
     timeline->removeProperty("automation");

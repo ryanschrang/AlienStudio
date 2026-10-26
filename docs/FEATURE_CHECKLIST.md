@@ -132,7 +132,7 @@ defects throughout; this ordering does not defer fixes needed to run the example
 | --- | --- | --- | --- |
 | AUTO-01 | Track volume/pan automation lanes, linear/hold points, read bypass, undo | Implemented | AutomationTests, TimelinePlaybackTests, ProjectControllerTests; Windows listening and UI checks pending |
 | AUTO-02 | Sample-position evaluation shared by playback and WAV export | Implemented | Exact-sample and block-size-independent playback regression |
-| AUTO-03 | Sends, stock-effect and plugin parameter automation | Started: stable target model only (#86) | ParameterAutomationTests. No UI, saving or playback yet; sends need addressing too |
+| AUTO-03 | Sends, stock-effect and plugin parameter automation | Send A–D lanes implemented on feature branch; plugin targets remain model-only (#86) | Send editor, undo, persistence and sample-position playback/export. AutomationTests, SessionProjectTests, TimelinePlaybackTests, TimelineViewTests, DeterministicStreamedExportTests; Windows CI/listening pending. Stock/plugin parameter UI, saving and scheduling remain unfinished |
 | TEMPO-01 | Tempo and time-signature maps | Planned | Must update transport, MIDI, click, streaming and deterministic export together |
 | WARP-03 | Interactive warp markers and transient detection | Planned | Requires source-to-musical-time mapping and background analysis (WARP-01 is the offline render) |
 

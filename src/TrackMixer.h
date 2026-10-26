@@ -98,6 +98,12 @@ public:
         if (std::abs(level - target) < 1.0e-7f) level = target;
         return level;
     }
+    // Automation is already a sample-position curve. Keep its last value so
+    // disabling Read or leaving Song glides back to the untouched manual target.
+    float automated(float value) noexcept {
+        level = std::isfinite(value) ? std::clamp(value, 0.0f, 1.0f) : 0.0f;
+        return level;
+    }
     // Off and finished gliding: next() would return 0 until the target changes.
     bool idle() const noexcept { return level == 0.0f && target == 0.0f; }
 private:

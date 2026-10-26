@@ -1102,6 +1102,62 @@ static void automationPlaybackTests() {
     require(seek.energy(0, 800) == 0.0, "seek evaluates hold automation immediately");
 }
 
+static void sendAutomationPlaybackTests() {
+    using alien::automation::Parameter;
+    using alien::automation::Curve;
+    auto clip = makeSine(2);
+    for (auto& sample : clip.left) sample *= 0.1f; // keep summed returns below the output limiter
+    auto song = newSong(1); song->clips[0][0].audio = &clip;
+    place(*song, regionOf(0, 0, 0, ticksPerBar));
+    Rig reference; reference.publish(song); reference.play(); reference.render(4000);
+    auto automated = std::make_shared<alien::ArrangementPlayback>(*song);
+    automated->timeline.automationLanes = {
+        {0, Parameter::sendA, true, {{0, 0}, {100, 1}}},
+        {0, Parameter::sendD, true, {{0, 0, Curve::hold}, {50, 0.5f, Curve::hold}}}
+    };
+    Rig one; one.block = 1; one.publish(automated); one.play(); one.render(4000);
+    Rig awkward; awkward.block = 257; awkward.publish(automated); awkward.play(); awkward.render(4000);
+    require(one.out == awkward.out, "send automation is block-size independent with manual sends off");
+    for (std::size_t i = 0; i < one.out.size(); ++i) {
+        const double tick = static_cast<double>(i) / tickFrames;
+        const double gain = 1 + std::min(1.0, tick / 100) + (tick >= 50 ? 0.5 : 0);
+        require(std::abs(one.out[i] - reference.out[i] * gain) < 2e-6, "send curves reach the returns at the intended sample");
+    }
+    // A send-only curve must not change fader smoothing. A pre-fader send
+    // still plays with the dry fader at zero and still obeys mute/solo.
+    auto preSong = std::make_shared<alien::ArrangementPlayback>(*song);
+    preSong->timeline.automationLanes = {{0, Parameter::sendB, true, {{0, 1}}}};
+    Rig pre; pre.engine.tracks[0].gain.store(0); pre.engine.tracks[0].sendPre[1].store(true);
+    pre.render(4000); pre.out.clear(); pre.publish(preSong); pre.play(); pre.render(4000);
+    for (std::size_t i = 0; i < pre.out.size(); ++i) require(std::abs(pre.out[i] - reference.out[i]) < 2e-6, "pre-fader automation ignores dry gain");
+    pre.engine.tracks[0].mute.store(true); pre.out.clear(); pre.render(800);
+    require(pre.energy(0, 800) == 0, "mute cuts automated pre sends");
+    Rig solo; solo.engine.tracks[1].solo.store(true); solo.engine.tracks[0].sendPre[1].store(true);
+    solo.render(4000); solo.publish(preSong); solo.play(); solo.out.clear(); solo.render(800);
+    require(solo.energy(0, 800) == 0, "another track solo cuts automated pre sends");
+    Rig seek; seek.publish(automated); seek.seek(100); seek.play(); seek.render(800);
+    Rig seekDry; seekDry.publish(song); seekDry.seek(100); seekDry.play(); seekDry.render(800);
+    for (std::size_t i = 0; i < seek.out.size(); ++i)
+        require(std::abs(seek.out[i] - seekDry.out[i] * 2.5f) < 2e-6, "seek evaluates send curves immediately");
+    auto loopSong = std::make_shared<alien::ArrangementPlayback>(*automated);
+    // The shortest loop the timeline accepts (one step, 6000 frames), so 7000 frames wrap once.
+    require(loopSong->timeline.setLoop(0, ticksPerStep) && loopSong->timeline.setLoopEnabled(true), "a one-step send automation loop");
+    Rig loopOne; loopOne.block = 1; loopOne.publish(loopSong); loopOne.play(); loopOne.render(7000);
+    Rig loopOdd; loopOdd.block = 257; loopOdd.publish(loopSong); loopOdd.play(); loopOdd.render(7000);
+    require(loopOne.out == loopOdd.out, "send curves restart at loop wraps independently of block size");
+    auto bypass = std::make_shared<alien::ArrangementPlayback>(*automated);
+    for (auto& lane : bypass->timeline.automationLanes) lane.enabled = false;
+    awkward.publish(bypass); awkward.render(12000); awkward.out.clear(); awkward.seek(0); awkward.render(4000);
+    for (std::size_t i = 0; i < awkward.out.size(); ++i)
+        require(std::abs(awkward.out[i] - reference.out[i]) < 2e-6, "Read bypass restores manual send levels");
+    require(awkward.engine.tracks[0].send[0].load() == 0, "automation never overwrites manual knobs");
+    float l[257]{}, r[257]{}; float* outputs[]{l, r};
+    one.block = 257;
+    const auto before = allocationCount;
+    one.engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 257, {});
+    require(allocationCount == before, "automated sends do not allocate in callback");
+}
+
 // ---- fades and crossfades ------------------------------------------------------------------------------------
 // Expected gains are computed from the tick of each output frame. The engine reads the playhead one sample on,
 // so a gain may differ by one frame's slope (about 4e-5 here): the tolerances allow that and nothing more.
@@ -1233,6 +1289,7 @@ int main() {
     timed("take comp", takeCompPlaybackTests);
     timed("fades", fadeTests);
     timed("automation", automationPlaybackTests);
+    timed("send automation", sendAutomationPlaybackTests);
     timed("start from anywhere", startFromAnywhereTests);
     timed("loops", loopTests);
     timed("rack lanes", rackLaneTests);

@@ -1800,9 +1800,38 @@ static void freezeMenuChecks() {
     require(unfrozen==2 && !rig->controller.isTrackFrozen(2) && c.inputText(2)!="Frozen audio","unfreeze restores editable track");
 }
 
+static void sendAutomationEditorChecks() {
+    auto rig = std::make_unique<Rig>();
+    auto* editor = childNamed<TrackAutomationEditor>(rig->view, "Track automation");
+    require(editor != nullptr, "automation editor exists");
+    editor->setSize(900, 180);
+    auto* target = childNamed<juce::ComboBox>(*editor, "Automation parameter");
+    auto* read = childNamed<juce::TextButton>(*editor, "Automation read");
+    require(target != nullptr && target->getNumItems() == 6 && read != nullptr, "all send targets and Read are offered");
+    for (int k = 0; k < 4; ++k) {
+        target->setSelectedId(3 + k, juce::sendNotificationSync);
+        // Top and bottom of the graph are unity and off for sends.
+        editor->mouseDown(mouse(*editor, {100, 42}));
+        editor->mouseDrag(mouse(*editor, {200, 42}, leftButton, 1, true));
+        editor->mouseUp(mouse(*editor, {200, 42}));
+        const auto& lanes = rig->controller.timeline().automationLanes;
+        require(lanes.size() == static_cast<std::size_t>(k + 1) && lanes.back().parameter == static_cast<alien::automation::Parameter>(2 + k)
+            && lanes.back().points.size() == 1 && lanes.back().points[0].value == 1, "send drag creates one unity point on chosen return");
+        require(rig->controller.undo() && rig->controller.timeline().automationLanes.size() == static_cast<std::size_t>(k), "one undo removes whole gesture");
+        require(rig->controller.redo(), "redo restores send curve");
+    }
+    clickButton(*read);
+    require(!rig->controller.timeline().automationLanes.back().enabled, "Read disables selected send curve");
+    require(rig->controller.undo() && rig->controller.timeline().automationLanes.back().enabled, "Read toggle is undoable");
+    editor->mouseDown(mouse(*editor, {400, 171}));
+    editor->mouseUp(mouse(*editor, {400, 171}));
+    require(rig->controller.timeline().automationLanes.back().points.back().value < 0.01f, "send graph bottom means off, not negative gain");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     freezeMenuChecks();
+    sendAutomationEditorChecks();
     takeCompChecks();
     geometryChecks();
     snapChecks();
