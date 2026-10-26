@@ -54,6 +54,8 @@ inline juce::String oversizedPluginName(const PluginRackState& rack) {
 }
 // The four return tracks' FX racks (effects only, like the master's).
 using ReturnRacks = std::array<PluginRackState, maxReturns>;
+// The group buses' FX racks (effects only), one per bus slot whether or not the bus exists.
+using BusRacks = std::array<PluginRackState, maxBuses>;
 
 // Hex strings preserve all 64 bits through JSON implementations that use doubles.
 inline juce::String instanceIdString(std::uint64_t id) {

@@ -630,6 +630,22 @@ latency Alien Studio reports. Moving a send knob glides over a few
 milliseconds, so it does not click; switching a send between pre and post
 fader while it plays jumps at once and can click.
 
+**Group buses.** Click **Add bus** (top right of the mixer) to add a group bus,
+up to eight. Each track strip has an **OUTPUT** menu: **Master** (the default)
+or one of the buses. A bus sums the tracks routed to it after their faders, runs
+its own FX (choose **<bus name> FX (bus)** in **Plugins**), then its strip - pan,
+mute, solo, a volume fader (0-200 %) and a meter - and goes on to the master.
+Buses feed only the master, so routing can never loop. Click a bus's name to
+rename or delete it; deleting a bus sends its tracks back to the master. Sends
+still come from each track, so a track on a bus can also feed the returns.
+Soloing a track keeps its bus audible; soloing a bus keeps every track that
+feeds it audible and silences the rest. Plugin delay on a bus is compensated:
+every bus waits for the slowest bus chain, and the tracks that go straight to
+the master and the sends to the returns wait just as long. Buses, track outputs
+and bus FX are saved with the project (format 19; older projects open with
+every track going to the master), are undoable, and are included in WAV export,
+stems and freeze.
+
 The **Master** strip at the right edge of the mixer has a volume fader
 (0–400%, i.e. −∞ to +12 dB, double-click for 0 dB) and an output meter. The
 master volume is applied after the master FX chain, is saved with the project
@@ -1154,7 +1170,10 @@ or loop range, then choose a parent folder. Export creates a new numbered folder
 with 48 kHz / 24-bit stereo files: one per Session track, Return A–D, and Channel
 Rack channels routed directly to master. Track stems include track FX, faders,
 pan and volume/pan automation. Returns are separate, so shared effects are not
-duplicated into each track. Project mute/solo states apply.
+duplicated into each track. Project mute/solo states apply. Each group bus is
+its own file ("Bus N - name", after its FX and fader); a track routed to a bus
+is marked "(into name)" because its sound is inside that bus file too, so leave
+it out when summing.
 
 Files share a start and duration, including plugin tails (the host's existing
 30-second cap). Master effects, master gain and final output limiting are excluded.

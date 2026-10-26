@@ -20,11 +20,13 @@ namespace alien {
 // because its internal state (held locks, half-freed memory) is unknown. It is parked instead.
 class PluginRuntime {
 public:
-    // Racks: one per Session track, then the master, then return tracks A-D.
+    // Racks: one per Session track, then the master, then return tracks A-D, then the group buses.
     static constexpr int blockSize = 512, maxDelay = 96000, masterIndex = maxSessionTracks;
-    static constexpr int returnBase = masterIndex + 1, rackCount = returnBase + maxReturns;
+    static constexpr int returnBase = masterIndex + 1, busBase = returnBase + maxReturns, rackCount = busBase + maxBuses;
     static constexpr int returnIndex(int r) noexcept { return returnBase + r; }
-    static constexpr bool isReturn(int rack) noexcept { return rack >= returnBase && rack < rackCount; }
+    static constexpr bool isReturn(int rack) noexcept { return rack >= returnBase && rack < busBase; }
+    static constexpr int busIndex(int b) noexcept { return busBase + b; }
+    static constexpr bool isBus(int rack) noexcept { return rack >= busBase && rack < rackCount; }
     struct PlayHead final : juce::AudioPlayHead {
         PositionInfo info;
         juce::Optional<PositionInfo> getPosition() const override { return info; }
@@ -55,6 +57,7 @@ public:
     std::array<juce::AudioBuffer<float>, maxSessionTracks> tracks;
     juce::AudioBuffer<float> live, master;
     std::array<juce::AudioBuffer<float>, maxReturns> returns;   // what the tracks send to each return, then its FX
+    std::array<juce::AudioBuffer<float>, maxBuses> buses;       // the tracks routed to each group bus, then its FX
     std::array<juce::MidiBuffer, maxSessionTracks> midi;
     int sampleOffset{};
     std::array<int,maxSessionTracks> eventCounts{};
@@ -114,11 +117,14 @@ public:
         for (auto& b : tracks) b.setSize(2, blockSize);
         live.setSize(2, blockSize); master.setSize(2, blockSize);
         for (auto& b : returns) b.setSize(2, blockSize);
+        for (auto& b : buses) b.setSize(2, blockSize);
         for (auto& m : midi) m.ensureSize(65536);
         emptyMidi.ensureSize(65536);
         for (auto& delay : delays) delay.prepare();
         for (auto& delay : returnDelays) delay.prepare();
-        dryDelay.prepare();
+        for (auto& delay : busDelays) delay.prepare();
+        for (auto& delay : sendDelays) delay.prepare();
+        dryDelay.prepare(); directDelay.prepare();
         for (int r=0;r<rackCount;++r) {
             auto& rack=racks[static_cast<std::size_t>(r)];
             prepareSlot(rack.instrument,r,-1);
@@ -137,6 +143,7 @@ public:
     void begin(int samples, double bpm, bool playing, double ppq, double seconds = -1.0) noexcept {
         for (auto& b : tracks) b.clear(); live.clear(); master.clear();
         for (auto& b : returns) b.clear();
+        for (auto& b : buses) b.clear();
         for (auto& m : midi) m.clear();
         sampleOffset = 0; currentSamples = samples; eventCounts.fill(0);
         playHead.info.setBpm(bpm);
@@ -193,6 +200,27 @@ public:
         for (std::size_t t = 0; t < tracks.size(); ++t) delays[t].process(tracks[t],samples,maximum-rackLatency(racks[t]));
         delays[maxSessionTracks].process(live,samples,maximum);
     }
+    // Runs each group bus's FX, then lines everything up at the bus stage: every bus waits for the
+    // slowest bus chain, and what skips the buses - the tracks summed straight into `master`, and
+    // what the tracks send to the returns - waits as long, so a track arrives at the master (and
+    // at its returns) at the same moment whichever way it goes.
+    void processBuses(int samples) {
+        const int slowest = busLatency();
+        for (int b = 0; b < maxBuses; ++b) {
+            auto& rack = racks[static_cast<std::size_t>(busIndex(b))];
+            auto& buffer = buses[static_cast<std::size_t>(b)];
+            if(!rack.frozen)for (int i = 0; i < rack.effectCount; ++i) { emptyMidi.clear(); process(rack.effects[i], busIndex(b), i, buffer, emptyMidi, samples); }
+            busDelays[static_cast<std::size_t>(b)].process(buffer, samples, slowest - rackLatency(rack));
+        }
+        for (int r = 0; r < maxReturns; ++r) sendDelays[static_cast<std::size_t>(r)].process(returns[static_cast<std::size_t>(r)], samples, slowest);
+        directDelay.process(master, samples, slowest);
+    }
+    // The delay the bus chains add (the slowest one).
+    int busLatency() const noexcept {
+        int slowest = 0;
+        for (int b = 0; b < maxBuses; ++b) slowest = std::max(slowest, rackLatency(racks[static_cast<std::size_t>(busIndex(b))]));
+        return slowest;
+    }
     // Runs each return's FX, then lines everything up: every return waits for the slowest return
     // chain, and the dry mix already summed into `master` waits as long, so what a track sends
     // arrives together with the track itself.
@@ -234,7 +262,7 @@ public:
     int latencySamples() const noexcept {
         int maximum = 0;
         for (int t = 0; t < maxSessionTracks; ++t) maximum = std::max(maximum,rackLatency(racks[t]));
-        return maximum + returnLatency() + rackLatency(racks[masterIndex]);
+        return maximum + busLatency() + returnLatency() + rackLatency(racks[masterIndex]);
     }
     // Asks each plugin how long it rings on. A plugin that fails the question is disabled like any other.
     double tailSeconds() {
@@ -250,11 +278,12 @@ public:
             for (int i=0;i<rack.effectCount;++i) tail += slotTail(rack.effects[static_cast<std::size_t>(i)],rackIndex,i);
             return std::isfinite(tail) ? std::clamp(tail,0.0,30.0) : 30.0;
         };
-        double longest=0, returnTail=0;
+        double longest=0, busTail=0, returnTail=0;
         for(int t=0;t<maxSessionTracks;++t)longest=std::max(longest,rackTail(racks[static_cast<std::size_t>(t)],t));
-        // A return rings on after the track that feeds it, and the master after that.
+        // A bus or a return rings on after the track that feeds it, and the master after that.
+        for(int b=0;b<maxBuses;++b)busTail=std::max(busTail,rackTail(racks[static_cast<std::size_t>(busIndex(b))],busIndex(b)));
         for(int r=0;r<maxReturns;++r)returnTail=std::max(returnTail,rackTail(racks[static_cast<std::size_t>(returnIndex(r))],returnIndex(r)));
-        return std::min(30.0,longest+returnTail+rackTail(racks[masterIndex],masterIndex));
+        return std::min(30.0,longest+std::max(busTail,returnTail)+rackTail(racks[masterIndex],masterIndex));
     }
 private:
     struct Delay {
@@ -297,7 +326,9 @@ private:
     std::array<std::array<float,blockSize>,2> dry{};
     std::array<Delay,maxSessionTracks+1> delays;
     std::array<Delay,maxReturns> returnDelays;
-    Delay dryDelay;
+    std::array<Delay,maxBuses> busDelays;
+    std::array<Delay,maxReturns> sendDelays;   // what the tracks send, waiting for the bus stage
+    Delay dryDelay, directDelay;
     juce::MidiBuffer emptyMidi;
     double rate{44100};
     juce::int64 renderedSamples{};

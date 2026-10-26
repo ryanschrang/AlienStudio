@@ -116,6 +116,8 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     }
     bool hasPlugins = !capture && !project.masterPlugins.effects.empty();
     if(!freezing)for (const auto& rack : project.returnPlugins) hasPlugins = hasPlugins || !rack.effects.empty();
+    if(!freezing)for (const auto& rack : project.busPlugins) hasPlugins = hasPlugins || !rack.effects.empty();
+
     for (std::size_t t=0;t<project.plugins.size();++t) {
         if(project.trackSettings[t].frozen() || (freezing && static_cast<int>(t)!=options.freezeTrack))continue;
         const auto& rack=project.plugins[t];hasPlugins=hasPlugins || !rack.instrument.descriptionXml.isEmpty() || !rack.effects.empty();
@@ -139,6 +141,8 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         if(freezing) {
             for(int t=0;t<maxSessionTracks;++t)if(t!=options.freezeTrack)engine->plugins->racks[static_cast<std::size_t>(t)].frozen=true;
             for(int k=0;k<maxReturns;++k)engine->plugins->racks[PluginRuntime::returnIndex(k)].frozen=true;
+            for(int b=0;b<maxBuses;++b)engine->plugins->racks[PluginRuntime::busIndex(b)].frozen=true;
+
         }
         for (auto& slot : engine->plugins->racks[PluginRuntime::masterIndex].effects) slot.bypass = true;
     } else engine->stemCapture.reset();
@@ -146,6 +150,12 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     engine->renderStreamsDeterministically();   // streamed clips are read here, on this thread, in order
     engine->masterControls.gain.store(project.masterGain);
     for (std::size_t r = 0; r < engine->returns.size(); ++r) engine->returns[r].set(project.returns[r]);
+    // A freeze renders one track on its own, so it goes through no bus.
+    for (std::size_t b = 0; b < engine->buses.size(); ++b) {
+        engine->buses[b].set(project.buses[b].settings);
+        engine->buses[b].active.store(!freezing && project.buses[b].used);
+    }
+
     for(int t=0;t<project.trackCount();++t)engine->plugins->racks[static_cast<std::size_t>(t)].frozen=
         project.trackSettings[static_cast<std::size_t>(t)].frozen() || (freezing && t!=options.freezeTrack);
     engine->prepare(exportRate);
@@ -160,7 +170,8 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     engine->patternMode.store(2);
     for (std::size_t t=0;t<static_cast<std::size_t>(project.trackCount());++t) {
         auto settings=project.trackSettings[t];
-        if(freezing){ settings.send.fill(0);settings.mute=false;settings.solo=false;if(static_cast<int>(t)!=options.freezeTrack)settings.freezeScene=0; }
+        if(freezing){ settings.send.fill(0);settings.mute=false;settings.solo=false;settings.output=-1;if(static_cast<int>(t)!=options.freezeTrack)settings.freezeScene=0; }
+
         engine->tracks[t].set(settings);
         for (std::size_t p=0;p<drumPadCount;++p)
             engine->drumKits[t].samples[p].store(drums[t][p]);
@@ -204,10 +215,22 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         for (int t=0; t<project.trackCount(); ++t) {
             auto name = juce::File::createLegalFileName(project.trackNames[static_cast<std::size_t>(t)]).substring(0,64);
             if (name.isEmpty()) name="Track";
+            // A track that goes to a group bus says so: its sound is in that bus's file too.
+            const int output = project.trackSettings[static_cast<std::size_t>(t)].output;
+            if (output >= 0) name += " (into " + juce::File::createLegalFileName(project.buses[static_cast<std::size_t>(output)].name).substring(0,64) + ")";
             if (!add(t, juce::String(t+1).paddedLeft('0',2) + " - " + name + ".wav")) {
                 error="Cannot create track stem."; return false;
             }
         }
+        for (int b=0; b<maxBuses; ++b) {
+            if (!project.buses[static_cast<std::size_t>(b)].used) continue;
+            auto name = juce::File::createLegalFileName(project.buses[static_cast<std::size_t>(b)].name).substring(0,64);
+            if (name.isEmpty()) name="Bus";
+            if (!add(StemCapture::busBase+b, "Bus " + juce::String(b+1) + " - " + name + ".wav")) {
+                error="Cannot create bus stem."; return false;
+            }
+        }
+
         for (int r=0; r<maxReturns; ++r)
             if (!add(StemCapture::returnBase+r, "Return " + juce::String::charToString(static_cast<juce::juce_wchar>('A'+r)) + ".wav")) {
                 error="Cannot create return stem."; return false;
@@ -273,8 +296,12 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         if (!folder->staging.getChildFile("README.txt").replaceWithText(
             "Alien Studio stems: 48 kHz, 24-bit stereo. All files share the same start and length.\n"
             "Track files include track FX, faders, pan and volume/pan automation. Returns are separate files.\n"
+            "Group buses are separate files (\"Bus N - name\") after their FX and fader. A track marked \"(into name)\" goes to that bus,\n"
+            "so its sound is also inside the bus file; leave it out when summing.\n"
             "Channel Rack - Master contains channels routed directly to master. Muting/soloing follows the project.\n"
-            "Master FX, master gain and final limiter are excluded. Sum reconstructs the pre-master bus, subject to 24-bit quantization/clipping.\n"
+            "Master FX, master gain and final limiter are excluded. The sum of the bus files, the tracks not marked \"(into ...)\", the returns\n"
+            "and Channel Rack - Master reconstructs the pre-master bus, subject to 24-bit quantization/clipping.\n"
+
             "Plugin tails use the host's existing 30-second maximum. Silence is retained for alignment.\n")) {
             error="Cannot write stem notes."; return false;
         }

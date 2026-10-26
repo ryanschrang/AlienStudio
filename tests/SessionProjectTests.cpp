@@ -251,7 +251,7 @@ static void tempoMapFormatTests() {
     require(source.timeline.setTempoChange(2 * 3840, 72.5) && source.timeline.setTempoChange(5 * 3840, 180.0), "fixture tempo changes");
     alien::SessionProjectData loaded; juce::String error;
     const auto json = alien::serializeSessionProject(source);
-    require(juce::JSON::parse(json).getProperty("version", 0) == juce::var(18), "tempo changes are written in format 18");
+    require(juce::JSON::parse(json).getProperty("version", 0) == juce::var(alien::sessionProjectFormatVersion), "tempo changes are written in the current format (18 or later)");
     require(alien::parseSessionProject(json, loaded, error) && loaded.timeline.tempoChanges == source.timeline.tempoChanges
         && loaded.bpm == 100, "tempo changes round-trip exactly, fractional tempos included");
     const auto prior = loaded.timeline;

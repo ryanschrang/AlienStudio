@@ -133,12 +133,36 @@ public:
             };
             updateSendTooltip(static_cast<int>(r));
         }
+
+        // Where the fader goes: the master, or one of the group buses.
+        outputLabel.setText("OUTPUT", juce::dontSendNotification);
+        outputLabel.setFont(ui::font(10.0f, true));
+        outputLabel.setColour(juce::Label::textColourId, ui::colours::textFaint);
+        outputLabel.setJustificationType(juce::Justification::centred);
+        addAndMakeVisible(outputLabel);
+        addAndMakeVisible(output);
+        output.setTooltip("Where this track goes after its fader: the master, or a group bus");
+        output.onChange = [this] { if (onOutputChosen && output.getSelectedId() > 0) onOutputChosen(output.getSelectedId() - 2); };
+    }
+
+    // Called with -1 (the master) or a bus slot when the user picks an output.
+    std::function<void(int)> onOutputChosen;
+    // busNames: one per bus slot, empty for a slot not in use.
+    void setOutputs(const std::array<juce::String, maxBuses>& busNames, int current) {
+        output.clear(juce::dontSendNotification);
+        output.addItem("Master", 1);
+        for (int b = 0; b < maxBuses; ++b)
+            if (busNames[static_cast<std::size_t>(b)].isNotEmpty()) output.addItem(busNames[static_cast<std::size_t>(b)], b + 2);
+        output.setSelectedId(output.indexOfItemId(current + 2) >= 0 ? current + 2 : 1, juce::dontSendNotification);
     }
 
     void setTrack(const juce::String& name, juce::Colour newColour) {
+
         colour = newColour;
         title.setText(name, juce::dontSendNotification);
         preset.setName(name + " instrument");
+        output.setName(name + " output");
+
         gain.setName(name + " volume");
         pan.setName(name + " balance");
         mute.setName(name + " mute");
@@ -177,8 +201,12 @@ public:
         title.setBounds(r.removeFromBottom(26));
         r.removeFromBottom(8);
         preset.setBounds(r.removeFromTop(26));
+        r.removeFromTop(4);
+        outputLabel.setBounds(r.removeFromTop(12));
+        output.setBounds(r.removeFromTop(24));
         r.removeFromTop(6);
         sendsLabel.setBounds(r.removeFromTop(12));
+
         auto knobs = r.removeFromTop(28), modes = r.removeFromTop(16);
         const int cell = knobs.getWidth() / static_cast<int>(sends.size());
         for (std::size_t i = 0; i < sends.size(); ++i) {
@@ -221,6 +249,8 @@ public:
     // Geometry and controls shared with the tests.
     juce::Slider& sendKnob(int r) { return sends[static_cast<std::size_t>(r)]; }
     juce::TextButton& sendMode(int r) { return sendModes[static_cast<std::size_t>(r)]; }
+    juce::ComboBox& outputBox() { return output; }
+
 
 private:
     void updateSendTooltip(int r) {
@@ -235,8 +265,9 @@ private:
 
     TrackControls& controls;
     std::function<void(bool)> edited;
-    juce::Label title, gainLabel, panLabel, sendsLabel;
-    juce::ComboBox preset;
+    juce::Label title, gainLabel, panLabel, sendsLabel, outputLabel;
+    juce::ComboBox preset, output;
+
     juce::Slider gain, pan;
     std::array<juce::Slider, maxReturns> sends;
     std::array<juce::TextButton, maxReturns> sendModes;
@@ -339,6 +370,107 @@ private:
     ui::LevelMeter meter;
 };
 
+// A group bus's strip: the tracks whose output is this bus arrive here after their faders, go
+// through its FX (chosen in Plugins as "<name> FX (bus)"), this strip, and on to the master.
+// Its name button opens a menu to rename or delete it.
+class BusChannelStrip final : public juce::Component {
+public:
+    BusChannelStrip(BusControls& busControls, std::function<void(bool)> editedCallback)
+        : controls(busControls), edited(std::move(editedCallback)) {
+        for (auto* c : std::array<juce::Component*, 8>{&title, &panLabel, &pan, &mute, &solo, &gainLabel, &gain, &meter}) addAndMakeVisible(c);
+        title.setColour(juce::TextButton::buttonColourId, ui::colours::accent.withAlpha(0.45f));
+        title.setColour(juce::TextButton::textColourOffId, ui::colours::accentInk);
+        title.onClick = [this] { if (onMenu) onMenu(); };
+        for (auto* label : {&gainLabel, &panLabel}) {
+            label->setFont(ui::font(10.0f, true));
+            label->setColour(juce::Label::textColourId, ui::colours::textFaint);
+            label->setJustificationType(juce::Justification::centred);
+        }
+        panLabel.setText("PAN", juce::dontSendNotification);
+        gainLabel.setText("VOLUME", juce::dontSendNotification);
+        pan.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
+        pan.setRange(-100, 100, 1);
+        pan.setDoubleClickReturnValue(true, 0.0);
+        pan.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+        pan.setColour(juce::Slider::rotarySliderFillColourId, ui::colours::accent);
+        pan.onValueChange = [this] { controls.pan.store(static_cast<float>(pan.getValue() / 100)); edited(!pan.isMouseButtonDown()); };
+        pan.onDragEnd = [this] { edited(true); };
+        mute.setButtonText("M"); solo.setButtonText("S");
+        mute.setClickingTogglesState(true); solo.setClickingTogglesState(true);
+        mute.setColour(juce::TextButton::buttonOnColourId, ui::colours::mute);
+        mute.setColour(juce::TextButton::textColourOnId, ui::colours::accentInk);
+        solo.setColour(juce::TextButton::buttonOnColourId, ui::colours::solo);
+        solo.setColour(juce::TextButton::textColourOnId, juce::Colour(0xff06162a));
+        mute.onClick = [this] { controls.mute.store(mute.getToggleState()); edited(true); };
+        solo.onClick = [this] { controls.solo.store(solo.getToggleState()); edited(true); };
+        gain.setSliderStyle(juce::Slider::LinearVertical);
+        gain.setRange(0, 200, 1);
+        gain.setSkewFactorFromMidPoint(50.0);
+        gain.setDoubleClickReturnValue(true, 100.0);
+        gain.textFromValueFunction = [](double v) { return mixer_text::gainToText(v); };
+        gain.valueFromTextFunction = [](const juce::String& t) { return mixer_text::textToGain(t, 200.0); };
+        gain.onValueChange = [this] { controls.gain.store(static_cast<float>(gain.getValue() / 100)); edited(!gain.isMouseButtonDown()); };
+        gain.onDragEnd = [this] { edited(true); };
+        gain.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 60, 20);
+        gain.setColour(juce::Slider::trackColourId, ui::colours::accent);
+    }
+
+    std::function<void()> onMenu;   // the name button: rename or delete
+
+    void setBusName(const juce::String& name) {
+        title.setButtonText(name);
+        title.setTooltip(name + ": click to rename or delete this bus");
+        pan.setName(name + " balance"); pan.setTooltip(name + " stereo balance. Double-click to centre.");
+        mute.setName(name + " mute"); mute.setTooltip("Mute " + name);
+        solo.setName(name + " solo"); solo.setTooltip("Solo " + name + " (and the tracks that feed it)");
+        gain.setName(name + " volume"); gain.setTooltip(name + " volume, after its FX. Double-click to reset to 0 dB.");
+    }
+    void refreshSettings() {
+        const auto s = controls.snapshot();
+        gain.setValue(s.gain * 100, juce::dontSendNotification);
+        pan.setValue(s.pan * 100, juce::dontSendNotification);
+        mute.setToggleState(s.mute, juce::dontSendNotification);
+        solo.setToggleState(s.solo, juce::dontSendNotification);
+        gain.updateText();
+    }
+    void tick() { meter.setPeak(controls.peak.load()); }
+
+    void resized() override {
+        auto r = getLocalBounds().reduced(6, 8);
+        title.setBounds(r.removeFromBottom(26));
+        r.removeFromBottom(8);
+        panLabel.setBounds(r.removeFromTop(12));
+        pan.setBounds(r.removeFromTop(44).withSizeKeepingCentre(44, 44));
+        r.removeFromTop(6);
+        auto ms = r.removeFromTop(24);
+        mute.setBounds(ms.removeFromLeft(ms.getWidth() / 2 - 2));
+        ms.removeFromLeft(4);
+        solo.setBounds(ms);
+        r.removeFromTop(10);
+        gainLabel.setBounds(r.removeFromTop(12));
+        r.removeFromTop(4);
+        const int faderW = 34, meterW = 6;
+        auto area = r.withSizeKeepingCentre(faderW + 8 + meterW * 2 + 2, r.getHeight());
+        gain.setBounds(area.removeFromLeft(faderW));
+        area.removeFromLeft(8);
+        meter.setBounds(area.withTrimmedBottom(22).withSizeKeepingCentre(meterW * 2 + 2, area.getHeight() - 22));
+    }
+
+    void paint(juce::Graphics& g) override { ui::drawCard(g, getLocalBounds().toFloat(), ui::colours::raised, 6.0f); }
+
+    // For the tests.
+    juce::Slider& volume() { return gain; }
+    juce::TextButton& soloButton() { return solo; }
+
+private:
+    BusControls& controls;
+    std::function<void(bool)> edited;
+    juce::TextButton title, mute, solo;
+    juce::Label panLabel, gainLabel;
+    juce::Slider pan, gain;
+    ui::LevelMeter meter;
+};
+
 // The master channel: one fader for the whole mix (-inf to +12 dB) and an output
 // meter. The meter reads before the output soft clipper, so its red clip light
 // shows when the mix is hot enough to be bent by it.
@@ -424,8 +556,10 @@ public:
     TrackMixerPanel(ProjectController& projectController,
                     std::array<TrackControls, ToneEngine::sessionTracks>& engineControls,
                     std::array<ReturnControls, maxReturns>& returnControls,
-                    MasterControls& masterControls)
-        : controller(projectController), controls(engineControls),
+                    MasterControls& masterControls,
+                    std::array<BusControls, maxBuses>& engineBusControls)
+        : controller(projectController), controls(engineControls), busControls(engineBusControls),
+
           masterStrip(masterControls, [this](bool committed) { if (onMasterEdited) onMasterEdited(committed); }) {
         addAndMakeVisible(masterStrip);
         for (int r = 0; r < maxReturns; ++r) {
@@ -434,11 +568,16 @@ public:
             addAndMakeVisible(*returnStrips[static_cast<std::size_t>(r)]);
         }
         addAndMakeVisible(help);
-        help.setText("Independent instrument, level, balance and sends for each Session track. Sends A-D feed the return tracks "
-                     "(their FX are set in Plugins); the master fader on the right sets the overall level.",
+        help.setText("Independent instrument, level, balance and sends for each Session track. Output sends a track to the master "
+                     "or a group bus; sends A-D feed the return tracks (bus and return FX are set in Plugins).",
             juce::dontSendNotification);
         help.setColour(juce::Label::textColourId, ui::colours::textFaint);
         help.setFont(ui::font(12.5f));
+        addAndMakeVisible(addBusButton);
+        addBusButton.setButtonText("Add bus");
+        addBusButton.setTooltip("Add a group bus: route tracks to it with their Output menu, then mix them together");
+        addBusButton.onClick = [this] { addBus(); };
+
         addAndMakeVisible(viewport);
         viewport.setViewedComponent(&content, false);
         viewport.setScrollBarsShown(false, true);
@@ -452,6 +591,11 @@ public:
     // Same contract for the master fader, and for a return strip (its index).
     std::function<void(bool)> onMasterEdited;
     std::function<void(int, bool)> onReturnEdited;
+    std::function<void(int, bool)> onBusEdited;   // a bus strip (its slot)
+    // A bus was added, renamed or deleted, or a track's output changed; the label names the edit.
+    // The panel has already updated itself; the owner commits it.
+    std::function<void(const juce::String&)> onRoutingChanged;
+    std::function<void()> beforeBusDeleted;      // the owner can capture the bus's plugin state first
 
     // Recreate strips after tracks are added, removed or reordered.
     void rebuild() {
@@ -460,9 +604,11 @@ public:
         for (int t = 0; t < d.trackCount() && t < static_cast<int>(controls.size()); ++t) {
             auto strip = std::make_unique<MixerChannelStrip>(controls[static_cast<std::size_t>(t)],
                 [this, t](bool committed) { if (onTrackEdited) onTrackEdited(t, committed); });
+            strip->onOutputChosen = [this, t](int output) { chooseOutput(t, output); };
             content.addAndMakeVisible(*strip);
             strips.push_back(std::move(strip));
         }
+        rebuildBuses();
         refreshSettings();
         resized();
     }
@@ -471,23 +617,61 @@ public:
         masterStrip.refreshSettings();
         for (auto& strip : returnStrips) strip->refreshSettings();
         const auto& d = controller.document();
+        std::array<juce::String, maxBuses> busNames;
+        for (std::size_t b = 0; b < busNames.size(); ++b) if (d.buses[b].used) busNames[b] = d.buses[b].name;
         for (std::size_t t = 0; t < strips.size() && t < d.tracks.size(); ++t) {
             strips[t]->setTrack(d.tracks[t].name, ui::trackColour(d.tracks[t].colour));
+            strips[t]->setOutputs(busNames, d.tracks[t].settings.output);
             strips[t]->refreshSettings();
         }
+        for (auto& [slot, strip] : busStrips) {
+            strip->setBusName(d.buses[static_cast<std::size_t>(slot)].name);
+            strip->refreshSettings();
+        }
+        addBusButton.setEnabled(busStrips.size() < static_cast<std::size_t>(maxBuses));
     }
 
     void tick() {
         if (!isShowing()) return;
         for (auto& strip : strips) strip->tick();
+        for (auto& [slot, strip] : busStrips) strip->tick();
         for (auto& strip : returnStrips) strip->tick();
         masterStrip.tick();
     }
 
+    // Routing edits, from the strips' menus (and the tests). Each returns false when nothing changed.
+    int addBus() {
+        const int b = controller.addBus();
+        if (b >= 0) routingChanged("Add bus");
+        return b;
+    }
+    bool renameBus(int b, const juce::String& name) {
+        if (!controller.renameBus(b, name)) return false;
+        routingChanged("Rename bus");
+        return true;
+    }
+    bool deleteBus(int b) {
+        if (b < 0 || b >= maxBuses || !controller.document().buses[static_cast<std::size_t>(b)].used) return false;
+        if (beforeBusDeleted) beforeBusDeleted();
+        if (!controller.deleteBus(b)) return false;
+        routingChanged("Delete bus");
+        return true;
+    }
+    bool chooseOutput(int track, int output) {
+        if (!controller.setTrackOutput(track, output)) { refreshSettings(); return false; }
+        routingChanged("Change track output");
+        return true;
+    }
+
+
     void resized() override {
         auto area = getLocalBounds().reduced(16, 12);
-        help.setBounds(area.removeFromTop(22));
+        auto header = area.removeFromTop(22);
+        addBusButton.setBounds(header.removeFromRight(90));
+        header.removeFromRight(gap);
+        help.setBounds(header);
         area.removeFromTop(10);
+
         masterStrip.setBounds(area.removeFromRight(minStripWidth));
         area.removeFromRight(gap);
         for (int r = maxReturns - 1; r >= 0; --r) {
@@ -495,32 +679,93 @@ public:
             area.removeFromRight(r == 0 ? gap * 2 : 4);
         }
         viewport.setBounds(area);
+        // The group buses scroll with the tracks, after them.
+        const int busWidth = busStrips.empty() ? 0 : gap * 2 + static_cast<int>(busStrips.size()) * (returnStripWidth + 4) - 4;
         const int count = juce::jmax(1, static_cast<int>(strips.size()));
-        const int stripWidth = juce::jlimit(minStripWidth, 168, (area.getWidth() - (count - 1) * gap) / count);
-        const int contentWidth = count * stripWidth + (count - 1) * gap;
+        const int stripWidth = juce::jlimit(minStripWidth, 168, (area.getWidth() - busWidth - (count - 1) * gap) / count);
+        const int tracksWidth = count * stripWidth + (count - 1) * gap;
+        const int contentWidth = tracksWidth + busWidth;
         const int height = area.getHeight() - (contentWidth > area.getWidth() ? 12 : 0);
         content.setSize(contentWidth, height);
         for (std::size_t i = 0; i < strips.size(); ++i)
             strips[i]->setBounds(static_cast<int>(i) * (stripWidth + gap), 0, stripWidth, height);
+        int x = tracksWidth + gap * 2;
+        for (auto& [slot, strip] : busStrips) { strip->setBounds(x, 0, returnStripWidth, height); x += returnStripWidth + 4; }
     }
+
 
     void paint(juce::Graphics& g) override { g.fillAll(ui::colours::surface); }
 
     // For the tests.
     MixerChannelStrip* trackStrip(int t) { return t >= 0 && t < static_cast<int>(strips.size()) ? strips[static_cast<std::size_t>(t)].get() : nullptr; }
     ReturnChannelStrip& returnStrip(int r) { return *returnStrips[static_cast<std::size_t>(r)]; }
+    BusChannelStrip* busStrip(int b) {
+        for (auto& [slot, strip] : busStrips) if (slot == b) return strip.get();
+        return nullptr;
+    }
+    int busStripCount() const noexcept { return static_cast<int>(busStrips.size()); }
+    juce::TextButton& addBusControl() { return addBusButton; }
 
 private:
     static constexpr int gap = 10, minStripWidth = 118, returnStripWidth = 84;
 
+    void rebuildBuses() {
+        busStrips.clear();
+        const auto& d = controller.document();
+        for (int b = 0; b < maxBuses; ++b) {
+            if (!d.buses[static_cast<std::size_t>(b)].used) continue;
+            auto strip = std::make_unique<BusChannelStrip>(busControls[static_cast<std::size_t>(b)],
+                [this, b](bool committed) { if (onBusEdited) onBusEdited(b, committed); });
+            strip->onMenu = [this, b] { showBusMenu(b); };
+            content.addAndMakeVisible(*strip);
+            busStrips.emplace_back(b, std::move(strip));
+        }
+    }
+    void routingChanged(const juce::String& label) {
+        rebuildBuses();
+        refreshSettings();
+        resized();
+        if (onRoutingChanged) onRoutingChanged(label);
+    }
+    void showBusMenu(int b) {
+        auto* strip = busStrip(b);
+        if (strip == nullptr) return;
+        juce::PopupMenu menu;
+        menu.addItem(1, "Rename...");
+        menu.addItem(2, "Delete bus (its tracks go to the master)");
+        juce::Component::SafePointer<TrackMixerPanel> safe(this);
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(strip), [safe, b](int result) {
+            if (safe == nullptr) return;
+            if (result == 2) safe->deleteBus(b);
+            else if (result == 1) safe->askBusName(b);
+        });
+    }
+    void askBusName(int b) {
+        if (b < 0 || b >= maxBuses || !controller.document().buses[static_cast<std::size_t>(b)].used) return;
+        auto* window = new juce::AlertWindow("Rename bus", {}, juce::MessageBoxIconType::NoIcon, this);
+        window->addTextEditor("name", controller.document().buses[static_cast<std::size_t>(b)].name);
+        window->addButton("Rename", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        juce::Component::SafePointer<TrackMixerPanel> safe(this);
+        window->enterModalState(true, juce::ModalCallbackFunction::create(
+            [safe, window, b](int result) {
+                if (safe != nullptr && result == 1) safe->renameBus(b, window->getTextEditorContents("name"));
+            }), true);
+    }
+
     ProjectController& controller;
     std::array<TrackControls, ToneEngine::sessionTracks>& controls;
+    std::array<BusControls, maxBuses>& busControls;
+
     MasterChannelStrip masterStrip;
     std::array<std::unique_ptr<ReturnChannelStrip>, maxReturns> returnStrips;
     juce::Label help;
+    juce::TextButton addBusButton;
     juce::Viewport viewport;
     juce::Component content;
     std::vector<std::unique_ptr<MixerChannelStrip>> strips;
+    std::vector<std::pair<int, std::unique_ptr<BusChannelStrip>>> busStrips;   // (slot, strip), in slot order
 };
+
 
 } // namespace alien

@@ -61,6 +61,16 @@ struct ReturnTrack {
     bool operator==(const ReturnTrack&) const = default;
 };
 
+// A group bus slot (see SessionBus): whether it exists, its name, strip and FX rack.
+struct GroupBus {
+    bool used{};
+    juce::String name;
+    BusSettings settings;
+    PluginRackState plugins;
+    bool operator==(const GroupBus&) const = default;
+};
+
+
 struct SessionScene {
     juce::String name;
     std::uint32_t id = newObjectId();
@@ -88,6 +98,8 @@ struct ProjectDocument {
     alien::timeline::Timeline timeline;   // the Arrangement view: where clips and rack patterns sit on the song
     PluginRackState masterPlugins;
     std::array<ReturnTrack, maxReturns> returns{};   // return tracks A-D
+    std::array<GroupBus, maxBuses> buses{};          // group buses, by slot
+
     rack::Project channelRack = rack::Project::createDefault(); // the Channel Rack; decoded samples are held by the ProjectController
 
     static ProjectDocument createDefault(int trackCount = sessionProjectTrackCount,
@@ -158,9 +170,11 @@ inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
     auto sameSettings = [](const TrackSettings& x, const TrackSettings& y) {
         return x.preset == y.preset && x.gain == y.gain && x.pan == y.pan && x.mute == y.mute && x.solo == y.solo && x.instrument == y.instrument
             && x.armed == y.armed && x.input == y.input && x.stereoInput == y.stereoInput && x.monitor == y.monitor
-            && x.send == y.send && x.sendPre == y.sendPre && x.freezeScene == y.freezeScene;
+            && x.send == y.send && x.sendPre == y.sendPre && x.freezeScene == y.freezeScene && x.output == y.output;
     };
-    if (a.masterPlugins != b.masterPlugins || a.masterGain != b.masterGain || !(a.recording == b.recording) || a.returns != b.returns) return false;
+    if (a.masterPlugins != b.masterPlugins || a.masterGain != b.masterGain || !(a.recording == b.recording) || a.returns != b.returns
+        || a.buses != b.buses) return false;
+
     if (!a.channelRack.sameContent(b.channelRack)) return false; // which pattern is selected is not an edit
     if (!(a.timeline == b.timeline)) return false;
     if (a.bpm != b.bpm || a.launchQuantizationSteps != b.launchQuantizationSteps || a.livePreset != b.livePreset
@@ -191,6 +205,12 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
     data.timeline = doc.timeline;
     data.masterPlugins = doc.masterPlugins;
     for (std::size_t r = 0; r < doc.returns.size(); ++r) { data.returns[r] = doc.returns[r].settings; data.returnPlugins[r] = doc.returns[r].plugins; }
+    for (std::size_t b = 0; b < doc.buses.size(); ++b) {
+        const auto& bus = doc.buses[b];
+        data.buses[b] = {bus.used, bus.used ? bus.name : juce::String{}, bus.settings};
+        data.busPlugins[b] = bus.used ? bus.plugins : PluginRackState{};
+    }
+
     data.channelRack = doc.channelRack;
     data.launchQuantizationSteps = doc.launchQuantizationSteps;
     data.masterGain = doc.masterGain;
@@ -227,6 +247,9 @@ inline ProjectDocument fromProjectData(const SessionProjectData& data) {
     doc.timeline.tempo = data.bpm;
     doc.masterPlugins = data.masterPlugins;
     for (std::size_t r = 0; r < doc.returns.size(); ++r) doc.returns[r] = {data.returns[r], data.returnPlugins[r]};
+    for (std::size_t b = 0; b < doc.buses.size(); ++b)
+        doc.buses[b] = {data.buses[b].used, data.buses[b].name, data.buses[b].settings, data.busPlugins[b]};
+
     doc.channelRack = data.channelRack;
     doc.launchQuantizationSteps = data.launchQuantizationSteps;
     doc.masterGain = data.masterGain;

@@ -503,6 +503,18 @@ private:
             controller.returnSettingsEdited(r);
             if (committed) controller.commit("Change return " + alien::mixer_text::returnLetter(r) + " mix", -1, -1, "return-" + juce::String(r));
         };
+        mixerPanel.onBusEdited = [this](int b, bool committed) {
+            controller.busSettingsEdited(b);
+            if (committed) controller.commit("Change " + controller.document().buses[static_cast<std::size_t>(b)].name + " mix", -1, -1, "bus-" + juce::String(b));
+        };
+        // A bus was added, renamed or deleted, or a track's output changed: one undo step, and the
+        // plugin racks follow (a deleted bus takes its FX with it).
+        mixerPanel.beforeBusDeleted = [this] { snapshotPlugins(SnapshotReason::whenEdited); };
+        mixerPanel.onRoutingChanged = [this](const juce::String& label) {
+            controller.commit(label);
+            restorePlugins();
+        };
+
         mixerPanel.onTrackEdited = [this](int track, bool committed) {
             controller.trackSettingsEdited(track);
             sessionView.repaint();
@@ -1166,7 +1178,8 @@ private:
         auto renderHost = std::make_shared<alien::PluginHost>(*renderEngine->plugins, hostLogFile());
         auto exportRacks=pluginStates();
         for(std::size_t t=0;t<exportRacks.size();++t)if(controller.isTrackFrozen(static_cast<int>(t)))exportRacks[t]={};
-        { const auto errors=renderHost->restore(exportRacks,stems ? alien::PluginRackState{} : controller.document().masterPlugins,controller.returnRacks(),48000);
+        { const auto errors=renderHost->restore(exportRacks,stems ? alien::PluginRackState{} : controller.document().masterPlugins,controller.returnRacks(),controller.busRacks(),48000);
+
           if(errors.isNotEmpty()){ timelineView.setStatus("Export stopped: " + errors);return; } }
         auto assets = controller.document();
         alien::DrumSamplePointers drums{};
@@ -1195,14 +1208,20 @@ private:
     static juce::File pluginListFile() {
         return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("Alien Studio/Plugins.xml");
     }
-    // A Session track's index, maxSessionTracks for the master, or a return's rack index (PluginRuntime::returnIndex).
+    // A Session track's index, maxSessionTracks for the master, or a return's or bus's rack index (PluginRuntime::returnIndex, busIndex).
+
     int pluginTarget() const {
         const int t=pluginPanel.destination();
+        // A deleted bus is no longer a destination: fall back to the master.
+        if(alien::PluginRuntime::isBus(t) && !controller.document().buses[static_cast<std::size_t>(t-alien::PluginRuntime::busBase)].used)return alien::maxSessionTracks;
         return t>=alien::maxSessionTracks && t<alien::PluginRuntime::rackCount ? t : juce::jlimit(0,controller.document().trackCount()-1,t);
+
     }
     // The rack state `t` (from pluginTarget) names, in copies of the document's racks.
-    static alien::PluginRackState& rackFor(int t, std::vector<alien::PluginRackState>& states, alien::PluginRackState& master, alien::ReturnRacks& returns) {
+    static alien::PluginRackState& rackFor(int t, std::vector<alien::PluginRackState>& states, alien::PluginRackState& master, alien::ReturnRacks& returns, alien::BusRacks& buses) {
+        if (alien::PluginRuntime::isBus(t)) return buses[static_cast<std::size_t>(t-alien::PluginRuntime::busBase)];
         if (alien::PluginRuntime::isReturn(t)) return returns[static_cast<std::size_t>(t-alien::PluginRuntime::returnBase)];
+
         return t==alien::maxSessionTracks ? master : states[static_cast<std::size_t>(t)];
     }
     std::vector<alien::PluginRackState> pluginStates() const {
@@ -1214,10 +1233,14 @@ private:
         juce::StringArray names; for(const auto& t:controller.document().tracks) names.add(t.name);
         pluginPanel.refreshLiveInput(names,engine.liveDrumTrack.load());
         drumPanel.setLiveInput(engine.liveDrumTrack.load());
-        const int t=pluginTarget();
         const auto& d=controller.document();
-        pluginPanel.refresh(names,alien::PluginRuntime::isReturn(t)?d.returns[static_cast<std::size_t>(t-alien::PluginRuntime::returnBase)].plugins
-                                  :t==alien::maxSessionTracks?d.masterPlugins:d.tracks[static_cast<std::size_t>(t)].plugins,knownPlugins);
+        std::array<juce::String,alien::maxBuses> busNames;
+        for(std::size_t b=0;b<busNames.size();++b)if(d.buses[b].used)busNames[b]=d.buses[b].name;
+        const int t=pluginTarget();
+        pluginPanel.refresh(names,alien::PluginRuntime::isBus(t)?d.buses[static_cast<std::size_t>(t-alien::PluginRuntime::busBase)].plugins
+                                  :alien::PluginRuntime::isReturn(t)?d.returns[static_cast<std::size_t>(t-alien::PluginRuntime::returnBase)].plugins
+                                  :t==alien::maxSessionTracks?d.masterPlugins:d.tracks[static_cast<std::size_t>(t)].plugins,knownPlugins,busNames);
+
     }
     double deviceRate() const { auto* device=audio.getCurrentAudioDevice(); return device?device->getCurrentSampleRate():44100.0; }
     // Why plugin state is being copied into the document. Reading it means
@@ -1233,6 +1256,8 @@ private:
         const auto& d = controller.document();
         bool assigned = !d.masterPlugins.effects.empty();
         for (const auto& r : d.returns) assigned = assigned || !r.plugins.effects.empty();
+        for (const auto& b : d.buses) assigned = assigned || !b.plugins.effects.empty();
+
         for (const auto& t : d.tracks) assigned = assigned || !t.plugins.instrument.descriptionXml.isEmpty() || !t.plugins.effects.empty();
         return assigned;
     }
@@ -1245,17 +1270,19 @@ private:
             if (reason == SnapshotReason::autosave && engine.playing.load()) return;
         }
         pluginHost.changed.store(false);
-        auto tracks=pluginStates(); auto master=controller.document().masterPlugins; auto returns=controller.returnRacks();
+        auto tracks=pluginStates(); auto master=controller.document().masterPlugins; auto returns=controller.returnRacks(); auto buses=controller.busRacks();
         const auto position=engine.timelinePosition.load();const bool playing=engine.playing.load();
         audio.removeAudioCallback(&engine);
         if(closeEditors)pluginHost.closeEditorWindows();
-        pluginHost.snapshot(tracks,master,returns);
+        pluginHost.snapshot(tracks,master,returns,buses);
+
         for(std::size_t t=0;t<tracks.size();++t)if(controller.isTrackFrozen(static_cast<int>(t)))tracks[t]=controller.document().tracks[t].plugins;
         audio.addAudioCallback(&engine);
         if(closeEditors && position>=0){engine.timelineSeek.store(position);engine.playing.store(playing);}
-        controller.setPluginRacks(tracks,master,returns);
-        loadedRacks = tracks; loadedMaster = master; loadedReturns = returns;
+        controller.setPluginRacks(tracks,master,returns,buses);
+        loadedRacks = tracks; loadedMaster = master; loadedReturns = returns; loadedBuses = controller.busRacks();
     }
+
     // Racks differ only if a plugin is present on one side and not the other, or
     // its saved state or bypass flag differs. Tracks past the end count as empty.
     static bool sameRacks(const std::vector<alien::PluginRackState>& a, const alien::PluginRackState& masterA,
@@ -1272,19 +1299,22 @@ private:
     // creating a document passes force=true so plugin state always matches the file.
     void restorePlugins(bool force = false) {
         const auto states = pluginStates(); const auto master = controller.document().masterPlugins; const auto returns = controller.returnRacks();
+        const auto buses = controller.busRacks();
         std::vector<int> frozen;
         for(const auto& track:controller.document().tracks)frozen.push_back(track.settings.freezeScene);
-        if (!force && frozen==loadedFrozen && returns == loadedReturns && sameRacks(states, master, loadedRacks, loadedMaster)) { refreshPlugins(); return; }
+        if (!force && frozen==loadedFrozen && returns == loadedReturns && buses == loadedBuses && sameRacks(states, master, loadedRacks, loadedMaster)) { refreshPlugins(); return; }
+
         const bool freezeChanged=frozen!=loadedFrozen;
         const auto position=engine.timelinePosition.load();const bool playing=engine.playing.load();
         audio.removeAudioCallback(&engine);
         auto runtimeStates=states;
         for(std::size_t t=0;t<runtimeStates.size();++t)if(controller.isTrackFrozen(static_cast<int>(t)))runtimeStates[t]={};
-        auto errors=pluginHost.restore(runtimeStates,master,returns,deviceRate());
+        auto errors=pluginHost.restore(runtimeStates,master,returns,buses,deviceRate());
         loadedFrozen=frozen;
         audio.addAudioCallback(&engine);
         if(freezeChanged && position>=0){engine.timelineSeek.store(position);engine.playing.store(playing);}
-        loadedRacks = states; loadedMaster = master; loadedReturns = returns;
+        loadedRacks = states; loadedMaster = master; loadedReturns = returns; loadedBuses = buses;
+
         pluginPanel.setStatus(errors.isEmpty()?"Plugin racks restored. Select a slot to open its editor.":"Missing or unsupported plugins (saved state preserved):\n"+errors);
         refreshPlugins();
     }
@@ -1301,28 +1331,32 @@ private:
         }
         if(chosen.isInstrument!=instrument) { pluginPanel.setStatus("Select an instrument for the instrument slot, or an FX plugin for Add FX.");return; }
         const int t=pluginTarget(); if(instrument && t>=alien::maxSessionTracks)return;
-        snapshotPlugins(SnapshotReason::always); auto states=pluginStates();auto master=controller.document().masterPlugins;auto returns=controller.returnRacks();
-        auto& rack=rackFor(t,states,master,returns);
+        snapshotPlugins(SnapshotReason::always); auto states=pluginStates();auto master=controller.document().masterPlugins;auto returns=controller.returnRacks();auto buses=controller.busRacks();
+        auto& rack=rackFor(t,states,master,returns,buses);
+
         alien::PluginState next{chosen.createXml()->toString(),{},false};
         if(instrument)rack.instrument=next;
         else { if(rack.effects.size()>=8){pluginPanel.setStatus("Each rack supports eight FX slots.");return;}rack.effects.push_back(next); }
-        controller.setPluginRacks(states,master,returns); restorePlugins();
+        controller.setPluginRacks(states,master,returns,buses); restorePlugins();
     }
+
     void pluginAction(int op,int slot) {
         if(controller.isTrackFrozen(pluginTarget())){pluginPanel.setStatus("Unfreeze the track before editing its instrument or effects.");return;}
         if(projectBusy || controller.isBusy())return;
         const int t=pluginTarget();
         if(op==0){const auto problem=pluginHost.openEditor(t,slot);if(problem.isNotEmpty()){pluginPanel.setStatus(problem);refreshPlugins();}return;}
-        snapshotPlugins(SnapshotReason::always);auto states=pluginStates();auto master=controller.document().masterPlugins;auto returns=controller.returnRacks();
-        auto& rack=rackFor(t,states,master,returns);
+        snapshotPlugins(SnapshotReason::always);auto states=pluginStates();auto master=controller.document().masterPlugins;auto returns=controller.returnRacks();auto buses=controller.busRacks();
+        auto& rack=rackFor(t,states,master,returns,buses);
+
         if(slot<0){if(t>=alien::maxSessionTracks)return;if(op==1)rack.instrument.bypass=!rack.instrument.bypass;else if(op==2)rack.instrument={};}
         else if(slot<static_cast<int>(rack.effects.size())){
             if(op==1)rack.effects[slot].bypass=!rack.effects[slot].bypass;
             else if(op==2)rack.effects.erase(rack.effects.begin()+slot);
             else { const int other=slot+(op==3?-1:1);if(other>=0 && other<static_cast<int>(rack.effects.size()))std::swap(rack.effects[slot],rack.effects[other]); }
         }
-        controller.setPluginRacks(states,master,returns);restorePlugins();
+        controller.setPluginRacks(states,master,returns,buses);restorePlugins();
     }
+
     // ---- plugin scanning -------------------------------------------------------------------------------
     static juce::File hostLogFile() { return alien::DiagnosticLog::defaultFile("plugin-host.log"); }
     static juce::File scanLogFile() { return alien::DiagnosticLog::defaultFile("plugin-scan.log"); }
@@ -1471,6 +1505,8 @@ private:
     std::vector<alien::PluginRackState> loadedRacks; // Rack states the plugin host last loaded or captured.
     alien::PluginRackState loadedMaster;
     alien::ReturnRacks loadedReturns;
+    alien::BusRacks loadedBuses;
+
     std::unique_ptr<juce::FileChooser> pluginChooser, relinkChooser;
     alien::TopBar topBar;
     alien::ApplicationToolbar applicationToolbar;
@@ -1479,7 +1515,8 @@ private:
     alien::StepSequencerView stepsView{controller};
     alien::PianoRollEditor pianoRoll;
     alien::SessionView sessionView{controller, engine};
-    alien::TrackMixerPanel mixerPanel{controller, engine.tracks, engine.returns, engine.masterControls};
+    alien::TrackMixerPanel mixerPanel{controller, engine.tracks, engine.returns, engine.masterControls, engine.buses};
+
     alien::DevicesView devicesView{engine.midi};
     juce::TabbedComponent tabs{juce::TabbedButtonBar::TabsAtTop};
     alien::CompactWorkspace workspace{tabs, devicesView};

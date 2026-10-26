@@ -237,6 +237,14 @@ if(BUILD_TESTING)
         juce::juce_audio_formats juce::juce_audio_basics)
     add_test(NAME MixerRoutingTests COMMAND MixerRoutingTests)
 
+    # Group buses (MIX-03): track output routing, bus strips and FX, solo, delay compensation, format, undo, stems.
+    add_executable(GroupBusTests tests/GroupBusTests.cpp)
+    target_include_directories(GroupBusTests PRIVATE src)
+    target_compile_definitions(GroupBusTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(GroupBusTests PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_audio_devices
+        juce::juce_audio_formats juce::juce_audio_basics)
+    add_test(NAME GroupBusTests COMMAND GroupBusTests)
+
     # Containment of crashes inside plugin code. Plain C++ (no JUCE): it really faults on purpose.
     add_executable(FaultGuardTests tests/FaultGuardTests.cpp)
     target_include_directories(FaultGuardTests PRIVATE src)

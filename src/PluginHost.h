@@ -115,7 +115,12 @@ public:
         return restore(tracks, master, ReturnRacks{}, rate);
     }
     juce::String restore(const std::vector<PluginRackState>& tracks, const PluginRackState& master, const ReturnRacks& returns, double rate) {
+        return restore(tracks, master, returns, BusRacks{}, rate);
+    }
+    juce::String restore(const std::vector<PluginRackState>& tracks, const PluginRackState& master, const ReturnRacks& returns,
+                         const BusRacks& buses, double rate) {
         closeEditors(); clearListeners();
+
         juce::String errors;
         loadProblems.clear();
         for (int t=0;t<PluginRuntime::rackCount;++t) {
@@ -124,9 +129,11 @@ public:
             for (int i=0;i<static_cast<int>(rack.effects.size());++i) runtime.destroy(rack.effects[static_cast<std::size_t>(i)],t,i);
             rack={};
             const PluginRackState empty;
-            const auto& state=PluginRuntime::isReturn(t)?returns[static_cast<std::size_t>(t-PluginRuntime::returnBase)]
+            const auto& state=PluginRuntime::isBus(t)?buses[static_cast<std::size_t>(t-PluginRuntime::busBase)]
+                             :PluginRuntime::isReturn(t)?returns[static_cast<std::size_t>(t-PluginRuntime::returnBase)]
                              :t==maxSessionTracks?master:t<static_cast<int>(tracks.size())?tracks[static_cast<std::size_t>(t)]:empty;
-            // Only Session tracks have an instrument; the master and the returns are effects only.
+            // Only Session tracks have an instrument; the master, the returns and the buses are effects only.
+
             rack.instrumentAssigned = t < maxSessionTracks && !state.instrument.descriptionXml.isEmpty();
             if (t < maxSessionTracks) loadSlot(rack.instrument,state.instrument,true,rate,errors,t,-1);
             rack.effectCount=juce::jmin(static_cast<int>(state.effects.size()),static_cast<int>(rack.effects.size()));
@@ -175,10 +182,13 @@ public:
     // Copies each plugin's state into the rack states. A plugin that has failed keeps the state
     // saved before the failure: asking a broken plugin for its state would only break it more.
     void snapshot(std::vector<PluginRackState>& tracks, PluginRackState& master) { ReturnRacks unused; snapshot(tracks, master, unused); }
-    void snapshot(std::vector<PluginRackState>& tracks, PluginRackState& master, ReturnRacks& returns) {
+    void snapshot(std::vector<PluginRackState>& tracks, PluginRackState& master, ReturnRacks& returns) { BusRacks unused; snapshot(tracks, master, returns, unused); }
+    void snapshot(std::vector<PluginRackState>& tracks, PluginRackState& master, ReturnRacks& returns, BusRacks& buses) {
         for (int t=0;t<PluginRuntime::rackCount;++t) {
             if (t<maxSessionTracks && t>=static_cast<int>(tracks.size())) continue;
-            auto& state=PluginRuntime::isReturn(t)?returns[static_cast<std::size_t>(t-PluginRuntime::returnBase)]
+            auto& state=PluginRuntime::isBus(t)?buses[static_cast<std::size_t>(t-PluginRuntime::busBase)]
+                       :PluginRuntime::isReturn(t)?returns[static_cast<std::size_t>(t-PluginRuntime::returnBase)]
+
                        :t==maxSessionTracks?master:tracks[static_cast<std::size_t>(t)];
             auto& rack=runtime.racks[static_cast<std::size_t>(t)];
             capture(rack.instrument,state.instrument,t,-1);
@@ -266,6 +276,8 @@ private:
     static juce::String where(int rack,int index) {
         const juce::String place = rack<0 ? juce::String("unknown location") : rack==PluginRuntime::masterIndex ? juce::String("master")
             : PluginRuntime::isReturn(rack) ? "return "+juce::String::charToString(static_cast<juce::juce_wchar>('A'+rack-PluginRuntime::returnBase))
+            : PluginRuntime::isBus(rack) ? "bus "+juce::String(rack-PluginRuntime::busBase+1)
+
             : "track "+juce::String(rack+1);
         return place+(index<0?(rack<0?"":" instrument"):" FX "+juce::String(index+1));
     }
