@@ -1,6 +1,8 @@
 # T1-03: shared clip and pattern model
 
-Status: design proposal; no runtime migration implemented by this document.
+Status: design proposal. Increment A (the identity and library model) is implemented in
+[ClipLibrary.h](../src/ClipLibrary.h) with ClipLibraryTests; nothing in the app uses it yet,
+and increments B-E are not started.
 Baseline: main `1587c17` (project format 17). Roadmap source: T1-03 in
 [PR #100](https://github.com/ryanschrang/AlienStudio/pull/100), workstream
 ARCH-01 / LIVE-03. The numbered priority plan is not yet on this baseline's
