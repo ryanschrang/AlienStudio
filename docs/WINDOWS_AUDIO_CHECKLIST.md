@@ -285,3 +285,9 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Record a take across a change with a count-in; check it lines up with what was played.
 - Export a WAV and stems of a song with tempo changes and compare them with playback; freeze a track, then add a tempo change and check it is unfrozen.
 - Load a VST3 tempo-synced effect (a synced delay or LFO) and check it follows the new tempo after each change.
+
+## Loop recording
+- Loop two bars, arm a track and record four or five passes while singing or playing something different each pass; stop part-way through a pass.
+- Check the song plays the last full pass, the Takes panel lists every pass (including the short last one), and comping a range from an earlier pass plays that pass's audio in time.
+- Repeat with a count-in, with punch on, at 44.1 and 96 kHz, and with a large audio buffer: each pass lines up with the beat (latency compensation), with no click or gap at the loop start.
+- Undo removes every pass in one step; redo brings them back. Record a long session of short loops until recording stops by itself after 64 passes.

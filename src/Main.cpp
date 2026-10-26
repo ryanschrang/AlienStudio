@@ -2,6 +2,7 @@
 #include "MainComponent.h"
 #include "PluginCheck.h"
 #include "Branding.h"
+#include "WindowChrome.h"
 
 // Application entry point: startup splash, main window and lifetime.
 class AlienStudioApp : public juce::JUCEApplication {
@@ -74,6 +75,7 @@ private:
         explicit Window(juce::String name) : juce::DocumentWindow(name, alien::ui::colours::window,
             juce::DocumentWindow::allButtons) {
             setUsingNativeTitleBar(true);
+            alien::ui::applyBrandTitleBar(*this);
             setContentOwned(new MainComponent(), true);
             setResizable(true, true);
             setResizeLimits(960, 650, 1920, 1440);
@@ -87,6 +89,8 @@ private:
            #endif
             // Shown by the application once the startup splash finishes.
         }
+        // The native window can be recreated, so colour the title bar again when it appears.
+        void visibilityChanged() override { DocumentWindow::visibilityChanged(); alien::ui::applyBrandTitleBar(*this); }
         void activeWindowStatusChanged() override {
             if (!isActiveWindow())
                 if (auto* content = dynamic_cast<MainComponent*>(getContentComponent())) content->applicationWindowDeactivated();
