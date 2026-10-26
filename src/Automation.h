@@ -5,7 +5,12 @@
 #include <vector>
 
 namespace alien::automation {
-enum class Parameter : int { volume = 0, pan = 1 };
+enum class Parameter : int { volume = 0, pan = 1, sendA = 2, sendB = 3, sendC = 4, sendD = 5 };
+inline constexpr int parametersPerTrack = 6;
+inline bool validParameter(Parameter p) noexcept { return static_cast<int>(p) >= 0 && static_cast<int>(p) < parametersPerTrack; }
+inline int sendIndex(Parameter p) noexcept { return static_cast<int>(p) >= 2 && validParameter(p) ? static_cast<int>(p) - 2 : -1; }
+inline float minimum(Parameter p) noexcept { return p == Parameter::pan ? -1.0f : 0.0f; }
+inline float maximum(Parameter p) noexcept { return p == Parameter::volume ? 2.0f : 1.0f; }
 enum class Curve : int { linear = 0, hold = 1 };
 inline constexpr std::size_t maxPoints = 4096;
 struct Point {
@@ -15,8 +20,7 @@ struct Point {
     bool operator==(const Point&) const = default;
 };
 inline bool validValue(Parameter parameter, float value) noexcept {
-    return std::isfinite(value) && (parameter == Parameter::volume ? value >= 0.0f && value <= 2.0f
-                                                                   : value >= -1.0f && value <= 1.0f);
+    return validParameter(parameter) && std::isfinite(value) && value >= minimum(parameter) && value <= maximum(parameter);
 }
 struct Lane {
     int track{};
@@ -25,7 +29,7 @@ struct Lane {
     std::vector<Point> points;
     bool operator==(const Lane&) const = default;
     bool valid(int tracks, std::int64_t length) const noexcept {
-        if (track < 0 || track >= tracks || (parameter != Parameter::volume && parameter != Parameter::pan)
+        if (track < 0 || track >= tracks || !validParameter(parameter)
             || points.size() > maxPoints) return false;
         std::int64_t last = -1;
         for (const auto& p : points) {

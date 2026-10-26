@@ -1172,3 +1172,21 @@ previous comp. Original files remain unchanged. **Forget take** removes a list
 entry without deleting its active comp or audio file. Projects use format 15.
 Recording still stops at loop boundaries; continuous loop takes and waveform
 lanes are not included in this increment.
+
+### Send automation
+
+In **Song > Automation**, choose a track and **Send A**, **Send B**, **Send C** or
+**Send D**. Click to add a point, drag to move it, and right-click a point to
+remove it. The top of the graph is unity (0 dB); the bottom is off. Linear and
+Hold curves use the Song playhead, including seeks and loop wraps. Each gesture
+is one undo step. **Read** disables the curve and glides back to the manual send
+knob, which automation never overwrites. Leaving Song playback also returns to
+the manual level.
+
+Sends use the mixer's existing pre/post-fader switch. Pre-fader sends ignore
+volume/pan but obey mute/solo; post-fader sends follow the processed track.
+WAV export uses the same curves. Send automation is saved in the existing
+version-15 automation list (parameter IDs 2–5). Earlier builds reject projects
+containing these unknown targets instead of silently dropping the curves;
+projects without send lanes remain compatible with the earlier format-15 parser.
+This does not automate return faders, pre/post switches or plugin parameters.

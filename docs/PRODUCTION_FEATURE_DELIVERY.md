@@ -81,3 +81,16 @@ to add a take. Automatic loop splitting, waveform lane gestures, grouped
 multitrack comp selection and listening/physical recording validation remain.
 The synth/MIDI recovery (#87) and automation model (#86) are now on main;
 automation UI/host scheduling remain unfinished, and #84 still owns mixer sends.
+
+## Send automation increment
+
+Based on main 0cbf576: send/return routing is merged, and Send A–D curves now
+extend the track automation editor, validation, persistence and sample-position
+playback/export. Manual knob values remain unchanged; Read bypass and leaving
+Song restore those values through the existing send glide. Pre/post mode stays
+manual. Version 15 retains its layout; older readers reject the new parameter
+IDs rather than discarding automation. No duplicate work on stem export (#89),
+freeze (#93), or saturator (#92) is included.
+
+Plugin-parameter automation still needs persistent instance IDs, lane storage,
+editor targets and runtime scheduling. Send automation does not complete it.

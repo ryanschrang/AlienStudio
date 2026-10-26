@@ -187,7 +187,7 @@ struct Timeline {
                 || r.fadeOut > r.length || r.crossfade > r.length || r.group != 0) return false;
             for (std::size_t j = 0; j < i; ++j) if (takes[j].id == r.id) return false;
         }
-        if (automationLanes.size() > static_cast<std::size_t>(tracks) * 2) return false;
+        if (automationLanes.size() > static_cast<std::size_t>(tracks) * automation::parametersPerTrack) return false;
         for (std::size_t i = 0; i < automationLanes.size(); ++i) {
             const auto& lane = automationLanes[i];
             if (!lane.valid(tracks, length())) return false;

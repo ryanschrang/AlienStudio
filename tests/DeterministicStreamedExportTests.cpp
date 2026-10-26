@@ -218,6 +218,34 @@ int main() {
     juce::String error;
     alien::DrumSamplePointers noDrums{};
 
+    // Send curves share sample timing between the live callback and the offline
+    // writer, including streamed audio and non-dividing render block sizes.
+    {
+        auto material = makeMaterial(48000, 2, 2, 1);
+        Song song; song.project->bpm = 120;
+        auto& t = song.playback->timeline; t.setLengthBars(1);
+        check(t.place(region(0, 0, 0, ticksPerBar)), "place send export source");
+        t.automationLanes = {{0, alien::automation::Parameter::sendA, true, {{0, 0}, {960, 1}, {1920, 0}}}};
+        put(song, 0, 0, *material, 0); finish(song);
+        const auto normal = render(song);
+        alien::WavExportOptions odd; odd.blockFrames = 257;
+        put(song, 0, 0, *material, 1);
+        const auto streamed = render(song, odd);
+        check(maxDifference(normal, streamed) == 0, "send export is identical for streamed sources and odd blocks");
+        put(song, 0, 0, *material, 0);
+        auto live = std::make_unique<ToneEngine>(); live->prepare(48000); live->bpm.store(120);
+        live->patternMode.store(2); live->activeTracks.store(4);
+        check(live->arrangementMailbox.publish(std::make_shared<const alien::ArrangementPlayback>(*song.playback)), "publish live send song");
+        live->playing.store(true);
+        float l[257]{}, r[257]{}; float* out[]{l, r};
+        for (int offset = 0; offset < normal.frames; offset += 257) {
+            const int n = static_cast<int>(std::min<std::int64_t>(257, normal.frames - offset));
+            live->audioDeviceIOCallbackWithContext(nullptr, 0, out, 2, n, {});
+            for (int c = 0; c < 2; ++c) for (int i = 0; i < n; ++i)
+                check(std::abs(out[c][i] - normal.samples.getSample(c, offset + i)) < 3e-7f, "live and WAV send automation agree within PCM quantization");
+        }
+    }
+
     // A comp export reads only its active pieces; retained alternate passes stay silent.
     {
         auto first = makeMaterial(48000, 1, 2, 1), second = makeMaterial(48000, 1, 2, 2);
