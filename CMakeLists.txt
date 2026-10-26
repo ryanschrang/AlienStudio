@@ -412,3 +412,9 @@ if(BUILD_TESTING)
     target_include_directories(ParameterAutomationTests PRIVATE src)
     add_test(NAME ParameterAutomationTests COMMAND ParameterAutomationTests)
 endif()
+
+if(BUILD_TESTING)
+    # Developer diagnostic; no audio engine/device is constructed and no limits change.
+    add_executable(TrackCapacityReport tools/TrackCapacityReport.cpp)
+    target_include_directories(TrackCapacityReport PRIVATE src)
+endif()
