@@ -146,3 +146,11 @@ Full recording/editing and warping milestones remain open: streaming playback,
 latency compensation, count-in/punch/overdub, trimming/fades, take lanes/comping,
 automatic BPM, warp markers and transient-aware algorithms. Windows listening and
 visual checks remain separate gates from the passing offline tests.
+
+## T1-03 design entry point
+
+The numbered Core 1.0 priority plan is proposed in PR #100. Start T1-03
+(ARCH-01 / LIVE-03) with [the shared clip/pattern model design](SHARED_CLIP_MODEL.md).
+The design defines source identity, linked/independent copies, lossless rack data,
+real-time publication, project migration and incremental acceptance gates.
+It is a proposal; the common model and cross-view migration are not implemented yet.
