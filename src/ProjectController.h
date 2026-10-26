@@ -553,6 +553,7 @@ public:
         int recorded{};              // tracks that captured audio
         bool refused{}, abandoned{};
         int ended{};                 // SongTakeCapture::Ended
+        int passes{};                // loop passes recorded (0 or 1: not a loop recording)
         std::vector<juce::File> kept; // files of the takes that could not be placed (abandoned, or failed to load)
         juce::String problems;       // disk or loading problems
     };
@@ -606,6 +607,8 @@ public:
         next.punch = doc.recording.punch;
         next.punchIn = doc.timeline.loopStart;
         next.punchOut = doc.timeline.loopEnd;
+        next.loopStart = doc.timeline.loopStart;
+        next.loopEnd = doc.timeline.loopEnd;
         songTake = std::move(next);
         for (RecordEvent stale; engine.recording.events.pop(stale);) {}
 
@@ -1044,11 +1047,17 @@ public:
         juce::File file;
         std::shared_ptr<SessionAudioClip> clip;
         alien::TakePlacement placement;
+        // A loop recording: one placement per pass of the loop (placement is then unused), and the pass
+        // that goes on the song. The others are kept in the take list.
+        std::vector<alien::TakePlacement> passes;
+        std::size_t activePass{};
     };
-    // Puts every take of one recording pass on the timeline as one undo step ("Record take"). Each take
+    // Puts every take of one recording on the timeline as one undo step ("Record take"). Each take
     // becomes the audio of a Session cell of its track that is empty and unused by the timeline (a scene
-    // is added when there is none) and a region at its placement, over whatever was there. Nothing changes
-    // when any take cannot be placed. Returns how many takes were placed.
+    // is added when there is none) and a region at its placement, over whatever was there; each pass of
+    // a loop recording becomes a take of that cell, and only the active pass is put on the song. When the
+    // take list has no room for every pass, the earliest are left out. Nothing changes when any take
+    // cannot be placed. Returns how many tracks' takes were placed.
     int addRecordedTakes(const std::vector<RecordedTake>& takes) {
         using namespace alien::timeline;
         if (busy || takes.empty()) return 0;
@@ -1084,11 +1093,22 @@ public:
             clip.audio = take.clip;
             clip.audioFileName = take.file.getFileName();
             clip.audioFilePath = take.file.getFullPathName();
-            Region region;
-            region.row = row; region.source = scene;
-            region.start = take.placement.start; region.length = take.placement.length;
-            region.audioOffset = take.placement.audioOffset;
-            if (!next.recordTake(region)) return fail();
+            std::vector<Region> passes;
+            for (const auto& placement : take.passes.empty() ? std::vector<alien::TakePlacement>{take.placement} : take.passes) {
+                Region region;
+                region.row = row; region.source = scene;
+                region.start = placement.start; region.length = placement.length;
+                region.audioOffset = placement.audioOffset;
+                passes.push_back(region);
+            }
+            std::size_t active = take.passes.empty() ? 0 : std::min(take.activePass, passes.size() - 1);
+            const auto room = timeline::maxTakes - std::min(timeline::maxTakes, next.takes.size());
+            if (passes.size() > room && room > 0) {
+                const auto drop = passes.size() - room;
+                passes.erase(passes.begin(), passes.begin() + static_cast<std::ptrdiff_t>(drop));
+                active = active >= drop ? active - drop : passes.size() - 1;
+            }
+            if (!next.recordTakes(std::move(passes), active)) return fail();
             cells.emplace_back(row, scene);
         }
         if (!next.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount)) return fail();
@@ -1873,6 +1893,7 @@ private:
         std::vector<timeline::TempoChange> tempoChanges;   // the song's tempo map when the take began
         bool punch{};
         std::int64_t punchIn{}, punchOut{};
+        std::int64_t loopStart{}, loopEnd{};   // where each pass of a loop recording begins and ends
     };
     SongTake songTake;
 
@@ -1900,6 +1921,11 @@ private:
         const auto frames = refused ? 0 : capture.frames.load();
         const double latency = capture.latencySamples.load() + songTake.offsetMs * songTake.sampleRate / 1000.0;
         const int ended = capture.ended.load();
+        std::vector<alien::TakePass> passes;
+        const int passCount = refused ? 0 : std::clamp(capture.passes.load(), 1, alien::SongTakeCapture::maxPasses);
+        for (int k = 0; k < passCount; ++k)
+            passes.push_back(k == 0 ? alien::TakePass{0, firstTick}
+                                    : alien::TakePass{capture.passFrame[static_cast<std::size_t>(k)].load(), capture.passTick[static_cast<std::size_t>(k)].load()});
         auto recordings = std::move(songTake.recordings);
         const auto finished = songTake;
         songTake = {};
@@ -1907,13 +1933,13 @@ private:
         auto loaded = std::make_shared<std::vector<Loaded>>();
         setBusy(true);
         std::weak_ptr<int> token = alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, recordings, loaded, finished, firstTick, frames, latency, ended, refused] {
+        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, recordings, loaded, finished, firstTick, frames, latency, ended, refused, passes] {
             for (const auto& [t, recording] : recordings) {
                 Loaded item; item.track = t; item.result = recording->finish();
                 if (item.result.file.existsAsFile() && !finished.abandoned) item.audio = importSessionAudioClip(item.result.file);
                 loaded->push_back(std::move(item));
             }
-            juce::MessageManager::callAsync([this, token, loaded, finished, firstTick, frames, latency, ended, refused] {
+            juce::MessageManager::callAsync([this, token, loaded, finished, firstTick, frames, latency, ended, refused, passes] {
                 if (token.lock() == nullptr) return;
                 setBusy(false);
                 SongTakeOutcome outcome;
@@ -1931,10 +1957,23 @@ private:
                     }
                     RecordedTake recorded;
                     recorded.track = item.track; recorded.file = item.result.file; recorded.clip = item.audio.clip;
-                    recorded.placement = placeTake(timeline::TempoMap{finished.tempoChanges, static_cast<double>(finished.bpm)},
-                                                   firstTick, std::min<std::uint64_t>(frames, item.result.writtenFrames),
-                                                   finished.sampleRate, latency,
-                                                   finished.punch ? finished.punchIn : 0, finished.punch ? finished.punchOut : -1);
+                    const timeline::TempoMap tempo{finished.tempoChanges, static_cast<double>(finished.bpm)};
+                    const auto written = std::min<std::uint64_t>(frames, item.result.writtenFrames);
+                    if (passes.size() > 1) {
+                        // A loop recording: every pass with something in it becomes a take; the last full pass plays.
+                        for (const auto& pass : placePasses(tempo, passes, written, finished.sampleRate, latency,
+                                                            finished.punch ? finished.punchIn : 0, finished.punch ? finished.punchOut : -1,
+                                                            finished.loopStart, finished.loopEnd)) {
+                            if (!pass.placement.valid) continue;
+                            if (pass.complete || recorded.passes.empty()) recorded.activePass = recorded.passes.size();
+                            recorded.passes.push_back(pass.placement);
+                        }
+                        outcome.passes = std::max(outcome.passes, static_cast<int>(recorded.passes.size()));
+                        recorded.placement.valid = !recorded.passes.empty();
+                    } else {
+                        recorded.placement = placeTake(tempo, firstTick, written, finished.sampleRate, latency,
+                                                       finished.punch ? finished.punchIn : 0, finished.punch ? finished.punchOut : -1);
+                    }
                     if (!recorded.placement.valid) { outcome.kept.push_back(item.result.file); continue; }
                     takes.push_back(std::move(recorded));
                 }

@@ -604,8 +604,9 @@ private:
         else if (outcome.abandoned) message = "The project changed while recording, so the takes were kept on disk only.";
         else {
             message = "Recorded " + juce::String(outcome.placed) + (outcome.placed == 1 ? " take" : " takes") + " onto the Song";
+            if (outcome.passes > 1) message += ", " + juce::String(outcome.passes) + " loop passes each; the last full pass plays, the others are in Takes";
             if (outcome.ended == alien::SongTakeCapture::punchedOut) message += " (stopped at the punch-out)";
-            else if (outcome.ended == alien::SongTakeCapture::loopWrapped) message += " (stopped where the loop wrapped)";
+            else if (outcome.ended == alien::SongTakeCapture::loopWrapped) message += " (stopped after the most loop passes a take can hold)";
             else if (outcome.ended == alien::SongTakeCapture::jumped) message += " (stopped where the playhead jumped)";
             message += ".";
         }

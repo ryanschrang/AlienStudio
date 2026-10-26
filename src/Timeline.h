@@ -402,14 +402,24 @@ struct Timeline {
     }
 
     // Retain the unedited pass and place its active copy atomically.
-    bool recordTake(Region region) {
-        if (takes.size() >= maxTakes || region.isPattern() || region.start < 0 || region.start > maxLength
-            || region.length < 1 || region.length > maxLength - region.start) return false;
+    bool recordTake(Region region) { return recordTakes({std::move(region)}, 0); }
+    // The passes of one loop recording, in the order they were played: every pass is kept as a take and
+    // the `active` one is put on the arrangement. Ids of the new takes go to `ids` when given.
+    bool recordTakes(std::vector<Region> passes, std::size_t active, Ids* ids = nullptr) {
+        if (passes.empty() || active >= passes.size() || takes.size() + passes.size() > maxTakes) return false;
         Timeline next = *this;
-        region.id = newId(); region.group = 0;
-        next.takes.push_back(region);
-        if (!next.place(region)) return false;
-        return adopt(std::move(next));
+        Ids made;
+        for (auto& region : passes) {
+            if (region.isPattern() || region.start < 0 || region.start > maxLength
+                || region.length < 1 || region.length > maxLength - region.start) return false;
+            region.id = newId(); region.group = 0;
+            next.takes.push_back(region);
+            made.push_back(region.id);
+        }
+        if (!next.place(passes[active])) return false;
+        if (!adopt(std::move(next))) return false;
+        if (ids != nullptr) *ids = std::move(made);
+        return true;
     }
     // A range comp edits only the active arrangement. Original take stays intact.
     bool compTake(std::uint32_t id, std::int64_t from, std::int64_t to) {

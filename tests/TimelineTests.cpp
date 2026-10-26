@@ -599,6 +599,27 @@ static void nonDestructiveAudioEditTests() {
 
 static bool near(double a, double b, double tolerance = 1.0e-9) { return std::abs(a - b) <= tolerance; }
 
+static void loopPassTakeTests() {
+    Timeline t;
+    std::vector<Region> passes(3);
+    for (std::size_t k = 0; k < passes.size(); ++k) {
+        passes[k].row = 2; passes[k].source = 4; passes[k].start = 0; passes[k].length = k == 2 ? bar / 2 : bar;
+        passes[k].audioOffset = 2.0 * static_cast<double>(k);
+    }
+    Ids ids;
+    check(t.recordTakes(passes, 1, &ids) && ids.size() == 3 && t.takes.size() == 3, "every pass of a loop recording is kept as a take");
+    check(t.regions.size() == 1 && t.regions[0].audioOffset == 2.0 && t.regions[0].length == bar && t.regions[0].id != ids[1],
+          "only the active pass is on the arrangement, as a region of its own");
+    check(t.takes[0].audioOffset == 0.0 && t.takes[2].length == bar / 2 && t.takes[0].id == ids[0], "the takes keep their own place in the file");
+    const auto before = t;
+    check(!t.recordTakes(passes, 3) && !t.recordTakes({}, 0) && t == before, "an active pass that is not one of them, or no passes, is refused");
+    Timeline full; full.takes.assign(maxTakes - 2, passes[0]);
+    for (auto& r : full.takes) r.id = newId();
+    check(!full.recordTakes(passes, 0) && full.takes.size() == maxTakes - 2, "more passes than the take list has room for are refused");
+    Region pattern = passes[0]; pattern.row = rackRowBase;
+    check(!t.recordTakes({passes[0], pattern}, 0) && t == before, "a pattern lane cannot hold a recorded pass");
+}
+
 static void tempoMapTests() {
     Timeline t; t.tempo = 120.0;
     check(t.tempoChanges.empty() && t.tempoAt(0) == 120.0 && t.tempoAt(1.0e9) == 120.0, "no changes: the project tempo throughout");
@@ -737,6 +758,7 @@ int main() {
     nonDestructiveAudioEditTests();
     equalityTests();
     tempoMapTests();
+    loopPassTakeTests();
     if (failures == 0) std::puts("TimelineTests passed");
     return failures == 0 ? 0 : 1;
 }
