@@ -930,7 +930,12 @@ everything; Esc clears. Grouped clips (Ctrl+G) select and move together.
 
 **Editing.** Drag a clip to move it (pattern clips can also change lane); drag its right edge to
 resize it; drag its left edge to hide or reveal the start of its music without moving the music. Ctrl-drag
-copies. Hold **Alt** while dragging to ignore the grid. Each drag is one undo step.
+copies. **Alt-drag an audio clip's body** to slip its source without moving or resizing it:
+right reveals later audio, left reveals earlier audio, stopping at the source start. This is
+unsnapped, at the timeline's tick resolution. In a mixed selection only audio clips slip.
+Audio edges and fade handles keep their usual gestures. For other drags, hold **Alt** to
+ignore the grid; to move audio freely, start a normal drag and then press Alt. Each drag is
+one undo step; Esc cancels the preview.
 
 **Arming tracks and listening to an input.** Each track's header has a round arm button (it turns
 red when armed) and shows the track's input under its name. Right-click the track name to arm it,

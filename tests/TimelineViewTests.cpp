@@ -990,6 +990,96 @@ static void recordingSetupChecks() {
     std::cout << "PASS: arming tracks and choosing inputs\n";
 }
 
+static void audioSlipDragChecks() {
+    Rig rig;
+    rig.song();
+    auto& c = rig.c;
+    const auto audio = rig.id.au;
+    const auto from = rig.at(1920, 2);
+    const auto to = from + juce::Point<int>(10, 0);  // 600 ticks, off the sixteenth grid
+    c.setSnap(Snap::bar);
+    const auto before = rig.t();
+    c.mouseDown(mouse(c, from, altLeft));
+    c.mouseDrag(mouse(c, from + juce::Point<int>(8, 0), altLeft, 1, true));
+    c.mouseDrag(mouse(c, to, altLeft, 1, true));
+    const auto* preview = c.shown().find(audio);
+    require(rig.t() == before && preview->offset == 600 && std::abs(preview->audioOffset - .3125) < 1e-9
+        && preview->start == 0 && preview->length == 2 * bar,
+        "Alt-drag previews an unsnapped source slip relative to the press, leaving boundaries and document unchanged");
+    // The gesture chosen on press stays a slip if Alt is released while dragging.
+    c.mouseUp(mouse(c, to, leftButton, 1, true));
+    auto expected = before;
+    expected.find(audio)->offset = 600; expected.find(audio)->audioOffset = .3125;
+    require(rig.t() == expected && rig.controller.undoLabel() == "Slip audio clip" && !c.dragging(),
+        "release changes only the audio source offsets, even if Alt is released first");
+    require(rig.oneUndoRestores(before), "one undo/redo restores the complete slip gesture");
+
+    // Clamping at the start, click jitter, returning to the press, and Escape add no edit.
+    const auto label = rig.controller.undoLabel();
+    rig.drag(from, {from + juce::Point<int>(-10, 0)}, altLeft);
+    rig.drag(from, {from + juce::Point<int>(1, 0)}, altLeft);
+    rig.drag(from, {to, from}, altLeft);
+    c.mouseDown(mouse(c, from, altLeft));
+    c.mouseDrag(mouse(c, to, altLeft, 1, true));
+    require(c.dragging() && rig.key(juce::KeyPress::escapeKey), "Escape cancels a slip preview");
+    c.mouseUp(mouse(c, to, altLeft, 1, true));
+    require(rig.t() == before && c.shown() == before && rig.controller.undoLabel() == label && rig.controller.canRedo(),
+        "cancelled and zero-distance slips change neither document nor undo/redo history");
+
+    rig.drag(from, {to}, altLeft);
+    rig.drag(from, {from + juce::Point<int>(-20, 0)}, altLeft);
+    require(rig.reg(audio).offset == 0 && rig.reg(audio).audioOffset == 0 && rig.reg(audio).start == 0,
+        "dragging back past the beginning clamps source offsets to zero without moving the clip");
+    require(rig.controller.undo() && rig.controller.undo(), "undo the two source slips");
+    rig.view.refresh();
+
+    // Mixed selections slip audio only, including several placements of the same source.
+    std::uint32_t other{};
+    require(rig.controller.placeRegion(2, 0, 4 * bar, &other), "place another audio occurrence");
+    rig.view.refresh();
+    c.setSelection({rig.id.a, audio, other, rig.id.p});
+    const auto mixed = rig.t();
+    rig.drag(from, {to}, altLeft);
+    expected = mixed;
+    for (const auto id : {audio, other}) { expected.find(id)->offset = 600; expected.find(id)->audioOffset = .3125; }
+    require(rig.t() == expected && rig.selectionIs({rig.id.a, audio, other, rig.id.p})
+        && rig.controller.undoLabel() == "Slip audio clips", "a mixed selection slips only its audio occurrences and preserves selection");
+    require(rig.oneUndoRestores(mixed), "several audio slips form one undo step");
+
+    // The existing tempo-aware slip operation supplies source seconds.
+    require(rig.controller.setTempoChange(240, 60), "add a tempo change under the slipped source range");
+    rig.view.refresh();
+    c.setSelection({audio});
+    rig.drag(from, {to}, altLeft);
+    require(rig.reg(audio).offset == 600 && std::abs(rig.reg(audio).audioOffset - .5) < 1e-9,
+        "slip maps ticks to source seconds through tempo changes");
+    rig.controller.undo(); rig.view.refresh();
+    const auto tempoBase = rig.t();
+    rig.controller.setExternalBusy(true);
+    rig.drag(from, {to}, altLeft);
+    rig.controller.setExternalBusy(false);
+    require(rig.t() == tempoBase && !c.dragging(), "a busy controller refuses slip commit cleanly");
+
+    // Audio edges retain Alt snap bypass instead of starting source slip.
+    const auto edge = juce::Point<int>(juce::roundToInt(c.regionBounds(audio).getRight()) - 1, from.y);
+    rig.drag(edge, {edge + juce::Point<int>(-10, 0)}, altLeft);
+    require(rig.reg(audio).start == 0 && rig.reg(audio).length == 2 * bar - 600 && rig.reg(audio).offset == 0,
+        "Alt-dragging an audio edge still trims freely");
+    rig.controller.undo(); rig.view.refresh();
+    const auto box = c.regionBounds(audio);
+    const juce::Point<int> handle{juce::roundToInt(box.getRight()) - 1, static_cast<int>(box.getY()) + 4};
+    rig.drag(handle, {handle + juce::Point<int>(-10, 0)}, altLeft);
+    require(rig.reg(audio).fadeOut > 0 && rig.reg(audio).length == 2 * bar && rig.reg(audio).offset == 0,
+        "Alt-dragging an audio fade handle still edits the fade");
+    rig.controller.undo(); rig.view.refresh();
+    c.mouseDown(mouse(c, from, leftButton));
+    c.mouseDrag(mouse(c, to, altLeft, 1, true));
+    c.mouseUp(mouse(c, to, altLeft, 1, true));
+    require(rig.reg(audio).start == 600 && rig.reg(audio).offset == 0,
+        "adding Alt after a normal audio move begins still bypasses snap without switching to slip");
+    std::cout << "PASS: Alt-drag audio source slip, preview, selection, tempo, cancellation and history\n";
+}
+
 // ---- fades and crossfades -----------------------------------------------------------------------
 static void fadeChecks() {
     Rig rig; rig.song();
@@ -1927,6 +2017,7 @@ int main() {
     dropChecks();
     selectionChecks();
     dragChecks();
+    audioSlipDragChecks();
     fadeChecks();
     recordingSetupChecks();
     commandChecks();
