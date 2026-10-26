@@ -28,6 +28,12 @@ static void portableProjectTests() {
     alien::timeline::Region archived; archived.row = 0; archived.source = 0;
     require(source.timeline.recordTake(archived), "portable fixture has original take");
     source.timeline.regions.clear(); // The original is not part of the active comp.
+    source.clips[2][0].audioFilePath=first.getFullPathName();
+    require(source.timeline.place(archived),"portable frozen original");
+    source.timeline.freezeBaseLengthBars=source.timeline.lengthBars;
+    require(source.timeline.freezeTrack(0,2,4000,2.0),"portable freeze cache");
+    source.trackSettings[0].freezeScene=2;
+
 
     juce::String error;
     const auto target = projectDir.getChildFile("Song.alienstudio");
@@ -49,6 +55,9 @@ static void portableProjectTests() {
     const auto movedTarget = moved.getChildFile("Song.alienstudio");
     alien::SessionProjectData loaded;
     require(alien::parseSessionProject(movedTarget.loadFileAsString(), loaded, error), "open moved portable project");
+    require(loaded.trackSettings[0].freezeScene==2 && loaded.timeline.frozenOriginals.size()==1
+        && alien::resolveProjectAudio(movedTarget,loaded.clips[2][0].audioFilePath).existsAsFile(),"portable move retains frozen cache and original arrangement");
+
     require(alien::resolveProjectAudio(movedTarget, loaded.clips[0][0].audioFilePath).loadFileAsString() == "first audio bytes"
         && alien::resolveProjectAudio(movedTarget, loaded.clips[0][1].audioFilePath).loadFileAsString() == "second audio bytes",
         "moved project resolves exact audio without original files");
@@ -249,7 +258,27 @@ static void takeFormatTests() {
         "version 14 projects open with no recording archive");
 }
 
+static void freezeFormatTests() {
+    alien::SessionProjectData source;alien::timeline::Region original;original.row=0;original.source=0;
+    require(source.timeline.place(original),"freeze format original");source.timeline.freezeBaseLengthBars=source.timeline.lengthBars;
+    require(source.timeline.freezeTrack(0,1,4000,2.0),"freeze format cache");
+    source.trackSettings[0].freezeScene=1;source.clips[1][0].audioFilePath="C:/Freeze/cache.wav";
+    source.plugins[0].effects.push_back({"<PLUGIN name=\"Original effect\"/>","YWJj",false});
+    alien::SessionProjectData loaded;juce::String error;
+    const auto json=alien::serializeSessionProject(source);
+    require(json.isNotEmpty() && alien::parseSessionProject(json,loaded,error),"frozen project round trip");
+    require(loaded.trackSettings[0].freezeScene==1 && loaded.timeline.frozenOriginals.size()==1
+        && loaded.plugins==source.plugins && loaded.timeline.regions.front().gain==2.0,"cache, originals, gain and plugin states preserved");
+    auto damaged=juce::JSON::parse(json);damaged.getProperty("trackSettings",{}).getArray()->getReference(0).getDynamicObject()->setProperty("freezeScene",30);
+    const auto previous=loaded.timeline;
+    require(!alien::parseSessionProject(juce::JSON::toString(damaged),loaded,error) && loaded.timeline==previous,"invalid cache reference rejected transactionally");
+    alien::SessionProjectData oldSource;auto old=juce::JSON::parse(alien::serializeSessionProject(oldSource));old.getDynamicObject()->setProperty("version",15);
+    for(auto& track:*old.getProperty("trackSettings",{}).getArray())track.getDynamicObject()->removeProperty("freezeScene");
+    require(alien::parseSessionProject(juce::JSON::toString(old),loaded,error) && !loaded.trackSettings[0].frozen(),"version 15 defaults unfrozen");
+}
+
 int main() {
+    freezeFormatTests();
     takeFormatTests();
     automationFormatTests();
     recordingSettingsFormatTests();

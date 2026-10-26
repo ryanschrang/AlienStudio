@@ -241,6 +241,12 @@ private:
         std::array<float, sessionTracks> peaks{};
         for (std::size_t t = 0; t < sessionTracks; ++t) {
             const auto settings = tracks[t].snapshot();
+            auto& rack=plugins->racks[t];
+            if(rack.frozen!=settings.frozen()) {
+                trackSynths[t].allSoundOff();drumSamplers[t].stop();
+                if(!settings.frozen())plugins->silence(t);
+                rack.frozen=settings.frozen();
+            }
             trackSynths[t].setPatch(alien::presets[static_cast<std::size_t>(std::clamp(settings.preset, 0, alien::presetCount - 1))]);
             trackMixers[t].setTarget(settings, anySolo);
             // A pre-fader send skips the fader but not mute or solo; a post-fader one hears all three.
@@ -300,7 +306,7 @@ private:
         for (std::size_t t = 0; t < sessionTracks; ++t) {
             NoteQueue::Event hit{};
             for (int n = 0; n < 256 && drumAuditions[t].pop(hit); ++n)
-                if (!panic && instrumentModes[t] == 1) drumSamplers[t].noteOn(hit.note, hit.velocity, 1);
+                if (!panic && !plugins->racks[t].frozen && instrumentModes[t] == 1) drumSamplers[t].noteOn(hit.note, hit.velocity, 1);
             if (drumAuditions[t].panic.exchange(false)) drumSamplers[t].stop(1);
         }
         midi.process([this](int n, float v, int ch) { sendMidi(n, v, ch); },
@@ -410,8 +416,8 @@ private:
             const float value = synth.nextSample();
             plugins->live.setSample(0,i,value); plugins->live.setSample(1,i,value);
             for (std::size_t track = 0; track < sessionTracks; ++track) {
-                const float voice = trackSynths[track].nextSample();
-                const auto drum = drumSamplers[track].nextSample();
+                const float voice = plugins->racks[track].frozen ? 0.0f : trackSynths[track].nextSample();
+                const auto drum = plugins->racks[track].frozen ? std::array<float,2>{} : drumSamplers[track].nextSample();
                 plugins->tracks[track].setSample(0,i,voice + drum[0]);
                 plugins->tracks[track].setSample(1,i,voice + drum[1]);
                 if (playNow && (modeNow == 1 || modeNow == 2)) {
@@ -472,7 +478,7 @@ private:
                 }
                 if (automated) trackMixers[t].processAutomated(l, r, settings, anySolo);
                 else trackMixers[t].process(l,r);
-                if (stemCapture) { stemCapture->buses[t].setSample(0,i,l); stemCapture->buses[t].setSample(1,i,r); }
+                if (stemCapture) { stemCapture->buses[t].setSample(0,i,stemCapture->freezeTrack==static_cast<int>(t)?preLeft:l); stemCapture->buses[t].setSample(1,i,stemCapture->freezeTrack==static_cast<int>(t)?preRight:r); }
                 peaks[t] = std::max(peaks[t], std::max(std::abs(l), std::abs(r)));
                 left += l; right += r;
                 if (!sending[t]) continue;
@@ -553,6 +559,7 @@ private:
             rackPlayer.process(*rackSnapshot, rackSamples, running, bpm.load(), activeTracks.load(), samples, left.data(), right.data());
         rackStep.store(running ? rackPlayer.currentStep() : -1, std::memory_order_relaxed);
         for (std::size_t t = 0; t < sessionTracks; ++t) {
+            if(plugins->racks[t].frozen)continue;
             plugins->tracks[t].addFrom(0, 0, left[t], samples);
             plugins->tracks[t].addFrom(1, 0, right[t], samples);
         }
@@ -568,6 +575,7 @@ private:
     void addTrackInputs(int samples, int offset) noexcept {
         for (std::size_t t = 0; t < sessionTracks; ++t) {
             auto& controls = tracks[t];
+            if(plugins->racks[t].frozen)continue;
             const bool armed = controls.armed.load(std::memory_order_relaxed);
             const int monitor = controls.monitor.load(std::memory_order_relaxed);
             const bool monitoring = monitor == static_cast<int>(alien::InputMonitor::always)
@@ -1143,6 +1151,7 @@ private:
             for (int note = 0; note < 128; ++note) trackSynths[track].noteOff(note, source);
     }
     void routeToTrack(std::size_t track, int note, float velocity, int source) noexcept {
+        if(plugins->racks[track].frozen)return;
         if (plugins->hasInstrument(track)) { plugins->note(track, note, velocity, velocity > 0, source == 64 ? 1 : source - 64); return; }
         if (instrumentModes[track] == 1) { if (velocity > 0) drumSamplers[track].noteOn(note, velocity, source - 56); return; }
         if (velocity > 0) trackSynths[track].noteOn(note, velocity, source);
@@ -1212,6 +1221,7 @@ private:
         }
     }
     void sendPattern(std::size_t track, int note, float velocity, bool on) noexcept {
+        if(plugins->racks[track].frozen)return;
         const int source = static_cast<int>(track) + 2;
         if (plugins->hasInstrument(track)) { plugins->note(track, note, velocity, on, 2); return; }
         if (instrumentModes[track] == 1) {

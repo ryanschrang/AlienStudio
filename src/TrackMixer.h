@@ -26,9 +26,11 @@ struct TrackSettings {
     // A pre-fader send ignores the fader and pan but still follows mute and solo.
     std::array<float, maxReturns> send{};
     std::array<bool, maxReturns> sendPre{};
+    int freezeScene{-1}; // >=0: rendered Session cell; original regions live in the timeline archive.
+    bool frozen() const noexcept { return freezeScene >= 0; }
     bool valid() const noexcept {
         for (const float level : send) if (!std::isfinite(level) || level < 0 || level > 1) return false;
-        return instrument >= 0 && instrument <= 1 && preset >= 0 && preset < presetCount && std::isfinite(gain) && gain >= 0 && gain <= 2
+        return freezeScene >= -1 && freezeScene < maxSessionScenes && instrument >= 0 && instrument <= 1 && preset >= 0 && preset < presetCount && std::isfinite(gain) && gain >= 0 && gain <= 2
             && std::isfinite(pan) && pan >= -1 && pan <= 1
             && input >= 0 && input + (stereoInput ? 1 : 0) < maxTrackInputs && monitor >= 0 && monitor <= 2;
     }
@@ -42,7 +44,7 @@ static_assert(std::atomic<float>::is_always_lock_free, "Track audio controls req
 static_assert(std::atomic<int>::is_always_lock_free, "Track audio controls require lock-free integers");
 
 struct TrackControls {
-    std::atomic<int> preset{0}, instrument{0}, input{0}, monitor{0};
+    std::atomic<int> preset{0}, instrument{0}, input{0}, monitor{0}, freezeScene{-1};
     std::atomic<float> gain{1.0f}, pan{0.0f}, peak{0.0f};
     std::atomic<float> inputPeak{0.0f};   // loudest input sample since the GUI last read it (armed or monitoring tracks)
     std::atomic<bool> mute{false}, solo{false}, armed{false}, stereoInput{false};
@@ -52,9 +54,11 @@ struct TrackControls {
         TrackSettings s{preset.load(), gain.load(), pan.load(), mute.load(), solo.load(), instrument.load(),
                         armed.load(), input.load(), stereoInput.load(), monitor.load()};
         for (std::size_t r = 0; r < s.send.size(); ++r) { s.send[r] = send[r].load(); s.sendPre[r] = sendPre[r].load(); }
+        s.freezeScene = freezeScene.load();
         return s;
     }
     void set(const TrackSettings& s) noexcept {
+        freezeScene.store(s.freezeScene);
         preset.store(s.preset); gain.store(s.gain); pan.store(s.pan);
         mute.store(s.mute); solo.store(s.solo); instrument.store(s.instrument);
         armed.store(s.armed); input.store(s.input); stereoInput.store(s.stereoInput); monitor.store(s.monitor);
