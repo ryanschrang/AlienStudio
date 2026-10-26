@@ -140,7 +140,9 @@ public:
         }
     }
     // `seconds` is the song time at `ppq` when a tempo map makes it more than ppq at `bpm`.
-    void begin(int samples, double bpm, bool playing, double ppq, double seconds = -1.0) noexcept {
+    // A song with a time signature map passes the meter and where the bar at `ppq` began.
+    void begin(int samples, double bpm, bool playing, double ppq, double seconds = -1.0,
+               int numerator = 4, int denominator = 4, double barStartPpq = -1.0) noexcept {
         for (auto& b : tracks) b.clear(); live.clear(); master.clear();
         for (auto& b : returns) b.clear();
         for (auto& b : buses) b.clear();
@@ -151,8 +153,8 @@ public:
         playHead.info.setTimeInSamples(timelineSamples);
         playHead.info.setTimeInSeconds(timelineSamples / rate);
         playHead.info.setPpqPosition(ppq);
-        playHead.info.setPpqPositionOfLastBarStart(std::floor(ppq / 4.0) * 4.0);
-        playHead.info.setTimeSignature(juce::AudioPlayHead::TimeSignature{4,4});
+        playHead.info.setPpqPositionOfLastBarStart(barStartPpq >= 0.0 ? barStartPpq : std::floor(ppq / 4.0) * 4.0);
+        playHead.info.setTimeSignature(juce::AudioPlayHead::TimeSignature{numerator,denominator});
         playHead.info.setIsPlaying(playing);
         if (panic.exchange(false)) for (auto& m : midi)
             for (int ch = 1; ch <= 16; ++ch) { m.addEvent(juce::MidiMessage::allSoundOff(ch),0); m.addEvent(juce::MidiMessage::allNotesOff(ch),0); }

@@ -199,9 +199,12 @@ private:
         handleRecording();
         bool playNow = playing.load();
         const int modeNow = patternMode.load();
-        if (modeNow == 2)
+        if (modeNow == 2) {
+            const auto bar = song->timeline.meterMap().barAt(timelineTick);
             plugins->begin(samples, songTempo().tempoAt(timelineTick), playNow, timelineTick / alien::timeline::ticksPerBeat,
-                           songTempo().secondsBetween(0.0, timelineTick));
+                           songTempo().secondsBetween(0.0, timelineTick), bar.meter.numerator, bar.meter.denominator,
+                           static_cast<double>(bar.start) / alien::timeline::ticksPerBeat);
+        }
         else plugins->begin(samples, bpm.load(), playNow, transportBeat);
         for (auto& b : clipBuffers) b.clear();
         if (stemCapture) stemCapture->clear();
@@ -212,6 +215,7 @@ private:
         if (const auto* fresh = arrangementMailbox.consume()) {
             song = fresh;
             timelineNextTempo = songTempo().nextChange(timelineTick);
+            clickBarKnown = false;   // the meter may have changed
             if (modeNow == 2 && playNow && wasPlaying && wasMode == 2) resyncTimeline();
         }
         if (synchronizedSceneLaunch.exchange(false)) {
@@ -370,15 +374,32 @@ private:
                 allSoundOff(); playing.store(false); playNow = false;   // the song reached its end
             }
             if (clockRunning) {
-                // A playing song clicks on its own beats, so the click follows tempo changes and loop wraps.
-                const double songTick = automationTicks[static_cast<std::size_t>(i)];
-                const double at = !countingIn && modeNow == 2
-                    ? (songTick >= 0.0 ? songTick / static_cast<double>(alien::timeline::ticksPerBeat) : -1.0)
-                    : beatBase + i * beatsPerSample;
-                const auto beat = static_cast<std::int64_t>(std::floor(at + 1.0e-9));
-                if (at >= 0.0 && beat != lastClickBeat) {
+                // A playing song clicks on its own beats, so the click follows tempo and time signature
+                // changes and loop wraps, accenting each bar's first beat. A count-in clicks the bars of
+                // the meter where recording starts; everything else is in 4/4.
+                std::int64_t beat = -1;
+                bool accent = false;
+                if (!countingIn && modeNow == 2) {
+                    const double songTick = automationTicks[static_cast<std::size_t>(i)];
+                    if (songTick >= 0.0) {
+                        if (!clickBarKnown || songTick < static_cast<double>(clickBar.start)
+                            || songTick >= static_cast<double>(clickBar.start + clickBar.meter.barTicks())) {
+                            clickBar = song->timeline.meterMap().barAt(songTick);
+                            clickBarKnown = true;
+                        }
+                        const auto inBar = static_cast<std::int64_t>(std::floor((songTick - static_cast<double>(clickBar.start))
+                            / static_cast<double>(clickBar.meter.beatTicks()) + 1.0e-9));
+                        beat = clickBar.index * (alien::timeline::maxMeterNumerator + 1) + inBar;
+                        accent = inBar == 0;
+                    }
+                } else {
+                    const double unit = countingIn ? countInBeatQuarters : 1.0;
+                    beat = static_cast<std::int64_t>(std::floor((beatBase + i * beatsPerSample) / unit + 1.0e-9));
+                    accent = beat % (countingIn ? countInNumerator : 4) == 0;
+                }
+                if (beat >= 0 && beat != lastClickBeat) {
                     lastClickBeat = beat;
-                    if (clickEnabled) click.trigger(beat % 4 == 0, clickVolume);
+                    if (clickEnabled) click.trigger(accent, clickVolume);
                 }
             }
             clickBuffer[static_cast<std::size_t>(i)] = click.next();
@@ -1200,7 +1221,11 @@ private:
         if (playing.load()) {
             recording.phase.store(alien::RecordControls::recording);
         } else if (bars > 0) {
-            countInBeats = 0; countInTotalBeats = bars * 4.0; lastClickBeat = -1;
+            // Counted in the bars of the meter where the song starts recording (4/4 outside the Song view).
+            const auto meter = patternMode.load() == 2 ? song->timeline.meterMap().barAt(timelineStart).meter : alien::timeline::Meter{};
+            countInBeatQuarters = static_cast<double>(meter.beatTicks()) / alien::timeline::ticksPerBeat;
+            countInNumerator = meter.numerator;
+            countInBeats = 0; countInTotalBeats = bars * static_cast<double>(meter.barTicks()) / alien::timeline::ticksPerBeat; lastClickBeat = -1;
             recording.phase.store(alien::RecordControls::countIn);
         } else {
             recording.phase.store(alien::RecordControls::recording);
@@ -1400,7 +1425,9 @@ private:
     std::array<float, alien::PluginRuntime::blockSize> clickBuffer{};
     std::array<double, alien::PluginRuntime::blockSize> automationTicks{};
     std::int64_t lastClickBeat{-1};
-    double countInBeats{}, countInTotalBeats{};
+    double countInBeats{}, countInTotalBeats{};                 // in quarter notes
+    double countInBeatQuarters{1.0}; int countInNumerator{4};    // the count-in's beat and bar
+    alien::timeline::MeterMap::Bar clickBar{}; bool clickBarKnown{};   // the bar the song's click is in
     double songTakeLastTick{-1.0};   // song position of the last sample a Song-view take looked at
     int monitorTrack{-1}; // track whose instrument plays live input during a take, or -1
     alien::StepClock clock;

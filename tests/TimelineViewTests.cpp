@@ -1580,6 +1580,89 @@ static void tempoChecks() {
         "an audio clip's length on the song follows the tempo where it is placed");
 }
 
+static void meterChecks() {
+    Rig rig;
+    rig.song();
+    auto& c = rig.c;
+    c.setSnap(Snap::bar);
+    const auto before = rig.t();
+    // The ruler menu sets the time signature from the bar under the pointer.
+    rig.rightClick(rig.ruler(4 * bar + 100));
+    auto items = rig.menu.items();
+    require(entry(items, TimelineCanvas::cmdMeter) != nullptr && entry(items, TimelineCanvas::cmdMeter)->enabled
+        && entry(items, TimelineCanvas::cmdMeter)->text == "Time signature from bar 5..." && !entry(items, TimelineCanvas::cmdRemoveMeter)->enabled,
+        "the ruler menu offers a time signature from the bar under the pointer");
+    rig.asked = false;
+    rig.menu.done(TimelineCanvas::cmdMeter);
+    require(rig.asked && rig.askTitle == "Time signature from bar 5 (for example 3/4 or 6/8)" && rig.askCurrent == "4/4", "it asks, showing 4/4");
+    rig.answer("3/4");
+    require(rig.t().meterChanges.size() == 1 && rig.t().meterChanges[0].bar == 4 && rig.t().meterChanges[0].numerator == 3, "and sets 3/4 from bar 5");
+    require(rig.oneUndoRestores(before, true), "one undo step");
+    const auto threeFour = 3 * 960;
+    // A label after the bar number; double-click it to change it.
+    const auto label = c.meterBounds(rig.t().meterChanges[0]).getCentre().toInt();
+    require(c.hitTest(label).zone == Zone::ruler && c.hitTest(label).meterBar == 4 && c.hitTest(label).tempo == -1, "the change is a label on the ruler");
+    for (const char* bad : {"3/5", "three/4", "0/4", "40/4", "3", "/4", "3/"}) {
+        rig.asked = false; rig.messages.clear();
+        rig.doubleClick(label);
+        require(rig.asked && rig.askCurrent == "3/4", "double-click on the label asks for its time signature");
+        rig.answer(bad);
+        require(rig.t().meterChanges[0].numerator == 3 && rig.t().meterChanges[0].denominator == 4 && !rig.messages.empty(),
+            "an impossible time signature is refused with a message");
+    }
+    rig.asked = false;
+    rig.doubleClick(label);
+    rig.answer(" 6 / 8 ");
+    require(rig.t().meterChanges[0].numerator == 6 && rig.t().meterChanges[0].denominator == 8, "6/8, spaces allowed");
+    rig.doubleClick(label);
+    rig.answer("3/4");
+    // The grid's bar lines and beats follow the time signatures (bar 5 in 3/4, 6/8 from bar 7), at any zoom.
+    require(rig.controller.editTimeline("6/8", [](tl::Timeline& t) { return t.setMeterChange(6, 6, 8); }), "fixture: 6/8 from bar 7");
+    std::vector<std::int64_t> bars, beats;
+    c.forEachGridLine(rig.t(), 3.5 * bar, 4 * bar + 4 * threeFour, 240, [&](std::int64_t tick, int kind, std::int64_t, std::int64_t) {
+        if (kind == 2) bars.push_back(tick); else if (kind == 1) beats.push_back(tick);
+    });
+    require(bars == std::vector<std::int64_t>({3 * bar, 4 * bar, 4 * bar + threeFour, 4 * bar + 2 * threeFour, 4 * bar + 3 * threeFour, 4 * bar + 4 * threeFour}),
+        "bar lines at every bar, each as long as its time signature");
+    require(std::count_if(beats.begin(), beats.end(), [&](std::int64_t b) { return b > 4 * bar && b < 4 * bar + threeFour; }) == 2
+        && std::count_if(beats.begin(), beats.end(), [&](std::int64_t b) { return b > 4 * bar + 2 * threeFour && b < 4 * bar + 3 * threeFour; }) == 5,
+        "three beats in a 3/4 bar, six eighths in a 6/8 bar");
+    std::vector<std::int64_t> sparse;
+    c.forEachGridLine(rig.t(), 0, 12 * bar, 2 * bar, [&](std::int64_t tick, int kind, std::int64_t index, std::int64_t) { if (kind == 2) sparse.push_back(index); });
+    require(sparse.size() >= 5 && std::find(sparse.begin(), sparse.end(), 4) != sparse.end() && std::find(sparse.begin(), sparse.end(), 6) != sparse.end(),
+        "zoomed out, lines skip bars but never step over a time signature change");
+    rig.controller.undo(); rig.view.refresh();
+    // Snapping, the readout and looping a bar follow the time signature.
+    require(c.snapTick(static_cast<double>(4 * bar + threeFour) - 300.0) == 4 * bar + threeFour, "bar snapping finds the 3/4 bar line");
+    c.setSnap(Snap::beat);
+    require(c.snapTick(static_cast<double>(4 * bar + threeFour + 1000)) == 4 * bar + threeFour + 960, "beat snapping counts the bar's beats");
+    c.setSnap(Snap::bar);
+    c.setCursor(4 * bar + threeFour + 960, false); rig.view.refresh();
+    require(labelStartingWith(rig.view, "Bar 6.2  3/4") != nullptr, "the readout shows bar, beat and time signature");
+    rig.doubleClick(rig.loopStrip(4 * bar + 100));
+    require(rig.t().loopStart == 4 * bar && rig.t().loopEnd == 4 * bar + threeFour, "double-click on the loop strip loops a 3/4 bar");
+    require(rig.key(juce::KeyPress::rightKey, juce::ModifierKeys::shiftModifier) && c.cursorTick() == 4 * bar + 2 * threeFour + 960,
+            "Shift+Right moves by the bar's own length");
+    // The label menu.
+    rig.rightClick(label);
+    items = rig.menu.items();
+    require(entry(items, TimelineCanvas::cmdJump) != nullptr && entry(items, TimelineCanvas::cmdMeter) != nullptr
+        && entry(items, TimelineCanvas::cmdRemoveMeter) != nullptr, "the time signature menu");
+    rig.seeks.clear();
+    rig.menu.done(TimelineCanvas::cmdJump);
+    require(!rig.seeks.empty() && rig.seeks.back() == 4 * bar, "Play from here starts at its bar");
+    rig.rightClick(label);
+    rig.menu.done(TimelineCanvas::cmdRemoveMeter);
+    require(rig.t().meterChanges.empty() && rig.valid(), "Delete time signature change removes it");
+    rig.controller.undo(); rig.view.refresh();
+    rig.rightClick(rig.ruler(2 * bar));
+    rig.menu.done(TimelineCanvas::cmdRemoveMeter);
+    require(rig.t().meterChanges.empty(), "Remove all time signature changes");
+    rig.messages.clear(); rig.asked = false;
+    c.askMeter(rig.t().lengthBars);
+    require(!rig.asked && !rig.messages.empty(), "no time signature past the end of the song");
+}
+
 static void markerChecks() {
     Rig rig;
     rig.song();
@@ -2025,6 +2108,7 @@ int main() {
     loopChecks();
     markerChecks();
     tempoChecks();
+    meterChecks();
     playbackChecks();
     toolbarChecks();
     robustnessChecks();

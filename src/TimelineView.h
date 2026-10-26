@@ -53,6 +53,7 @@ public:
         int displayRow{-1};
         std::uint32_t region{0}, marker{0};
         std::int64_t tempo{-1};   // the tick of the tempo change under the pointer on the ruler
+        int meterBar{-1};         // the bar of the time signature change under the pointer on the ruler
         Edge edge{Edge::none};
         Edge fade{Edge::none};   // a fade handle at the top of an audio clip: left is the fade in (or crossfade), right the fade out
         enum class LoopPart { none, start, end, body } loopPart{LoopPart::none};
@@ -151,8 +152,59 @@ public:
         if (!std::isfinite(tick)) return 0;
         const auto rounded = static_cast<std::int64_t>(std::llround(std::max(0.0, tick)));
         if (bypass || snapMode == tlui::Snap::off) return std::clamp<std::int64_t>(rounded, 0, timeline::maxLength);
+        // A grid of a bar or more snaps to the song's bar lines; a finer one counts from the start of the
+        // bar the tick is in, with the beat and the half bar of that bar's time signature.
+        const auto map = shown().meterMap();
+        const double at = std::max(0.0, tick);
+        const auto bar = map.barAt(at);
         const auto grid = gridTicks();
-        return std::clamp<std::int64_t>(static_cast<std::int64_t>(std::llround(std::max(0.0, tick) / static_cast<double>(grid))) * grid, 0, timeline::maxLength);
+        std::int64_t snapped;
+        if (grid >= timeline::ticksPerBar) {
+            const auto every = std::max<std::int64_t>(1, grid / timeline::ticksPerBar);
+            const auto nearest = bar.index + (at - static_cast<double>(bar.start) >= static_cast<double>(bar.meter.barTicks()) / 2.0 ? 1 : 0);
+            snapped = map.tickOfBar(static_cast<std::int64_t>(std::llround(static_cast<double>(nearest) / static_cast<double>(every))) * every);
+        } else {
+            const auto unit = snapMode == tlui::Snap::beat ? bar.meter.beatTicks() : snapMode == tlui::Snap::halfBar ? bar.meter.barTicks() / 2 : grid;
+            snapped = bar.start + static_cast<std::int64_t>(std::llround((at - static_cast<double>(bar.start)) / static_cast<double>(unit))) * unit;
+            snapped = std::min(snapped, bar.start + bar.meter.barTicks());
+        }
+        return std::clamp<std::int64_t>(snapped, 0, timeline::maxLength);
+    }
+    // "5.3": the bar and beat (of that bar's time signature) a tick falls in, counting from 1.
+    juce::String barBeat(std::int64_t tick) const {
+        const auto bar = shown().meterMap().barAt(static_cast<double>(std::max<std::int64_t>(0, tick)));
+        return juce::String(bar.index + 1) + "." + juce::String((tick - bar.start) / bar.meter.beatTicks() + 1);
+    }
+    static juce::String meterText(const timeline::Meter& m) { return juce::String(m.numerator) + "/" + juce::String(m.denominator); }
+    // A time signature change is a label just after its bar's number on the ruler.
+    juce::Rectangle<float> meterBounds(const timeline::MeterChange& c) const {
+        const float x = static_cast<float>(xForTick(static_cast<double>(shown().tickOfBar(c.bar))));
+        const float numberWidth = 6.4f * static_cast<float>(juce::String(c.bar + 1).length());
+        const float width = 8.0f + 6.0f * static_cast<float>(meterText({c.numerator, c.denominator}).length());
+        return {x + 6.0f + numberWidth, static_cast<float>(markerStripHeight + loopStripHeight + 1), width, 11.0f};
+    }
+    // Calls line(tick, kind, bar, beat) for the grid lines from `from` to `to`: kind 2 is a bar line, 1 a
+    // beat, 0 a finer line `fine` ticks apart. Bars and beats follow the song's time signatures; when a bar
+    // is finer than `fine`, only every few bars get a line.
+    template <class Line>
+    void forEachGridLine(const timeline::Timeline& t, double from, double to, std::int64_t fine, Line&& line) const {
+        const auto map = t.meterMap();
+        auto bar = map.barAt(std::max(0.0, from));
+        const auto every = std::max<std::int64_t>(1, fine / timeline::ticksPerBar);
+        if (every > 1) { const auto first = bar.index / every * every; bar = {first, map.tickOfBar(first), map.meterAtBar(first)}; }
+        for (int guard = 0; guard < 200000 && static_cast<double>(bar.start) <= to; ++guard) {
+            const auto barTicks = bar.meter.barTicks(), beatTicks = bar.meter.beatTicks();
+            line(bar.start, 2, bar.index, std::int64_t{0});
+            if (every == 1 && fine < barTicks)
+                for (std::int64_t offset = fine; offset < barTicks; offset += fine)
+                    line(bar.start + offset, offset % beatTicks == 0 ? 1 : 0, bar.index, offset / beatTicks);
+            // The next bar (or the next one with a line), never stepping over a time signature change.
+            std::int64_t nextChange = std::numeric_limits<std::int64_t>::max();
+            for (const auto& c : t.meterChanges) if (c.bar > bar.index) { nextChange = c.bar; break; }
+            const auto step = std::min<std::int64_t>(every, nextChange - bar.index);
+            const auto index = bar.index + step;
+            bar = {index, bar.start + step * barTicks, index >= nextChange ? map.meterAtBar(index) : bar.meter};
+        }
     }
 
     // ---- zoom and scroll ----------------------------------------------------------------------------------------------
@@ -451,7 +503,7 @@ public:
         if (tick <= 0) { say("The song starts at the project tempo; set it in the transport, or add a change later in the song."); return; }
         if (tick > committed().length()) { say("A tempo change must be inside the song."); return; }
         const double now = controller.songTempo().tempoAt(static_cast<double>(tick));
-        const juce::String where = "Bar " + juce::String(tick / timeline::ticksPerBar + 1) + "." + juce::String((tick % timeline::ticksPerBar) / timeline::ticksPerBeat + 1);
+        const juce::String where = "Bar " + barBeat(tick);
         askForName("Tempo from " + where + " (60-200 BPM)", juce::String(now, std::abs(now - std::round(now)) < 0.005 ? 0 : 2),
             [this, tick](const juce::String& text) {
                 const auto value = text.trim().upToFirstOccurrenceOf(" ", false, true);
@@ -467,9 +519,31 @@ public:
     bool removeTempoChange(std::int64_t tick) {
         return tempoEdit("Remove tempo change", [=](timeline::Timeline& t) { return t.removeTempoChange(tick); });
     }
+    // Asks for the time signature from bar `bar` (counting from 0) on, as "3/4" or "6/8".
+    void askMeter(int bar) {
+        if (bar < 0 || bar >= committed().lengthBars) { say("A time signature change must be inside the song."); return; }
+        const auto now = committed().meterMap().meterAtBar(bar);
+        askForName("Time signature from bar " + juce::String(bar + 1) + " (for example 3/4 or 6/8)", meterText(now),
+            [this, bar](const juce::String& text) {
+                const auto trimmed = text.trim();
+                const auto top = trimmed.upToFirstOccurrenceOf("/", false, false).trim(), bottom = trimmed.fromFirstOccurrenceOf("/", false, false).trim();
+                const int numerator = top.getIntValue(), denominator = bottom.getIntValue();
+                if (!trimmed.contains("/") || top.isEmpty() || bottom.isEmpty() || !top.containsOnly("0123456789") || !bottom.containsOnly("0123456789")
+                    || !timeline::validMeter(numerator, denominator)) {
+                    say("Enter a time signature such as 3/4 or 6/8: 1 to " + juce::String(timeline::maxMeterNumerator) + " beats of a 2, 4, 8 or 16.");
+                    return;
+                }
+                if (!edit("Time signature change", [=](timeline::Timeline& t) { return t.setMeterChange(bar, numerator, denominator); }))
+                    say("Bar " + juce::String(bar + 1) + " is already in " + meterText({numerator, denominator}) + ".");
+            });
+    }
+    bool removeMeterChange(int bar) {
+        return edit("Remove time signature change", [=](timeline::Timeline& t) { return t.removeMeterChange(bar); });
+    }
     // Arrow keys: moves the selection by the grid (or a bar), or the play position when nothing is selected.
     bool nudge(int direction, bool bar = false) {
-        const auto step = (bar ? timeline::ticksPerBar : gridTicks()) * direction;
+        const auto from = selected.empty() ? cursor : [&] { const auto* r = committed().find(selected.front()); return r != nullptr ? r->start : cursor; }();
+        const auto step = (bar ? committed().meterMap().barAt(static_cast<double>(from)).meter.barTicks() : gridTicks()) * direction;
         if (selected.empty()) { setCursor(cursor + step); return true; }
         const auto ids = selected;
         return edit("Nudge clips", [&](timeline::Timeline& t) { return t.move(ids, step); }, "timeline-nudge");
@@ -552,8 +626,9 @@ public:
         plan.valid = plan.length > 0;
         if (plan.valid) {
             timeline::Region named; named.row = plan.row; named.source = plan.source;
-            plan.message = "Drop to put " + regionName(named) + " on " + laneName(plan.row) + " at bar " + juce::String(plan.tick / timeline::ticksPerBar + 1)
-                         + ", beat " + juce::String((plan.tick % timeline::ticksPerBar) / timeline::ticksPerBeat + 1) + ".";
+            const auto at = barBeat(plan.tick);
+            plan.message = "Drop to put " + regionName(named) + " on " + laneName(plan.row) + " at bar " + at.upToFirstOccurrenceOf(".", false, false)
+                         + ", beat " + at.fromFirstOccurrenceOf(".", false, false) + ".";
         }
         return plan;
     }
@@ -588,7 +663,7 @@ public:
         const auto plan = planDrop(clipbin::decode(details.description), details.localPosition);
         showDropPlan({});
         if (!plan.valid) { say(plan.message.isNotEmpty() ? plan.message : "That cannot be placed there."); return; }
-        if (place(plan.row, plan.source, plan.tick)) say("Placed on " + laneName(plan.row) + " at bar " + juce::String(plan.tick / timeline::ticksPerBar + 1) + ".");
+        if (place(plan.row, plan.source, plan.tick)) say("Placed on " + laneName(plan.row) + " at bar " + barBeat(plan.tick).upToFirstOccurrenceOf(".", false, false) + ".");
     }
     void showDropPlan(const DropPlan& plan) {
         dropGhost = plan;
@@ -601,7 +676,7 @@ public:
     // The items of the right-click menus.
     enum Command { cmdSplit = 1, cmdMute, cmdDuplicate, cmdCopy, cmdCut, cmdDelete, cmdGroup, cmdUngroup, cmdOpen, cmdPaste, cmdSelectAll, cmdAddMarker,
                    cmdSlipLeft, cmdSlipRight, cmdSourceLoop, cmdReverse, cmdNormalize, cmdFade, cmdCrossfade,
-                   cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdRemoveFades, cmdTempo, cmdRemoveTempo, cmdColourBase = 100,
+                   cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdRemoveFades, cmdTempo, cmdRemoveTempo, cmdMeter, cmdRemoveMeter, cmdColourBase = 100,
                    cmdArm = 200, cmdFreeze = 201, cmdUnfreeze = 202, cmdMonitorBase = 210, cmdInputMonoBase = 300, cmdInputStereoBase = 400 };
     juce::PopupMenu placeMenu(int row) const {
         juce::PopupMenu menu;
@@ -701,6 +776,8 @@ public:
                 return hit;
             }
             hit.zone = Zone::ruler;
+            for (auto it = shown().meterChanges.rbegin(); it != shown().meterChanges.rend(); ++it)
+                if (meterBounds(*it).expanded(2.0f, 1.0f).contains(p.toFloat())) { hit.meterBar = it->bar; return hit; }
             const auto& changes = shown().tempoChanges;
             for (auto it = changes.rbegin(); it != changes.rend(); ++it)
                 if (tempoBounds(*it).expanded(3.0f, 2.0f).contains(p.toFloat())) { hit.tempo = it->tick; break; }
@@ -1049,12 +1126,14 @@ public:
         } else if (hit.zone == Zone::markerStrip) {
             if (hit.marker != 0) renameMarker(hit.marker);
             else { setCursor(tick, false); addMarkerAtCursor(); }
+        } else if (hit.zone == Zone::ruler && hit.meterBar >= 0) {
+            askMeter(hit.meterBar);
         } else if (hit.zone == Zone::ruler) {
             askTempo(hit.tempo >= 0 ? hit.tempo : tick);   // a tempo change, or a new one where the pointer is
         } else if (hit.zone == Zone::loopStrip) {
             // Double-click: loop the bar under the pointer.
-            const auto bar = static_cast<std::int64_t>(std::floor(tickAtX(static_cast<double>(e.x)) / timeline::ticksPerBar)) * timeline::ticksPerBar;
-            setLoopRange(bar, bar + timeline::ticksPerBar);
+            const auto bar = committed().meterMap().barAt(std::max(0.0, tickAtX(static_cast<double>(e.x))));
+            setLoopRange(bar.start, bar.start + bar.meter.barTicks());
         }
     }
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override {
@@ -1293,6 +1372,16 @@ private:
                 else if (id == cmdRemoveMarker) removeMarker(marker);
                 else if (id >= cmdColourBase && id < cmdColourBase + 8) colourMarker(marker, id - cmdColourBase);
             });
+        } else if (hit.zone == Zone::ruler && hit.meterBar >= 0) {
+            juce::PopupMenu menu;
+            menu.addItem(cmdJump, "Play from here");
+            menu.addItem(cmdMeter, "Change time signature...");
+            menu.addItem(cmdRemoveMeter, "Delete time signature change");
+            launch(std::move(menu), area, [this, bar = hit.meterBar](int id) {
+                if (id == cmdJump) setCursor(committed().tickOfBar(bar));
+                else if (id == cmdMeter) askMeter(bar);
+                else if (id == cmdRemoveMeter) removeMeterChange(bar);
+            });
         } else if (hit.zone == Zone::ruler && hit.tempo >= 0) {
             juce::PopupMenu menu;
             menu.addItem(cmdJump, "Play from here");
@@ -1309,11 +1398,17 @@ private:
             if (hit.zone == Zone::ruler) {
                 menu.addItem(cmdTempo, "Add tempo change here...", tick > 0);
                 menu.addItem(cmdRemoveTempo, "Remove all tempo changes", !committed().tempoChanges.empty());
+                menu.addSeparator();
+                const auto bar = static_cast<int>(committed().meterMap().barAt(static_cast<double>(tick)).index);
+                menu.addItem(cmdMeter, "Time signature from bar " + juce::String(bar + 1) + "...", bar < committed().lengthBars);
+                menu.addItem(cmdRemoveMeter, "Remove all time signature changes", !committed().meterChanges.empty());
             }
             launch(std::move(menu), area, [this, tick](int id) {
                 if (id == cmdAddMarker) { setCursor(tick, false); addMarkerAtCursor(); }
                 else if (id == cmdTempo) askTempo(tick);
                 else if (id == cmdRemoveTempo) tempoEdit("Remove tempo changes", [](timeline::Timeline& t) { return t.clearTempoChanges(); });
+                else if (id == cmdMeter) askMeter(static_cast<int>(committed().meterMap().barAt(static_cast<double>(tick)).index));
+                else if (id == cmdRemoveMeter) edit("Remove time signature changes", [](timeline::Timeline& t) { return t.clearMeterChanges(); });
             });
         } else if (hit.zone == Zone::loopStrip) {
             juce::PopupMenu menu;
@@ -1461,16 +1556,12 @@ private:
             g.fillRect(juce::Rectangle<float>(loop.getX(), static_cast<float>(topHeight), loop.getWidth(), static_cast<float>(getHeight() - topHeight)));
         }
         // Grid lines.
-        const auto fine = fineGrid();
-        const double firstTick = std::floor(scrollX / static_cast<double>(fine)) * static_cast<double>(fine);
-        for (double tick = firstTick; tick <= scrollX + visibleTicks() + static_cast<double>(fine); tick += static_cast<double>(fine)) {
-            const auto whole = static_cast<std::int64_t>(std::llround(tick));
+        forEachGridLine(t, scrollX, scrollX + visibleTicks(), fineGrid(), [&](std::int64_t whole, int kind, std::int64_t, std::int64_t) {
             const float x = static_cast<float>(xForTick(static_cast<double>(whole)));
-            if (x < headerWidth || x > getWidth()) continue;
-            const bool bar = whole % timeline::ticksPerBar == 0, beat = whole % timeline::ticksPerBeat == 0;
-            g.setColour((bar ? col::lineStrong : beat ? col::line.brighter(0.15f) : col::line).withAlpha(bar ? 1.0f : 0.7f));
+            if (x < headerWidth || x > getWidth()) return;
+            g.setColour((kind == 2 ? col::lineStrong : kind == 1 ? col::line.brighter(0.15f) : col::line).withAlpha(kind == 2 ? 1.0f : 0.7f));
             g.fillRect(x, static_cast<float>(topHeight), 1.0f, static_cast<float>(getHeight() - topHeight));
-        }
+        });
         // Markers run down through the lanes.
         for (const auto& m : t.markers) {
             const float x = static_cast<float>(xForTick(static_cast<double>(m.tick)));
@@ -1790,23 +1881,29 @@ private:
         }
         // Ruler: a number every few bars, ticks at the bars, beats and sixteenths that fit.
         const int labelStep = barLabelStep();
-        const auto fine = fineGrid();
-        const double firstTick = std::floor(scrollX / static_cast<double>(fine)) * static_cast<double>(fine);
         const int rulerTop = markerStripHeight + loopStripHeight;
-        for (double tick = firstTick; tick <= scrollX + visibleTicks() + static_cast<double>(fine); tick += static_cast<double>(fine)) {
-            const auto whole = static_cast<std::int64_t>(std::llround(tick));
+        forEachGridLine(t, scrollX, scrollX + visibleTicks(), fineGrid(), [&](std::int64_t whole, int kind, std::int64_t barIndex, std::int64_t beatIndex) {
             const float x = static_cast<float>(xForTick(static_cast<double>(whole)));
-            if (x < headerWidth || x > getWidth()) continue;
-            const bool bar = whole % timeline::ticksPerBar == 0, beat = whole % timeline::ticksPerBeat == 0;
+            if (x < headerWidth || x > getWidth()) return;
+            const bool bar = kind == 2, beat = kind == 1;
             g.setColour(bar ? col::textDim : col::textFaint.withAlpha(0.7f));
             g.fillRect(x, static_cast<float>(rulerTop + (bar ? 4 : beat ? 14 : 18)), 1.0f, static_cast<float>(rulerHeight - (bar ? 4 : beat ? 14 : 18)));
-            if (bar && (whole / timeline::ticksPerBar) % labelStep == 0) {
+            if (bar && barIndex % labelStep == 0) {
                 g.setColour(col::text); g.setFont(ui::monoFont(10.5f));
-                g.drawText(juce::String(whole / timeline::ticksPerBar + 1), juce::roundToInt(x) + 3, rulerTop, 40, 14, juce::Justification::centredLeft);
-            } else if (beat && ppt * timeline::ticksPerBeat >= 30.0 && !bar) {
+                g.drawText(juce::String(barIndex + 1), juce::roundToInt(x) + 3, rulerTop, 40, 14, juce::Justification::centredLeft);
+            } else if (beat && ppt * static_cast<double>(t.meterMap().meterAtBar(barIndex).beatTicks()) >= 30.0) {
                 g.setColour(col::textFaint); g.setFont(ui::monoFont(9.5f));
-                g.drawText(juce::String(whole / timeline::ticksPerBar + 1) + "." + juce::String((whole % timeline::ticksPerBar) / timeline::ticksPerBeat + 1), juce::roundToInt(x) + 3, rulerTop + 2, 40, 12, juce::Justification::centredLeft);
+                g.drawText(juce::String(barIndex + 1) + "." + juce::String(beatIndex + 1), juce::roundToInt(x) + 3, rulerTop + 2, 40, 12, juce::Justification::centredLeft);
             }
+        });
+        // Time signature changes: a label after the bar number.
+        for (const auto& c : t.meterChanges) {
+            const auto box = meterBounds(c);
+            if (box.getRight() < headerWidth || box.getX() > getWidth()) continue;
+            g.setColour(col::accent.withAlpha(0.85f));
+            g.fillRoundedRectangle(box, 2.5f);
+            g.setColour(col::accentInk); g.setFont(ui::monoFont(9.5f));
+            g.drawText(meterText({c.numerator, c.denominator}), box.toNearestInt().reduced(4, 0), juce::Justification::centredLeft, false);
         }
         g.setColour(col::line); g.fillRect(headerWidth, topHeight - 1, getWidth() - headerWidth, 1);
         // Markers.
@@ -2253,8 +2350,8 @@ private:
         const auto& t = controller.timeline();
         juce::PopupMenu menu;
         menu.addItem(exportSong, "Whole song (" + juce::String(t.lengthBars) + " bars)", t.hasRegions());
-        menu.addItem(exportLoop, "Loop range (bars " + juce::String(t.loopStart / timeline::ticksPerBar + 1) + " to "
-                     + juce::String((t.loopEnd + timeline::ticksPerBar - 1) / timeline::ticksPerBar) + ")", t.hasRegions());
+        menu.addItem(exportLoop, "Loop range (bars " + juce::String(t.meterMap().barAt(static_cast<double>(t.loopStart)).index + 1) + " to "
+                     + juce::String(t.meterMap().barsCovering(t.loopEnd)) + ")", t.hasRegions());
         menu.addSeparator();
         menu.addItem(exportStems, "Track and return stems - whole song", t.hasRegions());
         menu.addItem(exportLoopStems, "Track and return stems - loop range", t.hasRegions());
@@ -2278,8 +2375,9 @@ private:
         const auto tick = canvas.cursorTick();
         const double seconds = controller.songTempo().secondsBetween(0.0, static_cast<double>(tick));
         const int minutes = static_cast<int>(seconds / 60.0);
-        juce::String text = "Bar " + juce::String(tick / timeline::ticksPerBar + 1) + "." + juce::String((tick % timeline::ticksPerBar) / timeline::ticksPerBeat + 1)
-            + "  " + juce::String(minutes) + ":" + juce::String(seconds - minutes * 60.0, 2).paddedLeft('0', 5);
+        const auto bar = t.meterMap().barAt(static_cast<double>(tick));
+        juce::String text = "Bar " + juce::String(bar.index + 1) + "." + juce::String((tick - bar.start) / bar.meter.beatTicks() + 1)
+            + "  " + TimelineCanvas::meterText(bar.meter) + "  " + juce::String(minutes) + ":" + juce::String(seconds - minutes * 60.0, 2).paddedLeft('0', 5);
         const auto count = canvas.selection().size();
         if (count > 0) text += "   " + juce::String(static_cast<int>(count)) + (count == 1 ? " clip selected" : " clips selected");
         readout.setText(text, juce::dontSendNotification);
