@@ -48,13 +48,17 @@ public:
     std::function<void(bool,int)> onAdd;
     std::function<void(int,int)> onAction;
     int destination() const { return target.getSelectedId()-1; }
-    void refresh(const juce::StringArray& names, const PluginRackState& rack, const juce::KnownPluginList& list) {
+    // busNames: one per group bus slot, empty for a slot that is not in use.
+    void refresh(const juce::StringArray& names, const PluginRackState& rack, const juce::KnownPluginList& list,
+                 const std::array<juce::String,maxBuses>& busNames = {}) {
         const int t=target.getSelectedId(); target.clear(juce::dontSendNotification);
         for(int i=0;i<names.size();++i)target.addItem(names[i],i+1);
-        // Ids are destination + 1: tracks, then Master FX (maxSessionTracks), then the returns right after it.
+        // Ids are destination + 1: tracks, then Master FX (maxSessionTracks), then the returns right after it, then the buses.
+        constexpr int busFirstId=maxSessionTracks+2+maxReturns;
+        for(int b=0;b<maxBuses;++b)if(busNames[static_cast<std::size_t>(b)].isNotEmpty())target.addItem(busNames[static_cast<std::size_t>(b)]+" FX (bus)",busFirstId+b);
         for(int r=0;r<maxReturns;++r)target.addItem("Return "+juce::String::charToString(static_cast<juce::juce_wchar>('A'+r))+" FX",maxSessionTracks+2+r);
         target.addItem("Master FX",maxSessionTracks+1);
-        target.setSelectedId(t>maxSessionTracks&&t<=maxSessionTracks+1+maxReturns?t:juce::jlimit(1,names.size(),t),juce::dontSendNotification);
+        target.setSelectedId(t>maxSessionTracks&&target.indexOfItemId(t)>=0?t:t>maxSessionTracks?maxSessionTracks+1:juce::jlimit(1,names.size(),t),juce::dontSendNotification);
         const int selectedPlugin=available.getSelectedId(); available.clear(juce::dontSendNotification);
         for(std::size_t i=0;i<stock::catalog.size();++i)available.addItem(juce::String(stock::catalog[i].name)+" [stock FX]",stockBase+static_cast<int>(i));
         auto descriptions=list.getTypes(); if(!descriptions.isEmpty())available.addSeparator();

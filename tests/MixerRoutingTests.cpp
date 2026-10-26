@@ -226,7 +226,7 @@ static void undoAndPanels() {
     engine.returns[3].gain.store(0.25f);
 
     // The mixer: send knobs and pre switches on each track strip, and four return strips.
-    alien::TrackMixerPanel panel(c, engine.tracks, engine.returns, engine.masterControls);
+    alien::TrackMixerPanel panel(c, engine.tracks, engine.returns, engine.masterControls, engine.buses);
     panel.setSize(1400, 640);
     int trackEdits = 0, returnEdits = 0, lastReturn = -1;
     panel.onTrackEdited = [&](int, bool) { ++trackEdits; };

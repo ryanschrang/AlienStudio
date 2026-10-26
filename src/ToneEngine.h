@@ -56,6 +56,7 @@ public:
     std::atomic<int> bpm{120}, currentStep{-1}, preset{0};
     std::array<alien::TrackControls, sessionTracks> tracks;
     std::array<alien::ReturnControls, alien::maxReturns> returns;
+    std::array<alien::BusControls, alien::maxBuses> buses;   // group buses; `active` says which exist
     std::unique_ptr<alien::StemCapture> stemCapture; // Idle offline engine only; never set on live engine.
     alien::MasterControls masterControls;
     // Record, count-in and metronome state shared with the GUI, and the delay the
@@ -157,6 +158,7 @@ public:
         rackPlayer.prepare(sampleRate); rackStep.store(-1);
         for (auto& mixer : trackMixers) mixer.prepare(sampleRate);
         for (auto& mixer : returnMixers) mixer.prepare(sampleRate);
+        for (auto& mixer : busMixers) mixer.prepare(sampleRate);
         for (auto& trackSends : sendRamps) for (auto& ramp : trackSends) ramp.prepare(sampleRate);
         masterRampCoefficient = static_cast<float>(1.0 - std::exp(-1.0 / (sampleRate * 0.005)));
         masterRamp = alien::sanitizedMasterGain(masterControls.gain.load()); // no fade-in on start
@@ -236,11 +238,20 @@ private:
         }
         wasPlaying = playNow; wasMode = modeNow;
         synth.setPatch(alien::presets[static_cast<std::size_t>(juce::jlimit(0, alien::presetCount - 1, preset.load()))]);
-        bool anySolo = false;
-        for (const auto& track : tracks) anySolo = anySolo || track.solo.load();
+        // Where each track goes this block (a missing bus means the master), and who solo leaves audible.
+        soloState = {};
+        for (std::size_t t = 0; t < sessionTracks; ++t) {
+            const int output = tracks[t].output.load();
+            trackOutputs[t] = output >= 0 && output < alien::maxBuses && buses[static_cast<std::size_t>(output)].active.load() ? output : -1;
+            soloState.addTrack(trackOutputs[t], tracks[t].solo.load());
+        }
+        for (int b = 0; b < alien::maxBuses; ++b)
+            soloState.addBus(b, buses[static_cast<std::size_t>(b)].active.load() && buses[static_cast<std::size_t>(b)].solo.load());
+        const bool anySolo = soloState.any;
         std::array<float, sessionTracks> peaks{};
         for (std::size_t t = 0; t < sessionTracks; ++t) {
-            const auto settings = tracks[t].snapshot();
+            auto settings = tracks[t].snapshot();
+            settings.solo = soloState.trackHeard(trackOutputs[t], settings.solo);
             auto& rack=plugins->racks[t];
             if(rack.frozen!=settings.frozen()) {
                 trackSynths[t].allSoundOff();drumSamplers[t].stop();
@@ -469,6 +480,7 @@ private:
                 float l = plugins->tracks[t].getSample(0,i), r = plugins->tracks[t].getSample(1,i);
                 const float preLeft = l, preRight = r;
                 auto settings = tracks[t].snapshot();
+                settings.solo = soloState.trackHeard(trackOutputs[t], settings.solo);
                 bool automated = false;
                 std::array<bool, alien::maxReturns> automatedSends{};
                 const double automationTick = automationTicks[static_cast<std::size_t>(i)];
@@ -490,7 +502,10 @@ private:
                 else trackMixers[t].process(l,r);
                 if (stemCapture) { stemCapture->buses[t].setSample(0,i,stemCapture->freezeTrack==static_cast<int>(t)?preLeft:l); stemCapture->buses[t].setSample(1,i,stemCapture->freezeTrack==static_cast<int>(t)?preRight:r); }
                 peaks[t] = std::max(peaks[t], std::max(std::abs(l), std::abs(r)));
-                left += l; right += r;
+                if (const int bus = trackOutputs[t]; bus >= 0) {
+                    plugins->buses[static_cast<std::size_t>(bus)].addSample(0, i, l);
+                    plugins->buses[static_cast<std::size_t>(bus)].addSample(1, i, r);
+                } else { left += l; right += r; }
                 if (!sending[t]) continue;
                 for (std::size_t k = 0; k < static_cast<std::size_t>(alien::maxReturns); ++k) {
                     const float gate = sendPre[t][k] && (settings.mute || (anySolo && !settings.solo)) ? 0.0f : 1.0f;
@@ -502,6 +517,7 @@ private:
             }
             plugins->master.setSample(0,i,left); plugins->master.setSample(1,i,right);
         }
+        mixBuses(samples);
         plugins->processReturns(samples);
         std::array<float, alien::maxReturns> returnPeaks{};
         for (int i = 0; i < samples; ++i)
@@ -516,7 +532,7 @@ private:
                 plugins->master.addSample(0, i, l); plugins->master.addSample(1, i, r);
             }
         for (std::size_t k = 0; k < static_cast<std::size_t>(alien::maxReturns); ++k) returns[k].peak.store(returnPeaks[k], std::memory_order_relaxed);
-        if (stemCapture) stemCapture->alignDry(samples,plugins->returnLatency());
+        if (stemCapture) stemCapture->alignDry(samples,plugins->busLatency(),plugins->returnLatency());
         plugins->processMaster(samples);
         const float masterTarget = alien::sanitizedMasterGain(masterControls.gain.load(std::memory_order_relaxed));
         float masterPeak = 0.0f;
@@ -551,6 +567,30 @@ private:
         }
     }
 private:
+    // The group buses: their FX and alignment (PluginRuntime::processBuses), then each bus's strip,
+    // into the master. A bus that does not exist has no input and stays silent.
+    void mixBuses(int samples) noexcept {
+        plugins->processBuses(samples);
+        for (int b = 0; b < alien::maxBuses; ++b) {
+            const auto index = static_cast<std::size_t>(b);
+            auto strip = buses[index].snapshot().asTrack();
+            strip.solo = soloState.busHeard(b, buses[index].active.load() && strip.solo);
+            busMixers[index].setTarget(strip, soloState.any);
+            float peak = 0.0f;
+            auto& buffer = plugins->buses[index];
+            for (int i = 0; i < samples; ++i) {
+                float l = buffer.getSample(0, i), r = buffer.getSample(1, i);
+                busMixers[index].process(l, r);
+                if (stemCapture) {
+                    stemCapture->buses[static_cast<std::size_t>(alien::StemCapture::busBase + b)].setSample(0, i, l);
+                    stemCapture->buses[static_cast<std::size_t>(alien::StemCapture::busBase + b)].setSample(1, i, r);
+                }
+                peak = std::max(peak, std::max(std::abs(l), std::abs(r)));
+                plugins->master.addSample(0, i, l); plugins->master.addSample(1, i, r);
+            }
+            buses[index].peak.store(peak, std::memory_order_relaxed);
+        }
+    }
     // Renders the Channel Rack and adds each output bus after the track
     // instruments, so a plug-in instrument on a track cannot replace it: buses
     // for Session tracks join that track (and so pass through its effects and
@@ -1294,6 +1334,9 @@ private:
     FixedHeapArray<alien::SynthEngine, sessionTracks> trackSynths;
     FixedHeapArray<alien::TrackMixer, sessionTracks> trackMixers;
     std::array<alien::TrackMixer, alien::maxReturns> returnMixers{};
+    std::array<alien::TrackMixer, alien::maxBuses> busMixers{};
+    std::array<int, sessionTracks> trackOutputs{};   // this block: -1 the master, else the bus
+    alien::SoloState soloState;
     // Each track's send to each return: its glided level, and (for this block) whether it is taken before the fader.
     FixedHeapArray<std::array<alien::SendRamp, alien::maxReturns>, sessionTracks> sendRamps;
     std::array<std::array<bool, alien::maxReturns>, sessionTracks> sendPre{};

@@ -175,9 +175,9 @@ artwork stay original.
 | INST-08 | Preset browser for instruments (FL FLEX-style browsing) | Planned | Search and audition presets without opening each instrument |
 | INST-09 | MPE instrument (Live Meld) | Planned | Needs MIDI-08 |
 | INST-10 | VST3 instruments as Channel Rack channels | Planned | Live MIDI and keyboard routing into rack instruments included |
-| MIX-03 | Group buses and output routing (track to bus to master) | In progress (T1-05) | Latency compensation across buses; no feedback loops |
+| MIX-03 | Group buses and output routing (track to bus to master) | Implemented (T1-05): up to eight group buses, each with volume, pan, mute, solo, meter and an eight-slot FX rack; each track's Output goes to the master or a bus; buses feed only the master (no loops); soloing a track keeps its bus audible and soloing a bus keeps its tracks audible; delay compensation across buses (bus stage before the returns); stems add one file per bus and mark tracks routed into one; freeze renders the track without its bus; mixer Add bus / rename / delete and Output menus; project format 19 (older projects: every track to the master). Windows listening and real-plugin latency checks pending | GroupBusTests (exact bus levels, pan, mute, solo across tracks and buses, missing-bus fallback, delay alignment with latent bus and return FX, no allocation, format round-trip/older files/damage, controller undo/redo, mixer and plugin panels, stem capture alignment and files, freeze) |
 | MIX-04 | Sidechain inputs for compressors, gates and VST3 plugins | Planned | Stock compressor first, then plugin sidechain buses |
-| MIX-05 | Add, remove and rename returns; more than four | Planned | Needs a format bump (next free: 16) |
+| MIX-05 | Add, remove and rename returns; more than four | Planned | Needs a format bump (next free: 20) |
 | LIVE-04 | Raise Session track, scene and clip-note limits (toward FL's 500 mixer tracks) | Planned | Groundwork done in LIVE-03; per-track engine buffers still grow with the limits |
 | PROD-04 | Per-channel pattern length and rate, step trigger conditions | Planned | From the existing ROADMAP |
 | MIDI-04 | Capture MIDI: recover what was just played without recording (Live Capture MIDI) | Planned | Fixed-size history buffer filled off the audio thread |

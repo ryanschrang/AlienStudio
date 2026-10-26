@@ -23,7 +23,18 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 17;
+inline constexpr int sessionProjectFormatVersion = 19;   // 19: group buses (18 is the song tempo map)
+
+// A group bus slot. Slots keep their index while other buses come and go, so a track's output
+// (TrackSettings::output) and the bus's FX rack never need renumbering.
+struct SessionBus {
+    bool used{};
+    juce::String name;
+    BusSettings settings;
+    bool operator==(const SessionBus&) const = default;
+    bool valid() const { return settings.valid() && (used ? name.isNotEmpty() && name.length() <= 64 : name.isEmpty()); }
+};
+using SessionBuses = std::array<SessionBus, maxBuses>;
 
 struct SessionProjectClip {
     SharedPianoRoll pattern;   // shared with the document; empty clips share nothing at all
@@ -44,6 +55,9 @@ struct SessionProjectData {
     // Return tracks A-D and their FX. Absent before version 15: unity, centred, no FX (and every send off).
     std::array<ReturnSettings, maxReturns> returns{};
     ReturnRacks returnPlugins{};
+    // Group buses and their FX. Absent before version 19: none, so every track goes to the master.
+    SessionBuses buses{};
+    BusRacks busPlugins{};
     rack::Project channelRack = rack::Project::createDefault(); // Absent before version 7: the starting rack.
     int launchQuantizationSteps{16};
     float masterGain{1.0f}; // Absent in older files: unity.
@@ -100,7 +114,15 @@ struct SessionProjectData {
         for (const auto& pluginRack : plugins) if (!pluginRack.valid()) return false;
         for (const auto& r : returns) if (!r.valid()) return false;
         for (const auto& pluginRack : returnPlugins) if (!pluginRack.valid() || !pluginRack.instrument.descriptionXml.isEmpty()) return false;
-        // Identities are global across tracks, master and returns. Ambiguous IDs
+        for (std::size_t b = 0; b < buses.size(); ++b) {
+            const auto& pluginRack = busPlugins[b];
+            if (!buses[b].valid() || !pluginRack.valid() || !pluginRack.instrument.descriptionXml.isEmpty()
+                || (!buses[b].used && !pluginRack.effects.empty())) return false;
+        }
+        // A track can only go to a bus that exists. Buses feed only the master, so there is no cycle to check.
+        for (const auto& track : trackSettings)
+            if (track.output >= 0 && (track.output >= maxBuses || !buses[static_cast<std::size_t>(track.output)].used)) return false;
+        // Identities are global across tracks, master, returns and buses. Ambiguous IDs
         // must fail validation rather than redirect existing automation.
         std::vector<std::uint64_t> identities;
         auto uniqueRack = [&](const PluginRackState& rack) {
@@ -116,6 +138,7 @@ struct SessionProjectData {
         for (const auto& rack : plugins) if (!uniqueRack(rack)) return false;
         if (!uniqueRack(masterPlugins)) return false;
         for (const auto& rack : returnPlugins) if (!uniqueRack(rack)) return false;
+        for (const auto& rack : busPlugins) if (!uniqueRack(rack)) return false;
         if (!channelRack.valid()) return false;
         for (const auto& scene : clips) if (static_cast<int>(scene.size()) != tracks) return false;
         for (std::size_t t=0;t<trackSettings.size();++t) {
@@ -183,6 +206,22 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
         returns.add(value);
     }
     rootObject->setProperty("returns", juce::var(returns));
+    juce::Array<juce::var> buses;   // only the slots in use, each with its slot number
+    for (std::size_t b = 0; b < project.buses.size(); ++b) {
+        const auto& bus = project.buses[b];
+        if (!bus.used) continue;
+        auto value = juce::var(new juce::DynamicObject());
+        auto* object = value.getDynamicObject();
+        object->setProperty("slot", static_cast<int>(b));
+        object->setProperty("name", bus.name);
+        object->setProperty("gain", bus.settings.gain);
+        object->setProperty("pan", bus.settings.pan);
+        object->setProperty("mute", bus.settings.mute);
+        object->setProperty("solo", bus.settings.solo);
+        object->setProperty("plugins", rackToVar(project.busPlugins[b]));
+        buses.add(value);
+    }
+    rootObject->setProperty("buses", juce::var(buses));
     juce::Array<juce::var> settings;
     for (std::size_t t = 0; t < project.trackSettings.size(); ++t) {
         const auto& track = project.trackSettings[t];
@@ -197,6 +236,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
         object->setProperty("freezeScene",track.freezeScene);
         object->setProperty("armed", track.armed); object->setProperty("input", track.input);
         object->setProperty("stereoInput", track.stereoInput); object->setProperty("monitor", track.monitor);
+        object->setProperty("output", track.output);
         juce::Array<juce::var> sends;   // [level, pre-fader] for each return
         for (std::size_t r = 0; r < track.send.size(); ++r) {
             juce::Array<juce::var> send;
@@ -602,6 +642,10 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
             if (input.isInt()) track.input = static_cast<int>(input);
             if (stereoInput.isBool()) track.stereoInput = static_cast<bool>(stereoInput);
             if (monitor.isInt()) track.monitor = static_cast<int>(monitor);
+            // Absent before version 19: the master. Checked against the buses with the rest of the project.
+            const auto output = object->getProperty("output");
+            if ((formatVersion >= 19 && !output.isInt()) || (!output.isVoid() && !output.isInt())) { error = "Invalid track output."; return false; }
+            if (output.isInt()) track.output = static_cast<int>(output);
             // Sends are optional (absent before version 15: all off); when present there is one [level, pre] per return.
             if (object->hasProperty("sends")) {
                 const auto sendsValue = object->getProperty("sends");
@@ -775,6 +819,35 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
             if (!settings.valid()) { error = "A return track's level or pan is out of range."; return false; }
         }
     }
+    if (formatVersion >= 19) {
+        const auto busesValue = rootObject->getProperty("buses");
+        const auto* buses = busesValue.getArray();
+        if (buses == nullptr || buses->size() > maxBuses) { error = "Invalid group buses."; return false; }
+        for (const auto& value : *buses) {
+            const auto* object = value.getDynamicObject();
+            if (object == nullptr) { error = "Invalid group buses."; return false; }
+            const auto slot = object->getProperty("slot"), name = object->getProperty("name"), g = object->getProperty("gain"),
+                       pan = object->getProperty("pan"), mute = object->getProperty("mute"), solo = object->getProperty("solo");
+            if (!slot.isInt() || static_cast<int>(slot) < 0 || static_cast<int>(slot) >= maxBuses
+                || parsed.buses[static_cast<std::size_t>(static_cast<int>(slot))].used) { error = "Invalid group bus slot."; return false; }
+            auto& bus = parsed.buses[static_cast<std::size_t>(static_cast<int>(slot))];
+            auto& plugins = parsed.busPlugins[static_cast<std::size_t>(static_cast<int>(slot))];
+            if (!name.isString() || name.toString().trim().isEmpty() || !(g.isDouble() || g.isInt()) || !(pan.isDouble() || pan.isInt())
+                || !mute.isBool() || !solo.isBool() || !object->hasProperty("plugins")
+                || !rackFromVar(object->getProperty("plugins"), plugins) || !plugins.instrument.descriptionXml.isEmpty()) {
+                error = "Invalid group buses."; return false;
+            }
+            bus.used = true;
+            bus.name = name.toString().trim().substring(0, 64);
+            bus.settings = {static_cast<float>(static_cast<double>(g)), static_cast<float>(static_cast<double>(pan)),
+                            static_cast<bool>(mute), static_cast<bool>(solo)};
+            if (!bus.settings.valid()) { error = "A group bus's level or pan is out of range."; return false; }
+        }
+        for (std::size_t t = 0; t < parsed.trackSettings.size(); ++t) {
+            const int output = parsed.trackSettings[t].output;
+            if (output >= 0 && !parsed.buses[static_cast<std::size_t>(output)].used) { error = "A track goes to a group bus that does not exist."; return false; }
+        }
+    }
     if (formatVersion >= 17) {
         const auto* timelineObject = rootObject->getProperty("timeline").getDynamicObject();
         if (!timelineObject || !timelineObject->hasProperty("parameterAutomation")) { error = "Missing parameter automation."; return false; }
@@ -794,6 +867,9 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         const auto returns = rootObject->getProperty("returns");
         if (!returns.getArray()) { error = "Missing return tracks."; return false; }
         for (const auto& value : *returns.getArray()) if (!hasIds(value.getDynamicObject()->getProperty("plugins"))) { error = "Missing return plugin identity."; return false; }
+        if (formatVersion >= 19)
+            for (const auto& value : *rootObject->getProperty("buses").getArray())
+                if (!hasIds(value.getDynamicObject()->getProperty("plugins"))) { error = "Missing bus plugin identity."; return false; }
     }
     if (!parsed.valid()) { error = "Project settings are outside the supported range."; return false; }
     destination = std::move(parsed);

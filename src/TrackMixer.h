@@ -27,10 +27,11 @@ struct TrackSettings {
     std::array<float, maxReturns> send{};
     std::array<bool, maxReturns> sendPre{};
     int freezeScene{-1}; // >=0: rendered Session cell; original regions live in the timeline archive.
+    int output{-1};      // where the track's fader goes: -1 the master, 0.. that group bus
     bool frozen() const noexcept { return freezeScene >= 0; }
     bool valid() const noexcept {
         for (const float level : send) if (!std::isfinite(level) || level < 0 || level > 1) return false;
-        return freezeScene >= -1 && freezeScene < maxSessionScenes && instrument >= 0 && instrument <= 1 && preset >= 0 && preset < presetCount && std::isfinite(gain) && gain >= 0 && gain <= 2
+        return output >= -1 && output < maxBuses && freezeScene >= -1 && freezeScene < maxSessionScenes && instrument >= 0 && instrument <= 1 && preset >= 0 && preset < presetCount && std::isfinite(gain) && gain >= 0 && gain <= 2
             && std::isfinite(pan) && pan >= -1 && pan <= 1
             && input >= 0 && input + (stereoInput ? 1 : 0) < maxTrackInputs && monitor >= 0 && monitor <= 2;
     }
@@ -44,7 +45,7 @@ static_assert(std::atomic<float>::is_always_lock_free, "Track audio controls req
 static_assert(std::atomic<int>::is_always_lock_free, "Track audio controls require lock-free integers");
 
 struct TrackControls {
-    std::atomic<int> preset{0}, instrument{0}, input{0}, monitor{0}, freezeScene{-1};
+    std::atomic<int> preset{0}, instrument{0}, input{0}, monitor{0}, freezeScene{-1}, output{-1};
     std::atomic<float> gain{1.0f}, pan{0.0f}, peak{0.0f};
     std::atomic<float> inputPeak{0.0f};   // loudest input sample since the GUI last read it (armed or monitoring tracks)
     std::atomic<bool> mute{false}, solo{false}, armed{false}, stereoInput{false};
@@ -55,10 +56,11 @@ struct TrackControls {
                         armed.load(), input.load(), stereoInput.load(), monitor.load()};
         for (std::size_t r = 0; r < s.send.size(); ++r) { s.send[r] = send[r].load(); s.sendPre[r] = sendPre[r].load(); }
         s.freezeScene = freezeScene.load();
+        s.output = output.load();
         return s;
     }
     void set(const TrackSettings& s) noexcept {
-        freezeScene.store(s.freezeScene);
+        freezeScene.store(s.freezeScene); output.store(s.output);
         preset.store(s.preset); gain.store(s.gain); pan.store(s.pan);
         mute.store(s.mute); solo.store(s.solo); instrument.store(s.instrument);
         armed.store(s.armed); input.store(s.input); stereoInput.store(s.stereoInput); monitor.store(s.monitor);
@@ -82,6 +84,47 @@ struct ReturnControls {
     std::atomic<bool> mute{false};
     ReturnSettings snapshot() const noexcept { return {gain.load(), pan.load(), mute.load()}; }
     void set(const ReturnSettings& s) noexcept { gain.store(s.gain); pan.store(s.pan); mute.store(s.mute); }
+};
+
+// A group bus's strip: level (0..2), pan, mute and solo. Tracks whose output is the bus are summed
+// into it after their faders; it runs its FX rack and goes on to the master.
+struct BusSettings {
+    float gain{1.0f}, pan{};
+    bool mute{}, solo{};
+    bool operator==(const BusSettings&) const = default;
+    bool valid() const noexcept { return std::isfinite(gain) && gain >= 0 && gain <= 2 && std::isfinite(pan) && pan >= -1 && pan <= 1; }
+    TrackSettings asTrack() const noexcept { TrackSettings t; t.gain = gain; t.pan = pan; t.mute = mute; t.solo = solo; return t; }
+};
+
+struct BusControls {
+    std::atomic<float> gain{1.0f}, pan{0.0f}, peak{0.0f};
+    std::atomic<bool> mute{false}, solo{false};
+    std::atomic<bool> active{false};   // the bus exists; a track routed to a missing bus plays through the master
+    BusSettings snapshot() const noexcept { return {gain.load(), pan.load(), mute.load(), solo.load()}; }
+    void set(const BusSettings& s) noexcept { gain.store(s.gain); pan.store(s.pan); mute.store(s.mute); solo.store(s.solo); }
+};
+
+// Who solo leaves audible once tracks and buses can both be soloed. Soloing a track keeps the
+// bus it feeds audible; soloing a bus keeps every track that feeds it audible. Returns are
+// never silenced by solo. Outputs passed here are already resolved (-1 for the master).
+struct SoloState {
+    bool any{};
+    std::array<bool, maxBuses> busSoloed{}, fedBySoloedTrack{};
+    void addTrack(int output, bool solo) noexcept {
+        if (!solo) return;
+        any = true;
+        if (output >= 0 && output < maxBuses) fedBySoloedTrack[static_cast<std::size_t>(output)] = true;
+    }
+    void addBus(int bus, bool solo) noexcept {
+        if (!solo || bus < 0 || bus >= maxBuses) return;
+        any = true; busSoloed[static_cast<std::size_t>(bus)] = true;
+    }
+    bool trackHeard(int output, bool solo) const noexcept {
+        return !any || solo || (output >= 0 && output < maxBuses && busSoloed[static_cast<std::size_t>(output)]);
+    }
+    bool busHeard(int bus, bool solo) const noexcept {
+        return !any || solo || (bus >= 0 && bus < maxBuses && fedBySoloedTrack[static_cast<std::size_t>(bus)]);
+    }
 };
 
 // One send's level, glided over 5 ms like the fader, so turning a send knob (or muting the

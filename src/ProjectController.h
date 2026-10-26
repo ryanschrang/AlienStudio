@@ -90,12 +90,23 @@ public:
         setPluginRacks(racks, master, returnRacks());
     }
     void setPluginRacks(const std::vector<PluginRackState>& racks, const PluginRackState& master, const ReturnRacks& returns) {
+        setPluginRacks(racks, master, returns, busRacks());
+    }
+    void setPluginRacks(const std::vector<PluginRackState>& racks, const PluginRackState& master, const ReturnRacks& returns, const BusRacks& buses) {
         if (racks.size() != doc.tracks.size()) return;
         for (std::size_t t=0;t<racks.size();++t) doc.tracks[t].plugins = racks[t];
         doc.masterPlugins = master; runtimeDirty = false;
         for (std::size_t r=0;r<returns.size();++r) doc.returns[r].plugins = returns[r];
+        for (std::size_t b=0;b<buses.size();++b) if (doc.buses[b].used) doc.buses[b].plugins = buses[b];
         commit("Change plugins");
     }
+    // The group buses' FX racks (empty for unused slots), in the shape PluginHost takes them.
+    BusRacks busRacks() const {
+        BusRacks racks;
+        for (std::size_t b=0;b<racks.size();++b) if (doc.buses[b].used) racks[b] = doc.buses[b].plugins;
+        return racks;
+    }
+
     // The return tracks' FX racks, in the shape PluginHost takes them.
     ReturnRacks returnRacks() const {
         ReturnRacks racks;
@@ -189,8 +200,10 @@ public:
         if (history.currentId() == autosavedId) return;
         for (int t = 0; t < doc.trackCount(); ++t) trackSettingsEdited(t);
         for (int r = 0; r < maxReturns; ++r) returnSettingsEdited(r);
+        for (int b = 0; b < maxBuses; ++b) busSettingsEdited(b);
         masterGainEdited();
         auto project = toProjectData(doc);
+
         if (!project.valid()) {
             // Say so once; a silent failure would leave the user believing they are protected.
             if (!autosaveWarned) {
@@ -251,7 +264,12 @@ public:
         engine.activeTracks.store(doc.trackCount());
         engine.masterControls.gain.store(doc.masterGain);
         for (std::size_t r = 0; r < engine.returns.size(); ++r) engine.returns[r].set(doc.returns[r].settings);
+        for (std::size_t b = 0; b < engine.buses.size(); ++b) {
+            engine.buses[b].set(doc.buses[b].settings);
+            engine.buses[b].active.store(doc.buses[b].used);
+        }
         engine.recording.apply(doc.recording);
+
         for (std::size_t t = 0; t < engine.tracks.size(); ++t)
             for (int pad = 0; pad < drumPadCount; ++pad)
                 engine.drumKits[t].samples[pad].store(t < doc.tracks.size() ? doc.tracks[t].drumAssets[pad].get() : nullptr);
@@ -374,6 +392,59 @@ public:
         const auto next = engine.returns[static_cast<std::size_t>(r)].snapshot();
         if (next.valid()) doc.returns[static_cast<std::size_t>(r)].settings = next;
     }
+    void busSettingsEdited(int b) {
+        if (b < 0 || b >= maxBuses || !doc.buses[static_cast<std::size_t>(b)].used) return;
+        const auto next = engine.buses[static_cast<std::size_t>(b)].snapshot();
+        if (next.valid()) doc.buses[static_cast<std::size_t>(b)].settings = next;
+    }
+
+    // Group buses. A new bus takes the first free slot (its index, or -1 when all are in use);
+    // deleting one sends its tracks back to the master and drops its FX. Buses feed only the
+    // master, so no edit can make a loop. The caller commits, and rebuilds the plugin racks
+    // after a delete.
+    int addBus(const juce::String& name = {}) {
+        if (busy) return -1;
+        for (std::size_t b = 0; b < doc.buses.size(); ++b) {
+            if (doc.buses[b].used) continue;
+            const auto trimmed = name.trim().substring(0, 64);
+            doc.buses[b] = {true, trimmed.isNotEmpty() ? trimmed : nextBusName(), {}, {}};
+            pushDocumentToEngine();
+            return static_cast<int>(b);
+        }
+        return -1;
+    }
+    juce::String nextBusName() const {
+        for (int n = 1;; ++n) {
+            bool taken = false;
+            for (const auto& bus : doc.buses) taken = taken || (bus.used && bus.name == "Bus " + juce::String(n));
+            if (!taken) return "Bus " + juce::String(n);
+        }
+    }
+    bool renameBus(int b, const juce::String& name) {
+        const auto trimmed = name.trim().substring(0, 64);
+        if (busy || b < 0 || b >= maxBuses || !doc.buses[static_cast<std::size_t>(b)].used || trimmed.isEmpty()) return false;
+        doc.buses[static_cast<std::size_t>(b)].name = trimmed;
+        return true;
+    }
+    bool deleteBus(int b) {
+        if (busy || b < 0 || b >= maxBuses || !doc.buses[static_cast<std::size_t>(b)].used) return false;
+        for (int t = 0; t < doc.trackCount(); ++t) trackSettingsEdited(t);
+        for (auto& track : doc.tracks) if (track.settings.output == b) track.settings.output = -1;
+        doc.buses[static_cast<std::size_t>(b)] = {};
+        pushDocumentToEngine();
+        return true;
+    }
+    // -1 sends the track to the master. The engine hears the change at once; the caller commits.
+    bool setTrackOutput(int track, int output) {
+        if (busy || track < 0 || track >= doc.trackCount() || track >= static_cast<int>(engine.tracks.size())
+            || output < -1 || output >= maxBuses || (output >= 0 && !doc.buses[static_cast<std::size_t>(output)].used)) return false;
+        auto& settings = doc.tracks[static_cast<std::size_t>(track)].settings;
+        if (settings.output == output) return false;
+        settings.output = output;
+        engine.tracks[static_cast<std::size_t>(track)].output.store(output);
+        return true;
+    }
+
     void trackSettingsEdited(int track) {
         if (track < 0 || track >= doc.trackCount() || track >= static_cast<int>(engine.tracks.size())) return;
         auto next=engine.tracks[static_cast<std::size_t>(track)].snapshot();
@@ -768,8 +839,10 @@ public:
         if (onBeforeSnapshot) onBeforeSnapshot();
         for (int t = 0; t < doc.trackCount(); ++t) trackSettingsEdited(t);
         for (int r = 0; r < maxReturns; ++r) returnSettingsEdited(r);
+        for (int b = 0; b < maxBuses; ++b) busSettingsEdited(b);
         masterGainEdited();
         const auto project = toProjectData(doc);
+
         if (!project.valid()) {
             const auto reason = describeInvalidSession(doc);
             status("Could not save: " + reason, reason);
