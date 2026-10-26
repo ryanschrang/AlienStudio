@@ -1,5 +1,6 @@
 #pragma once
 #include "StudioWidgets.h"
+#include "WindowChrome.h"
 #include <functional>
 #include <memory>
 
@@ -67,8 +68,9 @@ private:
     public:
         Window(const juce::String& title,std::function<void()> close,std::function<void()> blur)
             :DocumentWindow(title,ui::colours::surface,DocumentWindow::allButtons),onClose(std::move(close)),onBlur(std::move(blur)) {
-            setUsingNativeTitleBar(true);
+            setUsingNativeTitleBar(true);ui::applyBrandTitleBar(*this);
         }
+        void visibilityChanged() override {DocumentWindow::visibilityChanged();ui::applyBrandTitleBar(*this);}
         void closeButtonPressed() override {if(onClose)onClose();}
         void activeWindowStatusChanged() override {if(!isActiveWindow()&&onBlur)onBlur();}
     private:
