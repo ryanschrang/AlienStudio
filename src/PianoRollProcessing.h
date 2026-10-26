@@ -162,6 +162,24 @@ private:
 };
 }
 
+// Refuse the whole operation at the MIDI boundaries so chord intervals survive.
+// Bound the argument before adding it to a pitch, including INT_MIN/INT_MAX.
+inline ProcessingResult processTranspose(PianoRollPattern& pattern, const PianoRollSelection& selection,
+                                         int semitones) noexcept {
+    using namespace piano_roll_processing_detail;
+    if (!validInputs(pattern, selection) || semitones < -127 || semitones > 127)
+        return result(ProcessingStatus::invalidInput, pattern, selection);
+    auto edited = pattern;
+    for (std::size_t i = 0; i < edited.count; ++i) {
+        auto& note = edited.notes[i];
+        if (!selection.contains(note.id)) continue;
+        const int pitch = note.pitch + semitones;
+        if (pitch < 0 || pitch > 127) return result(ProcessingStatus::invalidInput, pattern, selection);
+        note.pitch = pitch;
+    }
+    return commit(pattern, edited, selection);
+}
+
 inline ProcessingResult processStrum(PianoRollPattern& pattern, const PianoRollSelection& selection,
                                     const StrumSettings& settings = {}) noexcept {
     using namespace piano_roll_processing_detail;

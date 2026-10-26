@@ -27,7 +27,8 @@ public:
                     "New notes reuse the last edited note length and velocity. Drag to move; drag its right edge to resize. "
                     "Ctrl-click toggles note selection; Shift-drag empty space to select a group. "
                     "Delete erases selected notes. Arrow keys move selected notes; "
-                    "Shift Left or Right changes their length. Ctrl A selects all, Ctrl Z undoes, "
+                    "Shift Left or Right changes their length; Shift Up or Down transposes an octave. "
+                    "The Edit menu transposes by semitone or octave. Ctrl A selects all, Ctrl Z undoes, "
                     "and Ctrl Y redoes. Ctrl C copies, Ctrl V pastes at the amber cursor, and Ctrl D duplicates. "
                     "Click the ruler or empty grid to place the paste cursor. "
                     "Alt C opens chord stamps; Alt L opens scale guides; Alt I inverts, Alt V reverses, and Alt A arpeggiates. Tab moves between controls.");
@@ -99,7 +100,7 @@ public:
         exampleButton.setTooltip("Add an original example to an empty loop; clear existing notes first");
         exampleButton.onClick = [this] { loadExample(); };
         configureButton(editActionsButton, "Edit", "Piano roll edit actions");
-        editActionsButton.setTooltip("Select all (Ctrl A), Copy (Ctrl C), Paste (Ctrl V), Duplicate (Ctrl D)");
+        editActionsButton.setTooltip("Select all, Copy, Paste, Duplicate and Transpose selected notes");
         editActionsButton.onClick = [this] { showEditMenu(); };
 
         addAndMakeVisible(tools);
@@ -278,6 +279,29 @@ public:
         updateSelection();
     }
     bool canUndo() const noexcept { return historyPosition != 0; }
+    // Shared by the Edit menu and octave keyboard command; one history entry.
+    void transposeSelectedNotes(int semitones) {
+        if (locked) return;
+        prepareClipboardAction();
+        beginEdit();
+        const auto result = processTranspose(pattern, selection, semitones);
+        selection = result.selection;
+        if (result.changed()) {
+            changed();
+            if (const auto* moved = pattern.find(activeId)) {
+                if (moved->pitch < lowestVisiblePitch) setLowestVisible(moved->pitch);
+                if (moved->pitch > topPitch()) setLowestVisible(moved->pitch - visiblePitches + 1);
+            }
+        }
+        endEdit();
+        if (!result.changed()) {
+            statusMessage = selection.count == 0 ? "Select notes before transposing."
+                : result.status == ProcessingStatus::invalidInput
+                    ? "No changes: transposition would exceed MIDI pitches 0-127."
+                    : "No changes: the selected pitches are unchanged.";
+            updateSelection();
+        }
+    }
     bool canRedo() const noexcept { return historyPosition < history.size(); }
     bool isProcessingPanelOpen() const noexcept { return panelOpen; }
     double getInsertionStep() const noexcept { return insertionStep; }
@@ -743,6 +767,11 @@ public:
         }
         if (code != juce::KeyPress::leftKey && code != juce::KeyPress::rightKey
             && code != juce::KeyPress::upKey && code != juce::KeyPress::downKey) return false;
+        if (key.getModifiers().isShiftDown()
+            && (code == juce::KeyPress::upKey || code == juce::KeyPress::downKey)) {
+            transposeSelectedNotes(code == juce::KeyPress::upKey ? 12 : -12);
+            return true;
+        }
         beginEdit();
         const auto before = pattern;
         if (key.getModifiers().isShiftDown() && (code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey)) {
@@ -1056,6 +1085,11 @@ private:
         add(2, "Copy", "Ctrl+C", selection.count != 0);
         add(3, "Paste", "Ctrl+V", !clipboard.empty());
         add(4, "Duplicate", "Ctrl+D", selection.count != 0);
+        menu.addSeparator();
+        add(5, "Transpose up a semitone", "", selection.count != 0);
+        add(6, "Transpose down a semitone", "", selection.count != 0);
+        add(7, "Transpose up an octave", "Shift+Up", selection.count != 0);
+        add(8, "Transpose down an octave", "Shift+Down", selection.count != 0);
         juce::Component::SafePointer<PianoRollEditor> safe(this);
         menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(editActionsButton).withMinimumWidth(200),
             [safe](int action) {
@@ -1067,6 +1101,8 @@ private:
                 } else if (action == 2) safe->copyNotes();
                 else if (action == 3) safe->pasteNotes();
                 else if (action == 4) safe->duplicateNotes();
+                else if (action >= 5 && action <= 8)
+                    safe->transposeSelectedNotes(action == 5 ? 1 : action == 6 ? -1 : action == 7 ? 12 : -12);
                 if (action != 0) safe->grabKeyboardFocus();
             });
     }

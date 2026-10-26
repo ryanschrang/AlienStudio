@@ -286,7 +286,48 @@ static void performanceTransformTests() {
         && chord.find(mid)->probability == .5f, "arpeggiate sequences pitch order and preserves note expression");
 }
 
+static void transposeTests() {
+    PianoRollPattern pattern;
+    const auto a = pattern.add(60, 1.25, 2.5, .7f, .4f);
+    const auto b = pattern.add(67, 1.25, 3, .5f, .9f);
+    const auto other = pattern.add(40, 8, 1);
+    const auto before = pattern;
+    PianoRollSelection selected; selected.add(a); selected.add(b);
+    auto result = processTranspose(pattern, selected, 12);
+    require(result.changed() && result.selection.contains(a) && result.selection.contains(b)
+        && pattern.find(a)->pitch == 72 && pattern.find(b)->pitch == 79,
+        "octave transpose preserves chord intervals and selection IDs");
+    auto expected = before; expected.find(a)->pitch += 12; expected.find(b)->pitch += 12;
+    require(samePianoRollPattern(pattern, expected) && sameNote(*pattern.find(other), *before.find(other)),
+        "transpose changes only selected pitches, preserving timing and expression");
+    require(processTranspose(pattern, selected, -12).changed() && samePianoRollPattern(pattern, before),
+        "transpose down reverses transpose up exactly");
+    require(processTranspose(pattern, selected, 1).changed() && pattern.find(a)->pitch == 61
+        && processTranspose(pattern, selected, -1).changed() && samePianoRollPattern(pattern, before),
+        "semitone transposition works in both directions");
+    for (const int offset : {0, 61, -61, std::numeric_limits<int>::min(), std::numeric_limits<int>::max()}) {
+        result = processTranspose(pattern, selected, offset);
+        require(!result.changed() && samePianoRollPattern(pattern, before),
+            "zero, boundary crossing and extreme arguments never make partial edits");
+    }
+    PianoRollSelection empty;
+    require(!processTranspose(pattern, empty, 12).changed(), "empty selection never transposes all notes");
+    empty.add(999999);
+    require(processTranspose(pattern, empty, 12).selection.count == 0, "stale selection IDs are pruned");
+    selected.ids[1] = a;
+    require(processTranspose(pattern, selected, 12).status == ProcessingStatus::invalidInput
+        && samePianoRollPattern(pattern, before), "malformed selection leaves pitches unchanged");
+    pattern = {}; const auto bottom = pattern.add(0, 0, 1), top = pattern.add(127, 1, 1);
+    selected.clear(); selected.add(bottom);
+    require(processTranspose(pattern, selected, 127).changed() && pattern.find(bottom)->pitch == 127,
+        "exact upper MIDI boundary is valid");
+    selected.clear(); selected.add(top);
+    require(processTranspose(pattern, selected, -127).changed() && pattern.find(top)->pitch == 0,
+        "exact lower MIDI boundary is valid");
+}
+
 int main() {
+    transposeTests();
     selectionTests(); strumTests(); chopTests(); randomizeTests(); quantizeTests();
     performanceTransformTests(); invalidAndEmptyTests();
     std::cout << "Piano-roll selected-note processing tests passed\n";

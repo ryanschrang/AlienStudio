@@ -273,6 +273,12 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Cancel midway; confirm no final WAV or abandoned partial/journal remains. Try an existing target, a missing source, and a full/slow drive; preserve all source and existing destination audio.
 - Confirm RF64 long sources/results work in Windows and an external editor. Physical multi-hour rendering and listening remain manual checks.
 
+## Piano-roll transpose (T1-06)
+- Select a chord in Session and a Channel Rack note row. Use the piano-roll Edit menu's semitone and octave actions; confirm only selected pitches change and one Undo/Redo restores the whole chord.
+- Focus the note grid and press Shift+Up/Down; confirm octave movement. Shift+Left/Right must still resize. Focus a text field and confirm these keys do not transpose notes.
+- Include pitch 0 or 127 in a selection and transpose past the boundary; confirm the entire selection stays unchanged and no undo step is added.
+- During playback and note audition, transpose and undo; listen for the updated notes and confirm stopping releases all held notes. These listening checks remain manual.
+
 ## Song view fades and crossfades
 - Drag the fade handles of an audio clip with a real mouse at 100% and 150% display scaling; check the handles are easy to grab and do not get in the way of trimming.
 - Listen to fade ins/outs and to a one-beat and a one-bar crossfade between two different recordings: no click, dip or level jump at the join. Repeat with a long (streamed) recording as the first clip.
