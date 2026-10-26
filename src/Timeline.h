@@ -514,6 +514,24 @@ struct Timeline {
         piece.id = newId(); next.regions.push_back(piece);
         return adopt(std::move(next));
     }
+    // The song ranges, in order, where the arrangement plays take `id` as it was recorded: an unmuted clip of
+    // the take's track and source whose audio lines up with the take there (the pass placed when recording,
+    // or a comp from it). `tempo` is the song's tempo map, which turns ticks into seconds of the take's file.
+    std::vector<std::pair<std::int64_t, std::int64_t>> takePlays(std::uint32_t id, const TempoMap& tempo) const {
+        std::vector<std::pair<std::int64_t, std::int64_t>> parts;
+        const auto found = std::find_if(takes.begin(), takes.end(), [=](const Region& r) { return r.id == id; });
+        if (found == takes.end()) return parts;
+        for (const auto& r : regions) {
+            if (r.row != found->row || r.source != found->source || r.muted || r.reversed || r.loopSource) continue;
+            const auto from = std::max(r.start, found->start), to = std::min(r.end(), found->end());
+            if (to <= from) continue;
+            const double expected = found->audioOffset + tempo.secondsBetween(static_cast<double>(found->start), static_cast<double>(r.start));
+            if (std::abs(r.audioOffset - expected) > 1e-6) continue;
+            parts.emplace_back(from, to);
+        }
+        std::sort(parts.begin(), parts.end());
+        return parts;
+    }
     // A whole-bar placement of a Session clip, as the old bar-based arrangement made them.
     bool placeBars(int track, int scene, int startBar, int lengthBarCount, std::uint32_t* idOut = nullptr) {
         Region r;
