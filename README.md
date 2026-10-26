@@ -4,7 +4,7 @@
 
 Alien Studio is an **independent, original application**, not affiliated with or endorsed by any of those products. We aim to learn from broadly useful workflows without copying proprietary code, artwork, branding, or protected assets.
 
-> **Project status:** Integrated early DAW prototype with up to 16 tracks/32 scenes, 12 built-in sounds, drum sample kits/browser, an arrangement timeline (Session clips and Channel Rack patterns with snap, zoom, selection, loop ranges and markers) with WAV export, disk-streamed audio recording and offline tempo matching, six built-in stock effects (EQ, compressor, reverb, delay, limiter, filter), an FL Studio-style Channel Rack with a pattern bank, plus initial stereo VST3 instrument/FX hosting. Project v8 unifies these features with saving, portable media collection, undo/redo and recovery. Native Windows device, plugin and listening checks remain required; see [the checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
+> **Project status:** Integrated early DAW prototype with up to 16 tracks/32 scenes, 12 built-in sounds, drum sample kits/browser, an arrangement timeline (Session clips and Channel Rack patterns with snap, zoom, selection, loop ranges and markers) with WAV export, disk-streamed audio recording and offline tempo matching, seven built-in stock effects (EQ, compressor, saturator, reverb, delay, limiter, filter), an FL Studio-style Channel Rack with a pattern bank, plus initial stereo VST3 instrument/FX hosting. Project v8 unifies these features with saving, portable media collection, undo/redo and recovery. Native Windows device, plugin and listening checks remain required; see [the checklist](docs/WINDOWS_AUDIO_CHECKLIST.md).
 
 ## Product vision: three connected workspaces
 
@@ -726,7 +726,7 @@ pitch bend, mod wheel, sustain and other controllers are not stored. The take is
 kept in memory until it ends and is written to the project (and autosave) only then,
 so a crash in the middle of a take loses that take.
 
-### Stock effects: EQ, compressor, reverb, delay, limiter, filter
+### Stock effects: EQ, compressor, saturator, reverb, delay, limiter, filter
 
 Open **More... > Plugins**, pick a destination (a track or **Master FX**), choose one of the
 **[stock FX]** entries at the top of the list and press **Add FX**. They need no scanning and
@@ -739,6 +739,7 @@ up/down), **Bypass / enable**, **Remove**, undo/redo, saving, Save portable, and
 | --- | --- | --- |
 | **Alien EQ** | Low shelf, two bells (frequency, gain, Q) and high shelf, output level | The curve shows the combined response; drag a numbered handle to set frequency and gain, mouse wheel over a bell changes its width, double-click a handle to flatten it. A flat EQ is bit-exact pass-through. |
 | **Alien Compressor** | Threshold, ratio, attack, release, knee, make-up, mix | Stereo-linked peak detector, gain reduction smoothed in dB, soft knee. The meter shows the reduction; **Mix** gives parallel compression. |
+| **Alien Saturator** | Drive, character (soft, warm, hard), tone, mix, output level | Soft is a smooth tanh curve, Warm adds even harmonics like a tube stage, Hard clips. All three are clean at low levels, so Drive alone sets how hard the sound is pushed; the curve shows the result. It runs at 4x the sample rate so the harmonics it creates do not fold back as harsh aliases, and the 40-sample oversampling delay is reported as latency (the host delays every other track to match, and the dry part of Mix is delayed with it). Tone is a low-pass on the saturated sound (Open for none). Changing character crossfades over a few milliseconds. Peaks can go slightly above the clip level after the oversampling filter (about 10 % on a hard-clipped tone), so put a limiter after it if the next stage cannot take that. |
 | **Alien Reverb** | Size, damping, width, pre-delay, mix | A classic room (Freeverb-style) reverb. Its reported tail follows Size and pre-delay, so exported WAVs include the decay. |
 | **Alien Delay** | Time, tempo sync and division, feedback, ping-pong, tone, mix | With **Tempo sync** the time follows the project tempo (1/16 to one bar); ping-pong bounces the repeats left and right; Tone darkens the repeats (set to Open for none). Up to 2 s free, 4 s when synced. |
 | **Alien Limiter** | Gain, ceiling, release | A 2 ms look-ahead limiter. The output never exceeds the ceiling (measured on sample peaks; it is not an inter-sample/true-peak limiter). The look-ahead is reported as latency and the host delays every other track to match. |

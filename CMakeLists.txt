@@ -92,9 +92,7 @@ if(BUILD_TESTING)
     target_compile_definitions(ToneEngineTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
     target_link_libraries(ToneEngineTests PRIVATE juce::juce_audio_processors juce::juce_audio_devices juce::juce_audio_basics)
     add_test(NAME ToneEngineTests COMMAND ToneEngineTests)
-    # Offline rendering takes about 25 seconds in local Debug builds; slower
-    # hosted runners need headroom. Keep Release's tighter deadline unchanged.
-    set_tests_properties(ToneEngineTests PROPERTIES TIMEOUT "$<IF:$<CONFIG:Debug>,120,30>")
+    set_tests_properties(ToneEngineTests PROPERTIES TIMEOUT 120)   # 12-30 s in a Debug build; 30 s was timing out on CI runners
 
     add_executable(TimelinePlaybackTests tests/TimelinePlaybackTests.cpp)
     target_include_directories(TimelinePlaybackTests PRIVATE src)
