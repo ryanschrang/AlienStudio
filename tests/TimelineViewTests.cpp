@@ -2037,6 +2037,207 @@ static void takeCompChecks() {
         std::getenv("ALIEN_SNAPSHOT_DIR"), "recording-takes.png");
 }
 
+// ---- take lanes ------------------------------------------------------------------------------------------------------
+static std::shared_ptr<SessionAudioClip> toneClip(int seconds, float level) {
+    auto audio = std::make_shared<SessionAudioClip>();
+    audio->sampleRate = 8000; audio->channels = 1; audio->frames = static_cast<std::size_t>(seconds) * 8000;
+    audio->left.resize(audio->frames);
+    for (std::size_t i = 0; i < audio->left.size(); ++i) audio->left[i] = level * std::sin(static_cast<float>(i) * 0.2f);
+    audio->buildWaveform();
+    return audio;
+}
+static std::vector<std::pair<std::int64_t, std::int64_t>> plays(const Rig& rig, std::uint32_t take) {
+    return rig.t().takePlays(take, rig.controller.songTempo());
+}
+using Parts = std::vector<std::pair<std::int64_t, std::int64_t>>;
+
+static void takeLaneChecks() {
+    auto rig = std::make_unique<Rig>();
+    auto& c = rig->c;
+    rig->sources();
+    c.setSnap(Snap::sixteenth);
+    constexpr int rh = TimelineCanvas::rowHeight, lh = TimelineCanvas::takeLaneHeight;
+    const auto header = [&](int track) { return juce::Point<int>{40, c.rowTop(c.displayRowOf(track)) + 20}; };
+    const auto lane = [&](std::int64_t tick, int track, int index) {
+        return juce::Point<int>{juce::roundToInt(c.xForTick(static_cast<double>(tick))), c.takeLaneBounds(track, index).getCentreY()};
+    };
+
+    // A track without takes has no lanes, and cannot open them.
+    const int plainHeight = c.contentHeight();
+    require(c.takesOf(2).empty() && !c.toggleTakeLanes(2) && c.takeLaneCount(2) == 0 && c.blockHeight(2) == rh, "no takes: no lanes");
+    rig->rightClick(header(2));
+    auto headerItems = rig->menu.items();
+    const auto* showItem = entry(headerItems, TimelineCanvas::cmdTakeLanes);
+    require(showItem != nullptr && !showItem->enabled, "the track menu cannot show the lanes of a track without takes");
+
+    // Two single passes on track 3, from two recorded files (scenes 0 and 1); the later one plays.
+    require(rig->controller.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("timeline-view-take-2.wav"), 2, 1, toneClip(4, 0.8f)),
+            "install a second take's audio");
+    for (const int scene : {0, 1})
+        require(rig->controller.editTimeline("Take fixture", [=](tl::Timeline& t) {
+            tl::Region take; take.row = 2; take.source = scene; take.length = 2 * bar;
+            return t.recordTake(take);
+        }), "fixture: a recorded pass");
+    rig->view.refresh();
+    const auto first = rig->t().takes[0].id, second = rig->t().takes[1].id;
+    require(plays(*rig, first).empty() && plays(*rig, second) == Parts{{0, 2 * bar}}, "only the last pass plays");
+    require(c.takeLaneCount(2) == 0 && c.contentHeight() == plainHeight, "lanes start hidden");
+
+    // The header button shows the lanes; it is a view setting, not an undo step.
+    const auto document = rig->t();
+    const auto undoBefore = rig->controller.undoLabel();
+    const auto rowBelow = c.rowTop(3);
+    rig->press(c.takeLanesButtonRect(2).getCentre());
+    require(c.takeLanesShown(2) && c.takeLaneCount(2) == 2 && c.blockHeight(2) == rh + 2 * lh, "the header button opens one lane per take");
+    require(rig->t() == document && rig->controller.undoLabel() == undoBefore, "showing lanes changes nothing in the song or the undo history");
+    require(c.rowTop(3) == rowBelow + 2 * lh && c.contentHeight() == plainHeight + 2 * lh, "the rows below move down by the lanes");
+    require(c.rowTop(2) + rh == c.takeLaneBounds(2, 0).getY() && c.takeLaneBounds(2, 1).getY() == c.takeLaneBounds(2, 0).getBottom(), "lanes sit under the row, in order");
+    for (int y = c.rowTop(2); y < c.rowTop(3); ++y) require(c.displayRowAt(y) == 2, "every pixel of the row and its lanes belongs to it");
+    require(c.displayRowAt(c.rowTop(3)) == 3 && c.displayRowAt(c.rowTop(1)) == 1, "the rows around it are where they were drawn");
+    for (int d = 0; d + 1 < c.displayRowCount(); ++d) require(c.rowTop(d + 1) - c.rowTop(d) == c.blockHeight(d), "rows and lanes tile");
+    tl::Region below; below.row = 3; below.start = 0; below.length = bar;
+    require(static_cast<int>(c.regionBounds(below).getY()) == c.rowTop(3) + 3, "a clip below the lanes is drawn on its own row");
+
+    // Hit-testing: the lanes and their labels are takes; the row itself is unchanged.
+    auto hit = c.hitTest(lane(bar / 2, 2, 0));
+    require(hit.zone == Zone::take && hit.take == first && hit.takeLane == 0 && hit.displayRow == 2, "the first lane is the first take");
+    hit = c.hitTest(lane(bar / 2, 2, 1));
+    require(hit.zone == Zone::take && hit.take == second && hit.takeLane == 1, "the second lane is the second take");
+    hit = c.hitTest({30, c.takeLaneBounds(2, 1).getCentreY()});
+    require(hit.zone == Zone::take && hit.take == second, "a lane's label in the header is its take");
+    require(c.hitTest(rig->at(bar / 2, 2)).zone == Zone::region, "the clip on the row is still a clip");
+    require(c.hitTest(rig->at(bar / 2, 3)).zone == Zone::lane && c.hitTest(rig->at(bar / 2, 3)).displayRow == 3, "the row below is still its own row");
+    require(c.hitTest(header(3)).zone == Zone::header && c.hitTest(header(3)).displayRow == 3, "the header below is its own track");
+    const auto box = c.takeBounds(first);
+    require(std::abs(box.getX() - static_cast<float>(c.xForTick(0))) < 0.5f && std::abs(box.getRight() - static_cast<float>(c.xForTick(2.0 * bar))) < 0.5f
+            && c.takeLaneBounds(2, 0).toFloat().contains(box), "a take is drawn at its song position, inside its lane");
+
+    // A click picks a take (for the menu) and plays from there; nothing is edited.
+    rig->press(lane(bar, 2, 0));
+    require(c.selectedTakeId() == first && c.cursorTick() == bar && rig->t() == document, "a click on a lane picks its take");
+
+    // A drag across a lane comps that range from the take, as one undo step, keeping the take.
+    const auto takes = rig->t().takes;
+    rig->drag(lane(bar / 2, 2, 0), {lane(bar, 2, 0), lane(3 * bar / 2, 2, 0)});
+    require(rig->controller.undoLabel() == "Comp recording take" && rig->t().takes == takes, "a drag comps through the take path and keeps the takes");
+    const auto* comped = rig->t().regionAt(2, bar);
+    require(comped != nullptr && comped->source == 0 && comped->start == bar / 2 && comped->length == bar, "the dragged range now plays the first take");
+    require(std::abs(comped->audioOffset - 1.0) < 1e-9, "the comp starts one second into the take's file (half a bar at 120 BPM)");
+    require(comped->fadeIn > 0 && comped->fadeOut > 0, "the comp's edges get short fades");
+    require(plays(*rig, first) == Parts{{bar / 2, 3 * bar / 2}} && plays(*rig, second) == Parts{{0, bar / 2}, {3 * bar / 2, 2 * bar}},
+            "each lane knows which of its parts plays");
+    require(rig->oneUndoRestores(document, true), "one undo takes the comp back");
+    // Right to left, and past the take's end: the range is clamped to the take.
+    const auto comped1 = rig->t();
+    rig->drag(lane(3 * bar, 2, 0), {lane(5 * bar / 2, 2, 0), lane(7 * bar / 4, 2, 0)});
+    require(plays(*rig, first) == Parts{{bar / 2, 3 * bar / 2}, {7 * bar / 4, 2 * bar}}, "a drag from past the end, leftwards, comps up to the take's end");
+    require(rig->oneUndoRestores(comped1), "and is one undo step");
+
+    // The playing part of a lane is drawn brighter than the rest.
+    {
+        ui::StudioLookAndFeel look;
+        juce::LookAndFeel::setDefaultLookAndFeel(&look);
+        const auto image = c.createComponentSnapshot(c.getLocalBounds(), true, 1.0f);
+        const auto lit = c.takeBounds(first).toNearestInt().withX(juce::roundToInt(c.xForTick(bar / 2.0)) + 2).withWidth(juce::roundToInt(bar * c.pixelsPerTick()) - 4);
+        const auto dim = lit.withX(juce::roundToInt(c.xForTick(1.5 * bar)) + 2).withWidth(juce::roundToInt(bar / 2.0 * c.pixelsPerTick()) - 4);
+        const auto bright = ui::trackColour(rig->controller.document().tracks[2].colour);
+        const int litPixels = pixelsOfColour(image, lit, bright, 90), dimPixels = pixelsOfColour(image, dim, bright, 90);
+        require(litPixels > 40 && litPixels > 4 * dimPixels, "the part of a take that plays is highlighted");
+        juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
+    }
+
+    // The lane menu.
+    rig->rightClick(lane(bar, 2, 1));
+    auto items = rig->menu.items();
+    require(c.selectedTakeId() == second && entry(items, TimelineCanvas::cmdPlayTake) && entry(items, TimelineCanvas::cmdPlayTake)->enabled
+            && entry(items, TimelineCanvas::cmdForgetTake) && entry(items, TimelineCanvas::cmdForgetTake)->enabled, "a lane offers its take");
+    require(entry(items, TimelineCanvas::cmdPlayTakeLoop) && !entry(items, TimelineCanvas::cmdPlayTakeLoop)->enabled, "a loop range beyond the take cannot be comped");
+    rig->menu.done(TimelineCanvas::cmdPlayTake);
+    require(rig->controller.undoLabel() == "Comp recording take" && plays(*rig, second) == Parts{{0, 2 * bar}} && plays(*rig, first).empty(),
+            "Play this take puts all of it back");
+    require(rig->controller.editTimeline("Loop", [](tl::Timeline& t) { return t.setLoop(bar / 4, bar / 2); }), "set a loop inside the take");
+    rig->rightClick(lane(bar, 2, 0));
+    require(entry(rig->menu.items(), TimelineCanvas::cmdPlayTakeLoop)->enabled, "a loop range inside the take can be comped");
+    rig->menu.done(TimelineCanvas::cmdPlayTakeLoop);
+    require(plays(*rig, first) == Parts{{bar / 4, bar / 2}}, "the loop range plays the first take");
+    const auto regions = rig->t().regions;
+    rig->rightClick(lane(bar, 2, 0));
+    rig->menu.done(TimelineCanvas::cmdForgetTake);
+    require(rig->controller.undoLabel() == "Forget recording take" && rig->t().takes.size() == 1 && rig->t().regions == regions,
+            "Forget take drops the take, not what plays");
+    require(c.takeLaneCount(2) == 1 && c.contentHeight() == plainHeight + lh && c.hitTest(lane(bar, 2, 0)).take == second, "its lane goes; the next moves up");
+    require(rig->controller.undo(), "undo the forget");
+    rig->view.refresh();
+    require(c.takeLaneCount(2) == 2, "undo brings its lane back");
+    rig->rightClick(lane(bar, 2, 1));
+    rig->menu.done(TimelineCanvas::cmdTakeLanes);
+    require(!c.takeLanesShown(2) && c.contentHeight() == plainHeight, "Hide take lanes closes them");
+
+    // The track menu shows and hides them too, ticked while shown.
+    rig->rightClick(header(2));
+    headerItems = rig->menu.items();
+    showItem = entry(headerItems, TimelineCanvas::cmdTakeLanes);
+    require(showItem != nullptr && showItem->enabled && showItem->text.contains("2"), "the track menu offers the lanes, with the take count");
+    rig->menu.done(TimelineCanvas::cmdTakeLanes);
+    require(c.takeLaneCount(2) == 2, "and opens them");
+    auto* vertical = scrollBar(rig->view, true);
+    require(vertical != nullptr && static_cast<int>(vertical->getMaximumRangeLimit()) == std::max(c.contentHeight(), c.laneAreaHeight()), "the scroll bar covers the lanes");
+    c.scrollRowIntoView(tl::rackRowBase + 3);
+    require(c.rowTop(c.displayRowOf(tl::rackRowBase + 3)) + rh <= c.getHeight(), "the last row can still be scrolled into view");
+    c.setScrollY(0);
+
+    // Lanes hide when the track has no takes left, and are gone with the track.
+    require(c.forgetTake(first) && c.forgetTake(second), "forget both takes from their lanes");
+    require(c.takeLaneCount(2) == 0 && c.blockHeight(2) == rh && c.contentHeight() == plainHeight, "a track without takes shows no lanes");
+    require(c.hitTest({c.takeLanesButtonRect(2).getCentreX(), c.takeLanesButtonRect(2).getCentreY()}).zone == Zone::header, "and no lane button");
+    require(rig->controller.undo() && rig->controller.undo(), "bring the takes back");
+    rig->view.refresh();
+    require(c.takeLaneCount(2) == 2, "the lanes come back with them");
+    require(rig->deleteTrack(2), "delete the track");
+    rig->view.refresh();
+    require(rig->valid() && rig->t().takes.empty() && c.takeLaneCount(2) == 0 && c.contentHeight() == c.displayRowCount() * rh, "deleting a track takes its lanes");
+    std::cout << "PASS: take lanes\n";
+}
+
+static void loopPassLaneChecks() {
+    auto rig = std::make_unique<Rig>();
+    auto& c = rig->c;
+    rig->sources();
+    c.setSnap(Snap::sixteenth);
+    // One loop recording of three one-bar passes from one 6-second file; the last pass plays.
+    require(rig->controller.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("timeline-view-loop-take.wav"), 1, 0, toneClip(6, 0.6f)),
+            "install the loop recording");
+    tl::Ids ids;
+    require(rig->controller.editTimeline("Loop take fixture", [&](tl::Timeline& t) {
+        std::vector<tl::Region> passes;
+        for (int pass = 0; pass < 3; ++pass) {
+            tl::Region r; r.row = 1; r.source = 0; r.start = bar; r.length = bar; r.audioOffset = 2.0 * pass;
+            passes.push_back(r);
+        }
+        return t.recordTakes(passes, 2, &ids);
+    }), "fixture: three loop passes");
+    rig->view.refresh();
+    require(ids.size() == 3 && c.toggleTakeLanes(1) && c.takeLaneCount(1) == 3, "a loop recording opens one lane per pass");
+    for (int pass = 0; pass < 3; ++pass) {
+        const auto hit = c.hitTest({juce::roundToInt(c.xForTick(1.5 * bar)), c.takeLaneBounds(1, pass).getCentreY()});
+        require(hit.zone == Zone::take && hit.take == ids[static_cast<std::size_t>(pass)], "passes are in the order they were played");
+        require(std::abs(c.takeBounds(ids[static_cast<std::size_t>(pass)]).getX() - static_cast<float>(c.xForTick(static_cast<double>(bar)))) < 0.5f,
+                "every pass is drawn at the loop's position");
+    }
+    require(plays(*rig, ids[0]).empty() && plays(*rig, ids[1]).empty() && plays(*rig, ids[2]) == Parts{{bar, 2 * bar}}, "the last pass plays");
+    // Comp the middle of the second pass: its audio comes from that pass's part of the file.
+    const auto before = rig->t();
+    const auto y = c.takeLaneBounds(1, 1).getCentreY();
+    rig->drag({juce::roundToInt(c.xForTick(1.25 * bar)), y}, {{juce::roundToInt(c.xForTick(1.75 * bar)), y}});
+    const auto* comped = rig->t().regionAt(1, 3 * bar / 2);
+    require(comped != nullptr && comped->start == 5 * bar / 4 && comped->length == bar / 2 && std::abs(comped->audioOffset - 2.5) < 1e-9,
+            "a comp from the second pass reads 2.5 s into the file");
+    require(rig->t().takes == before.takes && plays(*rig, ids[1]) == Parts{{5 * bar / 4, 7 * bar / 4}}
+            && plays(*rig, ids[2]) == Parts{{bar, 5 * bar / 4}, {7 * bar / 4, 2 * bar}}, "the passes are kept and show what plays");
+    require(rig->oneUndoRestores(before), "the comp is one undo step");
+    std::cout << "PASS: loop passes in take lanes\n";
+}
+
 static void freezeMenuChecks() {
     auto rig=std::make_unique<Rig>();rig->song();auto& c=rig->c;
     int frozen=-1,unfrozen=-1;
@@ -2092,6 +2293,8 @@ int main() {
     freezeMenuChecks();
     sendAutomationEditorChecks();
     takeCompChecks();
+    takeLaneChecks();
+    loopPassLaneChecks();
     geometryChecks();
     snapChecks();
     placingChecks();

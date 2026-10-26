@@ -306,6 +306,12 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Repeat with a count-in, with punch on, at 44.1 and 96 kHz, and with a large audio buffer: each pass lines up with the beat (latency compensation), with no click or gap at the loop start.
 - Undo removes every pass in one step; redo brings them back. Record a long session of short loops until recording stops by itself after 64 passes.
 
+## Take lanes
+- After a loop recording, click the small take-count button in the track's header (or right-click the header and choose "Show take lanes"): one lane per pass opens under the track, in recording order, each with its waveform at the loop's position; the last pass is drawn bright and labelled "(playing)".
+- Drag across part of an earlier pass with a real mouse: the dragged range is outlined while dragging, and on release that part plays from the earlier pass, in time, with no click at either edge. The pass's lane now shows that part bright and the last pass shows the rest. One Undo returns to the previous comp; the passes are unchanged.
+- Right-click a lane: "Play this take" puts the whole pass back; "Play this take in the loop range" comps only the loop; "Forget take" removes the lane (Undo brings it back); "Hide take lanes" closes them. Check the Takes panel stays in step.
+- With lanes open, scroll, zoom, drag clips on the rows below, place clips by double-click, and add tempo and time-signature changes: the rows, rulers and lanes stay lined up. Reopen the project: lanes start closed (they are not saved).
+
 ## Song time signatures
 - In the Song view, right-click the ruler at bar 5 and choose "Time signature from bar 5...", enter 3/4; add 6/8 at bar 9 and 7/8 at bar 13. The ruler numbers, beat lines and the transport clock follow each bar's meter.
 - Turn the metronome on and play through the changes: the accent falls on each bar's first beat, 3/4 clicks three quarters, 6/8 clicks six eighths, with no doubled or missing click at a change or a loop wrap.
