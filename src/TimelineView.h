@@ -1634,11 +1634,11 @@ private:
             const float mid = inner.getCentreY(), half = inner.getHeight() * 0.5f;
             g.setColour(ink);
             const int first = static_cast<int>(std::floor(visibleLeft)), last = static_cast<int>(std::ceil(visibleRight));
+            const auto tempo = controller.songTempo();
+            const double start = static_cast<double>(r.start);
             for (int px = first; px <= last; ++px) {
                 const double tickInRegion = (static_cast<double>(px) - x0) / ppt;
                 if (tickInRegion < 0 || tickInRegion >= static_cast<double>(r.length)) continue;
-                const auto tempo = controller.songTempo();
-                const double start = static_cast<double>(r.start);
                 const double seconds = r.audioOffset + tempo.secondsBetween(start, start + tickInRegion);
                 if (seconds >= duration) break;
                 const double secondsNext = r.audioOffset + tempo.secondsBetween(start, start + tickInRegion + 1.0 / ppt);
