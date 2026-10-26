@@ -32,6 +32,9 @@ inline const juce::Colour mute     {0xffffc94a};
 inline const juce::Colour solo     {0xff5aa9ff};
 inline const juce::Colour lcd      {0xff0a1411};
 inline const juce::Colour lcdText  {0xff8ff5d6};
+// Window title bars: the royal blue of the logo's starfield.
+inline const juce::Colour titleBar    {0xff0310a8};
+inline const juce::Colour titleBarText{0xffffffff};
 } // namespace colours
 
 inline juce::Colour trackColour(int index) {
