@@ -158,7 +158,7 @@ inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
     auto sameSettings = [](const TrackSettings& x, const TrackSettings& y) {
         return x.preset == y.preset && x.gain == y.gain && x.pan == y.pan && x.mute == y.mute && x.solo == y.solo && x.instrument == y.instrument
             && x.armed == y.armed && x.input == y.input && x.stereoInput == y.stereoInput && x.monitor == y.monitor
-            && x.send == y.send && x.sendPre == y.sendPre;
+            && x.send == y.send && x.sendPre == y.sendPre && x.freezeScene == y.freezeScene;
     };
     if (a.masterPlugins != b.masterPlugins || a.masterGain != b.masterGain || !(a.recording == b.recording) || a.returns != b.returns) return false;
     if (!a.channelRack.sameContent(b.channelRack)) return false; // which pattern is selected is not an edit

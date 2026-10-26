@@ -212,7 +212,22 @@ static void stemTests() {
     root.deleteRecursively();
 }
 
+static void freezeBuiltinRelease() {
+    Song song;song.playback->timeline.setLengthBars(1);
+    check(song.playback->timeline.place(region(0,0,0,ticksPerBar)),"freeze synth source");
+    alien::PianoRollPattern notes;notes.loopSteps=16;notes.add(60,0,16,1);song.playback->clips[0][0].pattern=notes;
+    song.project->trackSettings[0].preset=5;finish(song);
+    alien::WavExportOptions options;options.freezeTrack=0;options.toTick=ticksPerBar;
+    const auto cached=render(song,options);
+    check(cached.frames==96000+57600 && energy(cached,96000,116000)>0.01,"factory release renders after final note without transport hard-stop");
+    song.project->trackSettings[0].gain=0.01f;song.project->trackSettings[0].pan=-1;
+    alien::automation::Lane lane{0,alien::automation::Parameter::volume};lane.put({0,0});
+    song.playback->timeline.automationLanes.push_back(lane);finish(song);
+    check(maxDifference(cached,render(song,options))<1e-7,"freeze capture excludes fader, pan and automation");
+}
+
 int main() {
+    freezeBuiltinRelease();
     stemTests();
     std::atomic<bool> cancelled{false};
     juce::String error;

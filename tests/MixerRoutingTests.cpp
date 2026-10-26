@@ -30,6 +30,7 @@ public:
     void prepareToPlay(double, int) override { position = 0; ring.fill(0); active = false; }
     void releaseResources() override {}
     void processBlock(juce::AudioBuffer<float>& b, juce::MidiBuffer& midi) override {
+        ++processCalls;
         auto it = midi.begin(); const auto end = midi.end();
         for (int i = 0; i < b.getNumSamples(); ++i) {
             while (it != end && (*it).samplePosition <= i) { const auto m = (*it).getMessage(); if (m.isNoteOn()) active = true; else if (m.isNoteOff() || m.isAllNotesOff() || m.isAllSoundOff()) active = false; ++it; }
@@ -44,6 +45,7 @@ public:
     const juce::String getProgramName(int) override { return {}; } void changeProgramName(int, const juce::String&) override {}
     bool hasEditor() const override { return false; } juce::AudioProcessorEditor* createEditor() override { return nullptr; }
     void getStateInformation(juce::MemoryBlock&) override {} void setStateInformation(const void*, int) override {}
+    int processCalls{};
     bool synth{}, active{}; float factor; int delay{}, position{}; std::array<float, 32> ring{};
 };
 
@@ -171,7 +173,7 @@ static void projectFormat() {
     require(alien::parseSessionProject(json, back, error), "and parses");
     require(back.trackSettings[1].send == project.trackSettings[1].send && back.trackSettings[1].sendPre == project.trackSettings[1].sendPre
             && back.returns == project.returns && back.returnPlugins == project.returnPlugins, "sends, return strips and return FX round-trip");
-    require(juce::JSON::parse(json).getProperty("version", 0) == juce::var(15), "projects are written as version 15");
+    require(juce::JSON::parse(json).getProperty("version", 0) == juce::var(alien::sessionProjectFormatVersion), "projects are written using the current format version");
     {   // Version 12 and older: no returns and no sends.
         auto old = juce::JSON::parse(json);
         old.getDynamicObject()->setProperty("version", 12);
@@ -314,8 +316,103 @@ static void stemPluginFailure() {
     require(!master.effects[0].bypass, "export restores the supplied engine's master bypass state");
 }
 
+static void freezeWorkflow() {
+    auto engine=std::make_unique<ToneEngine>();engine->prepare(48000);
+    alien::ProjectController c(*engine);c.pushDocumentToEngine();
+    alien::PianoRollPattern notes;notes.loopSteps=16;notes.add(60,0,16,1);
+    c.setClipPattern(0,0,notes,false);c.commit("Notes");
+    require(c.editTimeline("Length",[](alien::timeline::Timeline& t){return t.setLengthBars(1);}),"short freeze song");
+    require(c.placeRegion(0,0,0),"freeze source region");
+    auto project = alien::toProjectData(c.document());
+    project.plugins[0].effects.push_back({"<PLUGIN name=\"Original FX\"/>", {}, false});
+    const auto instance = project.plugins[0].effects[0].instanceId;
+    c.setPluginRacks(project.plugins, project.masterPlugins);
+    require(c.editTimeline("Parameter automation", [=](alien::timeline::Timeline& t) {
+        t.parameterLanes.push_back({{instance, "cutoff"}, true, {{0, 0.25f}, {960, 0.75f}}}); return true;
+    }), "parameter lane added before freeze");
+    const auto original=c.timeline();
+    auto cached=std::make_shared<alien::SessionAudioClip>();cached->sampleRate=48000;cached->channels=1;cached->frames=144000;
+    cached->left.assign(cached->frames,0.4f);cached->buildWaveform();
+    const auto file=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("AlienFreezeWorkflow",".wav");
+    {auto writer=alien::openExportWriter(file,true);juce::AudioBuffer<float> data(2,144000);data.clear();
+     require(writer && writer->writeFromAudioSampleBuffer(data,0,144000) && writer->flush(),"freeze fixture WAV");}
+    require(c.installFrozenTrack(0,file,cached,original) && c.isTrackFrozen(0),"install freezes one track");
+    require(c.undoLabel()=="Freeze track" && c.timeline().frozenOriginals.size()==1 && c.timeline().lengthBars==2,"freeze archives source and extends for tail");
+    const auto frozen=c.timeline();
+    require(frozen.parameterLanes == original.parameterLanes
+        && c.document().tracks[0].plugins.effects[0].instanceId == instance,
+        "freezing retains saved parameter target and original plugin identity");
+    require(!c.editTimeline("Delete cache",[](alien::timeline::Timeline& t){t.regions.clear();return true;}),"frozen cache is read-only");
+    require(!c.removeAudio(0,c.document().tracks[0].settings.freezeScene) && !c.deleteScene(0),"original and cache source cells protected");
+    alien::PianoRollPattern changed;changed.add(80,0,1);c.setClipPattern(0,0,changed,false);
+    require(c.document().clip(0,0).notes().notes[0].pitch==60,"original MIDI is read-only while frozen");
+    require(c.undo() && !c.isTrackFrozen(0) && c.timeline()==original && file.existsAsFile(),"undo freeze restores original without deleting file");
+    require(c.redo() && c.isTrackFrozen(0) && c.timeline()==frozen,"redo freeze restores cache");
+    require(c.moveScene(0,1),"reorder scenes with frozen cache");c.commit("Move scene");
+    require(c.document().tracks[0].settings.freezeScene==0 && engine->tracks[0].freezeScene.load()==0
+        && alien::toProjectData(c.document()).valid(),"frozen cache references follow reordered scenes");
+    require(c.undo() && c.timeline()==frozen,"scene reorder undo restores frozen references");
+
+    require(c.unfreezeTrack(0) && !c.isTrackFrozen(0) && c.timeline().lengthBars==1
+        && c.timeline().find(original.regions.front().id)!=nullptr && c.timeline().frozenOriginals.empty(),"unfreeze restores originals and song length");
+    require(c.timeline().parameterLanes == original.parameterLanes
+        && c.document().tracks[0].plugins.effects[0].instanceId == instance,
+        "unfreeze restores the same plugin automation target");
+    require(c.undo() && c.isTrackFrozen(0),"unfreeze is undoable");
+    c.setBpm(130);c.commit("Tempo");
+    require(!c.anyFrozenTrack() && c.document().bpm==130 && c.timeline().frozenOriginals.empty(),"tempo change safely unfreezes");
+    require(c.undo() && c.isTrackFrozen(0) && c.document().bpm==120,"tempo undo restores freeze state");
+    require(alien::toProjectData(c.document()).valid(),"frozen controller state remains serializable");
+    file.deleteFile();
+}
+static void freezeAudioAndSuspension() {
+    auto project=std::make_unique<alien::SessionProjectData>();
+    auto song=std::make_unique<alien::ArrangementPlayback>();song->timeline.setLengthBars(1);
+    alien::timeline::Region region;region.row=0;region.source=0;
+    require(song->timeline.place(region),"freeze render region");project->timeline=song->timeline;
+    alien::PianoRollPattern notes;notes.loopSteps=16;notes.add(60,0,16,1);song->clips[0][0].pattern=notes;
+    project->trackSettings[0].gain=0.1f;project->trackSettings[0].pan=0.5f;
+    auto renderer=std::make_unique<ToneEngine>();auto& rack=renderer->plugins->racks[0];
+    rack.instrumentAssigned=true;rack.instrument.processor=std::make_unique<TestProcessor>(true);
+    rack.effectCount=1;rack.effects[0].processor=std::make_unique<TestProcessor>(false,12.0f,4);
+    const auto file=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("AlienFreezeAudio",".wav");
+    alien::WavExportOptions options;options.freezeTrack=0;options.toTick=alien::timeline::ticksPerBar;
+    alien::DrumSamplePointers drums{};std::atomic<bool> stop{false};juce::String error;
+    require(alien::exportArrangementWav(file,*project,*song,drums,stop,error,renderer.get(),options),error.toRawUTF8());
+    juce::AudioFormatManager formats;formats.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
+    require(reader && reader->usesFloatingPointData && reader->bitsPerSample==32,"freeze writes float32 headroom");
+    juce::AudioBuffer<float> probe(2,512);require(reader->read(&probe,0,512,512,true,true),"read frozen audio");
+    require(approx(probe.getSample(0,200),2.4f) && approx(probe.getSample(1,200),2.4f),"cache includes FX but ignores fader/pan and preserves values above full scale");
+    reader.reset();auto imported=alien::importSessionAudioClip(file);require(imported.clip!=nullptr,"import frozen WAV");
+    auto live=std::make_unique<ToneEngine>();live->prepare(48000);alien::ProjectController c(*live);c.pushDocumentToEngine();
+    c.setClipPattern(0,0,notes,false);c.commit("Notes");require(c.placeRegion(0,0,0),"place original notes");
+    auto& liveRack=live->plugins->racks[0];liveRack.instrumentAssigned=true;
+    auto instrument=std::make_unique<TestProcessor>(true);auto* instrumentRaw=instrument.get();liveRack.instrument.processor=std::move(instrument);
+    auto effect=std::make_unique<TestProcessor>(false,12.0f,4);auto* effectRaw=effect.get();liveRack.effects[0].processor=std::move(effect);liveRack.effectCount=1;
+    live->plugins->prepare(48000);
+    live->tracks[0].gain.store(0.1f);live->tracks[0].pan.store(0.5f);c.trackSettingsEdited(0);c.commit("Mix");
+    const auto expected=c.timeline();require(c.installFrozenTrack(0,file,imported.clip,expected),"install rendered cache");
+    live->patternMode.store(2);live->timelineSeek.store(0);live->playing.store(true);
+    std::array<float,512> l{},right{};float* outputs[]{l.data(),right.data()};
+    for(int block=0;block<24;++block)live->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,512,{});
+    require(instrumentRaw->processCalls==0 && effectRaw->processCalls==0,"frozen track never processes original instrument/effects");
+    require(approx(l[400],0.12f) && approx(right[400],0.24f),"cache gain compensation preserves audible track level");
+    const auto before=allocations;live->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,512,{});
+    require(before==allocations,"frozen playback allocates nothing in callback");
+    require(c.editTimeline("Frozen automation",[](alien::timeline::Timeline& t){alien::automation::Lane lane{0,alien::automation::Parameter::volume};lane.put({0,0.2f});t.automationLanes.push_back(lane);return true;}),"automation remains editable");
+    live->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,512,{});
+    require(approx(l[400],0.24f) && approx(right[400],0.48f),"automation applies once after frozen cache");
+    require(c.unfreezeTrack(0),"restore original DSP");live->timelineSeek.store(0);
+    live->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,512,{});
+    require(instrumentRaw->processCalls>0 && effectRaw->processCalls>0,"unfreeze resumes original processing");
+    imported.clip.reset();file.deleteFile();
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    freezeWorkflow();
+    freezeAudioAndSuspension();
     stemPluginFailure();
     stemCaptureTiming();
     sendLevels();

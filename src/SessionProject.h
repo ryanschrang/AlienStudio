@@ -23,7 +23,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 15;
+inline constexpr int sessionProjectFormatVersion = 17;
 
 struct SessionProjectClip {
     SharedPianoRoll pattern;   // shared with the document; empty clips share nothing at all
@@ -100,8 +100,35 @@ struct SessionProjectData {
         for (const auto& pluginRack : plugins) if (!pluginRack.valid()) return false;
         for (const auto& r : returns) if (!r.valid()) return false;
         for (const auto& pluginRack : returnPlugins) if (!pluginRack.valid() || !pluginRack.instrument.descriptionXml.isEmpty()) return false;
+        // Identities are global across tracks, master and returns. Ambiguous IDs
+        // must fail validation rather than redirect existing automation.
+        std::vector<std::uint64_t> identities;
+        auto uniqueRack = [&](const PluginRackState& rack) {
+            auto unique = [&](const PluginState& plugin) {
+                if (plugin.instanceId == 0) return true;
+                if (std::find(identities.begin(), identities.end(), plugin.instanceId) != identities.end()) return false;
+                identities.push_back(plugin.instanceId); return true;
+            };
+            if (!unique(rack.instrument)) return false;
+            for (const auto& effect : rack.effects) if (!unique(effect)) return false;
+            return true;
+        };
+        for (const auto& rack : plugins) if (!uniqueRack(rack)) return false;
+        if (!uniqueRack(masterPlugins)) return false;
+        for (const auto& rack : returnPlugins) if (!uniqueRack(rack)) return false;
         if (!channelRack.valid()) return false;
-        for (const auto& track : trackSettings) if (!track.valid()) return false;
+        for (const auto& scene : clips) if (static_cast<int>(scene.size()) != tracks) return false;
+        for (std::size_t t=0;t<trackSettings.size();++t) {
+            const auto& track=trackSettings[t]; if (!track.valid()) return false;
+            if (track.frozen()) {
+                if (track.freezeScene>=scenes || clips[static_cast<std::size_t>(track.freezeScene)][t].audioFilePath.isEmpty()) return false;
+                int cache=0, original=0;
+                for(const auto& region:timeline.regions) if(region.row==static_cast<int>(t)) { if(region.source!=track.freezeScene)return false; ++cache; }
+                for(const auto& region:timeline.frozenOriginals) original+=region.row==static_cast<int>(t);
+                if(cache!=1 || original==0 || timeline.freezeBaseLengthBars==0)return false;
+            }
+        }
+        for(const auto& region:timeline.frozenOriginals) if(!trackSettings[static_cast<std::size_t>(region.row)].frozen())return false;
         for (const int colour : trackColours) if (colour < 0 || colour > 255) return false;
         for (const auto& scene : clips) {
             if (static_cast<int>(scene.size()) != tracks) return false;
@@ -167,6 +194,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
         object->setProperty("pan", track.pan);
         object->setProperty("mute", track.mute);
         object->setProperty("solo", track.solo);
+        object->setProperty("freezeScene",track.freezeScene);
         object->setProperty("armed", track.armed); object->setProperty("input", track.input);
         object->setProperty("stereoInput", track.stereoInput); object->setProperty("monitor", track.monitor);
         juce::Array<juce::var> sends;   // [level, pre-fader] for each return
@@ -206,6 +234,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     {
         auto timelineValue = juce::var(new juce::DynamicObject());
         auto* timelineObject = timelineValue.getDynamicObject();
+        timelineObject->setProperty("freezeBaseLengthBars",project.timeline.freezeBaseLengthBars);
         timelineObject->setProperty("lengthBars", project.timeline.lengthBars);
         timelineObject->setProperty("loopEnabled", project.timeline.loopEnabled);
         timelineObject->setProperty("loopStart", static_cast<int>(project.timeline.loopStart));
@@ -215,6 +244,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
         juce::Array<juce::var> regions;
         auto savedRegions = project.timeline.regions;
         savedRegions.insert(savedRegions.end(), project.timeline.takes.begin(), project.timeline.takes.end());
+        savedRegions.insert(savedRegions.end(),project.timeline.frozenOriginals.begin(),project.timeline.frozenOriginals.end());
         for (std::size_t savedIndex = 0; savedIndex < savedRegions.size(); ++savedIndex) {
             const auto& r = savedRegions[savedIndex];
             auto value = juce::var(new juce::DynamicObject());
@@ -232,7 +262,8 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
             object->setProperty("fadeOut", static_cast<int>(r.fadeOut)); object->setProperty("loopSource", r.loopSource);
             object->setProperty("reversed", r.reversed); object->setProperty("crossfade", static_cast<int>(r.crossfade));
             object->setProperty("muted", r.muted); object->setProperty("group", group);
-            if (savedIndex >= project.timeline.regions.size()) object->setProperty("take", true);
+            if (savedIndex >= project.timeline.regions.size()+project.timeline.takes.size()) object->setProperty("frozenOriginal",true);
+            else if (savedIndex >= project.timeline.regions.size()) object->setProperty("take", true);
             regions.add(value);
         }
         timelineObject->setProperty("regions", juce::var(regions));
@@ -250,6 +281,21 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
             object->setProperty("points", juce::var(points)); automationValues.add(value);
         }
         timelineObject->setProperty("automation", juce::var(automationValues));
+        juce::Array<juce::var> parameters;
+        for (const auto& lane : project.timeline.parameterLanes) {
+            auto value = juce::var(new juce::DynamicObject()); auto* o = value.getDynamicObject();
+            o->setProperty("instance", instanceIdString(lane.target.instance));
+            o->setProperty("parameterId", juce::String::fromUTF8(lane.target.parameterId.c_str()));
+            o->setProperty("enabled", lane.enabled);
+            juce::Array<juce::var> points;
+            for (const auto& point : lane.points) {
+                auto p = juce::var(new juce::DynamicObject()); auto* object = p.getDynamicObject();
+                object->setProperty("tick", static_cast<int>(point.tick)); object->setProperty("value", point.value);
+                object->setProperty("curve", static_cast<int>(point.curve)); points.add(p);
+            }
+            o->setProperty("points", juce::var(points)); parameters.add(value);
+        }
+        timelineObject->setProperty("parameterAutomation", juce::var(parameters));
 
         juce::Array<juce::var> markers;
         for (const auto& m : project.timeline.markers) {
@@ -307,12 +353,15 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
     }
     timeline::Timeline parsed;
     parsed.lengthBars = static_cast<int>(length);
+    const auto base=object->getProperty("freezeBaseLengthBars");
+    if(!base.isVoid() && !base.isInt()){error="Invalid freeze length.";return false;}
+    if(base.isInt())parsed.freezeBaseLengthBars=static_cast<int>(base);
     parsed.loopStart = static_cast<int>(loopStart); parsed.loopEnd = static_cast<int>(loopEnd);
     parsed.loopEnabled = static_cast<bool>(loopEnabled);
     const auto regionsValue = object->getProperty("regions"), markersValue = object->getProperty("markers");
     const auto* regions = regionsValue.getArray();
     const auto* markers = markersValue.getArray();
-    if (regions == nullptr || markers == nullptr || regions->size() > static_cast<int>(timeline::maxRegions + timeline::maxTakes)
+    if (regions == nullptr || markers == nullptr || regions->size() > static_cast<int>(2 * timeline::maxRegions + timeline::maxTakes)
         || markers->size() > static_cast<int>(timeline::maxMarkers)) {
         error = "The project's timeline has too many regions or markers."; return false;
     }
@@ -354,7 +403,10 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
         }
         const auto take = r->getProperty("take");
         if (!take.isVoid() && !take.isBool()) { error = "Invalid recording take flag."; return false; }
-        if (static_cast<bool>(take)) parsed.takes.push_back(region);
+        const auto frozen=r->getProperty("frozenOriginal");
+        if((!frozen.isVoid() && !frozen.isBool()) || (static_cast<bool>(take) && static_cast<bool>(frozen))) {error="Invalid frozen clip.";return false;}
+        if(static_cast<bool>(frozen))parsed.frozenOriginals.push_back(region);
+        else if (static_cast<bool>(take)) parsed.takes.push_back(region);
         else parsed.regions.push_back(region);
     }
     for (const auto& item : *markers) {
@@ -394,6 +446,34 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
                     static_cast<automation::Curve>(static_cast<int>(point->getProperty("curve")))});
             }
             parsed.automationLanes.push_back(std::move(lane));
+        }
+    }
+    const auto parameterValue = object->getProperty("parameterAutomation");
+    if (!parameterValue.isVoid()) {
+        const auto* lanes = parameterValue.getArray();
+        if (!lanes || lanes->size() > static_cast<int>(timeline::Timeline::maxParameterLanes)) { error = "Invalid parameter automation lanes."; return false; }
+        for (const auto& value : *lanes) {
+            const auto* o = value.getDynamicObject();
+            automation::ParameterLane lane;
+            if (!o || !parseInstanceId(o->getProperty("instance"), lane.target.instance)
+                || !o->getProperty("parameterId").isString() || !o->getProperty("enabled").isBool()) {
+                error = "Invalid parameter automation target."; return false;
+            }
+            lane.target.parameterId = o->getProperty("parameterId").toString().toStdString();
+            lane.enabled = static_cast<bool>(o->getProperty("enabled"));
+            const auto pointsValue = o->getProperty("points"); const auto* points = pointsValue.getArray();
+            if (!points || points->size() > static_cast<int>(automation::maxPoints)) { error = "Invalid parameter automation points."; return false; }
+            for (const auto& p : *points) {
+                const auto* point = p.getDynamicObject();
+                if (!point || !point->getProperty("tick").isInt() || !point->getProperty("curve").isInt()
+                    || !(point->getProperty("value").isInt() || point->getProperty("value").isDouble())) {
+                    error = "Invalid parameter automation point."; return false;
+                }
+                lane.points.push_back({static_cast<int>(point->getProperty("tick")),
+                    static_cast<float>(static_cast<double>(point->getProperty("value"))),
+                    static_cast<automation::Curve>(static_cast<int>(point->getProperty("curve")))});
+            }
+            parsed.parameterLanes.push_back(std::move(lane));
         }
     }
     // The file's own scene and pattern counts are checked with the rest of the project.
@@ -508,6 +588,9 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
                 if (!instrument.isInt()) { error = "Invalid instrument type."; return false; }
                 track.instrument = static_cast<int>(instrument);
             }
+            const auto frozenScene=object->getProperty("freezeScene");
+            if(!frozenScene.isVoid() && !frozenScene.isInt()){error="Invalid frozen track.";return false;}
+            if(frozenScene.isInt())track.freezeScene=static_cast<int>(frozenScene);
             // Recording settings are optional: projects saved before them have none (not armed, input 1, monitoring automatic).
             const auto armed = object->getProperty("armed"), input = object->getProperty("input"),
                 stereoInput = object->getProperty("stereoInput"), monitor = object->getProperty("monitor");
@@ -691,6 +774,26 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
             settings = {static_cast<float>(static_cast<double>(g)), static_cast<float>(static_cast<double>(pan)), static_cast<bool>(mute)};
             if (!settings.valid()) { error = "A return track's level or pan is out of range."; return false; }
         }
+    }
+    if (formatVersion >= 17) {
+        const auto* timelineObject = rootObject->getProperty("timeline").getDynamicObject();
+        if (!timelineObject || !timelineObject->hasProperty("parameterAutomation")) { error = "Missing parameter automation."; return false; }
+        auto hasIds = [](const juce::var& rack) {
+            const auto* o = rack.getDynamicObject();
+            if (!o) return false;
+            const auto instrument = o->getProperty("instrument");
+            if (!instrument.getDynamicObject() || !instrument.getDynamicObject()->hasProperty("instance")) return false;
+            const auto effects = o->getProperty("effects");
+            if (!effects.getArray()) return false;
+            for (const auto& p : *effects.getArray()) if (!p.getDynamicObject() || !p.getDynamicObject()->hasProperty("instance")) return false;
+            return true;
+        };
+        const auto plugins = rootObject->getProperty("plugins");
+        for (const auto& rack : *plugins.getArray()) if (!hasIds(rack)) { error = "Missing plugin identity."; return false; }
+        if (!hasIds(rootObject->getProperty("masterPlugins"))) { error = "Missing master plugin identity."; return false; }
+        const auto returns = rootObject->getProperty("returns");
+        if (!returns.getArray()) { error = "Missing return tracks."; return false; }
+        for (const auto& value : *returns.getArray()) if (!hasIds(value.getDynamicObject()->getProperty("plugins"))) { error = "Missing return plugin identity."; return false; }
     }
     if (!parsed.valid()) { error = "Project settings are outside the supported range."; return false; }
     destination = std::move(parsed);

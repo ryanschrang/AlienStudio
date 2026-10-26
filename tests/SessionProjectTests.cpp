@@ -28,6 +28,12 @@ static void portableProjectTests() {
     alien::timeline::Region archived; archived.row = 0; archived.source = 0;
     require(source.timeline.recordTake(archived), "portable fixture has original take");
     source.timeline.regions.clear(); // The original is not part of the active comp.
+    source.clips[2][0].audioFilePath=first.getFullPathName();
+    require(source.timeline.place(archived),"portable frozen original");
+    source.timeline.freezeBaseLengthBars=source.timeline.lengthBars;
+    require(source.timeline.freezeTrack(0,2,4000,2.0),"portable freeze cache");
+    source.trackSettings[0].freezeScene=2;
+
 
     juce::String error;
     const auto target = projectDir.getChildFile("Song.alienstudio");
@@ -49,6 +55,9 @@ static void portableProjectTests() {
     const auto movedTarget = moved.getChildFile("Song.alienstudio");
     alien::SessionProjectData loaded;
     require(alien::parseSessionProject(movedTarget.loadFileAsString(), loaded, error), "open moved portable project");
+    require(loaded.trackSettings[0].freezeScene==2 && loaded.timeline.frozenOriginals.size()==1
+        && alien::resolveProjectAudio(movedTarget,loaded.clips[2][0].audioFilePath).existsAsFile(),"portable move retains frozen cache and original arrangement");
+
     require(alien::resolveProjectAudio(movedTarget, loaded.clips[0][0].audioFilePath).loadFileAsString() == "first audio bytes"
         && alien::resolveProjectAudio(movedTarget, loaded.clips[0][1].audioFilePath).loadFileAsString() == "second audio bytes",
         "moved project resolves exact audio without original files");
@@ -264,12 +273,118 @@ static void takeFormatTests() {
         "version 14 projects open with no recording archive");
 }
 
+static void freezeFormatTests() {
+    alien::SessionProjectData source;alien::timeline::Region original;original.row=0;original.source=0;
+    require(source.timeline.place(original),"freeze format original");source.timeline.freezeBaseLengthBars=source.timeline.lengthBars;
+    require(source.timeline.freezeTrack(0,1,4000,2.0),"freeze format cache");
+    source.trackSettings[0].freezeScene=1;source.clips[1][0].audioFilePath="C:/Freeze/cache.wav";
+    source.plugins[0].effects.push_back({"<PLUGIN name=\"Original effect\"/>","YWJj",false});
+    const auto instance = source.plugins[0].effects[0].instanceId;
+    source.timeline.parameterLanes.push_back({{instance, "cutoff"}, true, {{0, 0.25f}, {960, 0.75f}}});
+    alien::SessionProjectData loaded;juce::String error;
+    const auto json=alien::serializeSessionProject(source);
+    require(json.isNotEmpty() && alien::parseSessionProject(json,loaded,error),"frozen project round trip");
+    require(loaded.trackSettings[0].freezeScene==1 && loaded.timeline.frozenOriginals.size()==1
+        && loaded.plugins==source.plugins && loaded.timeline.regions.front().gain==2.0,"cache, originals, gain and plugin states preserved");
+    require(loaded.timeline.parameterLanes == source.timeline.parameterLanes
+        && loaded.plugins[0].effects[0].instanceId == instance, "frozen project keeps parameter lanes and original plugin identity");
+    auto legacyFreeze = juce::JSON::parse(json);
+    legacyFreeze.getDynamicObject()->setProperty("version", 16);
+    legacyFreeze.getProperty("timeline", {}).getDynamicObject()->removeProperty("parameterAutomation");
+    auto legacyPlugins = legacyFreeze.getProperty("plugins", {});
+    auto legacyEffects = (*legacyPlugins.getArray())[0].getProperty("effects", {});
+    (*legacyEffects.getArray())[0].getDynamicObject()->removeProperty("instance");
+    require(alien::parseSessionProject(juce::JSON::toString(legacyFreeze), loaded, error)
+        && loaded.trackSettings[0].freezeScene == 1 && loaded.timeline.frozenOriginals.size() == 1
+        && loaded.timeline.frozenOriginals[0].row == source.timeline.frozenOriginals[0].row
+        && loaded.timeline.frozenOriginals[0].source == source.timeline.frozenOriginals[0].source
+        && loaded.timeline.frozenOriginals[0].length == source.timeline.frozenOriginals[0].length
+        && loaded.plugins[0].effects[0].instanceId != 0 && loaded.timeline.parameterLanes.empty(),
+        "legacy frozen project migrates without losing cache, original clips or plugin settings");
+    auto damaged=juce::JSON::parse(json);damaged.getProperty("trackSettings",{}).getArray()->getReference(0).getDynamicObject()->setProperty("freezeScene",30);
+    const auto previous=loaded.timeline;
+    require(!alien::parseSessionProject(juce::JSON::toString(damaged),loaded,error) && loaded.timeline==previous,"invalid cache reference rejected transactionally");
+    alien::SessionProjectData oldSource;auto old=juce::JSON::parse(alien::serializeSessionProject(oldSource));old.getDynamicObject()->setProperty("version",15);
+    for(auto& track:*old.getProperty("trackSettings",{}).getArray())track.getDynamicObject()->removeProperty("freezeScene");
+    require(alien::parseSessionProject(juce::JSON::toString(old),loaded,error) && !loaded.trackSettings[0].frozen(),"version 15 defaults unfrozen");
+}
+
+static void parameterPersistenceTests() {
+    using namespace alien;
+    SessionProjectData source, loaded;
+    const juce::String xml = "<PLUGIN name=\"Twin\"/>";
+    source.plugins[0].effects = {{xml, "YWJj", false}, {xml, {}, true}};
+    auto& first = source.plugins[0].effects[0];
+    first.instanceId = 0xfedcba9876543210ULL; // JSON must preserve high bits exactly.
+    source.masterPlugins.effects = {{xml, {}, false}};
+    source.returnPlugins[0].effects = {{xml, {}, false}};
+    source.timeline.parameterLanes = {{{first.instanceId, "cutoff"}, false,
+        {{0, 0.125f, automation::Curve::hold}, {960, 0.875f, automation::Curve::linear}}}};
+    // Compatibility fixture: all six mixer targets on every track coexist with
+    // a plugin parameter lane. This is deliberately beyond the old 2/track cap.
+    for (int track = 0; track < source.trackCount(); ++track)
+        for (int parameter = 0; parameter < automation::parametersPerTrack; ++parameter)
+            source.timeline.automationLanes.push_back({track, static_cast<automation::Parameter>(parameter), true, {{0, 0.25f}}});
+    juce::String error;
+    require(parseSessionProject(serializeSessionProject(source), loaded, error), "parameter project reopens");
+    require(loaded.plugins == source.plugins && loaded.masterPlugins == source.masterPlugins
+        && loaded.returnPlugins == source.returnPlugins && loaded.timeline == source.timeline,
+        "all plugin identities and parameter lane data round-trip exactly");
+    auto original = loaded.timeline;
+    loaded.timeline.parameterLanes[0].enabled = true;
+    require(!(original == loaded.timeline) && !original.playbackEquals(loaded.timeline), "parameter edits participate in document and publish equality");
+    loaded = source;
+    std::swap(loaded.plugins[0].effects[0], loaded.plugins[0].effects[1]);
+    require(loaded.timeline.parameterLanes[0].target.instance == loaded.plugins[0].effects[1].instanceId, "reorder retains target");
+    loaded.plugins[0].effects.clear();
+    require(parseSessionProject(serializeSessionProject(loaded), loaded, error)
+        && loaded.timeline.parameterLanes == source.timeline.parameterLanes, "orphan lanes survive missing or removed plugins");
+    loaded = source; loaded.masterPlugins.effects[0].instanceId = first.instanceId;
+    require(!loaded.valid() && serializeSessionProject(loaded).isEmpty(), "duplicate identities across racks rejected");
+    loaded = source; loaded.timeline.parameterLanes.push_back(loaded.timeline.parameterLanes[0]);
+    require(!loaded.valid(), "duplicate target lanes rejected");
+    loaded = source; loaded.timeline.parameterLanes[0].points.back().tick = loaded.timeline.length() + 1;
+    require(!loaded.valid(), "out-of-song parameter points rejected");
+    auto legacy = juce::JSON::parse(serializeSessionProject(source));
+    legacy.getDynamicObject()->setProperty("version", 15);
+    auto plugins = legacy.getProperty("plugins", {});
+    auto effects = (*plugins.getArray())[0].getProperty("effects", {});
+    (*effects.getArray())[0].getDynamicObject()->removeProperty("instance");
+    (*effects.getArray())[1].getDynamicObject()->removeProperty("instance");
+    auto timeline = legacy.getProperty("timeline", {});
+    timeline.getDynamicObject()->removeProperty("parameterAutomation");
+    require(parseSessionProject(juce::JSON::toString(legacy), loaded, error)
+        && loaded.plugins[0].effects[0].instanceId != 0
+        && loaded.plugins[0].effects[0].instanceId != loaded.plugins[0].effects[1].instanceId,
+        "legacy instances acquire distinct identities");
+    auto migrated = loaded.plugins;
+    require(parseSessionProject(serializeSessionProject(loaded), loaded, error) && loaded.plugins == migrated,
+        "legacy identities become stable after save");
+    legacy.getDynamicObject()->setProperty("version", 17);
+    require(!parseSessionProject(juce::JSON::toString(legacy), loaded, error), "new files cannot omit identity or lane fields");
+    auto missingId = juce::JSON::parse(serializeSessionProject(source));
+    auto missingEffects = (*missingId.getProperty("plugins", {}).getArray())[0].getProperty("effects", {});
+    (*missingEffects.getArray())[0].getDynamicObject()->removeProperty("instance");
+    require(!parseSessionProject(juce::JSON::toString(missingId), loaded, error), "new files cannot regenerate missing identities");
+    auto frozenVersion = juce::JSON::parse(serializeSessionProject(source));
+    frozenVersion.getDynamicObject()->setProperty("version", 16);
+    require(parseSessionProject(juce::JSON::toString(frozenVersion), loaded, error), "version 16 freeze schema remains supported");
+    auto damaged = juce::JSON::parse(serializeSessionProject(source));
+    auto lanes = damaged.getProperty("timeline", {}).getProperty("parameterAutomation", {});
+    (*lanes.getArray())[0].getDynamicObject()->setProperty("instance", "fedcba987654321z");
+    require(!parseSessionProject(juce::JSON::toString(damaged), loaded, error), "malformed target identities rejected");
+    PluginState replacement{xml, {}, false};
+    require(replacement.instanceId != first.instanceId && PluginState{}.instanceId == 0, "new insertions have fresh identities and empty slots do not");
+}
+
 int main() {
+    freezeFormatTests();
     takeFormatTests();
     automationFormatTests();
     recordingSettingsFormatTests();
     masterVolumeFormatTests();
     pluginStateLimitTests();
+    parameterPersistenceTests();
     portableProjectTests();
     alien::SessionProjectData source;
     source.launchQuantizationSteps = 4;

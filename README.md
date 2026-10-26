@@ -1169,7 +1169,7 @@ Recording in Song view keeps original passes in **Takes**. Choose a pass and
 **Use whole take**, or set loop markers inside the pass and choose **Use loop
 range** to replace just that part of the active arrangement. Undo restores the
 previous comp. Original files remain unchanged. **Forget take** removes a list
-entry without deleting its active comp or audio file. Projects use format 15.
+entry without deleting its active comp or audio file. Projects use format 17.
 Recording still stops at loop boundaries; continuous loop takes and waveform
 lanes are not included in this increment.
 
@@ -1190,3 +1190,47 @@ version-15 automation list (parameter IDs 2–5). Earlier builds reject projects
 containing these unknown targets instead of silently dropping the curves;
 projects without send lanes remain compatible with the earlier format-15 parser.
 This does not automate return faders, pre/post switches or plugin parameters.
+
+
+### Freeze and unfreeze Session tracks
+
+Right-click a Session track header in **Song** and choose **Freeze track (render
+audio)**. Freeze renders its arranged clips and track effects into a 48 kHz,
+32-bit floating-point cache, before fader, pan, sends and volume/pan automation.
+These mixer controls and shared return effects remain live. Original instrument
+and effect instances unload while frozen; saved plugin settings and source clips
+are retained. Choose **Unfreeze track** to restore them. Both actions undo/redo.
+
+The header reads **Frozen audio**. Source edits, recording, instrument/preset
+changes and edits to the cached Song clip are blocked until unfreeze. Changing
+tempo automatically unfreezes tracks, so caches never play at an incompatible
+tempo. Original Session cells stay intact; while frozen, Session playback uses
+only the new rendered cache cell. Unfreeze restores the original song length
+unless other content requires a longer song.
+
+This increment supports Session tracks without Channel Rack inputs. Reroute rack
+channels and ungroup clips shared with other tracks before freezing. Factory
+release envelopes, drum sample tails and reported plugin tails render up to the
+existing 30-second host cap. Native plugin behavior and joins still need listening
+checks. Rebuilding plugin instances can briefly interrupt playback.
+
+Projects use **format 17** and retain the cache reference and original regions.
+Formats 1–15 open unfrozen; format 16 retains its freeze state. Older app versions refuse format 17. **Save portable**
+collects cached and original media. Missing caches can be relinked, or unfreeze can
+restore the original clips. Caches live in the application's FreezeAudio folder;
+unfreeze keeps the file for Undo, and does not delete original media.
+
+### Plugin parameter automation persistence
+
+Project format 17 saves a persistent identity for every instrument/effect and
+normalized parameter automation lanes on the timeline. Identities follow FX
+reordering and undo; newly inserted or replacement plugins receive fresh IDs.
+Older projects acquire IDs on load and preserve them on subsequent saves.
+Missing/removed plugins retain orphan lanes so they cannot control a replacement.
+The host can enumerate stable parameter-ID bindings for loaded plugins on the
+message thread with audio detached. Parameters without persistent IDs are omitted.
+This increment provides persistence and bindings; the parameter lane editor,
+and playback application remain to be implemented. Send automation is on main through #95.
+
+Formats 1–16 remain supported, including frozen caches and original regions
+from format 16. Older readers refuse format 17 rather than discarding targets.

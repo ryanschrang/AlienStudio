@@ -501,6 +501,7 @@ static void hostTests() {
         const auto errors = host.restore(racks, master, 48000);
         check(errors.contains("Unknown stock effect"), "an unknown stock effect is reported when the rack loads");
         check(runtime->racks[0].effectCount == 2 && !runtime->racks[0].effects[0].processor && runtime->racks[0].effects[1].processor, "...and the rest of the rack still loads");
+        check(!automation::resolve({future.instanceId, "cutoff"}, host.parameterBindings()), "missing plugin has no runtime parameter binding");
         host.snapshot(racks, master);
         check(racks[0].effects[0] == future, "...its saved description and state are kept for a build that knows it");
         runtime->begin(512, 120, true, 0);
@@ -519,11 +520,29 @@ static void hostTests() {
         check(host.restore(racks, master, 48000).isEmpty(), "stock effects restore without errors");
         check(runtime->racks[0].effectCount == 3 && runtime->racks[0].effects[1].processor && runtime->racks[PluginRuntime::masterIndex].effectCount == 1, "effects are placed in the racks");
         check(runtime->rackLatency(runtime->racks[0]) == 95, "rack latency includes the limiter");
+        const automation::ParameterTarget target{racks[0].effects[1].instanceId, stock::comp::threshold};
+        const auto bindings = host.parameterBindings();
+        const auto* bound = automation::resolve(target, bindings);
+        check(bound && bound->rack == 0 && bound->slot == 1, "stable stock parameter ID resolves to runtime slot");
+        std::swap(racks[0].effects[0], racks[0].effects[1]);
+        check(host.restore(racks, master, 48000).isEmpty(), "reordered stock effects restore");
+        const auto reordered = host.parameterBindings();
+        bound = automation::resolve(target, reordered);
+        check(bound && bound->slot == 0, "binding follows effect reorder");
+        auto savedEffect = racks[0].effects[0];
+        racks[0].effects[0] = stockState("compressor");
+        check(host.restore(racks, master, 48000).isEmpty()
+            && !automation::resolve(target, host.parameterBindings()), "replacement cannot inherit old automation");
+        check(automation::resolve(target, bindings) != nullptr, "owned binding snapshot survives runtime reload");
+        racks[0].effects[0] = savedEffect;
+        std::swap(racks[0].effects[0], racks[0].effects[1]);
+        check(host.restore(racks, master, 48000).isEmpty(), "original order restored");
         host.changed.store(false);
         auto* comp = dynamic_cast<stock::CompressorEffect*>(runtime->racks[0].effects[1].processor.get());
         setParam(*comp, stock::comp::threshold, -33);
         check(host.changed.load(), "editing a stock effect marks the project as changed");
         host.snapshot(racks, master);
+        check(racks[0].effects[1].instanceId == target.instance, "state snapshot preserves persistent identity");
         check(racks[0].effects[1].stateBase64.isNotEmpty() && racks[0].effects[1].descriptionXml == stockState("compressor").descriptionXml, "snapshot keeps the identity and stores parameters");
         PluginHost second(*runtime);
         check(second.restore(racks, master, 48000).isEmpty(), "restoring from the snapshot works");

@@ -577,9 +577,30 @@ static void automationUndoTests() {
         && controller.timeline().automationLanes.empty(), "redo track deletion removes automation again");
 }
 
+static void parameterAutomationUndoTests() {
+    auto engine = std::make_unique<ToneEngine>(); alien::ProjectController c(*engine);
+    auto data = alien::toProjectData(c.document());
+    data.plugins[0].effects = {{"<PLUGIN name=\"Effect\"/>", {}, false}};
+    c.setPluginRacks(data.plugins, data.masterPlugins);
+    const auto id = c.document().tracks[0].plugins.effects[0].instanceId;
+    require(c.editTimeline("Parameter lane", [=](alien::timeline::Timeline& t) {
+        t.parameterLanes.push_back({{id, "cutoff"}, true, {{0, 0.25f}, {960, 0.75f}}}); return true;
+    }), "parameter lanes use document undo history");
+    const auto lanes = c.timeline().parameterLanes;
+    require(c.captureArrangement()->timeline.parameterLanes == lanes, "parameter lanes reach arrangement snapshots");
+    require(c.undo() && c.timeline().parameterLanes.empty(), "undo removes parameter lane");
+    require(c.redo() && c.timeline().parameterLanes == lanes, "redo restores parameter lane exactly");
+    data.plugins[0].effects.clear();
+    c.setPluginRacks(data.plugins, data.masterPlugins);
+    require(c.timeline().parameterLanes == lanes, "removal keeps orphan automation");
+    require(c.undo() && c.document().tracks[0].plugins.effects[0].instanceId == id
+        && c.timeline().parameterLanes == lanes, "undo removal restores original plugin identity and lane");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     automationUndoTests();
+    parameterAutomationUndoTests();
     masterVolumeTests();
     mediaIndexTests();
     missingAudioTests();

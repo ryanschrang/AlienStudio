@@ -2,6 +2,8 @@
 #include "SessionCapacity.h"
 #include <juce_core/juce_core.h>
 #include <array>
+#include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace alien {
@@ -12,9 +14,16 @@ inline constexpr int maxPluginStateChars = 24 * 1024 * 1024;
 struct PluginState {
     juce::String descriptionXml, stateBase64;
     bool bypass{};
+    std::uint64_t instanceId{};
+    PluginState() = default;
+    PluginState(juce::String description, juce::String state, bool bypassed = false)
+        : descriptionXml(std::move(description)), stateBase64(std::move(state)), bypass(bypassed) {
+        if (descriptionXml.isNotEmpty())
+            do { instanceId = static_cast<std::uint64_t>(juce::Random::getSystemRandom().nextInt64()); } while (instanceId == 0);
+    }
     bool operator==(const PluginState&) const = default;
     bool valid() const {
-        return descriptionXml.length() <= 65536 && stateBase64.length() <= maxPluginStateChars
+        return (descriptionXml.isEmpty() ? instanceId == 0 : instanceId != 0) && descriptionXml.length() <= 65536 && stateBase64.length() <= maxPluginStateChars
             && (descriptionXml.isEmpty() ? stateBase64.isEmpty() : juce::parseXML(descriptionXml) != nullptr);
     }
 };
@@ -46,9 +55,20 @@ inline juce::String oversizedPluginName(const PluginRackState& rack) {
 // The four return tracks' FX racks (effects only, like the master's).
 using ReturnRacks = std::array<PluginRackState, maxReturns>;
 
+// Hex strings preserve all 64 bits through JSON implementations that use doubles.
+inline juce::String instanceIdString(std::uint64_t id) {
+    return juce::String::toHexString(static_cast<juce::int64>(id)).paddedLeft('0', 16);
+}
+inline bool parseInstanceId(const juce::var& value, std::uint64_t& id) {
+    if (!value.isString()) return false;
+    const auto text = value.toString();
+    if (text.length() != 16 || !text.containsOnly("0123456789abcdefABCDEF")) return false;
+    id = static_cast<std::uint64_t>(text.getHexValue64()); return true;
+}
 inline juce::var pluginToVar(const PluginState& p) {
     auto value = juce::var(new juce::DynamicObject()); auto* o = value.getDynamicObject();
     o->setProperty("description", p.descriptionXml); o->setProperty("state", p.stateBase64); o->setProperty("bypass", p.bypass);
+    o->setProperty("instance", instanceIdString(p.instanceId));
     return value;
 }
 inline juce::var rackToVar(const PluginRackState& rack) {
@@ -61,7 +81,11 @@ inline bool pluginFromVar(const juce::var& value, PluginState& p) {
     const auto* o = value.getDynamicObject(); if (!o) return false;
     auto d = o->getProperty("description"), s = o->getProperty("state"), b = o->getProperty("bypass");
     if (!d.isString() || !s.isString() || !b.isBool()) return false;
-    p = {d.toString(), s.toString(), static_cast<bool>(b)}; return p.valid();
+    PluginState parsed{d.toString(), s.toString(), static_cast<bool>(b)};
+    // Legacy states acquire an identity once, on load. Copies and undo preserve it.
+    if (o->hasProperty("instance") && !parseInstanceId(o->getProperty("instance"), parsed.instanceId)) return false;
+    if (!parsed.valid()) return false;
+    p = std::move(parsed); return true;
 }
 inline bool rackFromVar(const juce::var& value, PluginRackState& rack) {
     const auto* o = value.getDynamicObject(); if (!o || !pluginFromVar(o->getProperty("instrument"), rack.instrument)) return false;

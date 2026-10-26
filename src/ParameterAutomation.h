@@ -56,10 +56,10 @@ private:
             && (p.curve == Curve::linear || p.curve == Curve::hold);
     }
 };
-// Rebuilt off the audio thread. Views borrow stable plugin metadata.
+// Rebuilt off the audio thread. Own IDs so snapshots survive metadata reloads.
 struct ParameterBinding {
     std::uint64_t instance{};
-    std::string_view parameterId;
+    std::string parameterId;
     int rack{-1}, slot{-1}, parameter{-1};
 };
 inline const ParameterBinding* resolve(const ParameterTarget& target,

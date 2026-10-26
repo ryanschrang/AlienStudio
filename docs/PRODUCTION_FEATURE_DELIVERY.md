@@ -94,3 +94,36 @@ freeze (#93), or saturator (#92) is included.
 
 Plugin-parameter automation still needs persistent instance IDs, lane storage,
 editor targets and runtime scheduling. Send automation does not complete it.
+
+
+## Session track freeze increment
+
+Based on validated stem-export head 63bc373 (#89); implemented separately so its
+branch remains unchanged. Session tracks render one post-FX/pre-fader float32 WAV.
+Frozen source placements are archived, the rendered cache replaces the active
+track regions, native instances unload, and built-in voices/track FX suspend.
+Fader, pan, sends and automation continue after the cache. Undo/unfreeze restores
+original clips/settings; tempo changes unfreeze before applying the new tempo.
+
+Format 17 stores the archive, rendered Session scene and original song length.
+Scene/track reorder maintains references. Source scenes/cache cells are protected
+from deletion/replacement until unfreeze. Portable save/relink use ordinary Session
+media handling. Cancellation/failure leaves originals intact. Session-only scope:
+tracks receiving Channel Rack channels and cross-track clip groups must be unrouted
+or ungrouped first. Cache files remain for undo. Tail rendering uses declared
+plugin tails and factory/sample releases, capped at 30 seconds. Manual native
+plugin, listening, device and interruption checks are separate from automated tests.
+
+## Plugin parameter automation foundation
+
+Format 17 combines the freeze schema with persistent plugin instance IDs and
+normalized parameter lanes. Formats 1–16 still open. IDs survive save/load,
+reorder, undo and freeze/unfreeze; replacements receive fresh IDs, and orphan
+lanes remain saved without binding to another plugin. Host catalogs use stable
+parameter IDs and own their strings. Enumerate them off the audio thread with
+audio detached, and rebuild after plugin reload or metadata changes.
+
+The combined freeze/send/persistence code passed six Release compatibility
+suites. The foundation separately passed six Release suites and Debug project
+persistence and mixer/freeze suites. This delivers persistence and bindings;
+plugin parameter editor targets and host playback scheduling are the next step.
