@@ -154,9 +154,12 @@ public:
         setInterceptsMouseClicks(false, true);
     }
 
-    void setPosition(int step, bool isPlaying, const juce::String& source) {
-        if (step == currentStep && isPlaying == playing && source == mode) return;
-        currentStep = step; playing = isPlaying; mode = source;
+    // `position` replaces the 4/4 bar . beat . 16th worked out from `step` (the Song's own bars use it),
+    // and `meter` is the time signature shown beside it.
+    void setPosition(int step, bool isPlaying, const juce::String& source, const juce::String& position = {},
+                     const juce::String& meter = "4/4") {
+        if (step == currentStep && isPlaying == playing && source == mode && position == positionText && meter == meterText) return;
+        currentStep = step; playing = isPlaying; mode = source; positionText = position; meterText = meter;
         repaint();
     }
 
@@ -179,7 +182,7 @@ public:
         auto r = getLocalBounds().reduced(6, 4);
         auto pos = r.removeFromLeft(positionWidth());
         const int s = juce::jmax(0, currentStep);
-        const juce::String text = currentStep < 0 ? "1 . 1 . 1"
+        const juce::String text = positionText.isNotEmpty() ? positionText : currentStep < 0 ? "1 . 1 . 1"
             : juce::String(s / 16 + 1) + " . " + juce::String((s % 16) / 4 + 1) + " . " + juce::String(s % 4 + 1);
         g.setColour(playing ? colours::lcdText : colours::lcdText.withAlpha(0.75f));
         g.setFont(monoFont(21.0f, true));
@@ -201,7 +204,7 @@ public:
         if (r.getWidth() > 40) {
             g.setColour(colours::lcdText.withAlpha(0.8f));
             g.setFont(monoFont(15.0f, true));
-            g.drawText("4/4", r.withTrimmedBottom(12), juce::Justification::centred, false);
+            g.drawText(meterText, r.withTrimmedBottom(12), juce::Justification::centred, false);
             drawCaption(g, mode, r.removeFromBottom(12), colours::lcdText.withAlpha(0.45f),
                         juce::Justification::centred);
         }
@@ -214,6 +217,7 @@ private:
     int currentStep{-1};
     bool playing{};
     juce::String mode{"Steps"};
+    juce::String positionText, meterText{"4/4"};
 };
 
 } // namespace alien::ui

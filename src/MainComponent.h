@@ -885,12 +885,21 @@ private:
             displayStep = position >= 0 ? position / 1000 : -1;
         }
         const bool songShown = engine.patternMode.load() == alien::songMode;
+        juce::String songPosition, songMeter = "4/4";
         if (songShown) {
-            // The whole song: show where the playhead is on the song's own bars and beats.
+            // The whole song: show where the playhead is on the song's own bars, beats (of each bar's time
+            // signature) and sixteenths.
             const auto position = engine.timelinePosition.load();
             displayStep = isPlaying && position >= 0 ? static_cast<int>(position / alien::timeline::ticksPerStep) : -1;
+            const auto bar = controller.timeline().meterMap().barAt(static_cast<double>(std::max<std::int64_t>(0, displayStep >= 0 ? position : 0)));
+            const auto into = std::max<std::int64_t>(0, (displayStep >= 0 ? position : 0) - bar.start);
+            songMeter = juce::String(bar.meter.numerator) + "/" + juce::String(bar.meter.denominator);
+            if (displayStep >= 0)
+                songPosition = juce::String(bar.index + 1) + " . " + juce::String(into / bar.meter.beatTicks() + 1) + " . "
+                             + juce::String((into % bar.meter.beatTicks()) / alien::timeline::ticksPerStep + 1);
         }
-        topBar.setPosition(displayStep, isPlaying || displayStep >= 0, songShown ? "Song" : rackMode ? "Rack" : stepMode ? "Steps" : "Session");
+        topBar.setPosition(displayStep, isPlaying || displayStep >= 0, songShown ? "Song" : rackMode ? "Rack" : stepMode ? "Steps" : "Session",
+                           songPosition, songMeter);
         devicesView.midi().tick();
         mixerPanel.tick();
         int controllerAction = -1;

@@ -201,7 +201,9 @@ public:
                                  + juce::String(ms, 1) + " ms is compensated automatically.");
     }
 
-    void setPosition(int step, bool running, const juce::String& source) { transportDisplay.setPosition(step, running, source); }
+    void setPosition(int step, bool running, const juce::String& source, const juce::String& position = {}, const juce::String& meter = "4/4") {
+        transportDisplay.setPosition(step, running, source, position, meter);
+    }
     void setTempo(int bpm) { tempo.setValue(bpm, juce::dontSendNotification); }
     bool isTempoDragging() const { return tempo.isMouseButtonDown(); }
     void openRecordingOptions() { showRecordOptions(); }

@@ -291,3 +291,10 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Check the song plays the last full pass, the Takes panel lists every pass (including the short last one), and comping a range from an earlier pass plays that pass's audio in time.
 - Repeat with a count-in, with punch on, at 44.1 and 96 kHz, and with a large audio buffer: each pass lines up with the beat (latency compensation), with no click or gap at the loop start.
 - Undo removes every pass in one step; redo brings them back. Record a long session of short loops until recording stops by itself after 64 passes.
+
+## Song time signatures
+- In the Song view, right-click the ruler at bar 5 and choose "Time signature from bar 5...", enter 3/4; add 6/8 at bar 9 and 7/8 at bar 13. The ruler numbers, beat lines and the transport clock follow each bar's meter.
+- Turn the metronome on and play through the changes: the accent falls on each bar's first beat, 3/4 clicks three quarters, 6/8 clicks six eighths, with no doubled or missing click at a change or a loop wrap.
+- Record with a two-bar count-in starting in a 3/4 or 6/8 section: the count-in has that meter's beats and recording starts on the next downbeat.
+- Load a tempo-synced VST3 that shows bars or uses the time signature (an arpeggiator, a step LFO): it follows the meter changes.
+- Change a meter under existing clips: they keep their positions; snapping to bars and beats, Shift+arrow nudging and looping a bar use the new bar lengths. Save, reopen and undo restore everything.
