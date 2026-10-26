@@ -30,7 +30,11 @@
   buttons, existing top-bar behavior and layouts from 960 to 1920 pixels. Windows
   build/test results and remaining manual checks are recorded in the feature PR.
 
-Snapshot: 2026-10-25. Baseline: main at 12bb76e (after #84 mixer returns and #88 take comping).
+Snapshot: 2026-10-26. Baseline: main at 1587c17 (after #89 stems, #93 freeze, #94 recording queue tests,
+#95 send automation and #98 plugin automation targets).
+Priority: work Tier 1 first, then the partly done Tier 2 items. The tiers, workstream IDs (T1-xx, T2-xx),
+dependencies and the rules for several people or agents working at once are in ROADMAP.md
+("Priority plan: Alien Studio Core 1.0"); the table "Roadmap tier rows" at the end lists the IDs it added.
 Owner: maintainers. Update this file in each feature PR. Link the PR, exact tested
 commit, automated test result and Windows listening result before promoting a status.
 "Implemented" means code exists; it does not mean all hardware or plugin combinations pass.
@@ -72,7 +76,7 @@ The current project format is 17.
 | PLUG-02 | Recursive VST3 scanning with scan logs, crash containment, editor failure reporting, compatibility check tool | Implemented; MSVC fault trapping and real commercial plugins pending | FaultGuardTests, PluginFaultTests, PluginScanTests, PluginCheckTests, PluginPanelTests, PluginEndToEndTests (Linux, real VST3 test plugin). NOT RUN: Windows, Valhalla Supermassive and every commercial plugin (docs/PLUGIN_COMPATIBILITY.md). Not contained: heap corruption, plugin threads, hangs during playback |
 | MIDI-03 | Live MIDI destination: play a Session track's VST3 or built-in instrument from MIDI, typing or on-screen keys | Implemented (#83) | Held notes released when the destination changes; not saved with the project. Rack channels are not destinations yet |
 | INST-02 | Built-in synth channels in the Channel Rack (12 presets, 64 shared voices) | Implemented (#82, format 14) | See "Channel Rack built-in synth channels" below |
-| FINISH-01 | Freeze, stems and reliable effect tails | Stems merged (#89); freeze integrated from #93 in this PR | Aligned stems, pre-fader float caches, preserved original clips and processing. Hardware/listening remains pending. |
+| FINISH-01 | Freeze, stems and reliable effect tails | Implemented: stem export (#89), track freeze/unfreeze (#93, integrated in #98) | Aligned stems, pre-fader float caches, preserved original clips and processing. Hardware/listening remains pending. |
 
 ## Completion rule
 
@@ -127,7 +131,7 @@ defects throughout; this ordering does not defer fixes needed to run the example
 | --- | --- | --- | --- |
 | AUTO-01 | Track volume/pan automation lanes, linear/hold points, read bypass, undo | Implemented | AutomationTests, TimelinePlaybackTests, ProjectControllerTests; Windows listening and UI checks pending |
 | AUTO-02 | Sample-position evaluation shared by playback and WAV export | Implemented | Exact-sample and block-size-independent playback regression |
-| AUTO-03 | Sends, stock-effect and plugin parameter automation | Send A–D automation merged (#95); plugin persistence and bindings implemented in this PR | Format 17 saves instance IDs and normalized lanes; reorder/undo/freeze migration retain targets; missing or replaced plugins remain unresolved. ParameterAutomationTests, SessionProjectTests, ProjectControllerTests, MixerRoutingTests, StockEffectsTests. Plugin parameter editor and playback scheduling remain unfinished. |
+| AUTO-03 | Sends, stock-effect and plugin parameter automation | Partial: Send A–D automation (#95); plugin parameter targets saved and kept across reorder/undo/freeze (#98); plugin parameter editor and playback scheduling remain | Format 17 saves instance IDs and normalized lanes; reorder/undo/freeze migration retain targets; missing or replaced plugins remain unresolved. ParameterAutomationTests, SessionProjectTests, ProjectControllerTests, MixerRoutingTests, StockEffectsTests. Plugin parameter editor and playback scheduling remain unfinished. |
 | TEMPO-01 | Tempo and time-signature maps | Planned | Must update transport, MIDI, click, streaming and deterministic export together |
 | WARP-03 | Interactive warp markers and transient detection | Planned | Requires source-to-musical-time mapping and background analysis (WARP-01 is the offline render) |
 
@@ -165,7 +169,7 @@ artwork stay original.
 
 | ID | Capability (for comparison) | Status | Notes / acceptance |
 | --- | --- | --- | --- |
-| FX-01 | Stock filter, saturator, chorus/phaser, gate and transient shaper | In progress: filter implemented (#91), saturator in #92; chorus/phaser, gate and transient shaper planned | One small PR each; DSP tests, no callback allocation, automatable parameters (AUTO-03). Filter and saturator: StockDspTests, StockEffectsTests; Windows listening pending |
+| FX-01 | Stock filter, saturator, chorus/phaser, gate and transient shaper | In progress: filter (#91) and saturator (#92) implemented; chorus/phaser, gate and transient shaper planned | One small PR each; DSP tests, no callback allocation, automatable parameters (AUTO-03). Filter and saturator: StockDspTests, StockEffectsTests; Windows listening pending |
 | FX-02 | More stock effects: flanger, multiband compressor, de-esser, stereo imager, bit crusher, convolution reverb | Planned | FL, Live and Logic all ship large native effect sets |
 | INST-03 | Wavetable synth (Live Wavetable; FL Sytrus/Harmor-style sound design) | Planned | Band-limited tables; preset scaffolding shared with INST-01 |
 | INST-04 | FM / additive synth (Live Operator, FL Sytrus, Logic Retro Synth) | Planned | Voice allocation and stealing tests as for INST-01 |
@@ -201,3 +205,23 @@ artwork stay original.
 
 Out of scope for now: macOS and iPad versions (Alien Studio is a Windows 11 DAW), and paid
 editions or update tiers (Alien Studio is free and open source).
+
+## Roadmap tier rows (added 2026-10-26)
+
+New IDs used by the tiered priority plan in ROADMAP.md. Every row is Planned unless it says
+otherwise. The Tier column is the roadmap tier; existing rows keep their place above.
+
+| ID | Tier | Capability | Status | Notes / acceptance |
+| --- | --- | --- | --- | --- |
+| CMD-01 | 1 (T1-02) | Command Engine: named, undoable commands (create/delete/move/rename/colour tracks, clips, parameters, buses, sends, devices, groups, tempo, chords, sections) with Execute, Undo, Redo, Batch and Preview | Planned | Built on the existing undo history (FILE-02). A batch is one undo step; Preview changes nothing. Foundation for macros, controller scripting, EXT-01 and AI-01 |
+| ARCH-01 | 1 (T1-03) | One clip/pattern object shared by Create (Steps, Piano Roll), Perform (Session) and Arrange (Song); editing any view updates all | Partial | Song regions already share Session clip notes (LIVE-03); Channel Rack patterns are a separate model. Needs a design doc before code |
+| TRACK-01 | 1 (T1-04) | Universal tracks: one track type that holds audio, MIDI, instrument and pattern content | Planned | Together with LIVE-04 (limits); rack channels become tracks or track content |
+| PROD-05 | 1 (T1-06) | Piano Roll V1 completion: ghost notes, transpose command, split, editing several clips at once | Planned | Draw, paint, move, resize, delete, multi-select, copy/paste, velocity, quantize, scales and undo already exist (PROD-02) |
+| UI-01 | 1 (T1-11) | Saved window layouts and multi-monitor / mixed-DPI support | Planned | Detachable windows exist; layouts are session-only today |
+| QA-03 | 1 (T1-12) | Windows hardware verification pass across Tier 1 features | Ongoing | Results recorded in WINDOWS_AUDIO_CHECKLIST.md with device, driver, buffer size and commit |
+| MIX-06 | 1 (later) | Node routing view editing the same routing graph as the mixer | Planned | After MIX-03 to MIX-05 |
+| RACK-01 | 2 (T2-02) | Instrument and effect racks with macros | Planned | Builds on the eight-slot FX racks and stock effects |
+| CHORD-01 | 2 (T2-04) | Project chord track and arrangement sections | Planned | One chord/scale context for the whole project (feeds INTEL-01); MIDI-06 covers scale awareness |
+| LIVE-05 | 2 (T2-05) | Follow actions, scene capture, record performance to the Song, crossfader, live looping | Planned | Starts after ARCH-01 is stable |
+| INTEL-01 | 3 | Global musical intelligence: chord track -> piano roll -> patterns -> bass generator -> arpeggiator -> Session Players -> pitch correction -> arrangement | Planned | Every smart feature reads the same project context |
+| PLAYER-01 | 4 | Intelligent Session Players | Planned | Needs INTEL-01 |
