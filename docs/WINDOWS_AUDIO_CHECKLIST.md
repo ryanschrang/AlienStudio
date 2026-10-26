@@ -274,6 +274,9 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Confirm RF64 long sources/results work in Windows and an external editor. Physical multi-hour rendering and listening remain manual checks.
 
 ## Song view fades and crossfades
+- Alt-drag the body of a decoded and a long streamed audio clip: right reveals later source audio, left reveals earlier audio and stops at source start. Check the waveform follows while clip position, length, fades and gain stay fixed. Repeat with several selected audio clips plus MIDI/pattern clips; only audio sources slip.
+- Undo/redo each slip as one step, cancel with Esc, and release Alt before the mouse button. Check normal audio movement still works, adding Alt after beginning a move bypasses snap, and Alt-dragging edges/top-corner handles still trims/edits fades.
+- During playback, slip a clip across a tempo change, then stop and export; compare the heard source position with the waveform and exported WAV. These listening checks remain unverified until recorded with device/driver, rate and buffer size.
 - Drag the fade handles of an audio clip with a real mouse at 100% and 150% display scaling; check the handles are easy to grab and do not get in the way of trimming.
 - Listen to fade ins/outs and to a one-beat and a one-bar crossfade between two different recordings: no click, dip or level jump at the join. Repeat with a long (streamed) recording as the first clip.
 - Start playback inside a crossfade, loop over one, and export a WAV containing one; compare the export with what was heard.

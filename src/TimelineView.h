@@ -60,6 +60,9 @@ public:
 
     explicit TimelineCanvas(ProjectController& projectController) : controller(projectController) {
         setName("Arrangement timeline");
+        setHelpText("Alt-drag an audio clip's body to slip its source without moving its boundaries. "
+                    "Drag right to reveal later source audio; drag left to reveal earlier audio. "
+                    "Slip is unsnapped. Edges trim and top-corner handles edit fades.");
         setWantsKeyboardFocus(true);
         setMouseClickGrabsKeyboardFocus(true);
     }
@@ -755,6 +758,10 @@ public:
         const auto hit = hitTest(e.getPosition());
         auto cursorType = juce::MouseCursor::NormalCursor;
         if (hit.zone == Zone::region && (hit.edge != Edge::none || hit.fade != Edge::none)) cursorType = juce::MouseCursor::LeftRightResizeCursor;
+        else if (hit.zone == Zone::region && e.mods.isAltDown() && !e.mods.isShiftDown() && !e.mods.isCommandDown()) {
+            if (const auto* r = committed().find(hit.region); r != nullptr && isAudioRegion(*r))
+                cursorType = juce::MouseCursor::LeftRightResizeCursor;
+        }
         else if (hit.zone == Zone::loopStrip && (hit.loopPart == Hit::LoopPart::start || hit.loopPart == Hit::LoopPart::end)) cursorType = juce::MouseCursor::LeftRightResizeCursor;
         else if (hit.zone == Zone::markerStrip && hit.marker != 0) cursorType = juce::MouseCursor::PointingHandCursor;
         else if (hit.zone == Zone::ruler && hit.tempo >= 0) cursorType = juce::MouseCursor::PointingHandCursor;
@@ -832,6 +839,16 @@ public:
                 drag.grabOffset = static_cast<double>(drag.edgeTick) - drag.anchorTick;
                 break;
             }
+            // Alt on an audio body slips the source; edges and fade handles keep
+            // their existing gestures. Other modifier combinations keep selection/copy.
+            if (bypass && !extend && isAudioRegion(*r)) {
+                if (!wasSelected) setSelection({hit.region});
+                drag.kind = DragKind::slip;
+                drag.grabbed = hit.region; drag.base = baseTimeline();
+                for (const auto id : selected)
+                    if (const auto* item = committed().find(id); item != nullptr && isAudioRegion(*item)) drag.ids.push_back(id);
+                break;
+            }
             if (e.mods.isShiftDown()) {
                 timeline::Ids ids = selected;
                 const auto group = committed().expandGroups({hit.region});
@@ -873,6 +890,15 @@ public:
         const double tickNow = tickAtX(static_cast<double>(pos.x));
         switch (drag.kind) {
         case DragKind::scrub: setCursor(snapTick(tickNow, bypass)); break;
+        case DragKind::slip: {
+            // Relative to the original press, never the previous preview. Right
+            // reveals later source audio. Alt slips freely at integer-tick resolution.
+            const auto delta = static_cast<std::int64_t>(std::llround(tickNow - drag.anchorTick));
+            const auto ids = drag.ids;
+            drag.label = ids.size() == 1 ? "Slip audio clip" : "Slip audio clips";
+            drag.apply = [=](timeline::Timeline& t) { return t.slip(ids, delta); };
+            updatePreview(); break;
+        }
         case DragKind::move: case DragKind::copy: {
             const auto* grabbed = drag.base->find(drag.grabbed);
             if (grabbed == nullptr) break;
@@ -973,7 +999,7 @@ public:
         const bool hadPreview = preview.has_value();
         preview.reset();
         switch (kind) {
-        case DragKind::move: case DragKind::copy: case DragKind::trimStart: case DragKind::trimEnd:
+        case DragKind::move: case DragKind::copy: case DragKind::slip: case DragKind::trimStart: case DragKind::trimEnd:
         case DragKind::fadeIn: case DragKind::fadeOut: case DragKind::marker: case DragKind::loopNew: case DragKind::loopStart: case DragKind::loopEnd: case DragKind::loopMove:
             if (active && finished.apply) {
                 const bool done = edit(finished.label, finished.apply);
@@ -1121,7 +1147,7 @@ public:
     }
 
 private:
-    enum class DragKind { none, scrub, move, copy, trimStart, trimEnd, fadeIn, fadeOut, marker, tempo, loopNew, loopStart, loopEnd, loopMove, marquee };
+    enum class DragKind { none, scrub, move, copy, slip, trimStart, trimEnd, fadeIn, fadeOut, marker, tempo, loopNew, loopStart, loopEnd, loopMove, marquee };
     struct Drag {
         DragKind kind{DragKind::none};
         bool active{};
@@ -1180,7 +1206,7 @@ private:
         menu.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(localAreaToGlobal(area)), std::move(done));
     }
     void autoScroll(int x) {
-        if (drag.kind == DragKind::marquee || drag.kind == DragKind::move || drag.kind == DragKind::copy || drag.kind == DragKind::trimEnd
+        if (drag.kind == DragKind::marquee || drag.kind == DragKind::move || drag.kind == DragKind::copy || drag.kind == DragKind::slip || drag.kind == DragKind::trimEnd
             || drag.kind == DragKind::loopNew || drag.kind == DragKind::loopEnd || drag.kind == DragKind::scrub) {
             const int right = getWidth() - 24;
             if (x > right) setScrollTicks(scrollX + std::min(40, x - right) * 0.6 / ppt);
@@ -2096,7 +2122,7 @@ public:
             label->setFont(ui::font(10.5f, true)); label->setColour(juce::Label::textColourId, col::textFaint);
         }
         snapLabel.setText("SNAP", juce::dontSendNotification); lengthLabel.setText("SONG BARS", juce::dontSendNotification);
-        addAndMakeVisible(snapBox); snapBox.setName("Snap"); snapBox.setTooltip("Round dragged clips, edges and the play position to this grid. Hold Alt to ignore it.");
+        addAndMakeVisible(snapBox); snapBox.setName("Snap"); snapBox.setTooltip("Round dragged clips, edges and the play position to this grid. Alt bypasses snap; Alt-drag on an audio body slips its source.");
         for (std::size_t i = 0; i < tlui::allSnaps.size(); ++i) snapBox.addItem(tlui::snapName(tlui::allSnaps[i]), static_cast<int>(i) + 1);
         snapBox.setSelectedId(1, juce::dontSendNotification);
         snapBox.onChange = [this] { canvas.setSnap(tlui::allSnaps[static_cast<std::size_t>(snapBox.getSelectedId() - 1)]); };
@@ -2135,7 +2161,7 @@ public:
         readout.setJustificationType(juce::Justification::centredRight);
         help.setFont(ui::font(12.0f)); help.setColour(juce::Label::textColourId, col::textFaint);
         help.setJustificationType(juce::Justification::centredLeft);
-        defaultHelp = "Double-click a lane to place a clip. Drag to move, drag an edge to resize, drag an audio clip's top corner to fade it, drag empty space to select. S splits, M mutes, L loops, K adds a marker, Ctrl+wheel zooms.";
+        defaultHelp = "Double-click a lane to place a clip. Drag to move, Alt-drag audio to slip its source, drag an edge to resize or a top corner to fade. S splits, M mutes, L loops, K adds a marker, Ctrl+wheel zooms.";
         help.setText(defaultHelp, juce::dontSendNotification);
         canvas.onViewChanged = [this] { layoutScroll(); };
         canvas.onStateChanged = [this] { updateControls(); };

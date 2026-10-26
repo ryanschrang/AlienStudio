@@ -48,7 +48,7 @@ Ordered by importance. Rows without dependencies can run in parallel.
 | T1-05 | Mixer routing: groups, buses, sidechain, flexible returns | MIX-03, MIX-04, MIX-05 | Partial: volume, pan, mute/solo, meters, four returns, pre/post sends, latency compensation (MIX-01, MIX-02) | - | `TrackMixer.h`, `ToneEngine.h` routing, mixer view |
 | T1-06 | Piano Roll V1 completion | PROD-05 | Mostly done; missing ghost notes, transpose command, split, multi-clip editing | - | `PianoRoll*.h` |
 | T1-07 | Recording completion | REC-02 | Mostly done; missing loop-pass recording and waveform take lanes | - | `SongRecording.h`, `TimelineView.h` |
-| T1-08 | Audio editing completion | EDIT-01, WARP-03 | Partial: trim, split, slip, gain, fades, crossfades; missing fade curves, Alt-drag slip, warp markers | Warp markers need T1-01 | `Timeline.h`, `TimelineView.h`, `TempoWarp.h` |
+| T1-08 | Audio editing completion | EDIT-01, WARP-03 | Partial: trim, split, menu/Alt-drag slip, gain, fades, crossfades; missing selectable fade curves and warp markers | Warp markers need T1-01 | `Timeline.h`, `TimelineView.h`, `TempoWarp.h` |
 | T1-09 | Plugin reliability and coverage | PLUG-01, PLUG-02, INST-10, AUTO-03 | Partial: VST3 hosting and crash containment; missing scans, rack VST3 instruments, plugin automation playback, commercial plugin checks | - | `Plugin*.h`, `RackEngine.h` |
 | T1-10 | Browser for samples, presets and plugins | BROWSE-01, INST-08 | Not started | - | new browser view; `ClipBin.h` |
 | T1-11 | UI and workspace | UI-01 | Mostly done: detachable windows, menus, theme; missing saved layouts, multi-monitor/DPI checks | - | `DetachableView.h`, `MainComponent.h` |
