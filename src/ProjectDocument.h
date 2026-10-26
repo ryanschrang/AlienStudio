@@ -1,10 +1,12 @@
 #pragma once
+#include "ClipLibrary.h"
 #include "PianoRollSequence.h"
 #include "SessionAudioClip.h"
 #include "SessionProject.h"
 #include "TrackMixer.h"
 #include <juce_core/juce_core.h>
 #include <array>
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -26,12 +28,21 @@ inline const std::shared_ptr<const PianoRollPattern>& emptyPattern() {
     return empty;
 }
 
+// What one Session cell plays: a read-only view of its clip in the document's library
+// (ProjectDocument::clip). To change a cell, change a copy and give it to setClip.
 struct SessionClip {
     std::shared_ptr<const PianoRollPattern> pattern = emptyPattern();
     // Decoded audio is immutable and retained by the ProjectController for the
     // lifetime of the engine, so the engine may hold raw pointers to it.
     std::shared_ptr<const SessionAudioClip> audio;
     juce::String audioFileName, audioFilePath;
+
+    SessionClip() = default;
+    SessionClip(const SessionClip&) = default;
+    SessionClip(SessionClip&&) = default;
+    // Only a named copy can be assigned: `doc.clip(t, s) = ...` would change a temporary and nothing else.
+    SessionClip& operator=(const SessionClip&) & = default;
+    SessionClip& operator=(SessionClip&&) & = default;
 
     const PianoRollPattern& notes() const noexcept { return *pattern; }
     bool hasAudio() const noexcept { return audio != nullptr; }
@@ -42,6 +53,13 @@ struct SessionClip {
     // An audio clip, loaded or offline, as opposed to a MIDI clip.
     bool isAudioClip() const noexcept { return audio != nullptr || audioFilePath.isNotEmpty(); }
     bool isEmpty() const noexcept { return audio == nullptr && audioFilePath.isEmpty() && pattern->count == 0; }
+};
+
+// An audio file a clip plays: the decoded audio (null when the file is offline) and where it is.
+struct SessionMedia {
+    std::shared_ptr<const SessionAudioClip> audio;
+    juce::String fileName, filePath;
+    bool operator==(const SessionMedia&) const = default;
 };
 
 struct SessionTrack {
@@ -86,7 +104,13 @@ struct StepSequence {
 struct ProjectDocument {
     std::vector<SessionTrack> tracks;
     std::vector<SessionScene> scenes;
-    std::vector<std::vector<SessionClip>> clips; // [scene][track]
+    // The Session grid, [scene][track]: each cell names the clip it launches, or none. The clip's
+    // musical content lives once, in `library` (T1-03; see docs/SHARED_CLIP_MODEL.md), and the
+    // audio it plays in `media`. Change cells only with setClip and clearClip.
+    std::vector<std::vector<library::ClipId>> cells;
+    library::Library library;
+    std::map<std::uint64_t, SessionMedia> media;   // by MediaId
+    std::uint64_t nextMedia{1};
     int bpm{120};
     int launchQuantizationSteps{16};
     float masterGain{1.0f}; // whole-mix level, 0..maxMasterGain
@@ -107,8 +131,8 @@ struct ProjectDocument {
         ProjectDocument d;
         for (int t = 0; t < trackCount; ++t) d.tracks.push_back({defaultTrackName(t), {}, t});
         for (int s = 0; s < sceneCount; ++s) d.scenes.push_back({defaultSceneName(s)});
-        d.clips.assign(static_cast<std::size_t>(sceneCount),
-                       std::vector<SessionClip>(static_cast<std::size_t>(trackCount)));
+        d.cells.assign(static_cast<std::size_t>(sceneCount),
+                       std::vector<library::ClipId>(static_cast<std::size_t>(trackCount)));
         for (const int step : {0, 4, 8, 12}) d.steps.on[static_cast<std::size_t>(step)] = true;
         return d;
     }
@@ -121,14 +145,65 @@ struct ProjectDocument {
     bool isValidCell(int track, int scene) const noexcept {
         return track >= 0 && track < trackCount() && scene >= 0 && scene < sceneCount();
     }
-    SessionClip& clip(int track, int scene) {
-        return clips[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
+    library::ClipId cellClip(int track, int scene) const {
+        return cells[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
     }
-    const SessionClip& clip(int track, int scene) const {
-        return clips[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
+    // What a cell plays, resolved from the library: an empty clip for an empty cell.
+    SessionClip clip(int track, int scene) const {
+        SessionClip view;
+        const auto content = library.content(cellClip(track, scene));
+        if (content == nullptr) return view;
+        for (const auto& lane : content->lanes) {
+            if (const auto* notes = std::get_if<library::NoteLane>(&lane.content)) view.pattern = notes->notes;
+            else if (const auto* audio = std::get_if<library::AudioLane>(&lane.content)) {
+                const auto found = media.find(audio->media.value);
+                if (found != media.end()) { view.audio = found->second.audio; view.audioFileName = found->second.fileName; view.audioFilePath = found->second.filePath; }
+            }
+        }
+        return view;
     }
-    SessionClip& selectedClip() { return clip(selectedTrack, selectedScene); }
-    const SessionClip& selectedClip() const { return clip(selectedTrack, selectedScene); }
+    SessionClip selectedClip() const { return clip(selectedTrack, selectedScene); }
+    // Gives a cell new content, as a new revision of the clip it already has (every use of that
+    // clip hears it), or as a new clip for an empty cell. Content that is just a new, empty clip (no
+    // audio, no notes, the default loop) empties the cell; an empty clip with its own loop is kept.
+    void setClip(int track, int scene, const SessionClip& content) {
+        const auto& blank = *emptyPattern();
+        const bool nothing = !content.isAudioClip() && (content.pattern == nullptr
+            || (content.pattern->count == 0 && content.pattern->loopSteps == blank.loopSteps));
+        if (nothing) { clearClip(track, scene); return; }
+        auto data = std::make_shared<library::PatternData>();
+        const auto& notes = content.pattern != nullptr ? content.pattern : emptyPattern();
+        data->lengthTicks = library::PatternData::loopTicks(*notes);
+        data->lanes.push_back({library::LaneId{1}, library::NoteLane{notes}});
+        if (content.isAudioClip()) data->lanes.push_back({library::LaneId{2}, library::AudioLane{mediaFor(track, scene, content)}});
+        auto& cell = cells[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
+        if (const auto* existing = library.clip(cell)) {
+            const auto* pattern = library.pattern(existing->pattern);
+            library.editPattern(existing->pattern, pattern->revision, std::move(data));
+        } else cell = library.addClip(std::shared_ptr<const library::PatternData>(std::move(data)));
+        prune();
+    }
+    void clearClip(int track, int scene) {
+        auto& cell = cells[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
+        if (!cell) return;
+        cell = {};
+        prune();
+    }
+    // Drops clips no cell uses any more, and audio no clip plays. (Undo keeps its own copies.)
+    void prune() {
+        std::vector<library::ClipId> roots;
+        for (const auto& scene : cells) for (const auto id : scene) if (id) roots.push_back(id);
+        library.prune(roots);
+        std::erase_if(media, [&](const auto& entry) {
+            for (const auto& scene : cells) for (const auto id : scene) {
+                const auto content = library.content(id);
+                if (content == nullptr) continue;
+                for (const auto& lane : content->lanes)
+                    if (const auto* audio = std::get_if<library::AudioLane>(&lane.content); audio != nullptr && audio->media.value == entry.first) return false;
+            }
+            return true;
+        });
+    }
 
     bool canAddTrack() const noexcept { return trackCount() < maxSessionTracks; }
     bool canAddScene() const noexcept { return sceneCount() < maxSessionScenes; }
@@ -161,6 +236,21 @@ struct ProjectDocument {
         selectedTrack = juce::jlimit(0, juce::jmax(0, trackCount() - 1), selectedTrack);
         selectedScene = juce::jlimit(0, juce::jmax(0, sceneCount() - 1), selectedScene);
     }
+private:
+    // The media entry for `content`'s audio: the cell's own entry when it already plays that audio
+    // from that file, otherwise a new one.
+    library::MediaId mediaFor(int track, int scene, const SessionClip& content) {
+        const SessionMedia wanted{content.audio, content.audioFileName, content.audioFilePath};
+        if (const auto existing = library.content(cellClip(track, scene)))
+            for (const auto& lane : existing->lanes)
+                if (const auto* audio = std::get_if<library::AudioLane>(&lane.content)) {
+                    const auto found = media.find(audio->media.value);
+                    if (found != media.end() && found->second == wanted) return audio->media;
+                }
+        const library::MediaId id{nextMedia++};
+        media.emplace(id.value, wanted);
+        return id;
+    }
 };
 
 // True when two documents have the same content (selection is ignored).
@@ -187,10 +277,10 @@ inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
             return false;
     for (std::size_t s = 0; s < a.scenes.size(); ++s)
         if (a.scenes[s].id != b.scenes[s].id || a.scenes[s].name != b.scenes[s].name) return false;
-    for (std::size_t s = 0; s < a.clips.size(); ++s)
-        for (std::size_t t = 0; t < a.clips[s].size(); ++t) {
-            const auto& x = a.clips[s][t];
-            const auto& y = b.clips[s][t];
+    for (int s = 0; s < a.sceneCount(); ++s)
+        for (int t = 0; t < a.trackCount(); ++t) {
+            const auto x = a.clip(t, s);
+            const auto y = b.clip(t, s);
             // Audio paths are excluded: they only change with the audio itself, or
             // when a portable save re-points them at collected copies.
             if (x.pattern != y.pattern || x.audio != y.audio) return false;
@@ -275,9 +365,10 @@ inline ProjectDocument fromProjectData(const SessionProjectData& data) {
     for (int s = 0; s < data.sceneCount(); ++s)
         for (int t = 0; t < data.trackCount(); ++t) {
             const auto& source = data.clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
-            auto& clip = doc.clip(t, s);
+            SessionClip clip;   // each saved cell is a clip of its own
             clip.pattern = source.pattern.shared() != nullptr ? source.pattern.shared() : emptyPattern();
             clip.audioFilePath = source.audioFilePath;
+            doc.setClip(t, s, clip);
         }
     doc.clampSelection();
     return doc;
