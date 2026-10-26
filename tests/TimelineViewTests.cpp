@@ -1778,8 +1778,31 @@ static void takeCompChecks() {
         std::getenv("ALIEN_SNAPSHOT_DIR"), "recording-takes.png");
 }
 
+static void freezeMenuChecks() {
+    auto rig=std::make_unique<Rig>();rig->song();auto& c=rig->c;
+    int frozen=-1,unfrozen=-1;
+    rig->view.onFreezeTrack=[&](int track){
+        frozen=track;const auto expected=rig->controller.timeline();
+        auto audio=std::const_pointer_cast<SessionAudioClip>(rig->controller.document().clip(2,0).audio);
+        require(rig->controller.installFrozenTrack(track,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("Freeze-UI.wav"),audio,expected),"UI installs a frozen track");
+        rig->view.refresh();
+    };
+    rig->view.onUnfreezeTrack=[&](int track){unfrozen=track;require(rig->controller.unfreezeTrack(track),"UI unfreezes track");rig->view.refresh();};
+    const auto header=juce::Point<int>{40,c.rowTop(c.displayRowOf(2))+20};
+    rig->rightClick(header);require(entry(rig->menu.items(),TimelineCanvas::cmdFreeze)!=nullptr,"track header offers freeze");
+    rig->menu.done(TimelineCanvas::cmdFreeze);
+    require(frozen==2 && c.inputText(2)=="Frozen audio","freeze callback and header label");
+    rig->rightClick(header);
+    require(entry(rig->menu.items(),TimelineCanvas::cmdUnfreeze)!=nullptr
+        && !entry(rig->menu.items(),TimelineCanvas::cmdArm)->enabled,"frozen header offers unfreeze and disables arming");
+    writePng(rig->view.createComponentSnapshot(rig->view.getLocalBounds(),true,1.0f),std::getenv("ALIEN_SNAPSHOT_DIR"),"frozen-track.png");
+    rig->menu.done(TimelineCanvas::cmdUnfreeze);
+    require(unfrozen==2 && !rig->controller.isTrackFrozen(2) && c.inputText(2)!="Frozen audio","unfreeze restores editable track");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    freezeMenuChecks();
     takeCompChecks();
     geometryChecks();
     snapChecks();

@@ -1172,3 +1172,32 @@ previous comp. Original files remain unchanged. **Forget take** removes a list
 entry without deleting its active comp or audio file. Projects use format 15.
 Recording still stops at loop boundaries; continuous loop takes and waveform
 lanes are not included in this increment.
+
+
+### Freeze and unfreeze Session tracks
+
+Right-click a Session track header in **Song** and choose **Freeze track (render
+audio)**. Freeze renders its arranged clips and track effects into a 48 kHz,
+32-bit floating-point cache, before fader, pan, sends and volume/pan automation.
+These mixer controls and shared return effects remain live. Original instrument
+and effect instances unload while frozen; saved plugin settings and source clips
+are retained. Choose **Unfreeze track** to restore them. Both actions undo/redo.
+
+The header reads **Frozen audio**. Source edits, recording, instrument/preset
+changes and edits to the cached Song clip are blocked until unfreeze. Changing
+tempo automatically unfreezes tracks, so caches never play at an incompatible
+tempo. Original Session cells stay intact; while frozen, Session playback uses
+only the new rendered cache cell. Unfreeze restores the original song length
+unless other content requires a longer song.
+
+This increment supports Session tracks without Channel Rack inputs. Reroute rack
+channels and ungroup clips shared with other tracks before freezing. Factory
+release envelopes, drum sample tails and reported plugin tails render up to the
+existing 30-second host cap. Native plugin behavior and joins still need listening
+checks. Rebuilding plugin instances can briefly interrupt playback.
+
+Projects use **format 16** and retain the cache reference and original regions.
+Older projects open unfrozen; older app versions refuse format 16. **Save portable**
+collects cached and original media. Missing caches can be relinked, or unfreeze can
+restore the original clips. Caches live in the application's FreezeAudio folder;
+unfreeze keeps the file for Undo, and does not delete original media.
