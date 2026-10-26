@@ -1140,7 +1140,8 @@ static void sendAutomationPlaybackTests() {
     for (std::size_t i = 0; i < seek.out.size(); ++i)
         require(std::abs(seek.out[i] - seekDry.out[i] * 2.5f) < 2e-6, "seek evaluates send curves immediately");
     auto loopSong = std::make_shared<alien::ArrangementPlayback>(*automated);
-    loopSong->timeline.loopEnabled = true; loopSong->timeline.loopStart = 0; loopSong->timeline.loopEnd = 120;
+    // The shortest loop the timeline accepts (one step, 6000 frames), so 7000 frames wrap once.
+    require(loopSong->timeline.setLoop(0, ticksPerStep) && loopSong->timeline.setLoopEnabled(true), "a one-step send automation loop");
     Rig loopOne; loopOne.block = 1; loopOne.publish(loopSong); loopOne.play(); loopOne.render(7000);
     Rig loopOdd; loopOdd.block = 257; loopOdd.publish(loopSong); loopOdd.play(); loopOdd.render(7000);
     require(loopOne.out == loopOdd.out, "send curves restart at loop wraps independently of block size");
