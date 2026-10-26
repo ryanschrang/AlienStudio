@@ -3,6 +3,7 @@
 #include "PluginRuntime.h"
 #include "PluginScan.h"
 #include "PluginState.h"
+#include "ParameterAutomation.h"
 #include "StockEffectEditors.h"
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <functional>
@@ -144,6 +145,33 @@ public:
         drain(errors);           // a plugin that failed while preparing is part of this restore's result
         return errors;
     }
+    // Message thread only; callers detach audio, as for restore/snapshot. Never
+    // invent an index-based ID for plugins without persistent parameter IDs.
+    std::vector<automation::ParameterBinding> parameterBindings() {
+        std::vector<automation::ParameterBinding> bindings;
+        auto collect = [&](PluginRuntime::Slot& slot, int rack, int index) {
+            if (!slot.processor || slot.faulted.get() || slot.instanceId == 0) return;
+            fault::Fault fault;
+            std::vector<automation::ParameterBinding> found;
+            if (!fault::guarded([&] {
+                const auto& parameters = slot.processor->getParameters();
+                for (int i = 0; i < parameters.size(); ++i) {
+                    auto* p = dynamic_cast<juce::HostedAudioProcessorParameter*>(parameters[i]);
+                    if (!p || !p->isAutomatable()) continue;
+                    auto id = p->getParameterID().toStdString();
+                    if (automation::ParameterTarget{slot.instanceId, id}.valid())
+                        found.push_back({slot.instanceId, std::move(id), rack, index, i});
+                }
+            }, fault)) { runtime.markFaulted(slot, rack, index, PluginPhase::query, fault); return; }
+            bindings.insert(bindings.end(), std::make_move_iterator(found.begin()), std::make_move_iterator(found.end()));
+        };
+        for (int r = 0; r < PluginRuntime::rackCount; ++r) {
+            auto& rack = runtime.racks[static_cast<std::size_t>(r)];
+            collect(rack.instrument, r, -1);
+            for (int i = 0; i < rack.effectCount; ++i) collect(rack.effects[static_cast<std::size_t>(i)], r, i);
+        }
+        return bindings;
+    }
     // Copies each plugin's state into the rack states. A plugin that has failed keeps the state
     // saved before the failure: asking a broken plugin for its state would only break it more.
     void snapshot(std::vector<PluginRackState>& tracks, PluginRackState& master) { ReturnRacks unused; snapshot(tracks, master, unused); }
@@ -209,6 +237,8 @@ public:
         if (brokenEditors.count(entry.processor.get())!=0) return "editor crashed";
         return {};
     }
+    // Message thread, with the device callback detached, before an offline snapshot.
+    void closeEditorWindows() { closeEditors(); }
     const DiagnosticLog& diagnosticLog() const noexcept { return log; }
     std::atomic<bool> changed{};
 private:
@@ -275,6 +305,7 @@ private:
     void loadSlot(PluginRuntime::Slot& slot,const PluginState& state,bool instrument,double rate,juce::String& errors,int rack,int index) {
         if(state.descriptionXml.isEmpty()) return;
         slot.name=pluginDisplayName(state);
+        slot.instanceId=state.instanceId;
         juce::String error; fault::Fault fault;
         if (preflight) {
             juce::PluginDescription description;

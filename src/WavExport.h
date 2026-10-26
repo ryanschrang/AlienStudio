@@ -15,6 +15,7 @@ struct WavExportOptions {
     std::int64_t fromTick{0};   // timeline ticks (960 to a quarter note)
     std::int64_t toTick{-1};    // -1: the end of the song
     std::array<const SessionAudioClip*, rack::maxChannels> rackClips{};
+    int freezeTrack{-1};       // >=0: one post-FX, pre-fader Session track WAV.
     bool stems{false};         // target is a new folder; capture aligned buses before master processing.
     int blockFrames{512};       // frames per render call (1..512); the result is the same for any size
 };
@@ -40,11 +41,12 @@ struct StemExportFolder {
         created = false; return true;
     }
 };
-inline std::unique_ptr<juce::AudioFormatWriter> openExportWriter(const juce::File& file) {
+inline std::unique_ptr<juce::AudioFormatWriter> openExportWriter(const juce::File& file, bool floatingPoint=false) {
     std::unique_ptr<juce::OutputStream> stream = file.createOutputStream();
     if (!stream) return {};
     return juce::WavAudioFormat().createWriterFor(stream, juce::AudioFormatWriterOptions{}
-        .withSampleRate(48000).withNumChannels(2).withBitsPerSample(24));
+        .withSampleRate(48000).withNumChannels(2).withBitsPerSample(floatingPoint?32:24)
+        .withSampleFormat(floatingPoint?juce::AudioFormatWriterOptions::SampleFormat::floatingPoint:juce::AudioFormatWriterOptions::SampleFormat::automatic));
 }
 
 // How many 64-bit output frames `ticks` of timeline take at `bpm`: an 18-hour song is over three billion.
@@ -64,6 +66,12 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     const std::atomic<bool>& cancelled, juce::String& error, ToneEngine* preparedEngine = nullptr,
     const WavExportOptions& options = {}) {
     constexpr double exportRate = 48000.0;
+    const bool freezing=options.freezeTrack>=0;
+    const bool capture=options.stems || freezing;
+    if(options.freezeTrack < -1 || options.freezeTrack>=project.trackCount() || (freezing && options.stems)
+        || (freezing && project.trackSettings[static_cast<std::size_t>(options.freezeTrack)].frozen())) {
+        error="Invalid freeze target.";return false;
+    }
     if (!project.valid() || !livesong.timeline.valid(project.trackCount(), project.sceneCount(), project.channelRack.patternCount)
         || !livesong.timeline.hasRegions()) {
         error="Add at least one clip or pattern to the Arrangement before exporting."; return false;
@@ -71,6 +79,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     // The export plays the song through once from the requested start, never looping.
     // (A snapshot is megabytes: it lives on the heap, never on this thread's stack.)
     auto song = std::make_shared<ArrangementPlayback>(livesong);
+    if(freezing)std::erase_if(song->timeline.regions,[&](const timeline::Region& region){return region.row!=options.freezeTrack;});
     song->timeline.loopEnabled = false;
     song->timeline.tempo = project.bpm;
     const std::int64_t songEnd = song->timeline.length();
@@ -95,30 +104,40 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
             return false;
         }
     }
-    bool hasPlugins = !options.stems && !project.masterPlugins.effects.empty();
-    for (const auto& rack : project.returnPlugins) hasPlugins = hasPlugins || !rack.effects.empty();
-    for (const auto& rack : project.plugins)
-        hasPlugins = hasPlugins || !rack.instrument.descriptionXml.isEmpty() || !rack.effects.empty();
+    bool hasPlugins = !capture && !project.masterPlugins.effects.empty();
+    if(!freezing)for (const auto& rack : project.returnPlugins) hasPlugins = hasPlugins || !rack.effects.empty();
+    for (std::size_t t=0;t<project.plugins.size();++t) {
+        if(project.trackSettings[t].frozen() || (freezing && static_cast<int>(t)!=options.freezeTrack))continue;
+        const auto& rack=project.plugins[t];hasPlugins=hasPlugins || !rack.instrument.descriptionXml.isEmpty() || !rack.effects.empty();
+    }
     if (hasPlugins && !preparedEngine) {
         error="Prepare plugin instances on the message thread before export"; return false;
     }
     auto ownedEngine = preparedEngine ? std::unique_ptr<ToneEngine>{} : std::make_unique<ToneEngine>();
     auto* engine = preparedEngine ? preparedEngine : ownedEngine.get();
-    struct RestoreMasterBypass {
-        PluginRuntime::Rack& rack; std::array<bool,8> previous{};
-        explicit RestoreMasterBypass(PluginRuntime::Rack& value) : rack(value) {
-            for (std::size_t i=0; i<previous.size(); ++i) previous[i]=rack.effects[i].bypass;
+    struct RestoreOfflineFlags {
+        PluginRuntime& runtime;
+        std::array<bool,PluginRuntime::rackCount> frozen{};
+        std::array<std::array<bool,8>,PluginRuntime::rackCount> bypass{};
+        explicit RestoreOfflineFlags(PluginRuntime& owner) : runtime(owner) {
+            for(std::size_t r=0;r<frozen.size();++r){frozen[r]=runtime.racks[r].frozen;for(std::size_t i=0;i<8;++i)bypass[r][i]=runtime.racks[r].effects[i].bypass;}
         }
-        ~RestoreMasterBypass() { for (std::size_t i=0; i<previous.size(); ++i) rack.effects[i].bypass=previous[i]; }
-    } restoreMaster(engine->plugins->racks[PluginRuntime::masterIndex]);
-    if (options.stems) {
-        engine->stemCapture = std::make_unique<StemCapture>();
+        ~RestoreOfflineFlags(){for(std::size_t r=0;r<frozen.size();++r){runtime.racks[r].frozen=frozen[r];for(std::size_t i=0;i<8;++i)runtime.racks[r].effects[i].bypass=bypass[r][i];}}
+    } restoreFlags(*engine->plugins);
+    if (capture) {
+        engine->stemCapture = std::make_unique<StemCapture>();engine->stemCapture->freezeTrack=options.freezeTrack;
+        if(freezing) {
+            for(int t=0;t<maxSessionTracks;++t)if(t!=options.freezeTrack)engine->plugins->racks[static_cast<std::size_t>(t)].frozen=true;
+            for(int k=0;k<maxReturns;++k)engine->plugins->racks[PluginRuntime::returnIndex(k)].frozen=true;
+        }
         for (auto& slot : engine->plugins->racks[PluginRuntime::masterIndex].effects) slot.bypass = true;
     } else engine->stemCapture.reset();
     const auto faultsBefore = engine->plugins->faultCount.load();
     engine->renderStreamsDeterministically();   // streamed clips are read here, on this thread, in order
     engine->masterControls.gain.store(project.masterGain);
     for (std::size_t r = 0; r < engine->returns.size(); ++r) engine->returns[r].set(project.returns[r]);
+    for(int t=0;t<project.trackCount();++t)engine->plugins->racks[static_cast<std::size_t>(t)].frozen=
+        project.trackSettings[static_cast<std::size_t>(t)].frozen() || (freezing && t!=options.freezeTrack);
     engine->prepare(exportRate);
     engine->recording.metronome.store(false);
     for (auto& rack : engine->plugins->racks) {
@@ -130,15 +149,32 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     engine->bpm.store(project.bpm);
     engine->patternMode.store(2);
     for (std::size_t t=0;t<static_cast<std::size_t>(project.trackCount());++t) {
-        engine->tracks[t].set(project.trackSettings[t]);
+        auto settings=project.trackSettings[t];
+        if(freezing){ settings.send.fill(0);settings.mute=false;settings.solo=false;if(static_cast<int>(t)!=options.freezeTrack)settings.freezeScene=0; }
+        engine->tracks[t].set(settings);
         for (std::size_t p=0;p<drumPadCount;++p)
             engine->drumKits[t].samples[p].store(drums[t][p]);
+    }
+    double tailSeconds=engine->plugins->tailSeconds();
+    if(freezing) {
+        if(project.plugins[static_cast<std::size_t>(options.freezeTrack)].instrument.descriptionXml.isEmpty()) {
+            const auto& settings=project.trackSettings[static_cast<std::size_t>(options.freezeTrack)];
+            double sourceTail=settings.instrument==0?presets[static_cast<std::size_t>(settings.preset)].release:0.0;
+            if(settings.instrument==1)for(const auto* sample:drums[static_cast<std::size_t>(options.freezeTrack)])
+                if(sample && sample->sampleRate>0)sourceTail=std::max(sourceTail,static_cast<double>(sample->frames)/sample->sampleRate);
+            tailSeconds+=sourceTail;
+        }
+        tailSeconds=std::min(30.0,tailSeconds);
+        const auto tailTicks=static_cast<std::int64_t>(std::ceil(tailSeconds*project.bpm*timeline::ticksPerBeat/60.0));
+        const auto end=to+tailTicks+timeline::ticksPerStep;
+        if(end>timeline::maxLength){error="Frozen tail exceeds the supported song length.";return false;}
+        song->timeline.lengthBars=std::max(song->timeline.lengthBars,static_cast<int>((end+timeline::ticksPerBar-1)/timeline::ticksPerBar));
     }
     if(!engine->arrangementMailbox.publish(std::shared_ptr<const ArrangementPlayback>(song))) { error="Invalid song data.";return false; }
     for (std::size_t c = 0; c < options.rackClips.size(); ++c) engine->rackSamples[c].store(options.rackClips[c]);
     engine->rackMailbox.publish(project.channelRack.snapshot());
     engine->timelineSeek.store(from);
-    engine->timelineEnd.store(to < songEnd ? to : -1);
+    engine->timelineEnd.store(!freezing && to < songEnd ? to : -1);
     engine->playing.store(true);
 
     // Declare the folder before its writers so failure closes handles before cleanup.
@@ -169,7 +205,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         if (!add(StemCapture::directBus,"Channel Rack - Master.wav")) { error="Cannot create rack stem."; return false; }
     } else {
         temporary=std::make_unique<juce::TemporaryFile>(target);
-        writer=openExportWriter(temporary->getFile());
+        writer=openExportWriter(temporary->getFile(),freezing);
         if (!writer) { error="Cannot create WAV writer."; return false; }
     }
 
@@ -177,7 +213,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     juce::AudioBuffer<float> buffer(2,block);
     const auto latency = static_cast<std::int64_t>(engine->plugins->latencySamples()
         - (options.stems ? engine->plugins->rackLatency(engine->plugins->racks[PluginRuntime::masterIndex]) : 0));
-    const auto tail = static_cast<std::int64_t>(std::ceil(engine->plugins->tailSeconds() * exportRate));
+    const auto tail = static_cast<std::int64_t>(std::ceil(tailSeconds * exportRate));
     const auto frames = exportFrameCount(to - from, project.bpm, exportRate);
     if (frames <= 0 || frames > std::numeric_limits<std::int64_t>::max() - latency - tail) {
         error="Export duration is too long."; return false;
@@ -191,6 +227,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         buffer.clear();
         float* outputs[]{buffer.getWritePointer(0),buffer.getWritePointer(1)};
         engine->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,count,{});
+        if(freezing)for(int c=0;c<2;++c)buffer.copyFrom(c,0,engine->stemCapture->buses[static_cast<std::size_t>(options.freezeTrack)],c,0,count);
         if (cancelled.load()) {
             error=options.stems ? "Stem export cancelled; no folder published." : "Export cancelled; existing file unchanged.";return false;
         }
@@ -201,8 +238,8 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
                 return false;
             }
         const int start=static_cast<int>(std::clamp<std::int64_t>(latency-offset,0,count));
-        if (options.stems && engine->plugins->faultCount.load() != faultsBefore) {
-            error="Plugin failed during stem export; no folder published."; return false;
+        if (capture && engine->plugins->faultCount.load() != faultsBefore) {
+            error="Plugin failed during offline capture; no output published."; return false;
         }
         if (count > start) {
             if (options.stems) {
@@ -214,7 +251,8 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
                         error="Stem write failed (invalid audio or unavailable disk)."; return false;
                     }
                 }
-            } else if (!writer->writeFromAudioSampleBuffer(buffer,start,count-start)) {
+            } else if ((freezing && (!allFinite(buffer.getReadPointer(0)+start,count-start) || !allFinite(buffer.getReadPointer(1)+start,count-start)))
+                || !writer->writeFromAudioSampleBuffer(buffer,start,count-start)) {
                 error="WAV write failed (check available space)."; return false;
             }
         }

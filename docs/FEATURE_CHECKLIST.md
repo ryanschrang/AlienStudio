@@ -36,7 +36,7 @@ commit, automated test result and Windows listening result before promoting a st
 "Implemented" means code exists; it does not mean all hardware or plugin combinations pass.
 Every row and section below describes main unless it says otherwise. "Planned" rows are not
 started; the gap list from the FL Studio / Ableton Live / Logic Pro comparison is at the end.
-The current project format is 15.
+The current project format is 17.
 
 | ID | Capability | Status | Evidence / remaining acceptance |
 | --- | --- | --- | --- |
@@ -50,7 +50,7 @@ The current project format is 15.
 | LIVE-03 | Shared clip storage (groundwork for raising the Session limits) | Implemented (#77) | The song snapshot and the save/load data point at the document's immutable clip notes (SharedPianoRoll) instead of copying a 32 KiB pattern per clip: a snapshot drops from about 16 MiB to a few KiB, and empty clips with the default loop keep no notes at all. No format or behaviour change. ArrangementTests (snapshot size, SharedPianoRoll), ProjectControllerTests (sharing to and from save data, live snapshot shares notes). Next: raise tracks/scenes/notes; the per-track engine buffers (pattern copies in the scheduler and mailboxes) still grow with the note limit |
 | LIVE-02 | Beat/bar launch, scene launch and MIDI CC mapping | Implemented | Session/MIDI tests; hardware live checks pending |
 | MIX-01 | Per-track volume, pan, mute/solo and meters | Implemented | TrackMixer tests; sends and returns are MIX-02 |
-| FILE-01 | Versioned projects, portable audio collection | Implemented | SessionProjectTests; project format 15 (older formats still open) |
+| FILE-01 | Versioned projects, portable audio collection | Implemented | SessionProjectTests; project format 17 (older formats still open) |
 | FILE-02 | Undo/redo, save prompts, autosave and recovery | Implemented | ProjectControllerTests; recovery hardware checks pending |
 | AUDIO-01 | WAV/MP3 Session import and one-shot playback | Implemented | Clips above 128 MiB stream from disk; short clips retain the decoded path |
 | REC-01 | Mono/stereo disk recording and interrupted-take recovery | Implemented | LongRecordingTests; PR #38 merged; multitrack arming is REC-02 |
@@ -72,7 +72,7 @@ The current project format is 15.
 | PLUG-02 | Recursive VST3 scanning with scan logs, crash containment, editor failure reporting, compatibility check tool | Implemented; MSVC fault trapping and real commercial plugins pending | FaultGuardTests, PluginFaultTests, PluginScanTests, PluginCheckTests, PluginPanelTests, PluginEndToEndTests (Linux, real VST3 test plugin). NOT RUN: Windows, Valhalla Supermassive and every commercial plugin (docs/PLUGIN_COMPATIBILITY.md). Not contained: heap corruption, plugin threads, hangs during playback |
 | MIDI-03 | Live MIDI destination: play a Session track's VST3 or built-in instrument from MIDI, typing or on-screen keys | Implemented (#83) | Held notes released when the destination changes; not saved with the project. Rack channels are not destinations yet |
 | INST-02 | Built-in synth channels in the Channel Rack (12 presets, 64 shared voices) | Implemented (#82, format 14) | See "Channel Rack built-in synth channels" below |
-| FINISH-01 | Freeze, stems and reliable effect tails | Stem export implemented (#89); freeze/unfreeze pending | Aligned post-track and return files before master processing; single render, staged publication, cancellation/failure cleanup. DeterministicStreamedExportTests, MixerRoutingTests and TimelineViewTests; hardware/listening remains pending. |
+| FINISH-01 | Freeze, stems and reliable effect tails | Stems merged (#89); freeze integrated from #93 in this PR | Aligned stems, pre-fader float caches, preserved original clips and processing. Hardware/listening remains pending. |
 
 ## Completion rule
 
@@ -127,7 +127,7 @@ defects throughout; this ordering does not defer fixes needed to run the example
 | --- | --- | --- | --- |
 | AUTO-01 | Track volume/pan automation lanes, linear/hold points, read bypass, undo | Implemented | AutomationTests, TimelinePlaybackTests, ProjectControllerTests; Windows listening and UI checks pending |
 | AUTO-02 | Sample-position evaluation shared by playback and WAV export | Implemented | Exact-sample and block-size-independent playback regression |
-| AUTO-03 | Sends, stock-effect and plugin parameter automation | Send A–D lanes implemented on feature branch; plugin targets remain model-only (#86) | Send editor, undo, persistence and sample-position playback/export. AutomationTests, SessionProjectTests, TimelinePlaybackTests, TimelineViewTests, DeterministicStreamedExportTests; Windows CI/listening pending. Stock/plugin parameter UI, saving and scheduling remain unfinished |
+| AUTO-03 | Sends, stock-effect and plugin parameter automation | Send A–D automation merged (#95); plugin persistence and bindings implemented in this PR | Format 17 saves instance IDs and normalized lanes; reorder/undo/freeze migration retain targets; missing or replaced plugins remain unresolved. ParameterAutomationTests, SessionProjectTests, ProjectControllerTests, MixerRoutingTests, StockEffectsTests. Plugin parameter editor and playback scheduling remain unfinished. |
 | TEMPO-01 | Tempo and time-signature maps | Planned | Must update transport, MIDI, click, streaming and deterministic export together |
 | WARP-03 | Interactive warp markers and transient detection | Planned | Requires source-to-musical-time mapping and background analysis (WARP-01 is the offline render) |
 

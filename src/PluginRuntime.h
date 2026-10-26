@@ -41,12 +41,13 @@ public:
     struct Slot {
         std::unique_ptr<juce::AudioProcessor> processor;
         bool bypass{}, prepared{};
+        std::uint64_t instanceId{}; // assigned by the host off the audio thread
         Flag faulted;               // set by whichever thread saw the failure; cleared only by unloading the slot
         juce::String name;          // for reports; the host fills it in when it loads the plugin
     };
     struct Rack {
         Slot instrument;
-        bool instrumentAssigned{};
+        bool instrumentAssigned{}, frozen{};
         std::array<Slot,8> effects;
         int effectCount{};
     };
@@ -150,14 +151,15 @@ public:
     }
     bool hasInstrument(std::size_t track) const noexcept { return racks[track].instrumentAssigned; }
     void controller(std::size_t track,int channel,int number,int value) noexcept {
-        if(track<tracks.size()&&channel>=1&&channel<=16&&number>=0&&number<128&&value>=0&&value<128)
+        if(track<tracks.size()&&!racks[track].frozen&&channel>=1&&channel<=16&&number>=0&&number<128&&value>=0&&value<128)
             midi[track].addEvent(juce::MidiMessage::controllerEvent(channel,number,value),sampleOffset);
     }
     void pitchWheel(std::size_t track,int channel,int value) noexcept {
-        if(track<tracks.size()&&channel>=1&&channel<=16)
+        if(track<tracks.size()&&!racks[track].frozen&&channel>=1&&channel<=16)
             midi[track].addEvent(juce::MidiMessage::pitchWheel(channel,std::clamp(value,0,16383)),sampleOffset);
     }
     void note(std::size_t track, int note, float velocity, bool on, int channel = 1) noexcept {
+        if(racks[track].frozen)return;
         // Bound events to the preallocated MIDI storage. Reserve the final
         // portion for a panic instead of reallocating under an event flood.
         auto& m = midi[track];
@@ -165,6 +167,7 @@ public:
         m.addEvent(on ? juce::MidiMessage::noteOn(channel,note,velocity) : juce::MidiMessage::noteOff(channel,note), sampleOffset);
     }
     int rackLatency(const Rack& rack) const noexcept {
+        if(rack.frozen)return 0;
         int latency = slotLatency(rack.instrument);
         for (int i = 0; i < rack.effectCount; ++i) latency += slotLatency(rack.effects[i]);
         return std::clamp(latency,0,maxDelay);
@@ -174,7 +177,7 @@ public:
     void instruments(int samples) {
         for (std::size_t t = 0; t < tracks.size(); ++t) {
             auto& slot = racks[t].instrument;
-            if (!racks[t].instrumentAssigned) continue;
+            if (!racks[t].instrumentAssigned || racks[t].frozen) continue;
             tracks[t].clear();
             if (slot.processor && !slot.bypass) process(slot, static_cast<int>(t), -1, tracks[t], midi[t], samples);
         }
@@ -183,7 +186,7 @@ public:
         int maximum = 0;
         for (std::size_t t = 0; t < tracks.size(); ++t) {
             auto& rack = racks[t];
-            for (int i = 0; i < rack.effectCount; ++i) { emptyMidi.clear(); process(rack.effects[i],static_cast<int>(t),i,tracks[t],emptyMidi,samples); }
+            if(!rack.frozen)for (int i = 0; i < rack.effectCount; ++i) { emptyMidi.clear(); process(rack.effects[i],static_cast<int>(t),i,tracks[t],emptyMidi,samples); }
             maximum = std::max(maximum,rackLatency(rack));
         }
         for (std::size_t t = 0; t < tracks.size(); ++t) delays[t].process(tracks[t],samples,maximum-rackLatency(racks[t]));
@@ -196,7 +199,7 @@ public:
         int slowest = 0;
         for (int r = 0; r < maxReturns; ++r) {
             auto& rack = racks[static_cast<std::size_t>(returnIndex(r))];
-            for (int i = 0; i < rack.effectCount; ++i) { emptyMidi.clear(); process(rack.effects[i], returnIndex(r), i, returns[static_cast<std::size_t>(r)], emptyMidi, samples); }
+            if(!rack.frozen)for (int i = 0; i < rack.effectCount; ++i) { emptyMidi.clear(); process(rack.effects[i], returnIndex(r), i, returns[static_cast<std::size_t>(r)], emptyMidi, samples); }
             slowest = std::max(slowest, rackLatency(rack));
         }
         for (int r = 0; r < maxReturns; ++r)
@@ -241,6 +244,7 @@ public:
             return value;
         };
         auto rackTail = [&](Rack& rack,int rackIndex) {
+            if(rack.frozen)return 0.0;
             double tail = slotTail(rack.instrument,rackIndex,-1);
             for (int i=0;i<rack.effectCount;++i) tail += slotTail(rack.effects[static_cast<std::size_t>(i)],rackIndex,i);
             return std::isfinite(tail) ? std::clamp(tail,0.0,30.0) : 30.0;

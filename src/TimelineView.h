@@ -65,6 +65,7 @@ public:
 
     // ---- what the owner hears about ---------------------------------------------------------------
     std::function<void(std::int64_t)> onSeek;                  // the play position was set (a click on the ruler, a marker...)
+    std::function<void(int)> onFreezeTrack, onUnfreezeTrack;
     std::function<void()> onPlayToggle;                        // Space
     std::function<void(int row, int source)> onOpenSource;     // double-click on a region: edit what it plays
     std::function<void(int track, int scene, bool sceneAdded)> onClipCreated;   // a new empty clip was made for a track (a scene is added when none was free)
@@ -561,7 +562,7 @@ public:
     enum Command { cmdSplit = 1, cmdMute, cmdDuplicate, cmdCopy, cmdCut, cmdDelete, cmdGroup, cmdUngroup, cmdOpen, cmdPaste, cmdSelectAll, cmdAddMarker,
                    cmdSlipLeft, cmdSlipRight, cmdSourceLoop, cmdReverse, cmdNormalize, cmdFade, cmdCrossfade,
                    cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdRemoveFades, cmdColourBase = 100,
-                   cmdArm = 200, cmdMonitorBase = 210, cmdInputMonoBase = 300, cmdInputStereoBase = 400 };
+                   cmdArm = 200, cmdFreeze = 201, cmdUnfreeze = 202, cmdMonitorBase = 210, cmdInputMonoBase = 300, cmdInputStereoBase = 400 };
     juce::PopupMenu placeMenu(int row) const {
         juce::PopupMenu menu;
         const auto& d = controller.document();
@@ -1246,6 +1247,7 @@ public:
     }
     // "In 1", "In 1+2" (the device's channel names in the menu), and whether the device has that input enabled.
     juce::String inputText(int track) const {
+        if(controller.isTrackFrozen(track))return "Frozen audio";
         const auto& s = controller.document().tracks[static_cast<std::size_t>(track)].settings;
         return "In " + juce::String(s.input + 1) + (s.stereoInput ? "+" + juce::String(s.input + 2) : juce::String());
     }
@@ -1285,13 +1287,16 @@ private:
         monitor.addItem(cmdMonitorBase + static_cast<int>(InputMonitor::automatic), "Auto (while armed)", true, s.monitor == static_cast<int>(InputMonitor::automatic));
         monitor.addItem(cmdMonitorBase + static_cast<int>(InputMonitor::always), "In (always)", true, s.monitor == static_cast<int>(InputMonitor::always));
         monitor.addItem(cmdMonitorBase + static_cast<int>(InputMonitor::off), "Off", true, s.monitor == static_cast<int>(InputMonitor::off));
-        menu.addItem(cmdArm, s.armed ? "Disarm recording" : "Arm for recording", true, s.armed);
-        menu.addSubMenu("Input (" + inputText(track) + ")", inputs);
-        menu.addSubMenu("Monitor input", monitor);
+        menu.addItem(cmdArm, s.armed ? "Disarm recording" : "Arm for recording", !s.frozen(), s.armed);
+        menu.addItem(s.frozen()?cmdUnfreeze:cmdFreeze,s.frozen()?"Unfreeze track":"Freeze track (render audio)",!controller.isBusy() && !controller.isRecording());
+        menu.addSubMenu("Input (" + inputText(track) + ")", inputs,!s.frozen());
+        menu.addSubMenu("Monitor input", monitor,!s.frozen());
         return menu;
     }
     void recordingMenuChosen(int track, int id) {
-        if (id == cmdArm) toggleArm(track);
+        if(id==cmdFreeze){if(onFreezeTrack)onFreezeTrack(track);}
+        else if(id==cmdUnfreeze){if(onUnfreezeTrack)onUnfreezeTrack(track);}
+        else if (id == cmdArm) toggleArm(track);
         else if (id >= cmdMonitorBase && id <= cmdMonitorBase + 2) setTrackMonitor(track, static_cast<InputMonitor>(id - cmdMonitorBase));
         else if (id >= cmdInputMonoBase && id < cmdInputMonoBase + maxTrackInputs) setTrackInput(track, id - cmdInputMonoBase, false);
         else if (id >= cmdInputStereoBase && id < cmdInputStereoBase + maxTrackInputs) setTrackInput(track, id - cmdInputStereoBase, true);
@@ -1971,6 +1976,8 @@ public:
     explicit TimelineView(ProjectController& projectController)
         : controller(projectController), canvas(projectController), clipBin(projectController), hBar(false), vBar(true), automationEditor(projectController), takesPanel(projectController) {
         namespace col = ui::colours;
+        canvas.onFreezeTrack=[this](int track){if(onFreezeTrack)onFreezeTrack(track);};
+        canvas.onUnfreezeTrack=[this](int track){if(onUnfreezeTrack)onUnfreezeTrack(track);};
         setName("Arrangement");
         addChildComponent(takesPanel);
         addAndMakeVisible(takesButton);
@@ -2047,6 +2054,7 @@ public:
     TimelineCanvas& timelineCanvas() noexcept { return canvas; }
     ClipBin& clipList() noexcept { return clipBin; }
     bool clipListShown() const noexcept { return clipBin.isVisible(); }
+    std::function<void(int)> onFreezeTrack, onUnfreezeTrack;
     std::function<void(std::int64_t from, std::int64_t to)> onExportStems;
     std::function<void(std::int64_t from, std::int64_t to)> onExport;   // to == -1: through the end of the song; while exporting, the button asks to cancel with (0, -1)
     std::function<void()> onTitleChanged;                                // the subtitle (length, clips, loop) changed
