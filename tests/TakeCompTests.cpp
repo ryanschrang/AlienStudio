@@ -19,6 +19,14 @@ int main() {
     check(before && middle && after && before->source == 1 && middle->source == 0 && after->source == 1, "only requested range replaced");
     check(std::abs(middle->audioOffset - 0.5) < 1e-12 && std::abs(after->audioOffset - 1.0) < 1e-12, "sample offsets follow trimmed source");
     check(middle->fadeIn > 0 && middle->fadeOut > 0, "comp edges receive short fades");
+    const TempoMap tempo{t.tempoChanges, t.tempo};
+    using Parts = std::vector<std::pair<std::int64_t, std::int64_t>>;
+    check(t.takePlays(first.id, tempo) == Parts{{960, 1920}} && t.takePlays(originals[1].id, tempo) == Parts{{0, 960}, {1920, ticksPerBar}},
+        "each take knows where it plays");
+    auto silenced = t; silenced.setMuted({middle->id}, true);
+    check(silenced.takePlays(first.id, tempo).empty() && t.takePlays(12345, tempo).empty(), "muted clips and unknown takes play nothing");
+    auto slipped = t; slipped.slip({middle->id}, 240);
+    check(slipped.takePlays(first.id, tempo).empty(), "a slipped comp no longer plays the take where it was recorded");
     check(t.compTake(first.id, 961, 962) && t.valid(), "tiny comp clamps surviving boundary fades");
     const auto saved = t;
     check(!t.compTake(first.id, -1, 100) && !t.compTake(first.id, 0, ticksPerBar + 1)
