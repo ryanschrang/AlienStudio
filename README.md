@@ -327,6 +327,20 @@ then undo/redo once per operation. Copy, delete the originals and Paste again.
 Try pasting at the loop end and into a full clip. Check the Edit menu, numeric
 text-field Copy/Paste, Tab navigation, typing piano, and Stop during playback.
 
+### Split piano-roll notes
+
+Select notes, click the ruler to place the amber edit cursor, then choose
+**Edit > Split selected notes at cursor** in the piano-roll toolbar. Only selected
+notes that cross the cursor split; notes starting or ending there stay unchanged.
+The left half keeps its ID, the right gets a new ID, and both halves remain selected.
+Pitch, velocity and probability are copied to both halves, with no gap or overlap.
+Both halves are separate notes, so playback retriggers at the cut and evaluates
+their probabilities independently. The operation uses the cursor's tick position.
+
+Splitting a chord is one Undo/Redo step. If the resulting notes would exceed the
+clip's capacity, the entire operation is refused. The cursor also remains the paste
+and chord-insertion position.
+
 ### Piano-roll processing tools
 
 Select notes before processing: click a note, Ctrl+click to toggle individual

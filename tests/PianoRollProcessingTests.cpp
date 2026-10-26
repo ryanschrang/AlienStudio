@@ -326,7 +326,106 @@ static void transposeTests() {
         "exact lower MIDI boundary is valid");
 }
 
+static void splitTests() {
+    PianoRollPattern pattern;
+    const auto a = pattern.add(60, 1.25, 3.5, .7f, .4f);
+    const auto b = pattern.add(67, 2, 3, .5f, .9f);
+    const auto untouched = pattern.add(72, 0, 8);
+    const auto endsHere = pattern.add(40, 0, 2.5);
+    const auto startsHere = pattern.add(41, 2.5, 1);
+    const auto before = pattern;
+    PianoRollSelection selected;
+    for (const auto id : {a, b, endsHere, startsHere}) selected.add(id);
+    const auto result = processSplit(pattern, selected, 2.5);
+    require(result.changed() && pattern.count == before.count + 2 && result.selection.count == selected.count + 2
+        && pattern.valid(), "split only notes that strictly cross the cursor and select both halves");
+    require(pattern.find(a)->lengthSteps == 1.25 && pattern.find(b)->lengthSteps == .5
+        && sameNote(*pattern.find(untouched), *before.find(untouched))
+        && sameNote(*pattern.find(endsHere), *before.find(endsHere))
+        && sameNote(*pattern.find(startsHere), *before.find(startsHere)),
+        "left halves keep IDs, boundaries are no-ops and unselected crossing notes stay unchanged");
+    for (std::size_t i = before.count; i < pattern.count; ++i) {
+        const auto& right = pattern.notes[i];
+        const auto& original = right.pitch == 60 ? *before.find(a) : *before.find(b);
+        const auto* left = pattern.find(original.id);
+        require(before.find(right.id) == nullptr && result.selection.contains(right.id)
+            && result.selection.contains(left->id) && left->startStep + left->lengthSteps == right.startStep
+            && right.startStep == 2.5 && right.startStep + right.lengthSteps == original.startStep + original.lengthSteps
+            && left->velocity == original.velocity && right.velocity == original.velocity
+            && left->probability == original.probability && right.probability == original.probability,
+            "fresh right IDs, exact adjoining extents and preserved velocity/probability on both halves");
+    }
+    const auto split = pattern;
+    require(!processSplit(pattern, result.selection, 2.5).changed() && samePianoRollPattern(pattern, split),
+        "repeating a split at the same boundary does nothing");
+    for (const double cursor : {0.0, static_cast<double>(pattern.loopSteps), -1.0,
+                               static_cast<double>(pattern.loopSteps) + 1, std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::quiet_NaN()})
+        require(!processSplit(pattern, result.selection, cursor).changed() && samePianoRollPattern(pattern, split),
+            "loop endpoints, outside cursors and non-finite cursors cannot alter notes");
+    PianoRollSelection empty;
+    require(!processSplit(pattern, empty, 3).changed(), "empty selection does not implicitly split all notes");
+    empty.add(999999);
+    require(processSplit(pattern, empty, 3).selection.count == 0, "stale selection IDs are pruned");
+    auto invalidSelection = selected; invalidSelection.ids[1] = invalidSelection.ids[0];
+    require(processSplit(pattern, invalidSelection, 3).status == ProcessingStatus::invalidInput
+        && samePianoRollPattern(pattern, split), "duplicate IDs cannot split a note twice");
+    auto invalid = pattern; invalid.count = pattern.maxNotes + 1;
+    require(processSplit(invalid, selected, 3).status == ProcessingStatus::invalidInput,
+        "invalid patterns are refused before walking storage");
+
+    PianoRollPattern tiny;
+    const auto id = tiny.add(60, 0, tiny.fromTicks(2));
+    selected.clear(); selected.add(id);
+    require(processSplit(tiny, selected, tiny.timeQuantum).changed() && tiny.count == 2
+        && tiny.notes[0].lengthSteps == tiny.timeQuantum && tiny.notes[1].lengthSteps == tiny.timeQuantum,
+        "a two-tick note can split into two minimum-length notes");
+
+    PianoRollPattern full;
+    for (std::size_t i = 0; i + 1 < full.maxNotes; ++i) full.add(60, 0, 2);
+    selected.clear(); selected.add(full.notes[0].id); selected.add(full.notes[1].id);
+    const auto almostFull = full;
+    require(processSplit(full, selected, 1).status == ProcessingStatus::capacityExceeded
+        && samePianoRollPattern(full, almostFull), "insufficient room for every split leaves the whole pattern unchanged");
+    selected.remove(full.notes[1].id);
+    require(processSplit(full, selected, 1).changed() && full.count == full.maxNotes && full.valid(),
+        "exactly enough room permits the entire split");
+
+    // Exercise the actual scheduler on generated halves: at this rate one tick
+    // is one sample, making the split boundary and final release exact.
+    PianoRollPattern playback;
+    const auto original = playback.add(60, 0, 1);
+    selected.clear(); selected.add(original);
+    require(processSplit(playback, selected, .5).changed(), "prepare split playback");
+    PianoRollMailbox mailbox; mailbox.publish(playback);
+    PianoRollScheduler scheduler;
+    struct Event { int sample; bool on; };
+    std::array<Event, 8> events{};
+    std::size_t count = 0; int sample = 0;
+    auto send = [&](int pitch, float, bool on) {
+        require(pitch == 60 && count < events.size(), "bounded split-note event stream");
+        events[count++] = {sample, on};
+    };
+    scheduler.beginBlock(mailbox, true, 1920, 120, send);
+    for (sample = 0; sample <= 240; ++sample) scheduler.nextSample(send);
+    require(count == 4 && events[0].sample == 0 && events[0].on
+        && events[1].sample == 120 && !events[1].on && events[2].sample == 120 && events[2].on
+        && events[3].sample == 240 && !events[3].on,
+        "split playback releases before retrigger at the cut and releases the final half on time");
+    scheduler.beginBlock(false, 1920, 120, send);
+    require(count == 4, "transport stop after the final release leaves no held split note");
+    count = 0;
+    scheduler.beginBlock(true, 1920, 120, send);
+    for (sample = 0; sample <= 150; ++sample) scheduler.nextSample(send);
+    scheduler.beginBlock(false, 1920, 120, send);
+    require(count == 4 && events[3].sample == 151 && !events[3].on,
+        "transport stop releases a split note while its second half is sounding");
+    scheduler.beginBlock(false, 1920, 120, send);
+    require(count == 4, "repeated stop does not leave another split-note release pending");
+}
+
 int main() {
+    splitTests();
     transposeTests();
     selectionTests(); strumTests(); chopTests(); randomizeTests(); quantizeTests();
     performanceTransformTests(); invalidAndEmptyTests();

@@ -180,6 +180,40 @@ inline ProcessingResult processTranspose(PianoRollPattern& pattern, const PianoR
     return commit(pattern, edited, selection);
 }
 
+// Split only selected notes that strictly cross the cursor. Keep the original
+// id on the left, allocate a fresh id on the right, and select both halves.
+inline ProcessingResult processSplit(PianoRollPattern& pattern, const PianoRollSelection& selection,
+                                    double cursorStep) noexcept {
+    using namespace piano_roll_processing_detail;
+    if (!validInputs(pattern, selection) || !within(cursorStep, 0, pattern.loopSteps))
+        return result(ProcessingStatus::invalidInput, pattern, selection);
+    const int cursor = pattern.toTicks(cursorStep);
+    const auto crosses = [&](const PianoRollNote& note) {
+        const int start = pattern.toTicks(note.startStep);
+        return selection.contains(note.id) && start < cursor
+            && cursor < start + pattern.toTicks(note.lengthSteps);
+    };
+    std::size_t required = 0;
+    for (std::size_t i = 0; i < pattern.count; ++i) required += crosses(pattern.notes[i]) ? 1 : 0;
+    if (required > pattern.maxNotes - pattern.count)
+        return result(ProcessingStatus::capacityExceeded, pattern, selection);
+    if (required == 0) return result(ProcessingStatus::unchanged, pattern, selection);
+    auto edited = pattern;
+    auto selected = selection;
+    selected.retain(pattern);
+    for (std::size_t i = 0; i < pattern.count; ++i) {
+        const auto& note = pattern.notes[i];
+        if (!crosses(note)) continue;
+        const int start = pattern.toTicks(note.startStep);
+        const int end = start + pattern.toTicks(note.lengthSteps);
+        edited.find(note.id)->lengthSteps = pattern.fromTicks(cursor - start);
+        const auto id = edited.add(note.pitch, pattern.fromTicks(cursor), pattern.fromTicks(end - cursor),
+                                   note.velocity, note.probability);
+        if (id == 0 || !selected.add(id)) return result(ProcessingStatus::capacityExceeded, pattern, selection);
+    }
+    return commit(pattern, edited, selected);
+}
+
 inline ProcessingResult processStrum(PianoRollPattern& pattern, const PianoRollSelection& selection,
                                     const StrumSettings& settings = {}) noexcept {
     using namespace piano_roll_processing_detail;

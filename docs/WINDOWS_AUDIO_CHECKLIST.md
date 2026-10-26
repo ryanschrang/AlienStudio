@@ -273,6 +273,11 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Cancel midway; confirm no final WAV or abandoned partial/journal remains. Try an existing target, a missing source, and a full/slow drive; preserve all source and existing destination audio.
 - Confirm RF64 long sources/results work in Windows and an external editor. Physical multi-hour rendering and listening remain manual checks.
 
+## Piano-roll note split (T1-06)
+- In Session and a Channel Rack note row, select a chord with different note lengths, click its middle on the ruler and choose Edit > Split selected notes at cursor. Both halves stay selected, adjoining at the cursor with pitch, velocity and probability preserved. Unselected notes stay unchanged.
+- Undo/redo once restores the whole chord and selection. Repeat at a note start/end, at loop boundaries, with no selection and near the note-capacity limit; confirm no partial split or extra undo step on refusal.
+- During playback and note audition, split and undo; listen for retrigger at the cut and confirm Stop releases every note. Probabilistic halves are separate notes. These hardware/listening and real-menu checks remain manual.
+
 ## Piano-roll transpose (T1-06)
 - Select a chord in Session and a Channel Rack note row. Use the piano-roll Edit menu's semitone and octave actions; confirm only selected pitches change and one Undo/Redo restores the whole chord.
 - Focus the note grid and press Shift+Up/Down; confirm octave movement. Shift+Left/Right must still resize. Focus a text field and confirm these keys do not transpose notes.
