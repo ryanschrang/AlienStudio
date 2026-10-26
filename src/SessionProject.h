@@ -23,7 +23,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 19;   // 19: group buses (18 is the song tempo map)
+inline constexpr int sessionProjectFormatVersion = 19;   // 18: song tempo changes; 19: group buses
 
 // A group bus slot. Slots keep their index while other buses come and go, so a track's output
 // (TrackSettings::output) and the bus's FX rack never need renumbering.
@@ -347,6 +347,15 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
             markers.add(value);
         }
         timelineObject->setProperty("markers", juce::var(markers));
+
+        juce::Array<juce::var> tempoChanges;
+        for (const auto& c : project.timeline.tempoChanges) {
+            auto value = juce::var(new juce::DynamicObject());
+            value.getDynamicObject()->setProperty("tick", static_cast<juce::int64>(c.tick));
+            value.getDynamicObject()->setProperty("bpm", c.bpm);
+            tempoChanges.add(value);
+        }
+        timelineObject->setProperty("tempoChanges", juce::var(tempoChanges));
         rootObject->setProperty("timeline", timelineValue);
     }
     juce::Array<juce::var> scenes;
@@ -460,6 +469,21 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
         marker.name = m->getProperty("name").toString().toStdString();
         marker.colour = static_cast<std::uint8_t>(juce::jlimit(0, 255, static_cast<int>(m->getProperty("colour"))));
         parsed.markers.push_back(marker);
+    }
+    // Absent before version 18: the project tempo throughout. Validated with the rest of the timeline.
+    const auto tempoValue = object->getProperty("tempoChanges");
+    if (!tempoValue.isVoid()) {
+        const auto* changes = tempoValue.getArray();
+        if (changes == nullptr || changes->size() > static_cast<int>(timeline::maxTempoChanges)) { error = "Invalid tempo changes."; return false; }
+        for (const auto& item : *changes) {
+            const auto* c = item.getDynamicObject();
+            if (c == nullptr || !(c->getProperty("tick").isInt() || c->getProperty("tick").isInt64())
+                || !(c->getProperty("bpm").isInt() || c->getProperty("bpm").isDouble())) {
+                error = "A tempo change is invalid."; return false;
+            }
+            parsed.tempoChanges.push_back({static_cast<std::int64_t>(static_cast<juce::int64>(c->getProperty("tick"))),
+                                           static_cast<double>(c->getProperty("bpm"))});
+        }
     }
     const auto automationValue = object->getProperty("automation");
     if (requireAutomation || !automationValue.isVoid()) {

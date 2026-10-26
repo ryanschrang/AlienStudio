@@ -1,5 +1,160 @@
 # Alien Studio roadmap
 
+## Priority plan: Alien Studio Core 1.0 (adopted 2026-10-26)
+
+This section replaces the older ordering below as the source of truth for what to work on next.
+The sections after it are kept as history.
+
+**Rule: Tier 1 comes first.** Tier 1 is the DAW foundation and is the priority until each row is
+complete. After that, expand the Tier 2 items that are only partly done. Tier 3 and Tier 4 are
+not scheduled; they must not pull effort away from the foundation. Status for every ID lives in
+FEATURE_CHECKLIST.md; this file says what order to do things in and how to split the work.
+
+Until the Tier 1 systems are mature, Alien Studio should not be described as competitive with
+established professional DAWs. Logic Pro, Ableton Live 12 and FL Studio set a high baseline:
+recording, takes and comping, timing and pitch editing, routing, automation, global tempo and
+key, markers, MIDI transformations and generators, MPE, scales and probability.
+
+### Working on this roadmap with several people or agents
+
+- **Claim before starting.** Open a draft PR (or an issue) whose title starts with the
+  workstream ID, for example `T1-06: ghost notes in the piano roll`. One claim per workstream
+  at a time; check open PRs for the ID before starting.
+- **One small PR at a time.** A workstream is a series of PRs, each from its own branch off
+  `main`, each with tests, test instructions and a verified / not verified split (AGENTS.md).
+- **Stay inside your area.** The "Main area" column lists the files a workstream normally
+  touches. Two workstreams that share a file can run at once, but the second to merge must
+  merge `main` and rerun the tests. `src/ToneEngine.h`, `src/ProjectController.h`,
+  `src/SessionProject.h` and `docs/FEATURE_CHECKLIST.md` are shared hot spots: keep edits to
+  them small.
+- **Project format numbers.** Only one open PR may claim a new project format number. Say
+  the number in the PR title or description (the next free number is 18) and renumber if
+  another PR merges first.
+- **Update the checklist** row for the ID in the same PR, and never mark something verified on
+  CI alone; Windows listening and hardware checks are recorded separately.
+- **Dependencies** in the tables are hard: do not start a row before the rows it depends on
+  have merged, or agree the shared design in a docs PR first.
+
+### Tier 1: DAW foundation (priority)
+
+Ordered by importance. Rows without dependencies can run in parallel.
+
+| Order | Workstream | Checklist IDs | Status today | Depends on | Main area |
+| --- | --- | --- | --- | --- | --- |
+| T1-01 | Tempo and time-signature map | TEMPO-01 | Not started | - | `Timeline.h`, `StepClock.h`, `ToneEngine.h`, export |
+| T1-02 | Command Engine (see below) | CMD-01 | Not started; undo/redo and save/load exist (FILE-01, FILE-02) | - | `ProjectController.h`, `DocumentHistory.h` (new command files) |
+| T1-03 | One clip/pattern model shared by Create, Perform and Arrange | ARCH-01, LIVE-03 | Partial: Song regions share Session clip notes; Channel Rack patterns are a separate model | Design doc first; T1-02 helps | `RackModel.h`, `SessionProject.h`, `Timeline.h`, `Arrangement.h` |
+| T1-04 | Universal tracks and higher limits | TRACK-01, LIVE-04 | Partial: 16 tracks / 32 scenes; rack channels are a separate track kind | T1-03 design | `SessionCapacity.h`, `SessionProject.h`, `ToneEngine.h` |
+| T1-05 | Mixer routing: groups, buses, sidechain, flexible returns | MIX-03, MIX-04, MIX-05 | Partial: volume, pan, mute/solo, meters, four returns, pre/post sends, latency compensation (MIX-01, MIX-02) | - | `TrackMixer.h`, `ToneEngine.h` routing, mixer view |
+| T1-06 | Piano Roll V1 completion | PROD-05 | Mostly done; missing ghost notes, transpose command, split, multi-clip editing | - | `PianoRoll*.h` |
+| T1-07 | Recording completion | REC-02 | Mostly done; missing loop-pass recording and waveform take lanes | - | `SongRecording.h`, `TimelineView.h` |
+| T1-08 | Audio editing completion | EDIT-01, WARP-03 | Partial: trim, split, slip, gain, fades, crossfades; missing fade curves, Alt-drag slip, warp markers | Warp markers need T1-01 | `Timeline.h`, `TimelineView.h`, `TempoWarp.h` |
+| T1-09 | Plugin reliability and coverage | PLUG-01, PLUG-02, INST-10, AUTO-03 | Partial: VST3 hosting and crash containment; missing scans, rack VST3 instruments, plugin automation playback, commercial plugin checks | - | `Plugin*.h`, `RackEngine.h` |
+| T1-10 | Browser for samples, presets and plugins | BROWSE-01, INST-08 | Not started | - | new browser view; `ClipBin.h` |
+| T1-11 | UI and workspace | UI-01 | Mostly done: detachable windows, menus, theme; missing saved layouts, multi-monitor/DPI checks | - | `DetachableView.h`, `MainComponent.h` |
+| T1-12 | Windows hardware verification | QA-03 | Ongoing; needs people with audio interfaces, MIDI controllers and plugins | - | `docs/WINDOWS_AUDIO_CHECKLIST.md` |
+
+**Good first parallel set:** T1-01, T1-02, T1-05, T1-06, T1-07, T1-09, T1-10 and T1-12 touch mostly
+separate files. T1-03 and T1-04 should start with a shared design doc, because they change the
+project model everyone else builds on.
+
+#### Milestone A: project engine (T1-01 to T1-04)
+
+Prove the skeleton: Project -> universal tracks -> clips -> patterns -> devices -> routing ->
+automation -> tempo -> undo/redo -> save/load.
+
+#### The Command Engine (T1-02)
+
+Do not build the Workflow Assistant yet; build the Command Engine. Every user operation should
+eventually be a named, undoable command, for example:
+
+```
+CreateTrack  DeleteTrack  MoveTrack  RenameTrack  ColorTrack
+CreateClip   DuplicateClip  MakeClipUnique
+SetParameter  AutomateParameter
+CreateBus  RouteTrack  CreateSend
+InsertDevice  MoveDevice  RemoveDevice
+CreateGroup  AddToGroup
+SetTempo  SetChord  SetArrangementSection
+```
+
+with **Execute, Undo, Redo, Batch and Preview**. This is not only for AI: it gives reliable
+undo/redo, macros, keyboard actions, MIDI controller scripting, user scripting, batch processing
+and workflow automation. The eventual assistant becomes a natural-language front end to the same
+commands. First slice: wrap the existing undoable track operations, with tests that a batch is
+one undo step.
+
+#### Milestone B: MIDI production (T1-06, then Tier 2)
+
+The target is the best compositional environment, not "has a piano roll".
+
+- **Piano Roll V1:** draw, paint, delete, move, resize, split, duplicate, velocity, quantize,
+  transpose, scale highlighting, ghost notes, multi-select, copy/paste, undo/redo.
+- **Piano Roll V2:** probability, per-note expression, MPE, editing several clips at once,
+  humanization, chord detection, chord tools.
+- **Piano Roll V3:** generators, Euclidean rhythm, mutation, groove extraction, voice leading,
+  harmonization, bass generation.
+
+#### Milestone C: audio engine (T1-07, T1-08)
+
+Audio tracks, recording, monitoring, input routing, waveform rendering, clip trimming, fades,
+gain, crossfades, stretching, looping, punch recording, comping, multichannel recording and
+latency compensation. When this works well, add warp-style processing.
+
+#### Milestone D: mixer (T1-05)
+
+Track -> insert chain -> sends -> bus/group -> master, plus sidechains, parallel routing,
+groups, sends/returns, delay compensation, metering and automation. Later: a traditional mixer
+and a node routing view (MIX-06) that edit exactly the same routing graph.
+
+#### Milestone E: Create + Arrange (T1-03)
+
+A pattern made in the Create views is the same object that launches in Perform (Session) and is
+placed in Arrange (Song). Editing any representation updates every one of them. This is the
+architectural feature to guard most carefully: it unifies the three workflows instead of
+cloning them.
+
+### Tier 2: what makes Alien Studio competitive (after Tier 1)
+
+Expand the partly done items first. Emphasis on T2-01 and T2-02: the sampler and racks must be
+genuinely integrated rather than checkbox features.
+
+| Order | Workstream | Checklist IDs | Status today |
+| --- | --- | --- | --- |
+| T2-01 | Integrated sampler: audio clip -> quick sample -> slice -> multisample -> granular/resynthesis, one audio object throughout (Milestone G) | INST-07, PROD-03 | Partial: eight-pad drum sampler and sample channels |
+| T2-02 | Instrument and effect racks with macros; remaining stock effects | RACK-01, FX-01, FX-02 | Partial: eight-slot FX rack per track and return, seven stock effects |
+| T2-03 | Mixing and mastering environment | FINISH-02 | Partial: stock EQ, compressor, limiter, saturator, filter, reverb, delay |
+| T2-04 | Chord and arrangement system: chord track, project-wide scale, arrangement sections (Milestone H foundation) | CHORD-01, MIDI-06 | Partial: chord builder and scales inside the Piano Roll |
+| T2-05 | Live performance: follow actions, scene capture, record performance to the Song, controller mapping, crossfader, live looping (Milestone F) | LIVE-05, LIVE-02 | Partial: clip and scene launch on the beat or bar, MIDI CC mapping |
+
+Milestone F (Perform) starts only after the shared clip model (T1-03) is stable.
+
+### Tier 3: what could make Alien Studio better than competitors (not scheduled)
+
+- **Source conversion pipeline (CONV-01 to CONV-03):** audio -> stems -> MIDI, chords and
+  groove -> sampler or instrument -> editable pattern. Stem separation alone no longer
+  differentiates (Ableton Live 12 has it); the pipeline does.
+- **Global musical intelligence (INTEL-01):** one chord and scale context in the project
+  model feeding the Piano Roll, patterns, bass generator, arpeggiator, Session Players, pitch
+  correction and the arrangement, instead of eight disconnected "smart" features. Protect this
+  direction in every Tier 1 and Tier 2 design.
+
+### Tier 4: frontier features (not scheduled)
+
+Large native instrument collection (INST-03 to INST-06, INST-09), advanced source separation,
+intelligent Session Players (PLAYER-01), the Workflow Assistant (AI-01) and cloud collaboration
+and version history (CLOUD-01).
+
+**Advanced audio (Milestone I),** after the above: pitch editing (PITCH-01), spectral editing,
+audio to MIDI, stem separation, transient/sustain decomposition, resynthesis and polyphonic pitch.
+
+**Workflow Assistant (Milestone J), explicitly postponed** until the Command Engine is mature. It
+then needs no special-purpose hacks: Interpret -> Plan -> Preview -> Execute -> single undo,
+through the same commands everything else uses. Add an Explain mode that analyses and suggests
+without changing anything: Analyze -> Explain -> Suggest -> Preview -> Apply -> Undo.
+
+## Earlier roadmap notes
+
 The integration branch combines the redesigned project/controller UI with drum kits,
 arrangement/WAV export, disk-streamed recording and offline tempo matching. Project v6
 also stores initial VST3 instrument/FX racks. See README for the supported workflow
@@ -146,3 +301,11 @@ Full recording/editing and warping milestones remain open: streaming playback,
 latency compensation, count-in/punch/overdub, trimming/fades, take lanes/comping,
 automatic BPM, warp markers and transient-aware algorithms. Windows listening and
 visual checks remain separate gates from the passing offline tests.
+
+## T1-03 design entry point
+
+The numbered Core 1.0 priority plan is proposed in PR #100. Start T1-03
+(ARCH-01 / LIVE-03) with [the shared clip/pattern model design](SHARED_CLIP_MODEL.md).
+The design defines source identity, linked/independent copies, lossless rack data,
+real-time publication, project migration and incremental acceptance gates.
+It is a proposal; the common model and cross-view migration are not implemented yet.

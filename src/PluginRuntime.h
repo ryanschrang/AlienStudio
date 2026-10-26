@@ -139,14 +139,15 @@ public:
             midi[track].addEvent(juce::MidiMessage::allNotesOff(channel),sampleOffset);
         }
     }
-    void begin(int samples, int bpm, bool playing, double ppq) noexcept {
+    // `seconds` is the song time at `ppq` when a tempo map makes it more than ppq at `bpm`.
+    void begin(int samples, double bpm, bool playing, double ppq, double seconds = -1.0) noexcept {
         for (auto& b : tracks) b.clear(); live.clear(); master.clear();
         for (auto& b : returns) b.clear();
         for (auto& b : buses) b.clear();
         for (auto& m : midi) m.clear();
         sampleOffset = 0; currentSamples = samples; eventCounts.fill(0);
-        playHead.info.setBpm(static_cast<double>(bpm));
-        const auto timelineSamples = static_cast<juce::int64>(std::llround(ppq * rate * 60.0 / bpm));
+        playHead.info.setBpm(bpm);
+        const auto timelineSamples = static_cast<juce::int64>(std::llround(seconds >= 0.0 ? seconds * rate : ppq * rate * 60.0 / bpm));
         playHead.info.setTimeInSamples(timelineSamples);
         playHead.info.setTimeInSeconds(timelineSamples / rate);
         playHead.info.setPpqPosition(ppq);

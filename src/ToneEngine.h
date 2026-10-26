@@ -199,7 +199,10 @@ private:
         handleRecording();
         bool playNow = playing.load();
         const int modeNow = patternMode.load();
-        plugins->begin(samples, bpm.load(), playNow, modeNow == 2 ? timelineTick / alien::timeline::ticksPerBeat : transportBeat);
+        if (modeNow == 2)
+            plugins->begin(samples, songTempo().tempoAt(timelineTick), playNow, timelineTick / alien::timeline::ticksPerBeat,
+                           songTempo().secondsBetween(0.0, timelineTick));
+        else plugins->begin(samples, bpm.load(), playNow, transportBeat);
         for (auto& b : clipBuffers) b.clear();
         if (stemCapture) stemCapture->clear();
         // A new snapshot is only a pointer swap. While the song plays, an edit
@@ -208,6 +211,7 @@ private:
         // region, edited notes, a new loop range).
         if (const auto* fresh = arrangementMailbox.consume()) {
             song = fresh;
+            timelineNextTempo = songTempo().nextChange(timelineTick);
             if (modeNow == 2 && playNow && wasPlaying && wasMode == 2) resyncTimeline();
         }
         if (synchronizedSceneLaunch.exchange(false)) {
@@ -345,7 +349,7 @@ private:
                     synchronizedSceneTracksQueued |= (1u << track);
             }
             if (modeNow == 2)
-                rolls[track].setTiming(sampleRate, bpm.load());   // the timeline starts and stops each clip itself
+                rolls[track].setTiming(sampleRate, songTempo().tempoAt(timelineTick));   // the timeline starts and stops each clip itself
             else
                 rolls[track].beginBlock(pianoRollNotes[track], playNow && modeNow == 1, sampleRate, bpm.load(),
                     [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
@@ -354,26 +358,30 @@ private:
         const bool clockRunning = countingIn || playNow;
         const bool clickEnabled = countingIn || recording.metronome.load(std::memory_order_relaxed);
         const float clickVolume = recording.metronomeVolume.load(std::memory_order_relaxed);
-        const double beatsPerSample = bpm.load() / (sampleRate * 60.0);
-        const double ticksPerSample = beatsPerSample * static_cast<double>(alien::timeline::ticksPerBeat);
+        const double beatsPerSample = clockTempo(modeNow) / (sampleRate * 60.0);
         rackHitCount = 0;
-        if (timelineRate != ticksPerSample) { timelineRate = ticksPerSample; setTimelineTick(timelineTick); }   // a tempo change starts a new segment
+        if (timelineRate != songRate(timelineTick)) setTimelineTick(timelineTick);   // the project tempo or the tempo map changed: a new segment
         const double beatBase = countingIn ? countInBeats : transportBeat;
         if (!clockRunning) lastClickBeat = -1;
         for (int i = 0; i < samples; ++i) {
             plugins->sampleOffset = i;
+            automationTicks[static_cast<std::size_t>(i)] = -1.0;
+            if (playNow && modeNow == 2 && !timelineSample(i)) {
+                allSoundOff(); playing.store(false); playNow = false;   // the song reached its end
+            }
             if (clockRunning) {
-                const auto beat = static_cast<std::int64_t>(std::floor(beatBase + i * beatsPerSample + 1.0e-9));
-                if (beat != lastClickBeat) {
+                // A playing song clicks on its own beats, so the click follows tempo changes and loop wraps.
+                const double songTick = automationTicks[static_cast<std::size_t>(i)];
+                const double at = !countingIn && modeNow == 2
+                    ? (songTick >= 0.0 ? songTick / static_cast<double>(alien::timeline::ticksPerBeat) : -1.0)
+                    : beatBase + i * beatsPerSample;
+                const auto beat = static_cast<std::int64_t>(std::floor(at + 1.0e-9));
+                if (at >= 0.0 && beat != lastClickBeat) {
                     lastClickBeat = beat;
                     if (clickEnabled) click.trigger(beat % 4 == 0, clickVolume);
                 }
             }
             clickBuffer[static_cast<std::size_t>(i)] = click.next();
-            automationTicks[static_cast<std::size_t>(i)] = -1.0;
-            if (playNow && modeNow == 2 && !timelineSample(i)) {
-                allSoundOff(); playing.store(false); playNow = false;   // the song reached its end
-            }
             if (playNow && modeNow == 0) {
                 const auto tick = clock.next(sampleRate, bpm.load());
                 if (tick.noteOff && activeStepPitch >= 0) {
@@ -604,7 +612,7 @@ private:
             left[b] = buses.left[b].data(); right[b] = buses.right[b].data();
         }
         if (timelineRunning)
-            rackPlayer.processTimeline(*rackSnapshot, rackSamples, true, rackHits.data(), rackHitCount, bpm.load(), activeTracks.load(),
+            rackPlayer.processTimeline(*rackSnapshot, rackSamples, true, rackHits.data(), rackHitCount, songTempo().tempoAt(timelineTick), activeTracks.load(),
                                        samples, left.data(), right.data());
         else
             rackPlayer.process(*rackSnapshot, rackSamples, running, bpm.load(), activeTracks.load(), samples, left.data(), right.data());
@@ -768,7 +776,7 @@ private:
                                      left->audioOffset * audio->sampleRate) && player.hasPending()) tail.waiting = true;
     }
     double tailFrame(const CrossfadeTail& tail, bool reversed) const noexcept {
-        const double seconds = tail.audioOffset + alien::timeline::secondsForTicks(timelineTick - static_cast<double>(tail.origin), bpm.load());
+        const double seconds = tail.audioOffset + songTempo().secondsBetween(static_cast<double>(tail.origin), timelineTick);
         const double forward = seconds * tail.audio->sampleRate;
         return reversed ? static_cast<double>(tail.audio->frames - 1) - forward : forward;
     }
@@ -841,7 +849,8 @@ private:
             const bool reverse = region.reversed && !clip.audio->streamed();
             const bool loopSource = region.loopSource && !clip.audio->streamed();
             lane.reversed = reverse; lane.loopSource = loopSource;
-            const double seconds = region.audioOffset + alien::timeline::secondsForTicks(into, bpm.load());
+            const double seconds = region.audioOffset
+                + songTempo().secondsBetween(static_cast<double>(region.start), static_cast<double>(region.start) + into);
             const double forwardFrame = seconds * clip.audio->sampleRate;
             const double startFrame = reverse ? static_cast<double>(clip.audio->frames - 1) - forwardFrame : forwardFrame;
             if (startFrame >= 0.0 && startFrame < static_cast<double>(clip.audio->frames)) {
@@ -871,9 +880,8 @@ private:
         if (next == nullptr || next->muted) return;
         const auto& clip = song->clips[static_cast<std::size_t>(next->source)][track];
         if (clip.audio == nullptr || !clip.audio->streamed()) return;
-        const double ticksPerSecond = static_cast<double>(bpm.load()) * static_cast<double>(alien::timeline::ticksPerBeat) / 60.0;
         lane.nextAudio = clip.audio; lane.nextAudioOffset = next->audioOffset;
-        lane.prefetchAt = static_cast<double>(next->start) - timelinePrefetchSeconds * ticksPerSecond;
+        lane.prefetchAt = songTempo().tickAfter(static_cast<double>(next->start), -timelinePrefetchSeconds);
     }
     void prefetchNext(std::size_t track) noexcept {
         auto& lane = trackLanes[track];
@@ -891,7 +899,8 @@ private:
         if (!player.hasPending() || lane.audio == nullptr) { lane.audioWaiting = false; return; }
         const double into = std::max(0.0, timelineTick - static_cast<double>(lane.start));
         const double frames = static_cast<double>(lane.audio->frames);
-        const double startFrame = (lane.audioOffset + alien::timeline::secondsForTicks(into, bpm.load())) * lane.audio->sampleRate;
+        const double startFrame = (lane.audioOffset
+            + songTempo().secondsBetween(static_cast<double>(lane.start), static_cast<double>(lane.start) + into)) * lane.audio->sampleRate;
         if (startFrame >= frames) { player.cancelPending(); lane.audioWaiting = false; return; }
         const double ahead = startFrame - player.pendingStartFrame();
         if (ahead < -0.5) return;                                   // asked for a moment ahead of the song: not due yet
@@ -966,8 +975,11 @@ private:
     // Whether `region` places its content where the lane already has it: the same origin, however much of it is shown.
     bool sameOrigin(const TimelineLane& lane, const alien::timeline::Region& region, bool audio) const noexcept {
         if (!audio) return region.start - region.offset == lane.start - lane.offset;
-        const double ticksPerSecond = static_cast<double>(bpm.load()) * static_cast<double>(alien::timeline::ticksPerBeat) / 60.0;
-        return std::abs(static_cast<double>(region.start - lane.start) - (region.audioOffset - lane.audioOffset) * ticksPerSecond) < 0.5;
+        // The source second at the region's start is where the lane's audio has got to there (within half a tick).
+        const auto map = songTempo();
+        const double apart = map.secondsBetween(static_cast<double>(lane.start), static_cast<double>(region.start))
+            - (region.audioOffset - lane.audioOffset);
+        return std::abs(apart) < alien::timeline::secondsForTicks(0.5, map.tempoAt(static_cast<double>(region.start)));
     }
     double rackStepTick(std::int64_t n) const noexcept {
         const double swing = std::clamp(static_cast<double>(rackSnapshot->swing), 0.0, 1.0);
@@ -1055,12 +1067,42 @@ private:
         fireRackSteps(sample);
         // The playhead is a base plus a whole number of samples at the current rate, not a running
         // sum, so it stays exact however long the song plays.
+        const double previous = timelineTick;
         timelineTick = timelineSegmentBase + static_cast<double>(++timelineSegmentSamples) * timelineRate;
+        if (timelineTick >= timelineNextTempo) crossTempoChange(previous);
         return true;
     }
+    // The playhead passed a tempo change during the last sample. The part of that sample after the
+    // change runs at the new tempo and a new segment starts there, so the position stays exact and
+    // does not depend on the block size. MIDI clips finish their current sixteenth at the new tempo.
+    void crossTempoChange(double previous) noexcept {
+        const auto map = songTempo();
+        double at = timelineNextTempo;
+        double left = std::clamp(1.0 - (at - previous) / timelineRate, 0.0, 1.0);   // of the sample, after the change
+        for (int guard = 0; guard < 64; ++guard) {
+            const double rate = rateForTempo(map.tempoAt(at));
+            const double next = map.nextChange(at);
+            if (at + left * rate < next || guard == 63) { setTimelineTick(at + left * rate); break; }
+            left -= (next - at) / rate; at = next;
+        }
+        const double tempo = map.tempoAt(timelineTick);
+        for (std::size_t t = 0; t < sessionTracks; ++t) if (trackLanes[t].midi) rolls[t].retime(tempo);
+    }
+    // The song's tempo map: the snapshot's tempo changes after the live project tempo.
+    alien::timeline::TempoMap songTempo() const noexcept {
+        return {song->timeline.tempoChanges, static_cast<double>(bpm.load())};
+    }
+    double rateForTempo(double tempo) const noexcept {
+        return sampleRate > 0.0 ? tempo * static_cast<double>(alien::timeline::ticksPerBeat) / (sampleRate * 60.0) : 0.0;
+    }
+    double songRate(double tick) const noexcept { return rateForTempo(songTempo().tempoAt(tick)); }
+    // The tempo the click and count-in run at: the song's where the playhead is in the Song view, else the project's.
+    double clockTempo(int mode) const noexcept { return mode == 2 ? songTempo().tempoAt(timelineTick) : static_cast<double>(bpm.load()); }
     void setTimelineTick(double tick) noexcept {
         timelineTick = timelineSegmentBase = tick;
         timelineSegmentSamples = 0;
+        timelineRate = songRate(tick);
+        timelineNextTempo = songTempo().nextChange(tick);
     }
     void stopMidiDrums() noexcept {
         for (std::size_t t=0;t<sessionTracks;++t) if (plugins->hasInstrument(t)) plugins->silence(t,1);
@@ -1175,7 +1217,7 @@ private:
     }
     int samplesUntilCountInEnds() const noexcept {
         if (recording.phase.load(std::memory_order_relaxed) != alien::RecordControls::countIn) return std::numeric_limits<int>::max();
-        const double perSample = bpm.load() / (sampleRate * 60.0);
+        const double perSample = clockTempo(patternMode.load()) / (sampleRate * 60.0);
         const double left = countInTotalBeats - countInBeats;
         if (!(perSample > 0.0) || left <= 0.0) return 1;
         return static_cast<int>(std::clamp(std::ceil(left / perSample - 1.0e-9), 1.0, 1.0e9));
@@ -1322,7 +1364,8 @@ private:
     static constexpr double tickEpsilon = 1.0e-7;   // slack for comparing the playhead with whole-tick boundaries
     double timelineStopAt = std::numeric_limits<double>::max();
     double timelineTick{}, timelineStart{}, transportBeat{};   // the playhead, and where the next play begins (ticks)
-    double timelineSegmentBase{}, timelineRate{};              // playhead = base + samples * rate since the last jump or tempo change
+    double timelineSegmentBase{}, timelineRate{};
+    double timelineNextTempo{std::numeric_limits<double>::infinity()};   // the next tempo change after the playhead              // playhead = base + samples * rate since the last jump or tempo change
     std::int64_t timelineSegmentSamples{};
     bool loopArmed{};   // the playhead is before the loop's end, so reaching it wraps (starting past it plays on)
     std::array<TimelineLane, sessionTracks> trackLanes{};

@@ -1158,6 +1158,155 @@ static void sendAutomationPlaybackTests() {
     require(allocationCount == before, "automated sends do not allocate in callback");
 }
 
+// ---- tempo changes ---------------------------------------------------------------------------------------------
+// The rig plays at 120 BPM (25 frames a tick). A change to 60 BPM makes a tick 50 frames from there on.
+
+// Noise that never repeats, so audio that starts at the wrong second cannot line up by chance (a sine with a whole
+// number of cycles a second would).
+static alien::SessionAudioClip makeNoise(int seconds) {
+    alien::SessionAudioClip clip;
+    clip.sampleRate = 48000; clip.channels = 1; clip.frames = static_cast<std::size_t>(48000 * seconds);
+    clip.left.resize(clip.frames);
+    std::uint32_t state = 12345u;
+    for (auto& sample : clip.left) { state = state * 1664525u + 1013904223u; sample = static_cast<float>(state >> 8) / 16777216.0f * 0.8f - 0.4f; }
+    clip.buildWaveform();
+    require(clip.valid(), "test noise clip");
+    return clip;
+}
+
+static void tempoMapPlaybackTests() {
+    const long slowBar = 2 * barFrames;   // a bar at 60 BPM
+    // The playhead and MIDI notes follow the change, at any block size, and every bar's note keeps its place.
+    {
+        Rig rig; rig.block = 1021; auto song = newSong(4);
+        require(song->timeline.setTempoChange(ticksPerBar, 60.0), "60 BPM from bar 2");
+        song->clips[0][0].pattern = oneNote(60, 0, 1);
+        place(*song, regionOf(0, 0, 0, 4 * ticksPerBar));
+        rig.publish(song); rig.seek(0); rig.play();
+        rig.render(barFrames);
+        closeTo(static_cast<double>(rig.position()), ticksPerBar, 1.0, "one bar at 120 BPM");
+        rig.render(barFrames);
+        closeTo(static_cast<double>(rig.position()), 1.5 * ticksPerBar, 1.0, "the same audio covers half a bar at 60 BPM");
+        rig.render(barFrames + slowBar);
+        closeTo(static_cast<double>(rig.position()), 3 * ticksPerBar, 1.0, "and every later bar takes twice as long");
+        const long first = rig.firstAbove(0, barFrames);
+        for (long top : {static_cast<long>(barFrames), barFrames + slowBar}) {
+            const auto onset = rig.firstAbove(top - 1000, top + 4000);
+            require(onset >= 0 && std::abs((onset - top) - first) <= 1, "a bar's first note is on its bar line after the change");
+        }
+    }
+    // A change part-way through a sixteenth: the rest of that sixteenth runs at the new tempo.
+    {
+        Rig rig; auto song = newSong(2);
+        require(song->timeline.setTempoChange(ticksPerBar + ticksPerStep / 2, 60.0), "60 BPM half a sixteenth into bar 2");
+        song->clips[0][0].pattern = oneNote(60, 1, 1);
+        place(*song, regionOf(0, 0, 0, 2 * ticksPerBar));
+        rig.publish(song); rig.seek(0); rig.play(); rig.render(barFrames + 12000);
+        const long first = rig.firstAbove(0, barFrames) - stepFrames;
+        const long due = barFrames + (ticksPerStep / 2) * tickFrames + (ticksPerStep / 2) * 2 * tickFrames;
+        const auto onset = rig.firstAbove(barFrames, barFrames + 12000);
+        require(onset >= 0 && std::abs((onset - due) - first) <= 1, "the second sixteenth of the bar comes where the tempo map puts it");
+    }
+    // Channel Rack steps land on the map's sample positions.
+    {
+        Rig rig; auto song = newSong(4);
+        require(song->timeline.setTempoChange(ticksPerBar, 60.0), "60 BPM from bar 2");
+        place(*song, regionOf(rackRowBase, 0, ticksPerBar, 2 * ticksPerBar));
+        rig.publishRack(rackWith({{0, 4}})); rig.publish(song); rig.seek(0); rig.play();
+        rig.render(barFrames + 2 * slowBar);
+        for (long top : {static_cast<long>(barFrames), barFrames + slowBar}) {
+            const long hit = top + 4 * 2 * stepFrames;
+            const auto onset = rig.firstAbove(top, top + slowBar);
+            require(onset >= hit && onset <= hit + 40, "a rack step sounds on its sixteenth at the new tempo");
+        }
+    }
+    // Audio is not stretched: it plays at its own speed straight through a tempo change.
+    const auto clip = makeNoise(6);
+    {
+        Rig plain; auto steady = newSong(4);
+        steady->clips[0][0].audio = &clip;
+        place(*steady, regionOf(0, 0, 0, 4 * ticksPerBar));
+        plain.publish(steady); plain.seek(0); plain.play(); plain.render(3 * 48000);
+        auto changing = std::make_shared<alien::ArrangementPlayback>(*steady);
+        require(changing->timeline.setTempoChange(ticksPerBar / 2, 60.0), "60 BPM from half way through bar 1");
+        Rig rig; rig.publish(changing); rig.seek(0); rig.play(); rig.render(6 * 48000 - 100);
+        require(worstDifference(rig.out, plain.out, 0, 3 * 48000) < 1.0e-6, "the same audio, sample for sample, across the change");
+        // Seeking after the change starts the clip at the second the song has reached there: 1 s, then a bar at 60 BPM (4 s).
+        Rig late; late.publish(changing); late.seek(ticksPerBar + ticksPerBar / 2); late.play(); late.render(48000 - 200);
+        const long into = 5 * 48000;
+        double worst = 0;
+        for (long i = 64; i < late.frames(); ++i)
+            worst = std::max(worst, static_cast<double>(std::abs(late.out[static_cast<std::size_t>(i)] - rig.out[static_cast<std::size_t>(into + i)])));
+        require(worst < 1.0e-5, "seeking past a change plays what playing up to it does");
+    }
+    // A region that starts after a change starts on the map's frame.
+    {
+        auto song = newSong(4);
+        require(song->timeline.setTempoChange(ticksPerBar / 2, 60.0), "60 BPM from half way through bar 1");
+        song->clips[0][0].audio = &clip;
+        place(*song, regionOf(0, 0, ticksPerBar, ticksPerBar));
+        Rig rig; rig.publish(song); rig.seek(0); rig.play(); rig.render(4 * 48000);
+        const long start = barFrames / 2 + (ticksPerBar / 2) * 2 * tickFrames;   // 1 s, then half a bar at 60 BPM (2 s)
+        require(rig.energy(0, start - 1) == 0, "silent before the region");
+        const auto onset = rig.firstAbove(0, 4 * 48000);
+        require(onset >= start && onset <= start + 64, "the region begins three seconds in");
+    }
+    // Loops: every pass replays the change. Any block size gives the same audio.
+    {
+        auto build = [&] {
+            auto song = newSong(4);
+            require(song->timeline.setTempoChange(ticksPerBar + 100, 75.0) && song->timeline.setTempoChange(ticksPerBar + 3001, 140.0),
+                    "two changes off the grid");
+            song->clips[0][0].pattern = oneNote(60, 0, 1); song->clips[1][0].pattern = oneNote(67, 5, 3);
+            song->clips[2][0].audio = &clip;
+            place(*song, regionOf(0, 0, 0, 2 * ticksPerBar)); place(*song, regionOf(1, 0, 0, 2 * ticksPerBar));
+            place(*song, regionOf(2, 0, ticksPerBar / 3, ticksPerBar)); place(*song, regionOf(rackRowBase, 0, 0, 2 * ticksPerBar));
+            require(song->timeline.setLoop(0, 2 * ticksPerBar) && song->timeline.setLoopEnabled(true), "loop two bars");
+            return song;
+        };
+        auto run = [&](int block) {
+            Rig rig; rig.block = block; rig.publishRack(rackWith({{0, 0}, {1, 6}}));
+            rig.publish(build()); rig.seek(0); rig.play(); rig.render(5 * barFrames);
+            return rig.out;
+        };
+        const auto one = run(1), odd = run(257), big = run(4096);
+        require(one == odd && one == big, "tempo changes sound the same at any block size");
+        const auto song = build();
+        const long pass = static_cast<long>(std::llround(song->timeline.secondsBetween(0, 2 * ticksPerBar) * 48000.0));
+        long first = 0;
+        while (first < pass && std::abs(one[static_cast<std::size_t>(first)]) <= 1.0e-4f) ++first;
+        long again = pass - 200;
+        while (again < pass + 2000 && std::abs(one[static_cast<std::size_t>(again)]) <= 1.0e-4f) ++again;
+        require(std::abs((again - pass) - first) <= 2, "the second pass starts again at the song's first tempo");
+    }
+    // The click follows the song's beats: half as often at 60 BPM.
+    {
+        Rig rig; auto song = newSong(4);
+        require(song->timeline.setTempoChange(ticksPerBar, 60.0), "60 BPM from bar 2");
+        rig.engine.recording.metronome.store(true);
+        rig.publish(song); rig.seek(0); rig.play(); rig.render(barFrames + 3 * 48000);
+        const auto beat5 = rig.firstAbove(barFrames + 10000, barFrames + 60000);
+        require(beat5 >= barFrames + 48000 && beat5 <= barFrames + 48002, "the beat after the change is a second later");
+    }
+    // Changing tempo while playing allocates nothing.
+    {
+        Rig rig; auto song = newSong(4);
+        require(song->timeline.setTempoChange(ticksPerBar / 3, 75.0) && song->timeline.setTempoChange(2 * ticksPerBar + 7, 170.0), "two changes");
+        song->clips[0][0].pattern = oneNote(60, 0, 3); song->clips[1][0].audio = &clip;
+        place(*song, regionOf(0, 0, 0, 3 * ticksPerBar)); place(*song, regionOf(1, 0, ticksPerBar / 2, 2 * ticksPerBar));
+        place(*song, regionOf(rackRowBase, 0, 0, 3 * ticksPerBar));
+        rig.publishRack(rackWith({{0, 0}, {2, 3}})); rig.publish(song); rig.seek(0); rig.play(); rig.render(4096);
+        const auto before = allocationCount;
+        float l[311]{}, r[311]{}; float* outputs[]{l, r};
+        for (int i = 0; i < 2000; ++i) {
+            if (i % 600 == 300) rig.engine.timelineSeek.store((i * 997) % (3 * ticksPerBar));
+            if (i % 450 == 200) rig.engine.bpm.store(80 + (i % 5) * 20);
+            rig.engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 311, {});
+        }
+        require(allocationCount == before, "playing through tempo changes does not allocate in the callback");
+    }
+}
+
 // ---- fades and crossfades ------------------------------------------------------------------------------------
 // Expected gains are computed from the tick of each output frame. The engine reads the playhead one sample on,
 // so a gain may differ by one frame's slope (about 4e-5 here): the tolerances allow that and nothing more.
@@ -1290,6 +1439,7 @@ int main() {
     timed("fades", fadeTests);
     timed("automation", automationPlaybackTests);
     timed("send automation", sendAutomationPlaybackTests);
+    timed("tempo changes", tempoMapPlaybackTests);
     timed("start from anywhere", startFromAnywhereTests);
     timed("loops", loopTests);
     timed("rack lanes", rackLaneTests);

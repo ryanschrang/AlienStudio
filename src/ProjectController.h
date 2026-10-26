@@ -133,6 +133,10 @@ public:
         return false;
     }
 
+    // Put back a document captured earlier in the same edit, before it was committed
+    // (e.g. a command batch that failed part way). The history is not changed.
+    void revertTo(const ProjectDocument& state) { restore(state, {{}, state.selectedTrack, state.selectedScene}); }
+
     // Replace the song with an empty default project.
     void newProject() {
         abandonRecording();
@@ -335,6 +339,14 @@ public:
         const auto trimmed = name.trim().substring(0, 64);
         if (track < 0 || track >= doc.trackCount() || trimmed.isEmpty()) return false;
         doc.tracks[static_cast<std::size_t>(track)].name = trimmed;
+        return true;
+    }
+
+    // Number of colours in the track palette (ui::trackColour).
+    static constexpr int trackColourCount = 8;
+    bool setTrackColour(int track, int colour) {
+        if (busy || track < 0 || track >= doc.trackCount() || colour < 0 || colour >= trackColourCount) return false;
+        doc.tracks[static_cast<std::size_t>(track)].colour = colour;
         return true;
     }
 
@@ -672,6 +684,7 @@ public:
         next.id = ++lastTakeId;
         next.sampleRate = sampleRate;
         next.bpm = doc.bpm;
+        next.tempoChanges = doc.timeline.tempoChanges;
         next.offsetMs = doc.recording.audioLatencyOffsetMs;
         next.punch = doc.recording.punch;
         next.punchIn = doc.timeline.loopStart;
@@ -735,21 +748,49 @@ public:
         engine.stepVelocities[static_cast<std::size_t>(step)].store(doc.steps.velocity[static_cast<std::size_t>(step)]);
     }
     void setBpm(int bpm) {
-        const bool unfreezing=juce::jlimit(60,200,bpm)!=doc.bpm && anyFrozenTrack();
-        if(unfreezing) {
-            for(int t=0;t<doc.trackCount();++t)if(isTrackFrozen(t)) {
-                const auto scene=doc.tracks[static_cast<std::size_t>(t)].settings.freezeScene;
-                doc.timeline.unfreezeTrack(t);doc.tracks[static_cast<std::size_t>(t)].settings.freezeScene=-1;
-                if(doc.isValidCell(t,scene))doc.clip(t,scene)=SessionClip{};
-            }
-            doc.timeline.lengthBars=std::max(doc.timeline.freezeBaseLengthBars,doc.timeline.minLengthBars());
-            doc.timeline.freezeBaseLengthBars=0;
-            pushDocumentToEngine();
-            status("Tracks unfrozen for tempo change.",{});
-        }
+        const bool unfreezing=juce::jlimit(60,200,bpm)!=doc.bpm && unfreezeForTempo();
         doc.bpm = juce::jlimit(60, 200, bpm);
         engine.bpm.store(doc.bpm);
         if(unfreezing && onDocumentRestored)onDocumentRestored();
+    }
+    // Frozen audio was rendered at the old tempo, so a tempo edit unfreezes every frozen track first.
+    bool unfreezeForTempo() {
+        if(!anyFrozenTrack())return false;
+        for(int t=0;t<doc.trackCount();++t)if(isTrackFrozen(t)) {
+            const auto scene=doc.tracks[static_cast<std::size_t>(t)].settings.freezeScene;
+            doc.timeline.unfreezeTrack(t);doc.tracks[static_cast<std::size_t>(t)].settings.freezeScene=-1;
+            if(doc.isValidCell(t,scene))doc.clip(t,scene)=SessionClip{};
+        }
+        doc.timeline.lengthBars=std::max(doc.timeline.freezeBaseLengthBars,doc.timeline.minLengthBars());
+        doc.timeline.freezeBaseLengthBars=0;
+        pushDocumentToEngine();
+        status("Tracks unfrozen for tempo change.",{});
+        return true;
+    }
+    // The song's tempo map: its tempo changes after the project tempo.
+    timeline::TempoMap songTempo() const noexcept { return {doc.timeline.tempoChanges, static_cast<double>(doc.bpm)}; }
+    // Tempo changes on the Song, each one undo step. Frozen tracks are unfrozen first.
+    bool setTempoChange(std::int64_t tick, double bpm) {
+        return editTempoMap("Tempo change", [=](timeline::Timeline& t) { return t.setTempoChange(tick, bpm); });
+    }
+    bool moveTempoChange(std::int64_t from, std::int64_t to) {
+        return editTempoMap("Move tempo change", [=](timeline::Timeline& t) { return t.moveTempoChange(from, to); });
+    }
+    bool removeTempoChange(std::int64_t tick) {
+        return editTempoMap("Remove tempo change", [=](timeline::Timeline& t) { return t.removeTempoChange(tick); });
+    }
+    bool clearTempoChanges() {
+        return editTempoMap("Remove tempo changes", [](timeline::Timeline& t) { return t.clearTempoChanges(); });
+    }
+    bool editTempoMap(const juce::String& label, const std::function<bool(timeline::Timeline&)>& edit) {
+        if (busy || isRecording()) return false;
+        auto probe = doc.timeline;
+        if (!edit(probe) || !probe.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount)) return false;
+        const bool unfrozen = unfreezeForTempo();
+        const bool changed = editTimeline(label, edit);
+        if (unfrozen && !changed) commit("Unfreeze tracks", -1, -1, {});
+        if (unfrozen && onDocumentRestored) onDocumentRestored();
+        return changed;
     }
     void setLivePreset(int preset) {
         doc.livePreset = preset;
@@ -1018,7 +1059,7 @@ public:
     // How long a clip or pattern naturally lasts on the timeline, in ticks: its loop
     // for MIDI and rack patterns, its running time at the current tempo for audio
     // (rounded up to a sixteenth so it ends on the grid).
-    std::int64_t naturalLength(int row, int source) const {
+    std::int64_t naturalLength(int row, int source, std::int64_t start = 0) const {
         using namespace alien::timeline;
         if (isPatternRow(row)) {
             if (!doc.channelRack.validPattern(source)) return ticksPerBar;
@@ -1028,14 +1069,14 @@ public:
         const auto& clip = doc.clip(row, source);
         if (clip.audio != nullptr && clip.audio->sampleRate > 0.0) {
             const double seconds = static_cast<double>(clip.audio->frames) / clip.audio->sampleRate;
-            const double ticks = seconds * doc.bpm * static_cast<double>(ticksPerBeat) / 60.0;
+            const double ticks = songTempo().tickAfter(static_cast<double>(start), seconds) - static_cast<double>(start);
             return std::clamp<std::int64_t>(static_cast<std::int64_t>(std::ceil(ticks / ticksPerStep)) * ticksPerStep, ticksPerStep, maxLength);
         }
         return static_cast<std::int64_t>(clip.notes().loopSteps) * ticksPerStep;
     }
     // Where the song starts and is shown when it is next played.
     bool placeRegion(int row, int source, std::int64_t start, std::uint32_t* idOut = nullptr) {
-        const auto length = naturalLength(row, source);
+        const auto length = naturalLength(row, source, start);
         return editTimeline(alien::timeline::isPatternRow(row) ? "Place pattern" : "Place clip", [&](alien::timeline::Timeline& t) {
             alien::timeline::Region r; r.row = row; r.source = source; r.start = start; r.length = length;
             return t.place(r, idOut);
@@ -1068,7 +1109,7 @@ public:
         auto next = doc.timeline;
         next.tempo = doc.bpm;
         Region region;
-        region.row = row; region.source = scene; region.start = start; region.length = naturalLength(row, scene);
+        region.row = row; region.source = scene; region.start = start; region.length = naturalLength(row, scene, start);
         if (!next.place(region, &id) || !next.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount)) {
             doc = saved;
             return false;
@@ -1191,7 +1232,7 @@ public:
         if(!retain(audio))return fail();
         auto& cache=doc.clip(track,scene);cache.audio=audio;cache.audioFilePath=file.getFullPathName();cache.audioFileName=file.getFileName();
         if(!anyFrozenTrack())doc.timeline.freezeBaseLengthBars=doc.timeline.lengthBars;
-        const double ticks=static_cast<double>(audio->frames)*doc.bpm*timeline::ticksPerBeat/(60.0*audio->sampleRate);
+        const double ticks=songTempo().tickAfter(0.0,static_cast<double>(audio->frames)/audio->sampleRate);
         if(!std::isfinite(ticks) || ticks<1 || ticks>timeline::maxLength || !doc.timeline.freezeTrack(track,scene,static_cast<std::int64_t>(std::ceil(ticks)),1.0/ToneEngine::audioClipLevel))return fail();
         doc.tracks[static_cast<std::size_t>(track)].settings.freezeScene=scene;
         if(!toProjectData(doc).valid())return fail();
@@ -1914,6 +1955,7 @@ private:
         std::vector<std::pair<int, std::shared_ptr<DiskRecording>>> recordings; // track, its take
         double sampleRate{44100.0};
         int bpm{120}, offsetMs{};
+        std::vector<timeline::TempoChange> tempoChanges;   // the song's tempo map when the take began
         bool punch{};
         std::int64_t punchIn{}, punchOut{};
     };
@@ -1974,8 +2016,9 @@ private:
                     }
                     RecordedTake recorded;
                     recorded.track = item.track; recorded.file = item.result.file; recorded.clip = item.audio.clip;
-                    recorded.placement = placeTake(firstTick, std::min<std::uint64_t>(frames, item.result.writtenFrames),
-                                                   finished.sampleRate, finished.bpm, latency,
+                    recorded.placement = placeTake(timeline::TempoMap{finished.tempoChanges, static_cast<double>(finished.bpm)},
+                                                   firstTick, std::min<std::uint64_t>(frames, item.result.writtenFrames),
+                                                   finished.sampleRate, latency,
                                                    finished.punch ? finished.punchIn : 0, finished.punch ? finished.punchOut : -1);
                     if (!recorded.placement.valid) { outcome.kept.push_back(item.result.file); continue; }
                     takes.push_back(std::move(recorded));
