@@ -42,7 +42,7 @@ Ordered by importance. Rows without dependencies can run in parallel.
 | Order | Workstream | Checklist IDs | Status today | Depends on | Main area |
 | --- | --- | --- | --- | --- | --- |
 | T1-01 | Tempo and time-signature map | TEMPO-01 | Not started | - | `Timeline.h`, `StepClock.h`, `ToneEngine.h`, export |
-| T1-02 | Command Engine (see below) | CMD-01 | Not started; undo/redo and save/load exist (FILE-01, FILE-02) | - | `ProjectController.h`, `DocumentHistory.h` (new command files) |
+| T1-02 | Command Engine (see below) | CMD-01 | Partial: structural track commands and track volume/pan, Execute/Undo/Redo/Batch/Preview; remaining operations and UI adoption pending | - | `CommandEngine.h`, `ProjectController.h`, `DocumentHistory.h` |
 | T1-03 | One clip/pattern model shared by Create, Perform and Arrange | ARCH-01, LIVE-03 | Partial: Song regions share Session clip notes; Channel Rack patterns are a separate model | Design doc first; T1-02 helps | `RackModel.h`, `SessionProject.h`, `Timeline.h`, `Arrangement.h` |
 | T1-04 | Universal tracks and higher limits | TRACK-01, LIVE-04 | Partial: 16 tracks / 32 scenes; rack channels are a separate track kind | T1-03 design | `SessionCapacity.h`, `SessionProject.h`, `ToneEngine.h` |
 | T1-05 | Mixer routing: groups, buses, sidechain, flexible returns | MIX-03, MIX-04, MIX-05 | Partial: volume, pan, mute/solo, meters, four returns, pre/post sends, latency compensation (MIX-01, MIX-02) | - | `TrackMixer.h`, `ToneEngine.h` routing, mixer view |
@@ -81,8 +81,9 @@ SetTempo  SetChord  SetArrangementSection
 with **Execute, Undo, Redo, Batch and Preview**. This is not only for AI: it gives reliable
 undo/redo, macros, keyboard actions, MIDI controller scripting, user scripting, batch processing
 and workflow automation. The eventual assistant becomes a natural-language front end to the same
-commands. First slice: wrap the existing undoable track operations, with tests that a batch is
-one undo step.
+commands. The implemented first slice wraps the existing undoable track operations, with tests
+that a batch is one undo step. Track volume/pan commands extend this foundation; remaining
+operations and adoption by the existing UI follow in later slices.
 
 #### Milestone B: MIDI production (T1-06, then Tier 2)
 
