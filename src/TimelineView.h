@@ -52,6 +52,7 @@ public:
         Zone zone{Zone::none};
         int displayRow{-1};
         std::uint32_t region{0}, marker{0};
+        std::int64_t tempo{-1};   // the tick of the tempo change under the pointer on the ruler
         Edge edge{Edge::none};
         Edge fade{Edge::none};   // a fade handle at the top of an audio clip: left is the fade in (or crossfade), right the fade out
         enum class LoopPart { none, start, end, body } loopPart{LoopPart::none};
@@ -118,6 +119,13 @@ public:
         const float x = static_cast<float>(xForTick(static_cast<double>(m.tick)));
         const float width = std::max(24.0f, 12.0f + 6.2f * static_cast<float>(juce::String::fromUTF8(m.name.c_str()).length()));
         return {x, 2.0f, width, static_cast<float>(markerStripHeight - 4)};
+    }
+    // A tempo change is a flag on the lower half of the ruler, labelled with its tempo.
+    static juce::String tempoLabel(double bpm) { return juce::String(bpm, std::abs(bpm - std::round(bpm)) < 0.005 ? 0 : 2) + " BPM"; }
+    juce::Rectangle<float> tempoBounds(const timeline::TempoChange& c) const {
+        const float x = static_cast<float>(xForTick(static_cast<double>(c.tick)));
+        const float width = 10.0f + 5.6f * static_cast<float>(tempoLabel(c.bpm).length());
+        return {x, static_cast<float>(markerStripHeight + loopStripHeight + 12), width, static_cast<float>(rulerHeight - 13)};
     }
     juce::Rectangle<float> loopBounds() const noexcept {
         const auto& t = shown();
@@ -427,6 +435,35 @@ public:
             edit("Rename marker", [&](timeline::Timeline& t) { return t.renameMarker(id, text.toStdString()); });
         });
     }
+    // Tempo changes go through the controller's tempo edits, which unfreeze frozen tracks first.
+    bool tempoEdit(const juce::String& label, const std::function<bool(timeline::Timeline&)>& change) {
+        if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return false; }
+        if (controller.isRecording()) { say("Stop recording before changing the tempo."); return false; }
+        const bool done = controller.editTempoMap(label, change);
+        if (done) afterEdit();
+        return done;
+    }
+    // Asks for the tempo from `tick` on. Tick 0 is the project tempo, which the transport sets.
+    void askTempo(std::int64_t tick) {
+        if (tick <= 0) { say("The song starts at the project tempo; set it in the transport, or add a change later in the song."); return; }
+        if (tick > committed().length()) { say("A tempo change must be inside the song."); return; }
+        const double now = controller.songTempo().tempoAt(static_cast<double>(tick));
+        const juce::String where = "Bar " + juce::String(tick / timeline::ticksPerBar + 1) + "." + juce::String((tick % timeline::ticksPerBar) / timeline::ticksPerBeat + 1);
+        askForName("Tempo from " + where + " (60-200 BPM)", juce::String(now, std::abs(now - std::round(now)) < 0.005 ? 0 : 2),
+            [this, tick](const juce::String& text) {
+                const auto value = text.trim().upToFirstOccurrenceOf(" ", false, true);
+                const double bpm = value.getDoubleValue();
+                if (value.isEmpty() || !value.containsOnly("0123456789.") || !timeline::validTempo(bpm)) {
+                    say("Enter a tempo from 60 to 200 BPM.");
+                    return;
+                }
+                if (!tempoEdit("Tempo change", [=](timeline::Timeline& t) { return t.setTempoChange(tick, bpm); }))
+                    say("The tempo there is already " + tempoLabel(bpm) + ".");
+            });
+    }
+    bool removeTempoChange(std::int64_t tick) {
+        return tempoEdit("Remove tempo change", [=](timeline::Timeline& t) { return t.removeTempoChange(tick); });
+    }
     // Arrow keys: moves the selection by the grid (or a bar), or the play position when nothing is selected.
     bool nudge(int direction, bool bar = false) {
         const auto step = (bar ? timeline::ticksPerBar : gridTicks()) * direction;
@@ -561,7 +598,7 @@ public:
     // The items of the right-click menus.
     enum Command { cmdSplit = 1, cmdMute, cmdDuplicate, cmdCopy, cmdCut, cmdDelete, cmdGroup, cmdUngroup, cmdOpen, cmdPaste, cmdSelectAll, cmdAddMarker,
                    cmdSlipLeft, cmdSlipRight, cmdSourceLoop, cmdReverse, cmdNormalize, cmdFade, cmdCrossfade,
-                   cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdRemoveFades, cmdColourBase = 100,
+                   cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdRemoveFades, cmdTempo, cmdRemoveTempo, cmdColourBase = 100,
                    cmdArm = 200, cmdFreeze = 201, cmdUnfreeze = 202, cmdMonitorBase = 210, cmdInputMonoBase = 300, cmdInputStereoBase = 400 };
     juce::PopupMenu placeMenu(int row) const {
         juce::PopupMenu menu;
@@ -660,7 +697,11 @@ public:
                 else if (x > loop.getX() && x < loop.getRight()) hit.loopPart = Hit::LoopPart::body;
                 return hit;
             }
-            hit.zone = Zone::ruler; return hit;
+            hit.zone = Zone::ruler;
+            const auto& changes = shown().tempoChanges;
+            for (auto it = changes.rbegin(); it != changes.rend(); ++it)
+                if (tempoBounds(*it).expanded(3.0f, 2.0f).contains(p.toFloat())) { hit.tempo = it->tick; break; }
+            return hit;
         }
         hit.displayRow = displayRowAt(p.y);
         if (p.x < headerWidth) { hit.zone = hit.displayRow >= 0 ? Zone::header : Zone::none; return hit; }
@@ -716,6 +757,7 @@ public:
         if (hit.zone == Zone::region && (hit.edge != Edge::none || hit.fade != Edge::none)) cursorType = juce::MouseCursor::LeftRightResizeCursor;
         else if (hit.zone == Zone::loopStrip && (hit.loopPart == Hit::LoopPart::start || hit.loopPart == Hit::LoopPart::end)) cursorType = juce::MouseCursor::LeftRightResizeCursor;
         else if (hit.zone == Zone::markerStrip && hit.marker != 0) cursorType = juce::MouseCursor::PointingHandCursor;
+        else if (hit.zone == Zone::ruler && hit.tempo >= 0) cursorType = juce::MouseCursor::PointingHandCursor;
         setMouseCursor(cursorType);
     }
     void mouseDown(const juce::MouseEvent& e) override {
@@ -740,6 +782,12 @@ public:
             }
             break;
         case Zone::ruler:
+            if (hit.tempo >= 0) {
+                drag.kind = DragKind::tempo; drag.newAnchor = hit.tempo;
+                drag.grabOffset = static_cast<double>(hit.tempo) - drag.anchorTick;
+                drag.base = baseTimeline();
+                break;
+            }
             drag.kind = DragKind::scrub; drag.active = true;
             setCursor(snapTick(drag.anchorTick, bypass));
             break;
@@ -881,6 +929,13 @@ public:
             drag.apply = [=](timeline::Timeline& t) { return t.moveMarker(id, to); };
             updatePreview(); break;
         }
+        case DragKind::tempo: {
+            const auto from = drag.newAnchor;
+            const auto to = snapTick(tickNow + drag.grabOffset, bypass);
+            drag.label = "Move tempo change";
+            drag.apply = [=](timeline::Timeline& t) { return to != from && t.moveTempoChange(from, to); };
+            updatePreview(); break;
+        }
         case DragKind::loopNew: case DragKind::loopStart: case DragKind::loopEnd: case DragKind::loopMove: {
             const auto& base = *drag.base;
             const auto snapped = std::min(snapTick(tickNow, bypass), base.length());   // the loop stays inside the song
@@ -948,6 +1003,11 @@ public:
                 setCursor(snapTick(finished.anchorTick, bypass));
             } else stateChanged();
             break;
+        case DragKind::tempo:
+            if (active && finished.apply) {
+                if (!tempoEdit(finished.label, finished.apply) && hadPreview && !controller.isBusy()) say("A tempo change cannot go there.");
+            } else if (!active) setCursor(finished.newAnchor);   // a click on a tempo change plays from there
+            break;
         default: break;
         }
         repaint();
@@ -963,6 +1023,8 @@ public:
         } else if (hit.zone == Zone::markerStrip) {
             if (hit.marker != 0) renameMarker(hit.marker);
             else { setCursor(tick, false); addMarkerAtCursor(); }
+        } else if (hit.zone == Zone::ruler) {
+            askTempo(hit.tempo >= 0 ? hit.tempo : tick);   // a tempo change, or a new one where the pointer is
         } else if (hit.zone == Zone::loopStrip) {
             // Double-click: loop the bar under the pointer.
             const auto bar = static_cast<std::int64_t>(std::floor(tickAtX(static_cast<double>(e.x)) / timeline::ticksPerBar)) * timeline::ticksPerBar;
@@ -1059,7 +1121,7 @@ public:
     }
 
 private:
-    enum class DragKind { none, scrub, move, copy, trimStart, trimEnd, fadeIn, fadeOut, marker, loopNew, loopStart, loopEnd, loopMove, marquee };
+    enum class DragKind { none, scrub, move, copy, trimStart, trimEnd, fadeIn, fadeOut, marker, tempo, loopNew, loopStart, loopEnd, loopMove, marquee };
     struct Drag {
         DragKind kind{DragKind::none};
         bool active{};
@@ -1205,10 +1267,28 @@ private:
                 else if (id == cmdRemoveMarker) removeMarker(marker);
                 else if (id >= cmdColourBase && id < cmdColourBase + 8) colourMarker(marker, id - cmdColourBase);
             });
+        } else if (hit.zone == Zone::ruler && hit.tempo >= 0) {
+            juce::PopupMenu menu;
+            menu.addItem(cmdJump, "Play from here");
+            menu.addItem(cmdTempo, "Change tempo...");
+            menu.addItem(cmdRemoveTempo, "Delete tempo change");
+            launch(std::move(menu), area, [this, at = hit.tempo](int id) {
+                if (id == cmdJump) setCursor(at);
+                else if (id == cmdTempo) askTempo(at);
+                else if (id == cmdRemoveTempo) removeTempoChange(at);
+            });
         } else if (hit.zone == Zone::markerStrip || hit.zone == Zone::ruler) {
             juce::PopupMenu menu;
             menu.addItem(cmdAddMarker, "Add marker here");
-            launch(std::move(menu), area, [this, tick](int id) { if (id == cmdAddMarker) { setCursor(tick, false); addMarkerAtCursor(); } });
+            if (hit.zone == Zone::ruler) {
+                menu.addItem(cmdTempo, "Add tempo change here...", tick > 0);
+                menu.addItem(cmdRemoveTempo, "Remove all tempo changes", !committed().tempoChanges.empty());
+            }
+            launch(std::move(menu), area, [this, tick](int id) {
+                if (id == cmdAddMarker) { setCursor(tick, false); addMarkerAtCursor(); }
+                else if (id == cmdTempo) askTempo(tick);
+                else if (id == cmdRemoveTempo) tempoEdit("Remove tempo changes", [](timeline::Timeline& t) { return t.clearTempoChanges(); });
+            });
         } else if (hit.zone == Zone::loopStrip) {
             juce::PopupMenu menu;
             menu.addItem(cmdJump, committed().loopEnabled ? "Loop off" : "Loop on");
@@ -1554,12 +1634,14 @@ private:
             const float mid = inner.getCentreY(), half = inner.getHeight() * 0.5f;
             g.setColour(ink);
             const int first = static_cast<int>(std::floor(visibleLeft)), last = static_cast<int>(std::ceil(visibleRight));
+            const auto tempo = controller.songTempo();
+            const double start = static_cast<double>(r.start);
             for (int px = first; px <= last; ++px) {
                 const double tickInRegion = (static_cast<double>(px) - x0) / ppt;
                 if (tickInRegion < 0 || tickInRegion >= static_cast<double>(r.length)) continue;
-                const double seconds = r.audioOffset + timeline::secondsForTicks(tickInRegion, controller.document().bpm);
+                const double seconds = r.audioOffset + tempo.secondsBetween(start, start + tickInRegion);
                 if (seconds >= duration) break;
-                const double secondsNext = r.audioOffset + timeline::secondsForTicks(tickInRegion + 1.0 / ppt, controller.document().bpm);
+                const double secondsNext = r.audioOffset + tempo.secondsBetween(start, start + tickInRegion + 1.0 / ppt);
                 const auto b0 = std::min(audio.waveformCount - 1, static_cast<std::size_t>(seconds / duration * static_cast<double>(audio.waveformCount)));
                 const auto b1 = std::min(audio.waveformCount - 1, std::max(b0, static_cast<std::size_t>(std::min(secondsNext, duration) / duration * static_cast<double>(audio.waveformCount))));
                 float amp = 0.0f;
@@ -1711,6 +1793,17 @@ private:
             g.setColour(col::accentInk); g.setFont(ui::font(10.5f, true));
             g.drawText(juce::String::fromUTF8(m.name.c_str()), box.toNearestInt().reduced(5, 0), juce::Justification::centredLeft, true);
             if (m.id == selectedMarker) { g.setColour(juce::Colours::white); g.drawRoundedRectangle(box, 3.0f, 1.5f); }
+        }
+        // Tempo changes: a line through the ruler and a flag with the tempo.
+        for (const auto& c : t.tempoChanges) {
+            const auto box = tempoBounds(c);
+            if (box.getRight() < headerWidth || box.getX() > getWidth()) continue;
+            g.setColour(col::warning);
+            g.fillRect(box.getX(), static_cast<float>(rulerTop), 1.5f, static_cast<float>(rulerHeight));
+            g.setColour(col::warning.withAlpha(0.85f));
+            g.fillRoundedRectangle(box, 2.5f);
+            g.setColour(col::accentInk); g.setFont(ui::monoFont(9.5f));
+            g.drawText(tempoLabel(c.bpm), box.toNearestInt().reduced(4, 0), juce::Justification::centredLeft, false);
         }
         // The play position and the playhead on the ruler.
         const float cx = static_cast<float>(xForTick(static_cast<double>(cursor)));
@@ -2157,7 +2250,7 @@ private:
         loopButton.setToggleState(t.loopEnabled, juce::dontSendNotification);
         loopButton.setColour(juce::TextButton::buttonColourId, t.loopEnabled ? ui::colours::accent.withAlpha(0.35f) : ui::colours::control);
         const auto tick = canvas.cursorTick();
-        const double seconds = timeline::secondsForTicks(static_cast<double>(tick), controller.document().bpm);
+        const double seconds = controller.songTempo().secondsBetween(0.0, static_cast<double>(tick));
         const int minutes = static_cast<int>(seconds / 60.0);
         juce::String text = "Bar " + juce::String(tick / timeline::ticksPerBar + 1) + "." + juce::String((tick % timeline::ticksPerBar) / timeline::ticksPerBeat + 1)
             + "  " + juce::String(minutes) + ":" + juce::String(seconds - minutes * 60.0, 2).paddedLeft('0', 5);

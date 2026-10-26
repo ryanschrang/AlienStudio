@@ -1404,6 +1404,92 @@ static void loopChecks() {
 }
 
 // ---- markers --------------------------------------------------------------------------------------------------
+// ---- tempo changes on the ruler -------------------------------------------------------------------------------------
+static const juce::Label* labelStartingWith(juce::Component& root, const juce::String& prefix) {
+    for (auto* child : root.getChildren()) {
+        if (auto* label = dynamic_cast<juce::Label*>(child); label != nullptr && label->getText().startsWith(prefix)) return label;
+        if (const auto* found = labelStartingWith(*child, prefix)) return found;
+    }
+    return nullptr;
+}
+static void tempoChecks() {
+    Rig rig;
+    rig.song();
+    auto& c = rig.c;
+    c.setSnap(Snap::bar);
+    const auto flag = [&](std::int64_t tick) { return rig.ruler(tick) + juce::Point<int>(8, 7); };
+    const auto before = rig.t();
+    // Double-click on the ruler asks for the tempo from there.
+    rig.doubleClick(rig.ruler(4 * bar));
+    require(rig.asked && rig.askTitle == "Tempo from Bar 5.1 (60-200 BPM)" && rig.askCurrent == "120", "double-click on the ruler asks for the tempo there");
+    rig.answer("90");
+    require(rig.t().tempoChanges.size() == 1 && rig.t().tempoChanges[0].tick == 4 * bar && rig.t().tempoChanges[0].bpm == 90.0,
+        "and adds a tempo change, snapped");
+    require(rig.oneUndoRestores(before, true), "adding a tempo change is one undo step");
+    require(c.hitTest(flag(4 * bar)).zone == Zone::ruler && c.hitTest(flag(4 * bar)).tempo == 4 * bar
+        && c.hitTest(rig.ruler(2 * bar)).tempo == -1, "the change is a flag on the ruler");
+    // Bad answers change nothing and say why.
+    for (const char* bad : {"fast", "500", "59", "", "-90"}) {
+        rig.asked = false; rig.messages.clear();
+        rig.doubleClick(flag(4 * bar));
+        require(rig.asked && rig.askCurrent == "90", "double-click on a flag asks for its tempo");
+        rig.answer(bad);
+        require(rig.t().tempoChanges.size() == 1 && rig.t().tempoChanges[0].bpm == 90.0 && !rig.messages.empty(),
+            "a tempo outside 60-200 BPM is refused with a message");
+    }
+    rig.asked = false;
+    rig.doubleClick(flag(4 * bar));
+    rig.answer("100.5 BPM");
+    require(rig.t().tempoChanges.size() == 1 && rig.t().tempoChanges[0].bpm == 100.5, "a fractional tempo, with or without BPM after it");
+    // The readout's time follows the tempo map: four bars at 120 BPM and two at 100.5 BPM.
+    c.setCursor(6 * bar, false); rig.view.refresh();
+    const double seconds = 8.0 + 2 * 4 * 60.0 / 100.5;
+    const auto* readout = labelStartingWith(rig.view, "Bar 7.1");
+    require(readout != nullptr && readout->getText().contains("0:" + juce::String(seconds, 2).paddedLeft('0', 5)), "the time readout follows the tempo map");
+    // Clicking a flag plays from there; dragging moves it.
+    rig.seeks.clear(); c.setCursor(0, false);
+    rig.press(flag(4 * bar));
+    require(!rig.seeks.empty() && rig.seeks.back() == 4 * bar && rig.t().tempoChanges[0].tick == 4 * bar, "clicking a tempo change plays from it");
+    const auto placed = rig.t();
+    rig.drag(flag(4 * bar), {flag(5 * bar), flag(6 * bar)});
+    require(rig.t().tempoChanges.size() == 1 && rig.t().tempoChanges[0].tick == 6 * bar && rig.t().tempoChanges[0].bpm == 100.5,
+        "dragging a tempo change moves it");
+    require(rig.oneUndoRestores(placed, true), "moving it is one undo step");
+    // The menus.
+    rig.rightClick(flag(6 * bar));
+    auto items = rig.menu.items();
+    require(entry(items, TimelineCanvas::cmdJump) != nullptr && entry(items, TimelineCanvas::cmdTempo) != nullptr
+        && entry(items, TimelineCanvas::cmdRemoveTempo) != nullptr, "the tempo change menu");
+    rig.asked = false;
+    rig.menu.done(TimelineCanvas::cmdTempo);
+    require(rig.asked && rig.askCurrent == "100.50", "Change tempo asks for the tempo");
+    rig.answer("140");
+    require(rig.t().tempoChanges[0].bpm == 140.0, "and changes it");
+    rig.rightClick(rig.ruler(2 * bar));
+    items = rig.menu.items();
+    require(entry(items, TimelineCanvas::cmdAddMarker) != nullptr && entry(items, TimelineCanvas::cmdTempo) != nullptr
+        && entry(items, TimelineCanvas::cmdTempo)->enabled && entry(items, TimelineCanvas::cmdRemoveTempo)->enabled,
+        "the ruler menu adds a tempo change, and removes them all when there are some");
+    rig.asked = false;
+    rig.menu.done(TimelineCanvas::cmdTempo);
+    rig.answer("75");
+    require(rig.t().tempoChanges.size() == 2 && rig.t().tempoChanges[0].tick == 2 * bar && rig.t().tempoChanges[0].bpm == 75.0, "a second change");
+    rig.rightClick(flag(2 * bar));
+    rig.menu.done(TimelineCanvas::cmdRemoveTempo);
+    require(rig.t().tempoChanges.size() == 1 && rig.t().tempoChanges[0].tick == 6 * bar, "Delete tempo change removes that one");
+    rig.rightClick(rig.ruler(2 * bar));
+    rig.menu.done(TimelineCanvas::cmdRemoveTempo);
+    require(rig.t().tempoChanges.empty() && rig.valid(), "Remove all tempo changes removes the rest");
+    // The song's start belongs to the project tempo.
+    rig.asked = false; rig.messages.clear();
+    rig.doubleClick(rig.ruler(0));
+    require(!rig.asked && !rig.messages.empty() && rig.t().tempoChanges.empty(), "no tempo change at the very start");
+    // A clip placed after a slower tempo lasts more ticks: the audio clip is four seconds.
+    require(rig.controller.setTempoChange(8 * bar, 60.0), "fixture: 60 BPM from bar 9");
+    require(rig.controller.naturalLength(2, 0, 0) == 2 * bar && rig.controller.naturalLength(2, 0, 8 * bar) == bar,
+        "an audio clip's length on the song follows the tempo where it is placed");
+}
+
 static void markerChecks() {
     Rig rig;
     rig.song();
@@ -1847,6 +1933,7 @@ int main() {
     zoomAndScrollChecks();
     loopChecks();
     markerChecks();
+    tempoChecks();
     playbackChecks();
     toolbarChecks();
     robustnessChecks();

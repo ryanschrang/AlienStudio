@@ -617,8 +617,9 @@ private:
     }
     // A Song-view audio take: every armed track's sink receives the input of the samples whose song
     // position is being recorded (all of them, or only those inside the punch range). Those samples
-    // are one run in the block, so each sink gets one append. The take ends by itself at the punch-out
-    // or when the loop wraps (each pass would need a take lane of its own).
+    // are one run in the block, so each sink gets one append. The take ends by itself at the punch-out.
+    // When the loop wraps it goes on as the next pass, and the frame and song position where each pass
+    // begins are reported, so the passes become separate takes of the one file.
     void captureSongTake(int samples, int offset) noexcept {
         auto& take = *songTake;
         if (!recording.audioTake.load(std::memory_order_relaxed)
@@ -633,8 +634,16 @@ private:
             const double tick = automationTicks[static_cast<std::size_t>(i)];
             if (tick < 0.0) continue;
             const bool capturing = (started || first >= 0);
-            // The playhead went back (the loop wrapped) or jumped ahead (a seek): the take would no longer be one piece.
-            if (capturing && tick + tickEpsilon < previous) { ending = alien::SongTakeCapture::loopWrapped; break; }
+            if (capturing && tick + tickEpsilon < previous) {
+                // The loop wrapped: the next pass begins with this sample, unless there is no room for one.
+                const int pass = take.passes.load(std::memory_order_relaxed);
+                if (pass >= alien::SongTakeCapture::maxPasses) { ending = alien::SongTakeCapture::loopWrapped; break; }
+                const auto at = take.frames.load(std::memory_order_relaxed) + static_cast<std::uint64_t>(first >= 0 ? i - first : 0);
+                take.passFrame[static_cast<std::size_t>(pass)].store(at, std::memory_order_relaxed);
+                take.passTick[static_cast<std::size_t>(pass)].store(tick, std::memory_order_relaxed);
+                take.passes.store(pass + 1, std::memory_order_relaxed);
+            }
+            // The playhead jumped ahead (a seek): the take would no longer be one piece.
             if (capturing && tick > previous + timelineRate + 1.0) { ending = alien::SongTakeCapture::jumped; break; }
             previous = tick;
             const bool inside = !punch || (tick + tickEpsilon >= punchIn && tick + tickEpsilon < punchOut);

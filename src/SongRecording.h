@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <vector>
 
 namespace alien {
 
@@ -25,10 +26,17 @@ struct SongTakeCapture {
     std::atomic<std::uint64_t> frames{0};   // frames given to every sink so far
     std::atomic<int> latencySamples{0};     // device input + output latency when the take began
     std::atomic<int> ended{notEnded};
+    // Loop recording: when the loop wraps, the take goes on as its next pass. Pass 0 begins at frame 0
+    // and firstTick; pass k > 0 at frame passFrame[k], where the song was at passTick[k] (the loop's
+    // start). With no room for another pass the take ends where the loop wraps.
+    static constexpr int maxPasses = 64;
+    std::array<std::atomic<std::uint64_t>, static_cast<std::size_t>(maxPasses)> passFrame{};
+    std::array<std::atomic<double>, static_cast<std::size_t>(maxPasses)> passTick{};
+    std::atomic<int> passes{1};
     static_assert(std::atomic<double>::is_always_lock_free && std::atomic<std::int64_t>::is_always_lock_free);
 
     void resetReport() noexcept {
-        firstTick.store(-1.0); frames.store(0); latencySamples.store(0); ended.store(notEnded);
+        firstTick.store(-1.0); frames.store(0); latencySamples.store(0); ended.store(notEnded); passes.store(1);
     }
     bool anySink() const noexcept {
         for (const auto& sink : sinks) if (sink.load(std::memory_order_relaxed) != nullptr) return true;
@@ -82,6 +90,42 @@ inline TakePlacement placeTake(const timeline::TempoMap& tempo, double firstTick
     p.audioOffset = std::max(0.0, tempo.secondsBetween(played, static_cast<double>(p.start)));
     p.valid = true;
     return p;
+}
+
+// One pass of a loop recording: where it begins in the take's file and on the song.
+struct TakePass {
+    std::uint64_t firstFrame{};
+    double firstTick{};
+};
+struct PassPlacement {
+    TakePlacement placement;   // audioOffset counts from the start of the whole file
+    bool complete{};           // the loop wrapped after it (the last pass was stopped part-way)
+};
+// Places every pass of a take of `frames` frames. A pass's last `latency` frames were heard before
+// the loop wrapped, so they are recorded at the start of the next pass: each pass takes them from
+// there, and each later pass starts at the loop's start, skipping them. The first pass starts no
+// earlier than `notBefore`, the last ends no later than `notAfter` (-1: anywhere), and every pass
+// the loop wrapped after ends at `loopEnd`.
+inline std::vector<PassPlacement> placePasses(const timeline::TempoMap& tempo, const std::vector<TakePass>& passes,
+                                              std::uint64_t frames, double sampleRate, double latencySamples,
+                                              std::int64_t notBefore, std::int64_t notAfter,
+                                              std::int64_t loopStart, std::int64_t loopEnd) {
+    std::vector<PassPlacement> out;
+    const auto carry = static_cast<std::uint64_t>(std::ceil(std::max(0.0, latencySamples)));
+    for (std::size_t k = 0; k < passes.size(); ++k) {
+        const bool last = k + 1 == passes.size();
+        const auto begin = passes[k].firstFrame;
+        if (begin >= frames) break;
+        auto end = last ? frames : std::min(frames, passes[k + 1].firstFrame + carry);
+        if (end <= begin) continue;
+        PassPlacement pass;
+        pass.complete = !last;
+        pass.placement = placeTake(tempo, passes[k].firstTick, end - begin, sampleRate, latencySamples,
+                                   k == 0 ? notBefore : loopStart, last ? notAfter : loopEnd);
+        pass.placement.audioOffset += static_cast<double>(begin) / sampleRate;
+        out.push_back(pass);
+    }
+    return out;
 }
 
 } // namespace alien

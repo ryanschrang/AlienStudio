@@ -75,6 +75,23 @@ void placementTests() {
     p = placeTake(map, 3888.0, 48000, rate, 4800.0);  // 0.1 s of latency reaches back across the change
     require(p.valid && p.start == 3744 && p.length == 1008 && closeTo(p.audioOffset, 0.0, 1.0e-9),
             "latency is measured along the tempo map");
+    // A loop recording of two full passes of a one-bar loop and half a third, with 10 ms of latency.
+    {
+        const std::vector<alien::TakePass> passes{{0, 0.0}, {96000, 0.0}, {192000, 0.0}};
+        const auto placed = alien::placePasses(steady, passes, 192000 + 40000, rate, 480.0, 0, -1, 0, 3840);
+        require(placed.size() == 3 && placed[0].complete && placed[1].complete && !placed[2].complete, "one placement a pass; the last was cut short");
+        require(placed[0].placement.valid && placed[0].placement.start == 0 && placed[0].placement.length == 3840
+                && closeTo(placed[0].placement.audioOffset, 0.01, 1.0e-9),
+                "the first pass fills the loop: its start skips the latency, its end takes the latency from the next pass");
+        require(placed[1].placement.start == 0 && placed[1].placement.length == 3840 && closeTo(placed[1].placement.audioOffset, 2.01, 1.0e-9),
+                "the second pass starts at the loop start, two seconds and the latency into the file");
+        require(placed[2].placement.start == 0 && placed[2].placement.length == 1580 && closeTo(placed[2].placement.audioOffset, 4.01, 1.0e-9),
+                "the last pass ends where the recording did");
+        const auto punched = alien::placePasses(steady, passes, 192000 + 40000, rate, 480.0, 960, 1920, 0, 3840);
+        require(punched[0].placement.start == 960 && punched[0].placement.length == 3840 - 960 && punched[2].placement.length == 1580
+                && alien::placePasses(steady, passes, 50000, rate, 0.0, 0, -1, 0, 3840).size() == 1,
+                "the first pass starts at the punch-in; passes that were never reached are left out");
+    }
     std::cout << "PASS: take placement\n";
 }
 
@@ -192,12 +209,32 @@ void captureTests() {
         require(holdsInputFrom(sink, from, 1), "the punched take is the input of that range");
     }
     {
-        Rig rig(true);   // a loop without punch: the first pass is the take
-        alien::AudioCapture sink(rate, 1, 5);
+        Rig rig(true);   // a loop without punch: the take goes on through each wrap, one pass after another
+        alien::AudioCapture sink(rate, 1, 10);
         rig.start(sink);
-        rig.render(samplesPerBar + 5000, 256);
-        require(sink.frames.load() == static_cast<std::uint64_t>(samplesPerBar), "one pass of the loop is recorded");
-        require(rig.ended() == alien::SongTakeCapture::loopWrapped, "the take ends where the loop wraps");
+        const auto from = rig.total;
+        rig.render(2 * samplesPerBar + 5000, 256);
+        const auto& take = *rig.engine.songTake;
+        require(take.passes.load() == 3 && rig.phase() == alien::RecordControls::recording, "two wraps: three passes, still recording");
+        require(std::llabs(static_cast<long long>(take.passFrame[1].load()) - samplesPerBar) <= 1
+                && std::llabs(static_cast<long long>(take.passFrame[2].load()) - 2 * samplesPerBar) <= 1, "each pass begins where the loop wrapped");
+        require(closeTo(take.passTick[1].load(), 0.0, 0.05) && closeTo(take.passTick[2].load(), 0.0, 0.05), "at the loop's start");
+        require(sink.frames.load() == static_cast<std::uint64_t>(2 * samplesPerBar + 5000), "every sample of every pass is recorded");
+        rig.engine.recording.stopRequested.store(true);
+        rig.render(256);
+        require(rig.ended() == alien::SongTakeCapture::stopped, "stopping ends the take");
+        rig.detach();
+        require(holdsInputFrom(sink, from, 1), "the passes are one unbroken recording of the input");
+    }
+    {
+        Rig rig(true, 0, 240);   // the shortest loop: past the most passes a take can hold, it ends where the loop wraps
+        alien::AudioCapture sink(rate, 1, 10);
+        rig.start(sink);
+        rig.render(6000LL * (alien::SongTakeCapture::maxPasses + 2), 256);
+        require(rig.ended() == alien::SongTakeCapture::loopWrapped && rig.engine.songTake->passes.load() == alien::SongTakeCapture::maxPasses,
+                "the take ends at the wrap after its last pass");
+        require(std::llabs(static_cast<long long>(sink.frames.load()) - 6000LL * alien::SongTakeCapture::maxPasses) <= 1,
+                "and holds every one of those passes");
         rig.detach();
     }
     {
@@ -466,6 +503,34 @@ void controllerTests(const juce::File& root) {
         require(folder.findChildFiles(juce::File::findFiles, false).isEmpty(), "and leaves no files");
         rig.render(512);
         require(!rig.engine.recording.active() && !rig.engine.playing.load(), "the engine stays idle");
+    }
+    {
+        ControllerRig rig;   // loop recording: every pass becomes a take of one file, the last full pass plays
+        auto& c = rig.controller;
+        auto settings = c.document().recording;
+        settings.countInBars = 0; settings.audioLatencyOffsetMs = 10;
+        c.setRecordSettings(settings);
+        require(c.editTimeline("Loop", [](alien::timeline::Timeline& t) { return t.setLoop(0, 3840) && t.setLoopEnabled(true); }), "fixture: loop a bar");
+        rig.render(256);
+        rig.arm(0);
+        const auto takesBefore = c.timeline().takes.size();
+        require(c.startSongTake(root.getChildFile("loop"), rate, 2).started, "start a loop recording");
+        rig.render(2 * samplesPerBar + 40000);
+        c.stopRecording(); rig.render(512); rig.waitForFinish();
+        require(rig.outcomes.size() == 1 && rig.outcomes.back().placed == 1 && rig.outcomes.back().passes == 3, "three passes of one track");
+        require(c.undoLabel() == "Record take", "the loop recording is one undo step");
+        const auto takes = c.timeline().takes;
+        require(takes.size() == takesBefore + 3 && takes[0].source == takes[1].source && takes[1].source == takes[2].source,
+                "every pass is a take of the same recording");
+        require(takes[0].start == 0 && takes[0].length == 3840 && closeTo(takes[0].audioOffset, 0.01, 1.0e-6)
+                && closeTo(takes[1].audioOffset, 2.01, 1.0e-6) && takes[2].length < 3840 && closeTo(takes[2].audioOffset, 4.01, 1.0e-6),
+                "each pass starts at its own place in the file");
+        std::vector<alien::timeline::Region> playing;
+        for (const auto& r : c.timeline().regions) if (r.row == 0) playing.push_back(r);
+        require(playing.size() == 1 && playing[0].start == 0 && playing[0].length == 3840 && closeTo(playing[0].audioOffset, 2.01, 1.0e-6),
+                "the last full pass is the one on the song");
+        require(c.compRecordedTake(takes[0].id, 0, 1920) && c.timeline().takes.size() == takesBefore + 3, "an earlier pass can be comped in");
+        require(c.undo() && c.undo() && c.timeline().takes.size() == takesBefore, "undo removes every pass");
     }
     std::cout << "PASS: controller takes\n";
 }
