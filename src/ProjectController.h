@@ -290,7 +290,7 @@ public:
         if (beforeStructureEdit) beforeStructureEdit();
         if (!doc.canAddTrack()) return false;
         doc.tracks.push_back({doc.nextTrackName(), {}, doc.nextTrackColour()});
-        for (auto& scene : doc.clips) scene.emplace_back();
+        for (auto& scene : doc.cells) scene.emplace_back();
         publishStop(static_cast<std::size_t>(doc.trackCount() - 1));
         pushDocumentToEngine();
         return true;
@@ -307,7 +307,8 @@ public:
         doc.timeline.trackDeleted(track);
         doc.channelRack.trackDeleted(track); // channels routed there fall back to the master bus
         doc.tracks.erase(doc.tracks.begin() + track);
-        for (auto& scene : doc.clips) scene.erase(scene.begin() + track);
+        for (auto& scene : doc.cells) scene.erase(scene.begin() + track);
+        doc.prune();
         if (doc.selectedTrack > track) --doc.selectedTrack;
         doc.clampSelection();
         pushDocumentToEngine();
@@ -326,7 +327,7 @@ public:
         doc.timeline.tracksSwapped(track, target);
         doc.channelRack.tracksSwapped(track, target); // channel routes follow their tracks
         std::swap(doc.tracks[static_cast<std::size_t>(track)], doc.tracks[static_cast<std::size_t>(target)]);
-        for (auto& scene : doc.clips)
+        for (auto& scene : doc.cells)
             std::swap(scene[static_cast<std::size_t>(track)], scene[static_cast<std::size_t>(target)]);
         if (doc.selectedTrack == track) doc.selectedTrack = target;
         else if (doc.selectedTrack == target) doc.selectedTrack = track;
@@ -354,7 +355,7 @@ public:
 
     bool duplicateScene(int scene) {
         if (scene < 0 || scene >= doc.sceneCount()) return false;
-        return insertScene(scene + 1, &doc.clips[static_cast<std::size_t>(scene)]);
+        return insertScene(scene + 1, &doc.cells[static_cast<std::size_t>(scene)]);
     }
 
     bool deleteScene(int scene) {
@@ -367,7 +368,8 @@ public:
         doc.timeline.sceneDeleted(scene);
         for(auto& track:doc.tracks)if(track.settings.freezeScene>scene)--track.settings.freezeScene;
         doc.scenes.erase(doc.scenes.begin() + scene);
-        doc.clips.erase(doc.clips.begin() + scene);
+        doc.cells.erase(doc.cells.begin() + scene);
+        doc.prune();
         if (doc.selectedScene > scene) --doc.selectedScene;
         doc.clampSelection();
         return true;
@@ -382,7 +384,7 @@ public:
         doc.timeline.scenesSwapped(scene, target);
         for(auto& track:doc.tracks){auto& frozen=track.settings.freezeScene;if(frozen==scene)frozen=target;else if(frozen==target)frozen=scene;}
         std::swap(doc.scenes[static_cast<std::size_t>(scene)], doc.scenes[static_cast<std::size_t>(target)]);
-        std::swap(doc.clips[static_cast<std::size_t>(scene)], doc.clips[static_cast<std::size_t>(target)]);
+        std::swap(doc.cells[static_cast<std::size_t>(scene)], doc.cells[static_cast<std::size_t>(target)]);
         if (doc.selectedScene == scene) doc.selectedScene = target;
         else if (doc.selectedScene == target) doc.selectedScene = scene;
         return true;
@@ -762,7 +764,7 @@ public:
         for(int t=0;t<doc.trackCount();++t)if(isTrackFrozen(t)) {
             const auto scene=doc.tracks[static_cast<std::size_t>(t)].settings.freezeScene;
             doc.timeline.unfreezeTrack(t);doc.tracks[static_cast<std::size_t>(t)].settings.freezeScene=-1;
-            if(doc.isValidCell(t,scene))doc.clip(t,scene)=SessionClip{};
+            if(doc.isValidCell(t,scene))doc.clearClip(t,scene);
         }
         doc.timeline.lengthBars=std::max(doc.timeline.freezeBaseLengthBars,doc.timeline.minLengthBars());
         doc.timeline.freezeBaseLengthBars=0;
@@ -809,11 +811,12 @@ public:
     void setClipPattern(int track, int scene, const PianoRollPattern& pattern, bool publishToEngine) {
         if (!doc.isValidCell(track, scene) || isTrackFrozen(track)) return;
         if (take.active && track == take.track && scene == take.scene) return; // the take owns this clip until it ends
-        auto& clip = doc.clip(track, scene);
+        auto clip = doc.clip(track, scene);
         // Re-loading a clip into the editor reports identical notes; keep the
         // existing object so it does not look like an edit.
         if (samePianoRollPattern(*clip.pattern, pattern)) return;
         clip.pattern = std::make_shared<const PianoRollPattern>(pattern);
+        doc.setClip(track, scene, clip);
         if (!publishToEngine || clip.isAudioClip()) return;
         const auto index = static_cast<std::size_t>(track);
         engine.requestedPianoRollClip[index].store(scene);
@@ -823,11 +826,12 @@ public:
 
     bool removeAudio(int track, int scene) {
         if (!doc.isValidCell(track, scene) || isTrackFrozen(track)) return false;
-        auto& clip = doc.clip(track, scene);
+        auto clip = doc.clip(track, scene);
         if (!clip.isAudioClip()) return false; // a loaded clip, or an offline reference
         clip.audio.reset();
         clip.audioFileName.clear();
         clip.audioFilePath.clear();
+        doc.setClip(track, scene, clip);
         republishIfLive(track, scene);
         return true;
     }
@@ -936,9 +940,9 @@ public:
                     }
                     for (auto& track : document.tracks) for (auto& path : track.drumPaths)
                         if (auto found = relocated.find(path); found != relocated.end()) path = found->second;
-                    for (auto& scene : document.clips) for (auto& clip : scene)
-                        if (auto found = relocated.find(clip.audioFilePath); found != relocated.end())
-                            clip.audioFilePath = found->second;
+                    for (auto& [id, media] : document.media)   // a file moved, not new content
+                        if (auto found = relocated.find(media.filePath); found != relocated.end())
+                            media.filePath = found->second;
                 };
                 relocate(doc);
                 history.relocateMedia(relocate);
@@ -1174,10 +1178,11 @@ public:
                 scene = doc.sceneCount() - 1;
             }
             if (!retain(take.clip)) return fail();
-            auto& clip = doc.clip(row, scene);
+            auto clip = doc.clip(row, scene);
             clip.audio = take.clip;
             clip.audioFileName = take.file.getFileName();
             clip.audioFilePath = take.file.getFullPathName();
+            doc.setClip(row, scene, clip);
             std::vector<Region> passes;
             for (const auto& placement : take.passes.empty() ? std::vector<alien::TakePlacement>{take.placement} : take.passes) {
                 Region region;
@@ -1250,7 +1255,8 @@ public:
         }
         if(scene<0){if(!insertScene(doc.sceneCount(),nullptr))return fail();scene=doc.sceneCount()-1;}
         if(!retain(audio))return fail();
-        auto& cache=doc.clip(track,scene);cache.audio=audio;cache.audioFilePath=file.getFullPathName();cache.audioFileName=file.getFileName();
+        auto cache=doc.clip(track,scene);cache.audio=audio;cache.audioFilePath=file.getFullPathName();cache.audioFileName=file.getFileName();
+        doc.setClip(track,scene,cache);
         if(!anyFrozenTrack())doc.timeline.freezeBaseLengthBars=doc.timeline.lengthBars;
         const double ticks=songTempo().tickAfter(0.0,static_cast<double>(audio->frames)/audio->sampleRate);
         if(!std::isfinite(ticks) || ticks<1 || ticks>timeline::maxLength || !doc.timeline.freezeTrack(track,scene,static_cast<std::int64_t>(std::ceil(ticks)),1.0/ToneEngine::audioClipLevel))return fail();
@@ -1263,7 +1269,7 @@ public:
         const int scene=doc.tracks[static_cast<std::size_t>(track)].settings.freezeScene;
         if(!doc.timeline.unfreezeTrack(track))return false;
         doc.tracks[static_cast<std::size_t>(track)].settings.freezeScene=-1;
-        if(doc.isValidCell(track,scene))doc.clip(track,scene)=SessionClip{};
+        if(doc.isValidCell(track,scene))doc.clearClip(track,scene);
         if(!anyFrozenTrack()) {
             doc.timeline.lengthBars=std::max(doc.timeline.freezeBaseLengthBars,doc.timeline.minLengthBars());
             doc.timeline.freezeBaseLengthBars=0;
@@ -1598,10 +1604,11 @@ private:
                 owner.drumAssets[pad] = found.clip;
                 owner.drumPaths[pad] = found.file.getFullPathName();
             } else {
-                auto& clip = doc.clip(track, scene);
+                auto clip = doc.clip(track, scene);
                 clip.audio = found.clip;
                 clip.audioFilePath = found.file.getFullPathName();
                 clip.audioFileName = found.file.getFileName();
+                doc.setClip(track, scene, clip);
                 republishIfLive(track, scene);
             }
             ++relinked;
@@ -1730,7 +1737,7 @@ private:
         auto loaded = fromProjectData(result.project);
         for (int s = 0; s < loaded.sceneCount(); ++s)
             for (int t = 0; t < loaded.trackCount(); ++t) {
-                auto& clip = loaded.clip(t, s);
+                auto clip = loaded.clip(t, s);
                 if (clip.audioFilePath.isEmpty()) continue;
                 const auto resolved = resolveProjectAudio(file, clip.audioFilePath);
                 if (resolved != juce::File{}) {
@@ -1741,6 +1748,7 @@ private:
                 }
                 const auto& asset = result.audio[static_cast<std::size_t>(s * loaded.trackCount() + t)];
                 clip.audio = asset;
+                loaded.setClip(t, s, clip);
                 if (asset != nullptr) { registerStream(asset); retained.push_back(asset); }
             }
         for (int t = 0; t < loaded.trackCount(); ++t) for (int p = 0; p < drumPadCount; ++p) {
@@ -1788,10 +1796,11 @@ private:
             importStatus("Session audio storage is full (512 MiB limit)", "Session audio storage is full (512 MiB limit)");
             return;
         }
-        auto& clip = doc.clip(track, scene);
+        auto clip = doc.clip(track, scene);
         clip.audio = result.clip;
         clip.audioFileName = file.getFileName();
         clip.audioFilePath = file.getFullPathName();
+        doc.setClip(track, scene, clip);
         republishIfLive(track, scene);
         commit("Import audio", track, scene);
         importStatus("Imported " + file.getFileName(), file.getFullPathName());
@@ -1932,20 +1941,24 @@ private:
         engine.pianoRollLaunches[track].publish(stopped);
     }
 
-    bool insertScene(int index, const std::vector<SessionClip>* copyFrom) {
+    // `copyFrom`: a scene to copy. Its clips are copied as independent clips (an edit of one copy
+    // does not reach the other), as Duplicate scene always did.
+    bool insertScene(int index, const std::vector<library::ClipId>* copyFrom) {
         if (busy) return false;
         if (beforeStructureEdit) beforeStructureEdit();
         if (!doc.canAddScene() || index < 0 || index > doc.sceneCount()) return false;
         // Inserting before existing scenes renumbers them.
         if (index < doc.sceneCount()) stopEverySlot();
-        const auto clips = copyFrom != nullptr ? *copyFrom
-                                               : std::vector<SessionClip>(static_cast<std::size_t>(doc.trackCount()));
+        std::vector<library::ClipId> row(static_cast<std::size_t>(doc.trackCount()));
+        if (copyFrom != nullptr)
+            for (std::size_t t = 0; t < row.size() && t < copyFrom->size(); ++t)
+                if ((*copyFrom)[t]) row[t] = doc.library.duplicateClip((*copyFrom)[t]);
         const auto name = copyFrom != nullptr ? doc.scenes[static_cast<std::size_t>(index - 1)].name + " copy"
                                               : doc.nextSceneName();
         doc.timeline.sceneInserted(index);
         for(auto& track:doc.tracks)if(track.settings.freezeScene>=index)++track.settings.freezeScene;
         doc.scenes.insert(doc.scenes.begin() + index, SessionScene{name});
-        doc.clips.insert(doc.clips.begin() + index, clips);
+        doc.cells.insert(doc.cells.begin() + index, row);
         if (doc.selectedScene >= index && index < doc.sceneCount() - 1) ++doc.selectedScene;
         return true;
     }

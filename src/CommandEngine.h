@@ -38,7 +38,7 @@ inline void swapTracks(ProjectDocument& d, int a, int b) {
     d.timeline.tracksSwapped(a, b);
     d.channelRack.tracksSwapped(a, b);
     std::swap(d.tracks[static_cast<std::size_t>(a)], d.tracks[static_cast<std::size_t>(b)]);
-    for (auto& scene : d.clips) std::swap(scene[static_cast<std::size_t>(a)], scene[static_cast<std::size_t>(b)]);
+    for (auto& scene : d.cells) std::swap(scene[static_cast<std::size_t>(a)], scene[static_cast<std::size_t>(b)]);
     if (d.selectedTrack == a) d.selectedTrack = b;
     else if (d.selectedTrack == b) d.selectedTrack = a;
 }
@@ -96,12 +96,13 @@ inline juce::String applyTo(ProjectDocument& d, const Command& command) {
     if (const auto why = refusal(d, command); why.isNotEmpty()) return why;
     if (std::holds_alternative<CreateTrack>(command)) {
         d.tracks.push_back({d.nextTrackName(), {}, d.nextTrackColour()});
-        for (auto& scene : d.clips) scene.emplace_back();
+        for (auto& scene : d.cells) scene.emplace_back();
     } else if (const auto* c = std::get_if<DeleteTrack>(&command)) {
         d.timeline.trackDeleted(c->track);
         d.channelRack.trackDeleted(c->track);
         d.tracks.erase(d.tracks.begin() + c->track);
-        for (auto& scene : d.clips) scene.erase(scene.begin() + c->track);
+        for (auto& scene : d.cells) scene.erase(scene.begin() + c->track);
+        d.prune();
         if (d.selectedTrack > c->track) --d.selectedTrack;
         d.clampSelection();
     } else if (const auto* c = std::get_if<MoveTrack>(&command)) {

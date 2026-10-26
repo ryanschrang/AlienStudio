@@ -28,7 +28,7 @@ static void structureTests() {
     require(d.trackCount() == alien::maxSessionTracks && !c.addTrack(), "track count is capped");
     require(engine.activeTracks.load() == alien::maxSessionTracks, "engine follows added tracks");
     require(d.tracks[4].name == "Track 5" && d.tracks[15].name == "Track 16", "new tracks get the next free name");
-    for (const auto& scene : d.clips) require(static_cast<int>(scene.size()) == d.trackCount(), "every scene has a clip per track");
+    for (const auto& scene : d.cells) require(static_cast<int>(scene.size()) == d.trackCount(), "every scene has a clip per track");
 
     // Delete a middle track: later tracks shift left and keep their content.
     c.setClipPattern(5, 0, patternWith(65), false);
@@ -68,7 +68,7 @@ static void fileFormatTests() {
     doc.tracks[8].colour = 5;
     doc.tracks[8].settings = {7, 0.5f, 0.25f, false, true};
     doc.scenes[10].name = "Outro";
-    doc.clip(8, 10).pattern = std::make_shared<const alien::PianoRollPattern>(patternWith(50));
+    { auto clip = doc.clip(8, 10); clip.pattern = std::make_shared<const alien::PianoRollPattern>(patternWith(50)); doc.setClip(8, 10, clip); }
     doc.selectedTrack = 8;
     doc.selectedScene = 10;
     const auto json = alien::serializeSessionProject(alien::toProjectData(doc));
@@ -97,7 +97,7 @@ static void fileFormatTests() {
     {   // An empty clip with its own loop length is kept: it is not the default.
         auto shortLoop = alien::ProjectDocument::createDefault(1, 1);
         alien::PianoRollPattern p; p.loopSteps = 32;
-        shortLoop.clip(0, 0).pattern = std::make_shared<const alien::PianoRollPattern>(p);
+        { auto clip = shortLoop.clip(0, 0); clip.pattern = std::make_shared<const alien::PianoRollPattern>(p); shortLoop.setClip(0, 0, clip); }
         alien::SessionProjectData again;
         require(alien::parseSessionProject(alien::serializeSessionProject(alien::toProjectData(shortLoop)), again, error)
                 && again.clips[0][0].pattern.shared() != nullptr && again.clips[0][0].pattern->loopSteps == 32,
@@ -622,6 +622,68 @@ static void parameterAutomationUndoTests() {
         && c.timeline().parameterLanes == lanes, "undo removal restores original plugin identity and lane");
 }
 
+// T1-03 increment B1: the clip library owns every Session cell's content.
+static void clipLibraryOwnershipTests() {
+    ToneEngine engine;
+    alien::ProjectController c(engine);
+    const auto& d = c.document();
+    require(d.library.clipCount() == 0 && !d.cellClip(0, 0) && d.clip(0, 0).isEmpty(), "a new project has empty cells and no clips");
+    // A cell gets a clip when it gets content; later edits are new revisions of the same clip.
+    c.setClipPattern(0, 0, patternWith(60), false); c.commit("Notes", 0, 0);
+    const auto first = d.cellClip(0, 0);
+    const auto pattern = d.library.clip(first)->pattern;
+    require(first && d.library.clipCount() == 1 && d.clip(0, 0).notes().notes[0].pitch == 60, "the cell's notes live in the library");
+    c.setClipPattern(0, 0, patternWith(62), false); c.commit("Notes", 0, 0);
+    require(d.cellClip(0, 0) == first && d.library.clip(first)->pattern == pattern && d.library.pattern(pattern)->revision == 2
+            && d.clip(0, 0).notes().notes[0].pitch == 62, "an edit is a new revision of the same clip, not a new clip");
+    // Undo and redo restore the revision.
+    require(c.undo() && d.clip(0, 0).notes().notes[0].pitch == 60 && d.library.pattern(pattern)->revision == 1, "undo restores the earlier revision");
+    require(c.redo() && d.clip(0, 0).notes().notes[0].pitch == 62, "redo the later one");
+    // Duplicating a scene copies its clips independently.
+    c.setClipPattern(1, 0, patternWith(48), false); c.commit("Notes", 1, 0);
+    require(c.duplicateScene(0), "duplicate the scene");
+    c.commit("Duplicate scene");
+    const auto copy = d.cellClip(0, 1);
+    require(copy && copy != first && !d.library.linked(first, copy) && d.clip(0, 1).notes().notes[0].pitch == 62 && d.cellClip(2, 1) == alien::library::ClipId{},
+            "the copied scene has clips of its own with the same notes, and empty cells stay empty");
+    c.setClipPattern(0, 1, patternWith(70), false); c.commit("Notes", 0, 1);
+    require(d.clip(0, 0).notes().notes[0].pitch == 62 && d.clip(0, 1).notes().notes[0].pitch == 70, "editing the copy leaves the original alone");
+    // Moving scenes and tracks moves clips with their cells; deleting a scene drops its clips.
+    require(c.moveScene(1, -1) && d.cellClip(0, 0) == copy && d.cellClip(0, 1) == first, "moving a scene moves its clips");
+    c.commit("Move scene");
+    require(c.moveTrack(0, 1) && d.cellClip(1, 1) == first && d.clip(1, 1).notes().notes[0].pitch == 62, "moving a track moves its clips");
+    c.commit("Move track");
+    const auto clips = d.library.clipCount();
+    require(c.deleteScene(0) && d.library.clipCount() == clips - 2 && d.library.clip(copy) == nullptr && d.library.valid(),
+            "deleting a scene drops the clips only it used");
+    c.commit("Delete scene");
+    require(c.undo() && d.library.clip(copy) != nullptr && d.cellClip(1, 0) == copy, "undo brings them back with the same ids");
+    // Clearing a cell drops its clip; an empty clip with its own loop length is kept.
+    alien::PianoRollPattern longLoop; longLoop.loopSteps = 32;
+    c.setClipPattern(3, 0, longLoop, false);
+    require(d.cellClip(3, 0) && d.clip(3, 0).notes().loopSteps == 32 && d.clip(3, 0).isEmpty(), "an empty 32-step clip is still a clip");
+    c.setClipPattern(3, 0, alien::PianoRollPattern{}, false);
+    require(!d.cellClip(3, 0) && d.library.valid(), "a default empty clip empties the cell");
+    // Audio: one media entry per file a clip plays, dropped with the last clip that plays it.
+    auto audio = std::make_shared<alien::SessionAudioClip>();
+    audio->sampleRate = 8000; audio->channels = 1; audio->frames = 800; audio->left.assign(800, 0.25f); audio->buildWaveform();
+    const auto file = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("clip-library-test.wav");
+    require(c.installAudio(file, 2, 0, audio) && d.clip(2, 0).audio == audio && d.clip(2, 0).audioFilePath == file.getFullPathName()
+            && d.media.size() == 1, "imported audio is a media entry its clip plays");
+    require(c.removeAudio(2, 0) && d.media.empty() && !d.clip(2, 0).isAudioClip(), "removing it drops the media entry");
+    // Saving writes each cell's content; opening gives every non-empty cell its own clip.
+    c.setClipPattern(2, 1, patternWith(62), false);
+    auto reopened = alien::fromProjectData(alien::toProjectData(d));
+    require(alien::sameContent(reopened, d) || [&] {
+                for (int s = 0; s < d.sceneCount(); ++s) for (int t = 0; t < d.trackCount(); ++t)
+                    if (!alien::samePianoRollPattern(d.clip(t, s).notes(), reopened.clip(t, s).notes())) return false;
+                return true; }(), "a save round trip keeps every cell's content");
+    require(reopened.cellClip(1, 1) && reopened.cellClip(2, 1) && reopened.cellClip(1, 1) != reopened.cellClip(2, 1)
+            && !reopened.library.linked(reopened.cellClip(1, 1), reopened.cellClip(2, 1)) && reopened.library.valid(),
+            "cells with equal notes open as separate, unlinked clips");
+    std::puts("PASS: the clip library owns Session cells");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     automationUndoTests();
@@ -632,6 +694,7 @@ int main() {
     timelineIntegrationTests();
     arrangementPublishTests();
     tempoMapControllerTests();
+    clipLibraryOwnershipTests();
     structureTests();
     fileFormatTests();
     undoTests();
