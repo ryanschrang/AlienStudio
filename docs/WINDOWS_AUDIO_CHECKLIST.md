@@ -277,3 +277,11 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Drag the fade handles of an audio clip with a real mouse at 100% and 150% display scaling; check the handles are easy to grab and do not get in the way of trimming.
 - Listen to fade ins/outs and to a one-beat and a one-bar crossfade between two different recordings: no click, dip or level jump at the join. Repeat with a long (streamed) recording as the first clip.
 - Start playback inside a crossfade, loop over one, and export a WAV containing one; compare the export with what was heard.
+
+## Song tempo changes
+- In the Song view, double-click the ruler at bar 5 and enter 90; add another change at bar 9 (140). Play from bar 1 with the metronome on: the click and every MIDI, drum and Channel Rack part change speed exactly on those bars, with no stuck or doubled notes.
+- Place a recorded vocal or long audio clip across a change: it plays at its own speed with no jump, click or pitch change; a clip placed after the change starts on its bar.
+- Loop a range that contains a change and listen to several passes; seek and start playback inside the faster and slower sections.
+- Record a take across a change with a count-in; check it lines up with what was played.
+- Export a WAV and stems of a song with tempo changes and compare them with playback; freeze a track, then add a tempo change and check it is unfrozen.
+- Load a VST3 tempo-synced effect (a synced delay or LFO) and check it follows the new tempo after each change.

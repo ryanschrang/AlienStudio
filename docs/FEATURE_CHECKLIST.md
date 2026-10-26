@@ -36,7 +36,7 @@ commit, automated test result and Windows listening result before promoting a st
 "Implemented" means code exists; it does not mean all hardware or plugin combinations pass.
 Every row and section below describes main unless it says otherwise. "Planned" rows are not
 started; the gap list from the FL Studio / Ableton Live / Logic Pro comparison is at the end.
-The current project format is 17.
+The current project format is 18 (song tempo changes, #104).
 
 | ID | Capability | Status | Evidence / remaining acceptance |
 | --- | --- | --- | --- |
@@ -128,7 +128,7 @@ defects throughout; this ordering does not defer fixes needed to run the example
 | AUTO-01 | Track volume/pan automation lanes, linear/hold points, read bypass, undo | Implemented | AutomationTests, TimelinePlaybackTests, ProjectControllerTests; Windows listening and UI checks pending |
 | AUTO-02 | Sample-position evaluation shared by playback and WAV export | Implemented | Exact-sample and block-size-independent playback regression |
 | AUTO-03 | Sends, stock-effect and plugin parameter automation | Send A–D automation merged (#95); plugin persistence and bindings implemented in this PR | Format 17 saves instance IDs and normalized lanes; reorder/undo/freeze migration retain targets; missing or replaced plugins remain unresolved. ParameterAutomationTests, SessionProjectTests, ProjectControllerTests, MixerRoutingTests, StockEffectsTests. Plugin parameter editor and playback scheduling remain unfinished. |
-| TEMPO-01 | Tempo and time-signature maps | Planned | Must update transport, MIDI, click, streaming and deterministic export together |
+| TEMPO-01 | Tempo and time-signature maps | Partial: song tempo map implemented (#104, format 18); time-signature changes planned | Tempo changes on the Song ruler (add, edit, drag, delete, undo); the project tempo plays until the first change. The Song playhead, MIDI and rack timing, audio regions (played unstretched), crossfades, stream prefetch, the click and count-in, plugin playheads, recorded take placement, clip lengths, freeze and WAV/stem export follow the map; editing it unfreezes frozen tracks. TimelineTests, TimelinePlaybackTests (sample positions, mid-sixteenth changes, unstretched audio, loops, block-size independence, click, no allocation), SessionProjectTests, SongRecordingTests, ProjectControllerTests, MixerRoutingTests, DeterministicStreamedExportTests, TimelineViewTests. Session and Steps keep the project tempo. Windows listening pending |
 | WARP-03 | Interactive warp markers and transient detection | Planned | Requires source-to-musical-time mapping and background analysis (WARP-01 is the offline render) |
 
 Automation editor: Arrangement > Automation. Choose a track and Volume/Pan. Click to add,
