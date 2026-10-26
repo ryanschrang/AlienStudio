@@ -1147,6 +1147,22 @@ In Piano Roll, choose **Chord progression** in the processing tools list and cli
 **Steps / chord** uses sixteenth notes: 16 steps is one 4/4 bar. Apply inserts all four chords at the insertion cursor and selects their notes for further editing, strumming or arpeggiation. Existing notes remain. The sequence must fit inside the current loop and note limit; failures leave the clip unchanged. Undo/redo treats insertion as one edit. Use the normal transport to hear the inserted sequence. This tool does not copy another DAW's UI or include third-party chord content.
 
 
+### Track and return stem export
+
+In **Song > Export WAV**, choose **Track and return stems** for the whole song
+or loop range, then choose a parent folder. Export creates a new numbered folder
+with 48 kHz / 24-bit stereo files: one per Session track, Return A–D, and Channel
+Rack channels routed directly to master. Track stems include track FX, faders,
+pan and volume/pan automation. Returns are separate, so shared effects are not
+duplicated into each track. Project mute/solo states apply.
+
+Files share a start and duration, including plugin tails (the host's existing
+30-second cap). Master effects, master gain and final output limiting are excluded.
+Summing the files reconstructs the pre-master bus subject to PCM quantization
+and clipping of individual stems above full scale. Cancellation or a plugin/write
+failure discards the staging folder. Existing folders are not replaced. Freeze
+and unfreeze are not implemented by this export increment.
+
 ### Recording takes and range comps
 
 Recording in Song view keeps original passes in **Takes**. Choose a pass and

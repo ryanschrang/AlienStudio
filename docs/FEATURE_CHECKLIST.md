@@ -72,7 +72,7 @@ The current project format is 15.
 | PLUG-02 | Recursive VST3 scanning with scan logs, crash containment, editor failure reporting, compatibility check tool | Implemented; MSVC fault trapping and real commercial plugins pending | FaultGuardTests, PluginFaultTests, PluginScanTests, PluginCheckTests, PluginPanelTests, PluginEndToEndTests (Linux, real VST3 test plugin). NOT RUN: Windows, Valhalla Supermassive and every commercial plugin (docs/PLUGIN_COMPATIBILITY.md). Not contained: heap corruption, plugin threads, hangs during playback |
 | MIDI-03 | Live MIDI destination: play a Session track's VST3 or built-in instrument from MIDI, typing or on-screen keys | Implemented (#83) | Held notes released when the destination changes; not saved with the project. Rack channels are not destinations yet |
 | INST-02 | Built-in synth channels in the Channel Rack (12 presets, 64 shared voices) | Implemented (#82, format 14) | See "Channel Rack built-in synth channels" below |
-| FINISH-01 | Freeze, stems and reliable effect tails | Stems in draft PR #89; freeze planned | Track and return stems aligned with return latency (#89, CI and listening pending). Freeze: offline/live equivalence and portable media |
+| FINISH-01 | Freeze, stems and reliable effect tails | Stem export implemented (#89); freeze/unfreeze pending | Aligned post-track and return files before master processing; single render, staged publication, cancellation/failure cleanup. DeterministicStreamedExportTests, MixerRoutingTests and TimelineViewTests; hardware/listening remains pending. |
 
 ## Completion rule
 

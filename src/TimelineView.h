@@ -2046,6 +2046,7 @@ public:
     TimelineCanvas& timelineCanvas() noexcept { return canvas; }
     ClipBin& clipList() noexcept { return clipBin; }
     bool clipListShown() const noexcept { return clipBin.isVisible(); }
+    std::function<void(std::int64_t from, std::int64_t to)> onExportStems;
     std::function<void(std::int64_t from, std::int64_t to)> onExport;   // to == -1: through the end of the song; while exporting, the button asks to cancel with (0, -1)
     std::function<void()> onTitleChanged;                                // the subtitle (length, clips, loop) changed
     std::function<void(juce::PopupMenu, std::function<void(int)>)> menuLauncher;   // lets the tests answer for the user
@@ -2119,18 +2120,25 @@ public:
     }
 
 private:
-    enum ExportId { exportSong = 1, exportLoop };
+    enum ExportId { exportSong = 1, exportLoop, exportStems, exportLoopStems };
     void showExportMenu() {
         const auto& t = controller.timeline();
         juce::PopupMenu menu;
         menu.addItem(exportSong, "Whole song (" + juce::String(t.lengthBars) + " bars)", t.hasRegions());
         menu.addItem(exportLoop, "Loop range (bars " + juce::String(t.loopStart / timeline::ticksPerBar + 1) + " to "
                      + juce::String((t.loopEnd + timeline::ticksPerBar - 1) / timeline::ticksPerBar) + ")", t.hasRegions());
+        menu.addSeparator();
+        menu.addItem(exportStems, "Track and return stems - whole song", t.hasRegions());
+        menu.addItem(exportLoopStems, "Track and return stems - loop range", t.hasRegions());
         juce::Component::SafePointer<TimelineView> safe(this);
         std::function<void(int)> done = [safe](int id) {
-            if (safe == nullptr || id == 0 || !safe->onExport) return;
+            if (safe == nullptr || id == 0) return;
             const auto& tl = safe->controller.timeline();
-            if (id == exportSong) safe->onExport(0, -1); else if (id == exportLoop) safe->onExport(tl.loopStart, tl.loopEnd);
+            if (id == exportStems || id == exportLoopStems) {
+                if (safe->onExportStems) safe->onExportStems(id == exportStems ? 0 : tl.loopStart, id == exportStems ? -1 : tl.loopEnd);
+            } else if (safe->onExport) {
+                if (id == exportSong) safe->onExport(0, -1); else if (id == exportLoop) safe->onExport(tl.loopStart, tl.loopEnd);
+            }
         };
         if (menuLauncher) { menuLauncher(std::move(menu), std::move(done)); return; }
         menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&exportButton), std::move(done));

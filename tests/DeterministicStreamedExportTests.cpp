@@ -162,7 +162,58 @@ static Song busySong(std::array<std::unique_ptr<Material>, 4>& m, unsigned strea
     return song;
 }
 
+static void stemTests() {
+    auto first = makeMaterial(48000,1,2,1), second = makeMaterial(48000,2,2,2);
+    Song song; song.playback->timeline.setLengthBars(1);
+    check(song.playback->timeline.place(region(0,0,0,ticksPerBar))
+        && song.playback->timeline.place(region(1,1,0,ticksPerBar)), "stem fixture");
+    put(song,0,0,*first,0); put(song,1,1,*second,2); finish(song);
+    song.project->trackNames[0] = song.project->trackNames[1] = "Same";
+    song.project->trackSettings[0].gain = 0.25f; song.project->trackSettings[1].gain = 0.35f;
+    song.project->trackSettings[0].send[0] = 0.4f; song.project->trackSettings[1].send[0] = 0.2f;
+    const auto reference = render(song);
+    const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("AlienStemTest","",false);
+    check(root.createDirectory().wasOk(), "stem test folder");
+    alien::WavExportOptions options; options.stems = true;
+    const auto target = root.getChildFile("stems"); std::atomic<bool> stop{false}; juce::String error;
+    alien::DrumSamplePointers drums{};
+    check(alien::exportArrangementWav(target,*song.project,*song.playback,drums,stop,error,nullptr,options), error.toRawUTF8());
+    const auto files = target.findChildFiles(juce::File::findFiles,false,"*.wav");
+    check(files.size() == song.project->trackCount() + alien::maxReturns + 1 && target.getChildFile("README.txt").existsAsFile(),
+        "one file per track, return and direct-rack bus plus routing notes");
+    std::vector<float> summed(static_cast<std::size_t>(reference.frames),0);
+    for (const auto& file : files) {
+        const auto wav = readWav(file); check(wav.frames == reference.frames, "common stem duration");
+        for (int f=0; f<static_cast<int>(wav.frames); ++f) summed[static_cast<std::size_t>(f)] += wav.samples.getSample(0,f);
+    }
+    double worst=0;
+    for (int f=0; f<static_cast<int>(reference.frames); ++f)
+        worst=std::max(worst,static_cast<double>(std::abs(alien::softLimit(summed[static_cast<std::size_t>(f)])-reference.samples.getSample(0,f))));
+    check(worst < 2e-6, "stems sum to original pre-master mix within PCM quantization");
+    check(target.getChildFile("01 - Same.wav").existsAsFile() && target.getChildFile("02 - Same.wav").existsAsFile(),
+        "duplicate track names have unique numbered files");
+    check(!alien::exportArrangementWav(target,*song.project,*song.playback,drums,stop,error,nullptr,options)
+        && target.getChildFile("01 - Same.wav").existsAsFile(), "existing destination is preserved");
+    stop.store(true);
+    check(!alien::exportArrangementWav(root.getChildFile("cancelled"),*song.project,*song.playback,drums,stop,error,nullptr,options)
+        && !root.getChildFile("cancelled").exists(), "cancelled export publishes no partial folder");
+    stop.store(false);
+    song.project->masterGain=0.1f; options.blockFrames=113;
+    const auto alternate=root.getChildFile("alternate");
+    check(alien::exportArrangementWav(alternate,*song.project,*song.playback,drums,stop,error,nullptr,options), "alternate block-size stems");
+    for (const auto& file : files)
+        check(maxDifference(readWav(file),readWav(alternate.getChildFile(file.getFileName()))) < 3e-7,
+            "stems ignore master gain and are independent of callback size");
+    second->file->readsBeforeFailure=0;
+    check(!alien::exportArrangementWav(root.getChildFile("failed-read"),*song.project,*song.playback,drums,stop,error,nullptr,options)
+        && !root.getChildFile("failed-read").exists(), "mid-render source failure publishes no partial folder");
+    const auto children=root.findChildFiles(juce::File::findDirectories,false);
+    check(children.size() == 2, "staging folders cleaned after failure/cancellation");
+    root.deleteRecursively();
+}
+
 int main() {
+    stemTests();
     std::atomic<bool> cancelled{false};
     juce::String error;
     alien::DrumSamplePointers noDrums{};
