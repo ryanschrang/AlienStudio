@@ -30,7 +30,7 @@ public:
                     "Shift Left or Right changes their length; Shift Up or Down transposes an octave. "
                     "The Edit menu transposes by semitone or octave. Ctrl A selects all, Ctrl Z undoes, "
                     "and Ctrl Y redoes. Ctrl C copies, Ctrl V pastes at the amber cursor, and Ctrl D duplicates. "
-                    "Click the ruler or empty grid to place the paste cursor. "
+                    "Click the ruler to place the amber edit cursor; Edit > Split selected notes at cursor cuts crossing notes there. "
                     "Alt C opens chord stamps; Alt L opens scale guides; Alt I inverts, Alt V reverses, and Alt A arpeggiates. Tab moves between controls.");
         setWantsKeyboardFocus(true);
         setMouseClickGrabsKeyboardFocus(true);
@@ -100,7 +100,7 @@ public:
         exampleButton.setTooltip("Add an original example to an empty loop; clear existing notes first");
         exampleButton.onClick = [this] { loadExample(); };
         configureButton(editActionsButton, "Edit", "Piano roll edit actions");
-        editActionsButton.setTooltip("Select all, Copy, Paste, Duplicate and Transpose selected notes");
+        editActionsButton.setTooltip("Select all, Copy, Paste, Duplicate, Transpose and Split selected notes at the amber cursor");
         editActionsButton.onClick = [this] { showEditMenu(); };
 
         addAndMakeVisible(tools);
@@ -303,6 +303,22 @@ public:
         }
     }
     bool canRedo() const noexcept { return historyPosition < history.size(); }
+    void splitSelectedNotes() {
+        if (locked) return;
+        prepareClipboardAction();
+        beginEdit();
+        const auto result = processSplit(pattern, selection, insertionStep);
+        selection = result.selection;
+        if (result.changed()) changed();
+        endEdit();
+        if (!result.changed()) {
+            statusMessage = result.status == ProcessingStatus::capacityExceeded
+                ? "No changes: splitting these notes would exceed the note limit. Select fewer notes or delete notes first."
+                : selection.count == 0 ? "Select notes before splitting."
+                : "No changes: place the amber cursor inside a selected note using the ruler.";
+            updateSelection();
+        }
+    }
     bool isProcessingPanelOpen() const noexcept { return panelOpen; }
     double getInsertionStep() const noexcept { return insertionStep; }
     void setInsertionStep(double step) {
@@ -570,7 +586,7 @@ public:
             + noteName(lowestVisiblePitch) + " - " + noteName(topPitch()) + "  |  "
             + juce::String(static_cast<int>(pattern.count)) + "/" + juce::String(static_cast<int>(PianoRollPattern::maxNotes)) + " notes";
         status += "  |  " + juce::String(static_cast<int>(selection.count)) + " selected";
-        status += "  |  Paste at step " + juce::String(insertionStep + 1.0, 3);
+        status += "  |  Edit cursor: step " + juce::String(insertionStep + 1.0, 3);
         if (const auto* note = pattern.find(activeId))
             status += "  |  " + noteName(note->pitch) + ": step " + juce::String(note->startStep + 1, 3)
                    + ", length " + juce::String(note->lengthSteps, 3) + ", velocity "
@@ -1090,6 +1106,8 @@ private:
         add(6, "Transpose down a semitone", "", selection.count != 0);
         add(7, "Transpose up an octave", "Shift+Up", selection.count != 0);
         add(8, "Transpose down an octave", "Shift+Down", selection.count != 0);
+        menu.addSeparator();
+        add(9, "Split selected notes at cursor", "", selection.count != 0);
         juce::Component::SafePointer<PianoRollEditor> safe(this);
         menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(editActionsButton).withMinimumWidth(200),
             [safe](int action) {
@@ -1103,6 +1121,7 @@ private:
                 else if (action == 4) safe->duplicateNotes();
                 else if (action >= 5 && action <= 8)
                     safe->transposeSelectedNotes(action == 5 ? 1 : action == 6 ? -1 : action == 7 ? 12 : -12);
+                else if (action == 9) safe->splitSelectedNotes();
                 if (action != 0) safe->grabKeyboardFocus();
             });
     }
