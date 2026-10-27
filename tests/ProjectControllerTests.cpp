@@ -628,12 +628,13 @@ static void clipLibraryOwnershipTests() {
     ToneEngine engine;
     alien::ProjectController c(engine);
     const auto& d = c.document();
-    require(d.library.clipCount() == 0 && !d.cellClip(0, 0) && d.clip(0, 0).isEmpty(), "a new project has empty cells and no clips");
+    // The only clip in a new project is the Channel Rack's empty pattern (T1-03 increment C).
+    require(d.library.clipCount() == 1 && !d.cellClip(0, 0) && d.clip(0, 0).isEmpty(), "a new project has empty cells and no Session clips");
     // A cell gets a clip when it gets content; later edits are new revisions of the same clip.
     c.setClipPattern(0, 0, patternWith(60), false); c.commit("Notes", 0, 0);
     const auto first = d.cellClip(0, 0);
     const auto pattern = d.library.clip(first)->pattern;
-    require(first && d.library.clipCount() == 1 && d.clip(0, 0).notes().notes[0].pitch == 60, "the cell's notes live in the library");
+    require(first && d.library.clipCount() == 2 && d.clip(0, 0).notes().notes[0].pitch == 60, "the cell's notes live in the library");
     c.setClipPattern(0, 0, patternWith(62), false); c.commit("Notes", 0, 0);
     require(d.cellClip(0, 0) == first && d.library.clip(first)->pattern == pattern && d.library.pattern(pattern)->revision == 2
             && d.clip(0, 0).notes().notes[0].pitch == 62, "an edit is a new revision of the same clip, not a new clip");
@@ -870,6 +871,76 @@ static void placementClipFileTests() {
     std::puts("PASS: placement clips save and reopen (format 24)");
 }
 
+// T1-03 increment C: the Channel Rack's patterns live in the clip library; the rack is their view.
+static void rackLibraryTests() {
+    ToneEngine engine;
+    alien::ProjectController c(engine);
+    const auto& d = c.document();
+    using alien::library::ClipId;
+    namespace rk = alien::rack;
+    const auto clipOf = [&](int slot) { return ClipId{d.channelRack.clips[static_cast<std::size_t>(slot)]}; };
+    const auto revisionOf = [&](int slot) { return d.library.pattern(d.library.clip(clipOf(slot))->pattern)->revision; };
+    require(clipOf(0) && d.library.clip(clipOf(0)) != nullptr && d.rackMatchesLibrary(), "a new project's pattern is a library clip");
+    require(d.library.clip(clipOf(0))->info.name == "Pattern 1", "named after the pattern");
+
+    // A step edit is a new revision of the same clip.
+    const auto first = clipOf(0);
+    const auto revision = revisionOf(0);
+    require(c.editRack("Step", [](rk::Project& p) { return p.setStepOn(0, 0, 0, true); }), "turn a step on");
+    require(clipOf(0) == first && revisionOf(0) == revision + 1 && d.rackMatchesLibrary(), "a step edit is a new revision of the pattern's clip");
+    // Notes on a channel are kept as notes, with the dormant steps.
+    alien::PianoRollPattern notes; notes.loopSteps = 16; notes.add(62, 1, 3, 0.7f); notes.add(65, 1, 3, 0.6f);
+    require(c.setRackChannelNotes(0, 1, notes), "notes on channel 2");
+    const auto content = d.library.content(first);
+    require(content->lanes.size() == 2 && std::get<alien::library::StepLane>(content->lanes[1].content).notes != nullptr && d.rackMatchesLibrary(),
+            "the note row is in the clip as notes");
+
+    // A copied pattern is an independent clip.
+    require(c.editRack("Copy pattern", [](rk::Project& p) { return p.addPattern(0); }), "copy the pattern");
+    require(clipOf(1) && clipOf(1) != first && !d.library.linked(first, clipOf(1)) && d.library.clip(clipOf(1))->info.name == "Pattern 2",
+            "the copy is a clip of its own");
+    require(c.editRack("Step", [](rk::Project& p) { return p.setStepOn(1, 0, 4, true); }), "edit the copy");
+    require(!d.channelRack.pattern(0).steps[0][4].on && d.rackMatchesLibrary(), "the original keeps its steps");
+
+    // Moving a channel changes no content; removing one is an edit of every pattern that used it.
+    const auto before = revisionOf(0);
+    require(c.editRack("Move channel", [](rk::Project& p) { return p.moveChannel(0, 1); }), "move channel 1 down");
+    require(revisionOf(0) == before && d.channelRack.pattern(0).steps[1][0].on && d.rackMatchesLibrary(), "a moved channel keeps its row and the clip its revision");
+    require(c.editRack("Remove channel", [](rk::Project& p) { return p.removeChannel(1); }), "remove that channel");
+    require(revisionOf(0) == before + 1 && d.library.content(first)->lanes.size() == 1 && d.rackMatchesLibrary(), "its lane is gone from the content");
+    require(c.editRack("Add channel", [](rk::Project& p) { return p.addChannel("New", "builtin:kick"); }), "add a channel");
+    require(!d.channelRack.pattern(0).steps[3][0].on && d.rackMatchesLibrary(), "a new channel does not inherit the removed row");
+
+    // Deleting a pattern drops its clip; undo brings it back.
+    const auto copy = clipOf(1);
+    const auto copied = d.channelRack.patterns[1];
+    require(c.deleteRackPattern(1) && d.library.clip(copy) == nullptr && d.channelRack.patternCount == 1, "deleting a pattern drops its clip");
+    require(c.undo() && d.library.clip(copy) != nullptr && d.channelRack.pattern(1) == *copied && d.rackMatchesLibrary(), "undo restores it");
+
+    // Save and reopen: the content comes from the library, and every pattern is its own clip again.
+    const auto data = alien::toProjectData(d);
+    require(data.valid() && data.channelRack.sameContent(d.channelRack), "a save writes the library's content");
+    const auto json = alien::serializeSessionProject(data);
+    alien::SessionProjectData parsed; juce::String error;
+    require(alien::parseSessionProject(json, parsed, error), "reads back");
+    const auto reopened = alien::fromProjectData(parsed);
+    require(reopened.rackMatchesLibrary() && reopened.channelRack.sameContent(d.channelRack)
+            && reopened.channelRack.clips[0] != 0 && reopened.channelRack.clips[0] != reopened.channelRack.clips[1], "reopens as independent library clips");
+
+    // Ids from another document never name a clip here.
+    c.setClipPattern(0, 0, patternWith(60), false); c.commit("Notes", 0, 0);
+    auto withCell = c.document();
+    auto stray = withCell.channelRack; stray.clips[0] = withCell.cellClip(0, 0).value;
+    stray.clips[1] = 0;
+    require(withCell.setRack(stray) && withCell.clip(0, 0).notes().notes[0].pitch == 60 && withCell.rackMatchesLibrary(),
+            "a rack naming a Session cell's clip gets a clip of its own, and the cell keeps its notes");
+    // Nothing changes when the rack is invalid.
+    auto broken = withCell.channelRack; broken.lanes[0] = 0;
+    const auto clips = withCell.library.clipCount();
+    require(!withCell.setRack(broken) && withCell.library.clipCount() == clips && withCell.rackMatchesLibrary(), "an invalid rack is refused");
+    std::puts("PASS: Channel Rack patterns are library clips");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     automationUndoTests();
@@ -885,6 +956,7 @@ int main() {
     placementUniqueTests();
     placementClipTests();
     placementClipFileTests();
+    rackLibraryTests();
     structureTests();
     fileFormatTests();
     undoTests();

@@ -353,3 +353,9 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Put a latent VST3 (a look-ahead limiter or linear-phase EQ) on return G and check dry and G stay aligned (no flamming), then remove G and check the other returns still line up.
 - Save, reopen and Save portable with returns removed, added past D and renamed; open a project saved by an older build and check it has returns A-D exactly as before.
 - Export a WAV and stems: one stem per return that exists ("Return A.wav", "Return F - <name>.wav"), none for removed ones, and the stems sum back to the mix. Freeze a track that sends to return F: the frozen audio has the track alone.
+
+## Channel Rack patterns in the clip library
+Nothing should sound or look different: this moves where the rack's patterns are kept.
+- Open a project saved before this change with several rack patterns (steps with drawn velocity, pan, pitch, gate, nudge and ratchets, and a channel with piano-roll notes). Play each pattern and the Song: it sounds as it did, and the graph editor shows the same values, including on steps that are off.
+- Edit steps and notes, copy a pattern and edit the copy (the original keeps its steps), move, duplicate and remove channels, delete a pattern, and undo and redo each step. Play the Channel Rack while editing: no stuck notes or clicks.
+- Save, reopen and export a WAV and stems of a Song with rack lanes: the files match an export made before the edits that were undone.

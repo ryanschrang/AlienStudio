@@ -208,6 +208,13 @@ struct Project {
     int selectedPattern{};
     float swing{};  // 0..1: how late every second sixteenth lands (1 = three quarters of the way to the next)
     int nameColumnWidth{defaultNameColumn};   // a view setting like selectedPattern: not an undoable edit
+    // Identities for the project's clip library (T1-03 increment C; see docs/SHARED_CLIP_MODEL.md). Each channel's
+    // row is a lane with a stable id, so a reordered channel keeps its content and a new channel never inherits a
+    // deleted one's; each pattern slot names the library clip that holds its content (0 until the document has
+    // put it there). Both move with their channel or pattern.
+    std::array<std::uint64_t, maxChannels> lanes{};
+    std::array<std::uint64_t, maxPatterns> clips{};
+    std::uint64_t nextLane{1};
 
     static const std::shared_ptr<const Pattern>& emptyPattern() {
         static const auto empty = std::make_shared<const Pattern>();
@@ -261,6 +268,7 @@ struct Project {
         patterns[static_cast<std::size_t>(slot)] = validPattern(copyFrom) && copyFrom != slot
             ? patterns[static_cast<std::size_t>(copyFrom)] : emptyPattern();
         patternNames[static_cast<std::size_t>(slot)] = freshPatternName();
+        clips[static_cast<std::size_t>(slot)] = 0;   // a copy is a new, independent pattern
         selectedPattern = slot;
         return true;
     }
@@ -269,10 +277,12 @@ struct Project {
         for (int i = index; i + 1 < patternCount; ++i) {
             patterns[static_cast<std::size_t>(i)] = patterns[static_cast<std::size_t>(i + 1)];
             patternNames[static_cast<std::size_t>(i)] = patternNames[static_cast<std::size_t>(i + 1)];
+            clips[static_cast<std::size_t>(i)] = clips[static_cast<std::size_t>(i + 1)];
         }
         --patternCount;
         patterns[static_cast<std::size_t>(patternCount)].reset();
         patternNames[static_cast<std::size_t>(patternCount)].clear();
+        clips[static_cast<std::size_t>(patternCount)] = 0;
         if (selectedPattern > index || selectedPattern >= patternCount) selectedPattern = std::max(0, selectedPattern - 1);
         return true;
     }
@@ -369,9 +379,11 @@ struct Project {
         for (int i = channelCount; i > index + 1; --i) {
             channels[static_cast<std::size_t>(i)] = channels[static_cast<std::size_t>(i - 1)];
             info[static_cast<std::size_t>(i)] = info[static_cast<std::size_t>(i - 1)];
+            lanes[static_cast<std::size_t>(i)] = lanes[static_cast<std::size_t>(i - 1)];
         }
         channels[static_cast<std::size_t>(index + 1)] = channels[static_cast<std::size_t>(index)];
         info[static_cast<std::size_t>(index + 1)] = info[static_cast<std::size_t>(index)];
+        lanes[static_cast<std::size_t>(index + 1)] = nextLane++;   // the copy's row is a lane of its own
         info[static_cast<std::size_t>(index + 1)].name = clean(info[static_cast<std::size_t>(index)].name + " copy");
         ++channelCount;
         forEachPattern([&](Pattern& p) {
@@ -415,6 +427,7 @@ struct Project {
         const auto slot = static_cast<std::size_t>(channelCount++);
         channels[slot] = Channel{};
         info[slot] = {clean(std::move(name)), std::move(sample)};
+        lanes[slot] = nextLane++;
         if (info[slot].name.empty()) info[slot].name = "Channel " + std::to_string(channelCount);
         return true;
     }
@@ -424,10 +437,12 @@ struct Project {
         for (int i = index; i + 1 < channelCount; ++i) {
             channels[static_cast<std::size_t>(i)] = channels[static_cast<std::size_t>(i + 1)];
             info[static_cast<std::size_t>(i)] = std::move(info[static_cast<std::size_t>(i + 1)]);
+            lanes[static_cast<std::size_t>(i)] = lanes[static_cast<std::size_t>(i + 1)];
         }
         --channelCount;
         channels[static_cast<std::size_t>(channelCount)] = Channel{};
         info[static_cast<std::size_t>(channelCount)] = {};
+        lanes[static_cast<std::size_t>(channelCount)] = 0;
         forEachPattern([&](Pattern& p) {
             for (int i = index; i + 1 < maxChannels; ++i) {
                 p.steps[static_cast<std::size_t>(i)] = p.steps[static_cast<std::size_t>(i + 1)];
@@ -444,6 +459,7 @@ struct Project {
         if (delta == 0 || !validChannel(index) || !validChannel(other)) return false;
         std::swap(channels[static_cast<std::size_t>(index)], channels[static_cast<std::size_t>(other)]);
         std::swap(info[static_cast<std::size_t>(index)], info[static_cast<std::size_t>(other)]);
+        std::swap(lanes[static_cast<std::size_t>(index)], lanes[static_cast<std::size_t>(other)]);
         forEachPattern([&](Pattern& p) { std::swap(p.steps[static_cast<std::size_t>(index)], p.steps[static_cast<std::size_t>(other)]); std::swap(p.notes[static_cast<std::size_t>(index)], p.notes[static_cast<std::size_t>(other)]); std::swap(p.noteRevisions[static_cast<std::size_t>(index)], p.noteRevisions[static_cast<std::size_t>(other)]); });
         return true;
     }
@@ -504,13 +520,16 @@ struct Project {
             if (!channels[i].valid() || info[i].name.size() > maxNameBytes || info[i].sample.size() > maxSampleBytes) return false;
             if (channels[i].isSynth() && !info[i].sample.empty()) return false;
             if (c >= channelCount && !(channels[i] == Channel{} && info[i] == ChannelInfo{})) return false;
+            if (c < channelCount ? lanes[i] == 0 || lanes[i] >= nextLane : lanes[i] != 0) return false;
+            for (int d = 0; d < c && c < channelCount; ++d) if (lanes[static_cast<std::size_t>(d)] == lanes[i]) return false;
         }
         for (int p = 0; p < maxPatterns; ++p) {
             const auto i = static_cast<std::size_t>(p);
             if (p < patternCount) {
                 if (patterns[i] == nullptr || !patterns[i]->valid() || patternNames[i].size() > maxNameBytes) return false;
                 for (int c = channelCount; c < maxChannels; ++c) if (patterns[i]->notes[static_cast<std::size_t>(c)]) return false;
-            } else if (patterns[i] != nullptr || !patternNames[i].empty()) return false;
+                for (int q = 0; q < p && clips[i] != 0; ++q) if (clips[static_cast<std::size_t>(q)] == clips[i]) return false;
+            } else if (patterns[i] != nullptr || !patternNames[i].empty() || clips[i] != 0) return false;
         }
         return true;
     }
@@ -521,6 +540,7 @@ struct Project {
     }
     // Everything except which pattern is selected and how wide the name column is, which are view settings like
     // the selected track or scene: choosing a different pattern or resizing the column is not an undoable edit.
+    // Lane and clip ids are bookkeeping for the clip library, not content (a saved project gets new ones).
     bool sameContent(const Project& o) const {
         if (channelCount != o.channelCount || patternCount != o.patternCount
             || swing != o.swing || channels != o.channels || info != o.info || patternNames != o.patternNames)
