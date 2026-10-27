@@ -76,12 +76,17 @@ JSON arguments are `{"track": 0, "muted": true}` and `{"track": 1, "soloed": fal
 The state must be a boolean: numeric 0/1, strings, null and missing/unknown arguments
 are refused. Solo is additive; it does not clear another track's solo state or change mute.
 Preview, batch refusal, no-op detection and undo/redo follow the volume/pan contracts.
-Only the addressed document field and live engine control change. Existing mixer and
-Session mute/solo gestures retain their current direct editing paths.
+Only the addressed document field and live engine control change. Session's left-click
+mute light, right-click solo light and S button now execute these named commands. A
+successful command sends a refresh-only notification to the mixer, without a second
+legacy commit; busy refusal sends no edit notification. Session volume/pan gestures
+and the Mixer's own controls retain their existing direct editing paths.
 
 CommandEngineTests covers true/false JSON round trips, strict types, side-effect-free
 preview, live controls, preserved mix/other solo states, busy/invalid-target refusal,
 redo preservation and sequential create/reorder batches. Manual listening remains pending.
+SessionViewTests drives the actual controls and checks one-step undo/redo, dirty state,
+additive solo, busy refusal, refresh notifications and unchanged selection/queued launches.
 
 ### Known limits of these slices
 

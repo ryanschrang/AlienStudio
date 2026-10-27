@@ -1,6 +1,7 @@
 #pragma once
 #include "FlLook.h"
 #include "ProjectController.h"
+#include "CommandEngine.h"
 #include "StudioTheme.h"
 #include "SynthEngine.h"
 #include "TrackMixerPanel.h"
@@ -12,8 +13,8 @@ namespace alien {
 
 // The track column of the Session view, laid out like a row of FL Studio's channel rack: a light (mute), pan and
 // volume knobs, the track's name button, solo, and a stop button. One row per Session track, lined up with that
-// track's row of clips. The knobs, mute and solo are the Mixer tab's own controls: they write the engine's
-// lock-free TrackControls and tell the owner, which commits the change like a Mixer edit.
+// track's row of clips. Knobs write the engine's lock-free controls and ask the owner to commit.
+// Mute/solo use named commands, which own their undo step, and notify the owner only to refresh.
 class SessionTrackStrip final : public juce::Component, public juce::TooltipClient {
 public:
     // Where the parts sit, in pixels from the strip's left edge (centres, except nameLeft).
@@ -24,6 +25,7 @@ public:
 
     // A mixer value changed from here (committed is false while a knob is being dragged and true when it is final).
     std::function<void(int, bool)> onMixEdited;
+    std::function<void(int)> onMixCommandExecuted; // already committed; refresh only
     std::function<void(int)> onSelect;   // the track's header was clicked
     std::function<void(int)> onRename;   // double-click
     std::function<void(int)> onMenu;     // right-click
@@ -174,16 +176,18 @@ private:
     }
 
     void toggleMute(int track) {
-        auto& controls = engine.tracks[static_cast<std::size_t>(track)];
-        controls.mute.store(!controls.mute.load());
+        const auto result = command::CommandEngine(controller).execute(command::SetTrackMute{
+            track, !engine.tracks[static_cast<std::size_t>(track)].mute.load()});
+        if (!result.ok || !result.changed) return;
         repaint(rowBounds(track));
-        if (onMixEdited) onMixEdited(track, true);
+        if (onMixCommandExecuted) onMixCommandExecuted(track);
     }
     void toggleSolo(int track) {
-        auto& controls = engine.tracks[static_cast<std::size_t>(track)];
-        controls.solo.store(!controls.solo.load());
+        const auto result = command::CommandEngine(controller).execute(command::SetTrackSolo{
+            track, !engine.tracks[static_cast<std::size_t>(track)].solo.load()});
+        if (!result.ok || !result.changed) return;
         repaint();   // a solo changes which other rows are audible
-        if (onMixEdited) onMixEdited(track, true);
+        if (onMixCommandExecuted) onMixCommandExecuted(track);
     }
 
     void beginKnob(int track, bool pan, int y) {

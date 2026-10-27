@@ -96,6 +96,7 @@ public:
         trackStrip.onMenu = [this](int track) { showTrackMenu(track); };
         trackStrip.onStop = [this](int) { refreshClips(); };
         trackStrip.onMixEdited = [this](int track, bool committed) { if (onTrackMixEdited) onTrackMixEdited(track, committed); };
+        trackStrip.onMixCommandExecuted = [this](int track) { if (onTrackMixCommandExecuted) onTrackMixCommandExecuted(track); };
         addAndMakeVisible(viewport);
         viewport.setViewedComponent(&gridContent, false);
         viewport.setScrollBarThickness(10);
@@ -249,7 +250,8 @@ public:
     // Optional presenter for deterministic UI tests and alternative menu hosts.
     // The native asynchronous popup remains the default.
     std::function<void(juce::PopupMenu, std::function<void(int)>)> trackMenuLauncher;
-    std::function<void(int, bool)> onTrackMixEdited;    // a track's volume, pan, mute or solo changed here (committed: final value)
+    std::function<void(int, bool)> onTrackMixEdited;    // volume/pan gesture (committed: final value)
+    std::function<void(int)> onTrackMixCommandExecuted; // mute/solo command already committed; refresh only
 
     // Rebuild the clip and scene buttons after the grid's shape changes.
     void rebuildGrid() {
