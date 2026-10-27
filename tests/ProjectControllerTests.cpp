@@ -684,6 +684,93 @@ static void clipLibraryOwnershipTests() {
     std::puts("PASS: the clip library owns Session cells");
 }
 
+// T1-03 increment B2a: cells that share one clip's content, saved from format 22.
+static void linkedClipTests() {
+    ToneEngine engine;
+    alien::ProjectController c(engine);
+    const auto& d = c.document();
+    const auto pitch = [&](int t, int s) { return d.clip(t, s).notes().count != 0 ? d.clip(t, s).notes().notes[0].pitch : -1; };
+    c.setClipPattern(0, 0, patternWith(60), false); c.commit("Notes", 0, 0);
+    require(!c.canPasteLinked() && !c.pasteCell(1, 1, true) && c.copyCell(0, 0) && c.canPasteLinked(), "Copy enables the pastes");
+    // Paste linked: a new clip sharing the content.
+    require(c.pasteCell(1, 1, true) && c.undoLabel() == "Paste linked clip", "Paste linked is one undo step");
+    require(d.cellClip(1, 1) && d.cellClip(1, 1) != d.cellClip(0, 0) && d.linkOf(1, 1) == d.linkOf(0, 0) && d.linkedCells(0, 0) == 2 && pitch(1, 1) == 60,
+            "the pasted cell has a clip of its own that shares the content");
+    require(!c.pasteCell(1, 1, true), "pasting the same link again changes nothing");
+    c.setClipPattern(1, 1, patternWith(64), false); c.commit("Notes", 1, 1);
+    require(pitch(0, 0) == 64 && pitch(1, 1) == 64 && d.linkedCells(0, 0) == 2, "editing either cell edits both");
+    // Paste a copy: independent.
+    require(c.pasteCell(2, 0, false) && c.undoLabel() == "Paste clip" && pitch(2, 0) == 60 && d.linkOf(2, 0) != d.linkOf(0, 0),
+            "Paste is an independent copy of what was copied (as it was when copied)");
+    c.setClipPattern(2, 0, patternWith(48), false); c.commit("Notes", 2, 0);
+    require(pitch(0, 0) == 64 && pitch(2, 0) == 48, "editing the copy leaves the original alone");
+    // A third link, then Make unique forks just one cell.
+    require(c.pasteCell(3, 3, true) && d.linkedCells(0, 0) == 3, "three cells linked");
+    require(c.makeCellUnique(1, 1) && c.undoLabel() == "Make clip unique" && d.linkedCells(1, 1) == 1 && d.linkedCells(0, 0) == 2 && pitch(1, 1) == 64,
+            "Make unique gives one cell its own copy; the others stay linked");
+    require(!c.makeCellUnique(1, 1), "a cell that shares nothing is already unique");
+    c.setClipPattern(1, 1, patternWith(72), false); c.commit("Notes", 1, 1);
+    require(pitch(0, 0) == 64 && pitch(3, 3) == 64, "its edits are its own");
+    // Clearing a linked cell leaves the others their content.
+    require(c.clearCell(3, 3) && !d.cellClip(3, 3) && pitch(0, 0) == 64 && d.linkedCells(0, 0) == 1, "clearing one linked cell empties only that cell");
+    c.commit("Clear clip", 3, 3);
+    require(c.undo() && d.linkedCells(0, 0) == 2 && pitch(3, 3) == 64, "undo brings the link back");
+    // Linking two cells that already hold equal notes is still an edit.
+    c.setClipPattern(2, 3, patternWith(64), false); c.commit("Notes", 2, 3);
+    require(c.copyCell(0, 0) && c.pasteCell(2, 3, true) && c.undoLabel() == "Paste linked clip" && d.linkedCells(0, 0) == 3,
+            "linking equal content is an undoable edit");
+    // Saving: links survive, written only where content is shared, from format 22.
+    const auto data = alien::toProjectData(d);
+    require(data.clips[0][0].link != 0 && data.clips[0][0].link == data.clips[3][3].link && data.clips[1][1].link == 0 && data.valid(),
+            "linked cells save one link; unshared cells none");
+    const auto json = alien::serializeSessionProject(data);
+    alien::SessionProjectData parsed; juce::String error;
+    require(static_cast<int>(juce::JSON::parse(json).getProperty("version", 0)) >= 22 && alien::parseSessionProject(json, parsed, error), "written and read as format 22");
+    auto reopened = alien::fromProjectData(parsed);
+    require(reopened.linkedCells(0, 0) == 3 && reopened.linkOf(3, 3) == reopened.linkOf(0, 0) && reopened.linkedCells(1, 1) == 1 && reopened.library.valid(),
+            "links survive a save and reopen");
+    auto edited = reopened.clip(3, 3); edited.pattern = std::make_shared<const alien::PianoRollPattern>(patternWith(50)); reopened.setClip(3, 3, edited);
+    require(reopened.clip(0, 0).notes().notes[0].pitch == 50 && reopened.clip(2, 3).notes().notes[0].pitch == 50, "and still edit together");
+    // Damaged and older files.
+    auto broken = juce::JSON::parse(json);
+    auto* scenes = broken.getProperty("scenes", {}).getArray();
+    scenes->getReference(3).getArray()->getReference(3).getDynamicObject()->setProperty("loopSteps", 32);
+    require(!alien::parseSessionProject(juce::JSON::toString(broken), parsed, error), "linked cells with different content are rejected");
+    broken = juce::JSON::parse(json);
+    broken.getProperty("scenes", {}).getArray()->getReference(0).getArray()->getReference(0).getDynamicObject()->setProperty("link", "zz");
+    require(!alien::parseSessionProject(juce::JSON::toString(broken), parsed, error), "a link that is not an id is rejected");
+    auto old = juce::JSON::parse(json);
+    old.getDynamicObject()->setProperty("version", 21);
+    for (auto& scene : *old.getProperty("scenes", {}).getArray()) for (auto& cell : *scene.getArray()) cell.getDynamicObject()->removeProperty("link");
+    require(alien::parseSessionProject(juce::JSON::toString(old), parsed, error) && alien::fromProjectData(parsed).linkedCells(0, 0) == 1,
+            "a format 21 project opens with every cell its own");
+    std::puts("PASS: linked Session clips");
+}
+
+static void placementUniqueTests() {
+    ToneEngine engine;
+    alien::ProjectController c(engine);
+    const auto& d = c.document();
+    c.setClipPattern(0, 0, patternWith(60), false); c.commit("Notes", 0, 0);
+    std::uint32_t first = 0, second = 0;
+    require(c.placeRegion(0, 0, 0, &first) && c.placeRegion(0, 0, 4 * alien::timeline::ticksPerBar, &second), "two placements of one cell");
+    require(c.placementShared(first) && c.placementShared(second), "they share what they play");
+    const auto scenes = d.sceneCount();
+    // Fill every other cell of track 0 so a new scene is needed.
+    for (int s = 1; s < d.sceneCount(); ++s) { c.setClipPattern(0, s, patternWith(40 + s), false); }
+    c.commit("Fill");
+    require(c.makePlacementUnique(second) && c.undoLabel() == "Make placement unique", "Make placement unique is one undo step");
+    const auto* moved = d.timeline.find(second);
+    require(moved != nullptr && moved->source == scenes && d.sceneCount() == scenes + 1 && d.timeline.find(first)->source == 0,
+            "with no free cell, a scene is added for the placement's own copy; the other placement keeps the cell");
+    require(d.clip(0, moved->source).notes().notes[0].pitch == 60 && d.linkOf(0, moved->source) != d.linkOf(0, 0), "an independent copy of the same notes");
+    c.setClipPattern(0, moved->source, patternWith(70), false); c.commit("Notes");
+    require(d.clip(0, 0).notes().notes[0].pitch == 60, "editing it leaves the other placement alone");
+    require(!c.makePlacementUnique(second) && !c.placementShared(first), "neither placement shares anything now");
+    require(c.undo() && c.undo() && d.timeline.find(second)->source == 0 && d.sceneCount() == scenes, "undo puts it back on the shared cell");
+    std::puts("PASS: making one placement unique");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     automationUndoTests();
@@ -695,6 +782,8 @@ int main() {
     arrangementPublishTests();
     tempoMapControllerTests();
     clipLibraryOwnershipTests();
+    linkedClipTests();
+    placementUniqueTests();
     structureTests();
     fileFormatTests();
     undoTests();

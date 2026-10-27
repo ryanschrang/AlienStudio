@@ -324,3 +324,10 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Move tracks and check the key follows the kick; delete the kick track and check the compressor is unkeyed (its slot no longer shows "keyed by").
 - Save, reopen and undo; export a WAV and compare it with playback.
 - Load a VST3 compressor or gate that has a sidechain input and key it from a track the same way; check it reacts (untested so far).
+
+## Linked clips
+- In the Session view, select a MIDI clip, choose Copy / link > Copy clip, select another cell and choose Paste linked here. Both cells show "linked x2". Edit the notes of either in the Piano Roll while both play on different tracks: both change at once.
+- Paste a copy into a third cell and edit it: only it changes. Use Make unique on one linked cell and edit it: the other keeps its notes.
+- Link an audio clip into two cells and clear one: the other keeps its audio. Place a linked clip twice on the Song, use Make this placement unique on one, edit it and listen: the other placement is unchanged.
+- Save, reopen, undo and redo after each step; open the project in an older build and confirm it refuses the file instead of losing the links.
+
