@@ -744,6 +744,7 @@ private:
     struct TimelineLane {
         bool active{}, midi{};
         int source{-1};
+        std::uint64_t clip{};          // the region's placement clip, or 0
         std::int64_t start{}, end{}, offset{};
         double audioOffset{}, gain{1.0};
         std::int64_t fadeIn{}, fadeOut{}, crossfade{};
@@ -785,14 +786,14 @@ private:
     const alien::timeline::Region* crossfadePartner(std::size_t track, const alien::timeline::Region& region) const noexcept {
         for (const auto& r : song->timeline.regions)
             if (r.row == region.row && r.end() == region.start && !r.muted && r.fadeOut == 0
-                && song->clips[static_cast<std::size_t>(r.source)][track].audio != nullptr) return &r;
+                && song->clipFor(r, track).audio != nullptr) return &r;
         return nullptr;
     }
     // Starts a crossfade's outgoing clip part-way through (the song started or jumped inside the crossfade).
     void startTail(std::size_t track, const alien::timeline::Region& region) noexcept {
         const auto* left = crossfadePartner(track, region);
         if (left == nullptr) return;
-        const auto* audio = song->clips[static_cast<std::size_t>(left->source)][track].audio;
+        const auto* audio = song->clipFor(*left, track).audio;
         if (audio->streamed() && (left->reversed || left->loopSource)) return;   // as startTrackRegion: no reverse/loop streaming
         auto& tail = tails[track];
         tail = {}; tail.active = true; tail.start = static_cast<double>(region.start);
@@ -863,10 +864,10 @@ private:
     }
     void startTrackRegion(std::size_t track, const alien::timeline::Region& region) noexcept {
         auto send = [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); };
-        const auto& clip = song->clips[static_cast<std::size_t>(region.source)][track];
+        const auto& clip = song->clipFor(region, track);
         const double into = std::max(0.0, timelineTick - static_cast<double>(region.start));
         auto& lane = trackLanes[track];
-        lane.active = true; lane.source = region.source; lane.start = region.start; lane.end = region.end();
+        lane.active = true; lane.source = region.source; lane.clip = region.clip; lane.start = region.start; lane.end = region.end();
         lane.offset = region.offset; lane.audioOffset = region.audioOffset; lane.gain = region.gain;
         lane.fadeIn = region.fadeIn; lane.fadeOut = region.fadeOut; lane.loopSource = region.loopSource; lane.reversed = region.reversed; lane.audio = clip.audio;
         lane.crossfade = clip.audio != nullptr ? region.crossfade : 0;
@@ -893,7 +894,7 @@ private:
             }
             audioClipMode[track] = true;
         } else {
-            lane.midi = rolls[track].startAt(*clip.pattern, region.source,
+            lane.midi = rolls[track].startAt(*clip.pattern, region.ownsClip() ? -1 : region.source,
                 (static_cast<double>(region.offset) + into) / alien::timeline::ticksPerStep, send);
         }
     }
@@ -908,7 +909,7 @@ private:
     void noteUpcoming(TimelineLane& lane, std::size_t track, const alien::timeline::Region* next) noexcept {
         lane.nextAudio = nullptr; lane.prefetchAt = -1.0; lane.prefetched = false;
         if (next == nullptr || next->muted) return;
-        const auto& clip = song->clips[static_cast<std::size_t>(next->source)][track];
+        const auto& clip = song->clipFor(*next, track);
         if (clip.audio == nullptr || !clip.audio->streamed()) return;
         lane.nextAudio = clip.audio; lane.nextAudioOffset = next->audioOffset;
         lane.prefetchAt = songTempo().tickAfter(static_cast<double>(next->start), -timelinePrefetchSeconds);
@@ -954,10 +955,10 @@ private:
             if (lane.active) clearTrack(track, false);
             return;
         }
-        const auto& clip = song->clips[static_cast<std::size_t>(region->source)][track];
+        const auto& clip = song->clipFor(*region, track);
         // The same content keeps playing through any edit that does not move it: a region made longer or
         // shorter, or trimmed at the front, is the same sound starting or stopping elsewhere.
-        const bool same = lane.active && lane.source == region->source && lane.audio == clip.audio
+        const bool same = lane.active && lane.source == region->source && lane.clip == region->clip && lane.audio == clip.audio
             && lane.reversed == region->reversed && lane.loopSource == region->loopSource
             && sameOrigin(lane, *region, clip.audio != nullptr);
         if (same) {

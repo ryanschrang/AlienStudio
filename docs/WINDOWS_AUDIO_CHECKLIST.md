@@ -331,3 +331,9 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Link an audio clip into two cells and clear one: the other keeps its audio. Place a linked clip twice on the Song, use Make this placement unique on one, edit it and listen: the other placement is unchanged.
 - Save, reopen, undo and redo after each step; open the project in an older build and confirm it refuses the file instead of losing the links.
 
+## Song placement clips
+- Place one MIDI Session clip twice on the Song. Right-click the second placement and choose Make this placement unique: no scene is added in the Session view, and the region is labelled "Song clip".
+- Double-click it: the piano roll opens with its notes and the title says "Song clip". Edit the notes while the song plays: the change is heard at once, and the first placement and the Session cell keep theirs.
+- Duplicate (or copy and paste) the unique placement and edit either copy: both change. Cut the only copy, paste it elsewhere and play: it has the notes it was cut with.
+- Delete the scene it came from: the unique placements stay and still play. Undo and redo each step.
+- Save, close and reopen: the placements still share their notes. Open the project in a build without this change and confirm it refuses the file.

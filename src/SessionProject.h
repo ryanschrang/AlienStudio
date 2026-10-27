@@ -10,6 +10,7 @@
 #include "PluginState.h"
 #include "RackProject.h"
 #include <juce_core/juce_core.h>
+#include <map>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -23,7 +24,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 22;   // 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains
+inline constexpr int sessionProjectFormatVersion = 24;   // 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 24: Song placement clips
 
 // A group bus slot. Slots keep their index while other buses come and go, so a track's output
 // (TrackSettings::output) and the bus's FX rack never need renumbering.
@@ -42,11 +43,14 @@ struct SessionProjectClip {
     // Cells with the same nonzero link play one shared clip content: an edit of one is an edit of
     // all. 0: the cell's content is its own. Saved from format 22 (absent before: every cell its own).
     std::uint64_t link{};
+    juce::String name;   // placement clips only: the name the Song view shows
 };
 
 // On-disk representation of a session. clips is [scene][track].
 struct SessionProjectData {
     std::vector<std::vector<SessionProjectClip>> clips;
+    // MIDI clips that only Song regions play (Region::clip names them), by saved id. Absent before version 24.
+    std::map<std::uint64_t, SessionProjectClip> placementClips;
     std::vector<TrackSettings> trackSettings;
     std::vector<juce::String> trackNames;  // Empty entry: use the default name.
     std::vector<int> trackColours;
@@ -184,12 +188,41 @@ struct SessionProjectData {
             for (const auto& clip : scene)
                 if (!clip.pattern->valid()) return false;
         }
+        for (const auto& [id, clip] : placementClips)
+            if (id == 0 || clip.audioFilePath.isNotEmpty() || clip.link != 0 || !clip.pattern->valid()) return false;
+        for (const auto* list : {&timeline.regions, &timeline.frozenOriginals})
+            for (const auto& region : *list) if (region.clip != 0 && placementClips.count(region.clip) == 0) return false;
         for (std::size_t i = 0; i < stepPitches.size(); ++i)
             if (stepPitches[i] < 0 || stepPitches[i] > 127
                 || stepVelocities[i] < 1 || stepVelocities[i] > 127) return false;
         return true;
     }
 };
+
+// One clip as saved: its loop, audio path, link and notes.
+inline juce::var projectClipToVar(const SessionProjectClip& clip) {
+    auto clipValue = juce::var(new juce::DynamicObject());
+    auto* clipObject = clipValue.getDynamicObject();
+    const PianoRollPattern& pattern = clip.pattern;
+    clipObject->setProperty("loopSteps", pattern.loopSteps);
+    clipObject->setProperty("audioFilePath", clip.audioFilePath);
+    if (clip.link != 0) clipObject->setProperty("link", instanceIdString(clip.link));
+
+    juce::Array<juce::var> notes;
+    for (std::size_t i = 0; i < pattern.count; ++i) {
+        const auto& note = pattern.notes[i];
+        auto noteValue = juce::var(new juce::DynamicObject());
+        auto* noteObject = noteValue.getDynamicObject();
+        noteObject->setProperty("pitch", note.pitch);
+        noteObject->setProperty("startTicks", PianoRollPattern::toTicks(note.startStep));
+        noteObject->setProperty("lengthTicks", PianoRollPattern::toTicks(note.lengthSteps));
+        noteObject->setProperty("velocity", static_cast<double>(note.velocity));
+        noteObject->setProperty("probability", static_cast<double>(note.probability));
+        notes.add(noteValue);
+    }
+    clipObject->setProperty("notes", juce::var(notes));
+    return clipValue;
+}
 
 inline juce::String serializeSessionProject(const SessionProjectData& project) {
     if (!project.valid()) return {};
@@ -328,6 +361,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
             object->setProperty("fadeOut", static_cast<int>(r.fadeOut)); object->setProperty("loopSource", r.loopSource);
             object->setProperty("reversed", r.reversed); object->setProperty("crossfade", static_cast<int>(r.crossfade));
             object->setProperty("muted", r.muted); object->setProperty("group", group);
+            if (r.clip != 0) object->setProperty("clip", instanceIdString(r.clip));
             if (savedIndex >= project.timeline.regions.size()+project.timeline.takes.size()) object->setProperty("frozenOriginal",true);
             else if (savedIndex >= project.timeline.regions.size()) object->setProperty("take", true);
             regions.add(value);
@@ -398,32 +432,79 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     for (const auto& scene : project.clips) {
         juce::Array<juce::var> tracks;
         for (const auto& clip : scene) {
-            auto clipValue = juce::var(new juce::DynamicObject());
-            auto* clipObject = clipValue.getDynamicObject();
-            const PianoRollPattern& pattern = clip.pattern;
-            clipObject->setProperty("loopSteps", pattern.loopSteps);
-            clipObject->setProperty("audioFilePath", clip.audioFilePath);
-            if (clip.link != 0) clipObject->setProperty("link", instanceIdString(clip.link));
-
-            juce::Array<juce::var> notes;
-            for (std::size_t i = 0; i < pattern.count; ++i) {
-                const auto& note = pattern.notes[i];
-                auto noteValue = juce::var(new juce::DynamicObject());
-                auto* noteObject = noteValue.getDynamicObject();
-                noteObject->setProperty("pitch", note.pitch);
-                noteObject->setProperty("startTicks", PianoRollPattern::toTicks(note.startStep));
-                noteObject->setProperty("lengthTicks", PianoRollPattern::toTicks(note.lengthSteps));
-                noteObject->setProperty("velocity", static_cast<double>(note.velocity));
-                noteObject->setProperty("probability", static_cast<double>(note.probability));
-                notes.add(noteValue);
-            }
-            clipObject->setProperty("notes", juce::var(notes));
-            tracks.add(clipValue);
+            tracks.add(projectClipToVar(clip));
         }
         scenes.add(juce::var(tracks));
     }
     rootObject->setProperty("scenes", juce::var(scenes));
+    if (!project.placementClips.empty()) {
+        juce::Array<juce::var> placements;
+        for (const auto& [id, clip] : project.placementClips) {
+            auto value = projectClipToVar(clip);
+            value.getDynamicObject()->setProperty("id", instanceIdString(id));
+            value.getDynamicObject()->setProperty("name", clip.name);
+            placements.add(value);
+        }
+        rootObject->setProperty("placementClips", juce::var(placements));
+    }
     return juce::JSON::toString(root, juce::JSON::FormatOptions().withIndentLevel(2));
+}
+
+// Reads one saved clip (a Session cell's, or a placement clip's): its loop, audio path, link and notes.
+inline bool parseProjectClip(const juce::DynamicObject* clipObject, SessionProjectClip& clip, juce::String& error) {
+    if (clipObject == nullptr) { error = "A project clip is invalid."; return false; }
+    const auto loopSteps = clipObject->getProperty("loopSteps");
+    const auto path = clipObject->getProperty("audioFilePath");
+    const auto notesValue = clipObject->getProperty("notes");
+    const auto* notes = notesValue.getArray();
+    if (!loopSteps.isInt() || notes == nullptr || notes->size() > static_cast<int>(PianoRollPattern::maxNotes)
+        || (!path.isString() && !path.isVoid())) {
+        error = "A project clip is missing valid pattern or audio data."; return false;
+    }
+    // Built on the heap: a pattern is 32 KiB, and an empty one with the default loop is not kept at all.
+    auto built = std::make_shared<PianoRollPattern>();
+    built->loopSteps = static_cast<int>(loopSteps);
+    if (built->loopSteps < 1 || built->loopSteps > PianoRollPattern::maxLoopSteps) {
+        error = "A project clip has an unsupported loop length."; return false;
+    }
+    if (path.isString()) clip.audioFilePath = path.toString();
+    if (clipObject->hasProperty("link") && (!parseInstanceId(clipObject->getProperty("link"), clip.link) || clip.link == 0)) {
+        error = "A project clip has an invalid link."; return false;
+    }
+    for (const auto& noteValue : *notes) {
+        const auto* note = noteValue.getDynamicObject();
+        if (note == nullptr) { error = "A piano-roll note is invalid."; return false; }
+        const auto pitch = note->getProperty("pitch");
+        const auto startTicks = note->getProperty("startTicks");
+        const auto lengthTicks = note->getProperty("lengthTicks");
+        const auto velocity = note->getProperty("velocity");
+        const auto probability = note->getProperty("probability");
+        const bool velocityIsNumber = velocity.isDouble() || velocity.isInt();
+        const bool probabilityIsNumber = probability.isDouble() || probability.isInt();
+        if (!pitch.isInt() || !startTicks.isInt() || !lengthTicks.isInt() || !velocityIsNumber || !probabilityIsNumber) {
+            error = "A piano-roll note contains missing or invalid values."; return false;
+        }
+        const int notePitch = static_cast<int>(pitch);
+        const int start = static_cast<int>(startTicks);
+        const int length = static_cast<int>(lengthTicks);
+        const double noteVelocity = static_cast<double>(velocity);
+        const double noteProbability = static_cast<double>(probability);
+        if (notePitch < 0 || notePitch > 127 || start < 0
+            || start >= built->loopSteps * PianoRollPattern::ticksPerStep || length < 1
+            || length > built->loopSteps * PianoRollPattern::ticksPerStep - start
+            || !std::isfinite(noteVelocity) || noteVelocity <= 0.0 || noteVelocity > 1.0
+            || !std::isfinite(noteProbability) || noteProbability < 0.0 || noteProbability > 1.0) {
+            error = "A piano-roll note is outside the supported range."; return false;
+        }
+        const auto id = built->add(notePitch, PianoRollPattern::fromTicks(start),
+            PianoRollPattern::fromTicks(length), static_cast<float>(noteVelocity),
+            static_cast<float>(noteProbability));
+        if (id == 0) { error = "A piano-roll note is outside the supported range."; return false; }
+    }
+    if (!built->valid()) { error = "A project clip contains an invalid piano-roll pattern."; return false; }
+    if (built->count > 0 || built->loopSteps != PianoRollPattern::defaultLoopSteps)
+        clip.pattern = std::shared_ptr<const PianoRollPattern>(std::move(built));
+    return true;
 }
 
 // Reads the "timeline" object of a version 8 project. Region and marker ids are made up
@@ -482,6 +563,10 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
             region.crossfade = static_cast<int>(crossfade);
         }
         region.muted = static_cast<bool>(muted);
+        // Absent before version 24: every track region plays a Session cell.
+        if (r->hasProperty("clip") && (!parseInstanceId(r->getProperty("clip"), region.clip) || region.clip == 0)) {
+            error = "A timeline region names an invalid clip."; return false;
+        }
         if (const int g = static_cast<int>(group); g > 0) {
             auto it = std::find_if(groups.begin(), groups.end(), [g](const auto& p) { return p.first == g; });
             if (it == groups.end()) { groups.emplace_back(g, timeline::newId()); it = groups.end() - 1; }
@@ -788,64 +873,33 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         }
         for (int trackIndex = 0; trackIndex < trackCount; ++trackIndex) {
             auto& clip = parsed.clips[static_cast<std::size_t>(sceneIndex)][static_cast<std::size_t>(trackIndex)];
-            const auto* clipObject = (*tracks)[trackIndex].getDynamicObject();
-            if (clipObject == nullptr) { error = "A project clip is invalid."; return false; }
-            const auto loopSteps = clipObject->getProperty("loopSteps");
-            const auto path = clipObject->getProperty("audioFilePath");
-            const auto notesValue = clipObject->getProperty("notes");
-            const auto* notes = notesValue.getArray();
-            if (!loopSteps.isInt() || notes == nullptr || notes->size() > static_cast<int>(PianoRollPattern::maxNotes)
-                || (!path.isString() && !path.isVoid())) {
-                error = "A project clip is missing valid pattern or audio data."; return false;
+            if (!parseProjectClip((*tracks)[trackIndex].getDynamicObject(), clip, error)) return false;
+        }
+    }
+    if (const auto placementsValue = rootObject->getProperty("placementClips"); !placementsValue.isVoid()) {
+        const auto* placements = placementsValue.getArray();
+        if (formatVersion < 24 || placements == nullptr || placements->size() > static_cast<int>(2 * timeline::maxRegions)) {
+            error = "The project's Song clips are invalid."; return false;
+        }
+        for (const auto& item : *placements) {
+            const auto* object = item.getDynamicObject();
+            SessionProjectClip clip;
+            std::uint64_t id{};
+            if (!parseProjectClip(object, clip, error)) return false;
+            if (!parseInstanceId(object->getProperty("id"), id) || id == 0 || parsed.placementClips.count(id) != 0
+                || !object->getProperty("name").isString() || clip.audioFilePath.isNotEmpty() || clip.link != 0) {
+                error = "A Song clip is invalid."; return false;
             }
-            // Built on the heap: a pattern is 32 KiB, and an empty one with the default loop is not kept at all.
-            auto built = std::make_shared<PianoRollPattern>();
-            built->loopSteps = static_cast<int>(loopSteps);
-            if (built->loopSteps < 1 || built->loopSteps > PianoRollPattern::maxLoopSteps) {
-                error = "A project clip has an unsupported loop length."; return false;
-            }
-            if (path.isString()) clip.audioFilePath = path.toString();
-            if (clipObject->hasProperty("link") && (!parseInstanceId(clipObject->getProperty("link"), clip.link) || clip.link == 0)) {
-                error = "A project clip has an invalid link."; return false;
-            }
-            for (const auto& noteValue : *notes) {
-                const auto* note = noteValue.getDynamicObject();
-                if (note == nullptr) { error = "A piano-roll note is invalid."; return false; }
-                const auto pitch = note->getProperty("pitch");
-                const auto startTicks = note->getProperty("startTicks");
-                const auto lengthTicks = note->getProperty("lengthTicks");
-                const auto velocity = note->getProperty("velocity");
-                const auto probability = note->getProperty("probability");
-                const bool velocityIsNumber = velocity.isDouble() || velocity.isInt();
-                const bool probabilityIsNumber = probability.isDouble() || probability.isInt();
-                if (!pitch.isInt() || !startTicks.isInt() || !lengthTicks.isInt() || !velocityIsNumber || !probabilityIsNumber) {
-                    error = "A piano-roll note contains missing or invalid values."; return false;
-                }
-                const int notePitch = static_cast<int>(pitch);
-                const int start = static_cast<int>(startTicks);
-                const int length = static_cast<int>(lengthTicks);
-                const double noteVelocity = static_cast<double>(velocity);
-                const double noteProbability = static_cast<double>(probability);
-                if (notePitch < 0 || notePitch > 127 || start < 0
-                    || start >= built->loopSteps * PianoRollPattern::ticksPerStep || length < 1
-                    || length > built->loopSteps * PianoRollPattern::ticksPerStep - start
-                    || !std::isfinite(noteVelocity) || noteVelocity <= 0.0 || noteVelocity > 1.0
-                    || !std::isfinite(noteProbability) || noteProbability < 0.0 || noteProbability > 1.0) {
-                    error = "A piano-roll note is outside the supported range."; return false;
-                }
-                const auto id = built->add(notePitch, PianoRollPattern::fromTicks(start),
-                    PianoRollPattern::fromTicks(length), static_cast<float>(noteVelocity),
-                    static_cast<float>(noteProbability));
-                if (id == 0) { error = "A piano-roll note is outside the supported range."; return false; }
-            }
-            if (!built->valid()) { error = "A project clip contains an invalid piano-roll pattern."; return false; }
-            if (built->count > 0 || built->loopSteps != PianoRollPattern::defaultLoopSteps)
-                clip.pattern = std::shared_ptr<const PianoRollPattern>(std::move(built));
+            clip.name = object->getProperty("name").toString();
+            parsed.placementClips.emplace(id, std::move(clip));
         }
     }
 
     if (formatVersion >= 8) {
         if (!parseTimeline(rootObject->getProperty("timeline"), parsed.timeline, error, formatVersion >= 9, formatVersion >= 10)) return false;
+        for (const auto* list : {&parsed.timeline.regions, &parsed.timeline.frozenOriginals, &parsed.timeline.takes})
+            for (const auto& region : *list)
+                if (region.clip != 0 && (formatVersion < 24 || list == &parsed.timeline.takes)) { error = "A timeline region names an invalid clip."; return false; }
     } else if (rootObject->hasProperty("arrangement")) {
         // Before version 8 the song was whole bars of Session clips. Each becomes a region at the same place.
         const auto songValue = rootObject->getProperty("arrangement");

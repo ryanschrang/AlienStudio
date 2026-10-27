@@ -103,7 +103,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     for (const auto& region : song->timeline.regions) {
         if (region.muted || region.row < 0 || region.row >= project.trackCount()
             || region.end() <= from || region.start >= to) continue;
-        const auto* clip = song->clips[static_cast<std::size_t>(region.source)][static_cast<std::size_t>(region.row)].audio;
+        const auto* clip = song->clipFor(region, static_cast<std::size_t>(region.row)).audio;
         if (clip == nullptr || !clip->streamed()) continue;
         std::unique_ptr<DiskAudioReader> reader;
         try { reader = clip->streamSource->valid() ? clip->streamSource->open() : nullptr; } catch (...) {}

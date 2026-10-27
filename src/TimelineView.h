@@ -11,6 +11,7 @@
 #include "StudioWidgets.h"
 #include "Timeline.h"
 #include <algorithm>
+#include <map>
 #include <cmath>
 #include <functional>
 #include <memory>
@@ -83,6 +84,7 @@ public:
     std::function<void(int)> onFreezeTrack, onUnfreezeTrack;
     std::function<void()> onPlayToggle;                        // Space
     std::function<void(int row, int source)> onOpenSource;     // double-click on a region: edit what it plays
+    std::function<void(std::uint64_t clip)> onOpenPlacement;    // ... or, for a placement clip, its notes
     std::function<void(int track, int scene, bool sceneAdded)> onClipCreated;   // a new empty clip was made for a track (a scene is added when none was free)
     std::function<void(const juce::String&)> onMessage;
     std::function<void()> onViewChanged;                       // zoom or scroll changed
@@ -445,15 +447,31 @@ public:
     bool cutSelection() {
         if (selected.empty()) return false;
         const auto ids = selected;
-        const auto cut = committed().copy(ids);
+        // Remembered before the edit: cutting the last region of a placement clip drops the clip.
+        const auto before = std::make_pair(clipboard(), clipboardOrigin());
+        remember(committed().copy(ids));
         const bool done = edit(ids.size() == 1 ? "Cut clip" : "Cut clips", [&](timeline::Timeline& t) { return t.remove(ids); });
-        if (done) { remember(cut); selected.clear(); stateChanged(); }
+        if (done) { selected.clear(); stateChanged(); }
+        else { clipboard() = before.first; clipboardOrigin() = before.second; }
         return done;
     }
     // Pastes at the play position (or `at`); rack patterns land on the focused lane.
     bool paste(std::optional<std::int64_t> at = std::nullopt) {
-        const auto clip = pastable();
+        auto clip = pastable();
         if (clip.empty()) { say("Nothing to paste."); return false; }
+        // A pasted placement clip shares the copied one while that still holds what was copied; otherwise
+        // (it was cut, or edited since) the paste brings back a clip with the copied notes.
+        std::map<std::uint64_t, std::uint64_t> restored;
+        for (auto& r : clip.regions) {
+            if (!r.ownsClip()) continue;
+            const auto& copied = clipboardOrigin().placements[r.clip];
+            const auto* now = controller.document().library.clip(library::ClipId{r.clip});
+            if (now != nullptr && controller.document().contentOf(library::ClipId{r.clip}).pattern == copied.first) continue;
+            auto& id = restored[r.clip];
+            if (id == 0) id = controller.restorePlacementClip(copied.first, copied.second);
+            if (id == 0) { say("Nothing to paste."); return false; }
+            r.clip = id;
+        }
         int laneDelta = 0;
         int firstLane = timeline::rowCount;
         for (const auto& r : clip.regions) if (r.isPattern()) firstLane = std::min(firstLane, r.row);
@@ -637,6 +655,11 @@ public:
                     say("The tempo there is already " + tempoLabel(bpm) + ".");
             });
     }
+    // Edits what a region plays: its placement clip, or its cell or rack pattern.
+    void openRegion(const timeline::Region& r) {
+        if (r.ownsClip()) { if (onOpenPlacement) onOpenPlacement(r.clip); }
+        else if (onOpenSource) onOpenSource(r.row, r.source);
+    }
     // Gives one placement its own copy of what it plays (see ProjectController::makePlacementUnique).
     bool makePlacementUnique(std::uint32_t id) {
         if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return false; }
@@ -644,7 +667,7 @@ public:
         if (!controller.makePlacementUnique(id)) { say("That placement already plays content of its own."); return false; }
         afterEdit();
         say("This placement now has its own copy: edit it without changing the others.");
-        if (const auto* r = committed().find(id); r != nullptr && onClipCreated)
+        if (const auto* r = committed().find(id); r != nullptr && r->playsCell() && onClipCreated)   // an audio placement took a cell
             onClipCreated(r->row, r->source, controller.document().sceneCount() != scenesBefore);
         return true;
     }
@@ -853,7 +876,11 @@ public:
     // position) its rows and sources meant, so a paste after tracks or scenes were deleted or reordered still
     // lands on the right ones and skips the clips whose track or scene is gone.
     static timeline::Clipboard& clipboard() { static timeline::Clipboard shared; return shared; }
-    struct ClipboardOrigin { std::vector<std::uint32_t> tracks, scenes; int patterns{0}; };
+    struct ClipboardOrigin {
+        std::vector<std::uint32_t> tracks, scenes; int patterns{0};
+        // Placement clips as they were copied, so a paste can bring back one that was cut (and so is gone).
+        std::map<std::uint64_t, std::pair<std::shared_ptr<const PianoRollPattern>, juce::String>> placements;
+    };
     static ClipboardOrigin& clipboardOrigin() { static ClipboardOrigin origin; return origin; }
     void remember(timeline::Clipboard clip) {
         clipboard() = std::move(clip);
@@ -862,6 +889,9 @@ public:
         for (const auto& track : controller.document().tracks) origin.tracks.push_back(track.id);
         for (const auto& scene : controller.document().scenes) origin.scenes.push_back(scene.id);
         origin.patterns = controller.channelRack().patternCount;
+        const auto& d = controller.document();
+        for (const auto& r : clipboard().regions)
+            if (r.ownsClip()) origin.placements[r.clip] = {d.contentOf(library::ClipId{r.clip}).pattern, d.placementName(r.clip)};
     }
     timeline::Clipboard pastable() const {
         const auto& origin = clipboardOrigin();
@@ -870,6 +900,11 @@ public:
         for (auto r : clipboard().regions) {
             if (r.isPattern()) {
                 if (origin.patterns != controller.channelRack().patternCount || r.source < 0 || r.source >= origin.patterns) continue;   // patterns were added or removed: their numbers mean something else now
+            } else if (r.ownsClip()) {
+                if (r.row < 0 || r.row >= static_cast<int>(origin.tracks.size()) || origin.placements.count(r.clip) == 0) continue;
+                const auto track = std::find_if(d.tracks.begin(), d.tracks.end(), [&](const auto& t) { return t.id == origin.tracks[static_cast<std::size_t>(r.row)]; });
+                if (track == d.tracks.end()) continue;
+                r.row = static_cast<int>(track - d.tracks.begin());
             } else {
                 if (r.row < 0 || r.row >= static_cast<int>(origin.tracks.size()) || r.source < 0 || r.source >= static_cast<int>(origin.scenes.size())) continue;
                 const auto track = std::find_if(d.tracks.begin(), d.tracks.end(), [&](const auto& t) { return t.id == origin.tracks[static_cast<std::size_t>(r.row)]; });
@@ -1285,7 +1320,7 @@ public:
         const bool bypass = e.mods.isAltDown();
         const auto tick = snapTick(tickAtX(static_cast<double>(e.x)), bypass);
         if (hit.zone == Zone::region) {
-            if (const auto* r = committed().find(hit.region); r != nullptr && onOpenSource) onOpenSource(r->row, r->source);
+            if (const auto* r = committed().find(hit.region); r != nullptr) openRegion(*r);
         } else if (hit.zone == Zone::lane && hit.displayRow >= 0) {
             placeDefault(timelineRow(hit.displayRow), tick);
         } else if (hit.zone == Zone::markerStrip) {
@@ -1499,7 +1534,7 @@ private:
                 case cmdDuplicate: duplicateSelection(); break; case cmdCopy: copySelection(); break;
                 case cmdCut: cutSelection(); break; case cmdDelete: deleteSelection(); break;
                 case cmdGroup: groupSelection(); break; case cmdUngroup: ungroupSelection(); break;
-                case cmdOpen: if (const auto* r = committed().find(region); r != nullptr && onOpenSource) onOpenSource(r->row, r->source); break;
+                case cmdOpen: if (const auto* r = committed().find(region); r != nullptr) openRegion(*r); break;
                 case cmdMakeUnique: makePlacementUnique(region); break;
                 default: break;
                 }
@@ -1724,6 +1759,10 @@ private:
             const auto& p = controller.channelRack();
             return p.validPattern(r.source) ? juce::String::fromUTF8(p.patternNames[static_cast<std::size_t>(r.source)].c_str()) : juce::String("Pattern");
         }
+        if (r.ownsClip()) {
+            const auto name = d.placementName(r.clip);
+            return (name.isNotEmpty() ? name : juce::String("Clip")) + ui::utf8("  \xc2\xb7  ") + "Song clip";
+        }
         if (!d.isValidCell(r.row, r.source)) return "Clip";
         const auto& clip = d.clip(r.row, r.source);
         const auto scene = d.scenes[static_cast<std::size_t>(r.source)].name;
@@ -1882,7 +1921,7 @@ private:
 
     bool isAudioRegion(const timeline::Region& r) const {
         const auto& d = controller.document();
-        return !r.isPattern() && d.isValidCell(r.row, r.source) && d.clip(r.row, r.source).audio != nullptr;
+        return !r.isPattern() && d.placementContent(r).audio != nullptr;
     }
     // Where the fade-in (or crossfade) and fade-out handles sit across a clip's box.
     std::pair<float, float> fadeHandles(const timeline::Region& r, juce::Rectangle<float> box) const {
@@ -1974,8 +2013,8 @@ private:
             }
             return;
         }
-        if (!d.isValidCell(r.row, r.source)) return;
-        const auto& clip = d.clip(r.row, r.source);
+        if (!r.ownsClip() && !d.isValidCell(r.row, r.source)) return;
+        const auto clip = d.placementContent(r);
         if (clip.audio != nullptr) {
             const auto& audio = *clip.audio;
             if (audio.streamed() && audio.waveformCount == 0) {   // too long to keep in memory: its waveform is in the clip detail view

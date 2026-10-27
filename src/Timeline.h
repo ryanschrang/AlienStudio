@@ -7,6 +7,8 @@
 // two kinds of source on the timeline by reference:
 //   * a Session clip (a track and a scene), which is MIDI or audio depending on
 //     what that slot holds, lives on its track's row;
+//   * a placement clip (a clip library id, no scene), a MIDI clip of the song's
+//     own that no Session cell launches, also lives on its track's row;
 //   * a Channel Rack pattern (a pattern index) lives on one of the rack lanes.
 // Several placements of one source all follow its edits. Regions on a row never
 // overlap: placing, pasting or moving a region over others overwrites them.
@@ -195,7 +197,10 @@ struct Region {
     std::uint32_t id{};
     std::uint32_t group{};            // 0: not grouped. Regions sharing a group move, copy and select together.
     int row{};                        // Session track, or rackRowBase + lane
-    int source{};                     // Session scene, or Channel Rack pattern index
+    int source{};                     // Session scene, or Channel Rack pattern index (-1 for a placement clip)
+    // A placement clip: the id (library::ClipId) of the clip this region plays instead of a Session cell.
+    // 0 for every other region. Regions with the same id share it, so an edit of one is heard in all.
+    std::uint64_t clip{};
     std::int64_t start{}, length{ticksPerBar};
     // Where in the source the region begins (nonzero after trimming its left edge).
     // MIDI and rack patterns count ticks, audio counts seconds; both are kept
@@ -214,6 +219,9 @@ struct Region {
     bool loopSource{}, reversed{};
     std::int64_t end() const noexcept { return start + length; }
     bool isPattern() const noexcept { return isPatternRow(row); }
+    bool ownsClip() const noexcept { return clip != 0; }
+    // Plays a Session cell (row, source), as opposed to a rack pattern or a placement clip.
+    bool playsCell() const noexcept { return !isPattern() && clip == 0; }
     bool operator==(const Region&) const = default;
 };
 
@@ -243,8 +251,9 @@ struct Clipboard {
     // Drops regions whose track, scene or pattern no longer exists.
     void prune(int tracks, int scenes, int patterns) {
         std::erase_if(regions, [&](const Region& r) {
-            return r.isPattern() ? r.source < 0 || r.source >= patterns
-                                 : r.row < 0 || r.row >= tracks || r.source < 0 || r.source >= scenes;
+            if (r.isPattern()) return r.source < 0 || r.source >= patterns;
+            if (r.ownsClip()) return r.row < 0 || r.row >= tracks;
+            return r.row < 0 || r.row >= tracks || r.source < 0 || r.source >= scenes;
         });
     }
 };
@@ -351,7 +360,7 @@ struct Timeline {
                 || r.offset < 0 || r.offset > maxLength || !std::isfinite(r.audioOffset) || r.audioOffset < 0
                 || !std::isfinite(r.gain) || r.gain < 0 || r.gain > 64
                 || r.fadeIn < 0 || r.fadeOut < 0 || r.crossfade < 0 || r.fadeIn > r.length
-                || r.fadeOut > r.length || r.crossfade > r.length || r.group != 0) return false;
+                || r.fadeOut > r.length || r.crossfade > r.length || r.group != 0 || r.clip != 0) return false;
             for (std::size_t j = 0; j < i; ++j) if (takes[j].id == r.id) return false;
         }
         if (meterChanges.size() > maxMeterChanges || length() > maxLength) return false;
@@ -384,9 +393,10 @@ struct Timeline {
             if (r.id == 0 || r.start < 0 || r.length < 1 || r.end() > length() || r.offset < 0
                 || !std::isfinite(r.audioOffset) || r.audioOffset < 0.0 || !std::isfinite(r.gain) || r.gain < 0.0 || r.gain > 64.0
                 || r.fadeIn < 0 || r.fadeOut < 0 || r.fadeIn > r.length || r.fadeOut > r.length
-                || r.crossfade < 0 || r.crossfade > r.length || r.source < 0) return false;
-            if (r.isPattern()) { if (r.source >= patterns) return false; }
-            else if (r.row < 0 || r.row >= tracks || r.source >= scenes) return false;
+                || r.crossfade < 0 || r.crossfade > r.length) return false;
+            if (r.isPattern()) { if (r.clip != 0 || r.source < 0 || r.source >= patterns) return false; }
+            else if (r.row < 0 || r.row >= tracks) return false;
+            else if (r.ownsClip() ? r.source != -1 : r.source < 0 || r.source >= scenes) return false;
             order.push_back(&r);
         }
         std::sort(order.begin(), order.end(), [](const Region* a, const Region* b) {
@@ -424,7 +434,7 @@ struct Timeline {
             || tempoChanges != o.tempoChanges || meterChanges != o.meterChanges) return false;
         for (std::size_t i = 0; i < regions.size(); ++i) {
             const auto& a = regions[i]; const auto& b = o.regions[i];
-            if (a.row != b.row || a.source != b.source || a.start != b.start || a.length != b.length
+            if (a.row != b.row || a.source != b.source || a.clip != b.clip || a.start != b.start || a.length != b.length
                 || a.offset != b.offset || a.audioOffset != b.audioOffset || a.gain != b.gain
                 || a.fadeIn != b.fadeIn || a.fadeOut != b.fadeOut || a.crossfade != b.crossfade || a.loopSource != b.loopSource
                 || a.reversed != b.reversed || a.muted != b.muted) return false;
@@ -937,6 +947,7 @@ struct Timeline {
         for (auto& lane : automationLanes) { if (lane.track == a) lane.track = b; else if (lane.track == b) lane.track = a; }
         for (auto& r : regions) if (!r.isPattern()) { if (r.row == a) r.row = b; else if (r.row == b) r.row = a; }
     }
+    // Scene changes leave placement clips alone: their source is -1, which matches no scene.
     void sceneDeleted(int scene) {
         std::erase_if(frozenOriginals,[=](const Region& r){return r.source==scene;});
         for(auto& r:frozenOriginals)if(r.source>scene)--r.source;
@@ -966,8 +977,9 @@ struct Timeline {
         std::erase_if(takes, [=](const Region& r) { return r.row < 0 || r.row >= tracks || r.source < 0 || r.source >= scenes; });
         std::erase_if(automationLanes, [=](const automation::Lane& lane) { return lane.track < 0 || lane.track >= tracks; });
         std::erase_if(regions, [&](const Region& r) {
-            return r.isPattern() ? r.source < 0 || r.source >= patterns
-                                 : r.row < 0 || r.row >= tracks || r.source < 0 || r.source >= scenes;
+            if (r.isPattern()) return r.source < 0 || r.source >= patterns;
+            if (r.ownsClip()) return r.row < 0 || r.row >= tracks;   // a placement clip belongs to no scene
+            return r.row < 0 || r.row >= tracks || r.source < 0 || r.source >= scenes;
         });
         tidyGroups();
     }
