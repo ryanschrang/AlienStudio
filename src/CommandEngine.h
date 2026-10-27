@@ -2,6 +2,7 @@
 #include "ProjectController.h"
 #include <juce_core/juce_core.h>
 #include <array>
+#include <cmath>
 #include <limits>
 #include <optional>
 #include <variant>
@@ -21,13 +22,15 @@ struct DeleteTrack { int track{-1}; };
 struct MoveTrack { int track{-1}, to{-1}; };        // `to` is the track's index afterwards
 struct RenameTrack { int track{-1}; juce::String name; };
 struct ColorTrack { int track{-1}, colour{-1}; };   // index into the track colour palette
+struct SetTrackVolume { int track{-1}; double gain{1.0}; }; // linear gain, 0..2 (1 is unity)
+struct SetTrackPan { int track{-1}; double pan{}; };         // -1 left, 0 centre, 1 right
 
-using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack>;
+using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan>;
 
 namespace detail {
 // Indexed like Command's alternatives.
-inline constexpr std::array<const char*, 5> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack"};
-inline constexpr std::array<const char*, 5> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track"};
+inline constexpr std::array<const char*, 7> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan"};
+inline constexpr std::array<const char*, 7> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan"};
 static_assert(names.size() == std::variant_size_v<Command> && labels.size() == names.size());
 
 // The name the controller stores for `name` (it trims and caps track names).
@@ -74,6 +77,16 @@ inline juce::String refusal(const ProjectDocument& d, const Command& command) {
         if (const auto why = track(c->track); why.isNotEmpty()) return why;
         return detail::trackName(c->name).isNotEmpty() ? juce::String{} : "A track name cannot be blank.";
     }
+    if (const auto* c = std::get_if<SetTrackVolume>(&command)) {
+        if (const auto why = track(c->track); why.isNotEmpty()) return why;
+        return std::isfinite(c->gain) && c->gain >= 0 && c->gain <= 2 ? juce::String{}
+            : "Track volume must be a finite linear gain from 0 to 2 (1 is unity).";
+    }
+    if (const auto* c = std::get_if<SetTrackPan>(&command)) {
+        if (const auto why = track(c->track); why.isNotEmpty()) return why;
+        return std::isfinite(c->pan) && c->pan >= -1 && c->pan <= 1 ? juce::String{}
+            : "Track pan must be a finite number from -1 (left) to 1 (right).";
+    }
     const auto& c = std::get<ColorTrack>(command);
     if (const auto why = track(c.track); why.isNotEmpty()) return why;
     return c.colour >= 0 && c.colour < ProjectController::trackColourCount ? juce::String{}
@@ -86,6 +99,8 @@ inline juce::String describe(const ProjectDocument& d, const Command& command) {
     if (const auto* c = std::get_if<DeleteTrack>(&command)) return "Delete " + detail::trackTitle(d, c->track);
     if (const auto* c = std::get_if<MoveTrack>(&command)) return "Move " + detail::trackTitle(d, c->track) + " to position " + juce::String(c->to + 1);
     if (const auto* c = std::get_if<RenameTrack>(&command)) return "Rename " + detail::trackTitle(d, c->track) + " to \"" + detail::trackName(c->name) + "\"";
+    if (const auto* c = std::get_if<SetTrackVolume>(&command)) return "Set volume of " + detail::trackTitle(d, c->track) + " to linear gain " + juce::String(c->gain, 6);
+    if (const auto* c = std::get_if<SetTrackPan>(&command)) return "Set pan of " + detail::trackTitle(d, c->track) + " to " + juce::String(c->pan, 6);
     const auto& c = std::get<ColorTrack>(command);
     return "Colour " + detail::trackTitle(d, c.track) + " with colour " + juce::String(c.colour);
 }
@@ -112,6 +127,10 @@ inline juce::String applyTo(ProjectDocument& d, const Command& command) {
         for (int t = c->track; t != c->to; t += step) detail::swapTracks(d, t, t + step);
     } else if (const auto* c = std::get_if<RenameTrack>(&command)) {
         d.tracks[static_cast<std::size_t>(c->track)].name = detail::trackName(c->name);
+    } else if (const auto* c = std::get_if<SetTrackVolume>(&command)) {
+        d.tracks[static_cast<std::size_t>(c->track)].settings.gain = static_cast<float>(c->gain);
+    } else if (const auto* c = std::get_if<SetTrackPan>(&command)) {
+        d.tracks[static_cast<std::size_t>(c->track)].settings.pan = static_cast<float>(c->pan);
     } else {
         const auto& colour = std::get<ColorTrack>(command);
         d.tracks[static_cast<std::size_t>(colour.track)].colour = colour.colour;
@@ -127,6 +146,8 @@ inline juce::var arguments(const Command& command) {
     else if (const auto* c = std::get_if<MoveTrack>(&command)) { object->setProperty("track", c->track); object->setProperty("to", c->to); }
     else if (const auto* c = std::get_if<RenameTrack>(&command)) { object->setProperty("track", c->track); object->setProperty("name", c->name); }
     else if (const auto* c = std::get_if<ColorTrack>(&command)) { object->setProperty("track", c->track); object->setProperty("colour", c->colour); }
+    else if (const auto* c = std::get_if<SetTrackVolume>(&command)) { object->setProperty("track", c->track); object->setProperty("gain", c->gain); }
+    else if (const auto* c = std::get_if<SetTrackPan>(&command)) { object->setProperty("track", c->track); object->setProperty("pan", c->pan); }
     return result;
 }
 
@@ -138,9 +159,10 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
     std::size_t index = 0;
     while (index < detail::names.size() && commandName != detail::names[index]) ++index;
     if (index >= detail::names.size()) { error = "Unknown command \"" + commandName + "\"."; return std::nullopt; }
-    static const std::array<juce::StringArray, 5> allowed{
+    static const std::array<juce::StringArray, 7> allowed{
         juce::StringArray{}, juce::StringArray{"track"}, juce::StringArray{"track", "to"},
-        juce::StringArray{"track", "name"}, juce::StringArray{"track", "colour"}};
+        juce::StringArray{"track", "name"}, juce::StringArray{"track", "colour"},
+        juce::StringArray{"track", "gain"}, juce::StringArray{"track", "pan"}};
     const auto* object = args.getDynamicObject();
     if (object == nullptr && !args.isVoid()) { error = commandName + " takes an object of arguments."; return std::nullopt; }
     if (object != nullptr)
@@ -167,12 +189,24 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
         return juce::String{};
     };
     std::optional<Command> command;
+    auto number = [&](const char* key) {
+        const auto value = object != nullptr ? object->getProperty(key) : juce::var{};
+        if (ok && (value.isInt() || value.isInt64() || value.isDouble())) {
+            const double numeric = static_cast<double>(value);
+            if (std::isfinite(numeric)) return numeric;
+        }
+        if (ok) error = commandName + " needs a finite-number \"" + juce::String(key) + "\" argument.";
+        ok = false;
+        return 0.0;
+    };
     switch (index) {
         case 0: command = CreateTrack{}; break;
         case 1: command = DeleteTrack{integer("track")}; break;
         case 2: { const int track = integer("track"); command = MoveTrack{track, integer("to")}; break; }
         case 3: { const int track = integer("track"); command = RenameTrack{track, text("name")}; break; }
-        default: { const int track = integer("track"); command = ColorTrack{track, integer("colour")}; break; }
+        case 4: { const int track = integer("track"); command = ColorTrack{track, integer("colour")}; break; }
+        case 5: { const int track = integer("track"); command = SetTrackVolume{track, number("gain")}; break; }
+        case 6: { const int track = integer("track"); command = SetTrackPan{track, number("pan")}; break; }
     }
     if (!ok) return std::nullopt;
     return command;
@@ -251,6 +285,8 @@ private:
             return true;
         }
         if (const auto* c = std::get_if<RenameTrack>(&command)) return controller.renameTrack(c->track, c->name);
+        if (const auto* c = std::get_if<SetTrackVolume>(&command)) return controller.setTrackVolume(c->track, c->gain);
+        if (const auto* c = std::get_if<SetTrackPan>(&command)) return controller.setTrackPan(c->track, c->pan);
         const auto& c = std::get<ColorTrack>(command);
         return controller.setTrackColour(c.track, c.colour);
     }

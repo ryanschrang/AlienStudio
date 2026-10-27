@@ -230,6 +230,108 @@ static void parseTests() {
     require(refuses("ColorTrack", "[1, 2]", "object"), "arguments must be an object");
 }
 
+static void parameterCommandTests() {
+    ToneEngine engine;
+    alien::ProjectController c(engine);
+    cmd::CommandEngine commands(c);
+    const auto& d = c.document();
+    c.pushDocumentToEngine();
+    engine.tracks[0].mute.store(true);
+    c.trackSettingsEdited(0); c.markAsNewBaseline();
+    const auto before = d;
+    const auto history = historyOf(c);
+    const std::vector<cmd::Command> mix{cmd::SetTrackVolume{0, .5}, cmd::SetTrackPan{0, -.25}};
+    const auto preview = commands.preview(mix);
+    require(preview.ok && preview.changed && preview.changes.size() == 2
+        && preview.after.tracks[0].settings.gain == .5f && preview.after.tracks[0].settings.pan == -.25f
+        && preview.changes[0].contains("linear gain") && preview.changes[1].contains("Track 1"),
+        "parameter preview describes and predicts both values");
+    require(alien::sameContent(d, before) && historyOf(c) == history
+        && engine.tracks[0].gain.load() == 1 && engine.tracks[0].pan.load() == 0,
+        "parameter preview touches neither document, history nor live controls");
+    require(commands.batch(mix, "Balance track").ok && alien::sameContent(d, preview.after)
+        && engine.tracks[0].gain.load() == .5f && engine.tracks[0].pan.load() == -.25f
+        && d.tracks[0].settings.mute && engine.tracks[0].mute.load(),
+        "parameter execution matches preview, publishes controls and preserves unrelated settings");
+    require(c.undoLabel() == "Balance track" && commands.undo() && !c.canUndo()
+        && alien::sameContent(d, before) && engine.tracks[0].gain.load() == 1 && engine.tracks[0].pan.load() == 0,
+        "one undo restores both document and live controls");
+    require(commands.redo() && engine.tracks[0].gain.load() == .5f && engine.tracks[0].pan.load() == -.25f,
+        "one redo restores both parameters");
+    const auto mixed = d;
+    const auto mixedHistory = historyOf(c);
+    const auto failed = commands.batch({cmd::SetTrackVolume{0, .75}, cmd::SetTrackPan{0, 1.01}}, "Invalid mix");
+    require(!failed.ok && failed.failedCommand == 1 && alien::sameContent(d, mixed)
+        && historyOf(c) == mixedHistory && engine.tracks[0].gain.load() == .5f && engine.tracks[0].pan.load() == -.25f,
+        "a later invalid parameter prevents every earlier write in the batch");
+    for (const auto& value : std::vector<cmd::Command>{cmd::SetTrackVolume{0, .5}, cmd::SetTrackPan{0, -.25},
+             cmd::SetTrackVolume{0, std::nextafter(.5, 1.0)}}) {
+        const auto result = commands.execute(value);
+        require(result.ok && !result.changed && historyOf(c) == mixedHistory,
+            "unchanged values, including values equal at stored float precision, create no history");
+    }
+    require(commands.undo(), "prepare redo history");
+    const auto redoHistory = historyOf(c);
+    for (const auto& value : std::vector<cmd::Command>{cmd::SetTrackVolume{-1, 1}, cmd::SetTrackPan{99, 0},
+             cmd::SetTrackVolume{0, -.001}, cmd::SetTrackVolume{0, 2.000000000001}, cmd::SetTrackPan{0, -1.000000000001},
+             cmd::SetTrackVolume{0, std::numeric_limits<double>::infinity()},
+             cmd::SetTrackPan{0, std::numeric_limits<double>::quiet_NaN()}}) {
+        const auto result = commands.execute(value);
+        require(!result.ok && result.error.isNotEmpty() && result.failedCommand == 0
+            && historyOf(c) == redoHistory && alien::sameContent(d, before)
+            && engine.tracks[0].gain.load() == 1 && engine.tracks[0].pan.load() == 0,
+            "invalid targets/ranges/non-finite values preserve redo, document and engine");
+    }
+    c.setExternalBusy(true);
+    require(!commands.execute(cmd::SetTrackVolume{0, .3}).ok && !c.setTrackVolume(0, .3)
+        && !c.setTrackPan(0, .3) && historyOf(c) == redoHistory
+        && engine.tracks[0].gain.load() == 1 && engine.tracks[0].pan.load() == 0, "busy project refuses parameter writes");
+    c.setExternalBusy(false);
+    require(!c.setTrackVolume(0, std::numeric_limits<double>::quiet_NaN()) && !c.setTrackPan(0, 2)
+        && !c.setTrackVolume(-1, .5) && alien::sameContent(d, before)
+        && engine.tracks[0].gain.load() == 1 && engine.tracks[0].pan.load() == 0, "controller setters also validate direct callers");
+    require(commands.batch({cmd::SetTrackVolume{0, 0}, cmd::SetTrackPan{0, -1}}, "Left silence").ok
+        && d.tracks[0].settings.gain == 0 && d.tracks[0].settings.pan == -1,
+        "lower endpoints are valid");
+    require(commands.execute(cmd::SetTrackVolume{0, 2}).ok && c.undoLabel() == "Set track volume"
+        && commands.execute(cmd::SetTrackPan{0, 1}).ok && c.undoLabel() == "Set track pan",
+        "upper endpoints are valid and individual commands have named undo steps");
+    const auto structureBase = d;
+    require(commands.batch({cmd::CreateTrack{}, cmd::SetTrackVolume{4, .25}, cmd::MoveTrack{4, 0},
+             cmd::SetTrackPan{0, .5}, cmd::SetTrackVolume{0, .25}}, "Create mixed track").ok
+        && d.tracks[0].settings.gain == .25f && d.tracks[0].settings.pan == .5f
+        && engine.tracks[0].gain.load() == .25f && engine.tracks[0].pan.load() == .5f,
+        "parameters follow sequential create/reorder operations, including an unchanged command");
+    require(commands.undo() && alien::sameContent(d, structureBase), "mixed structural/parameter batch is one undo step");
+}
+
+static void parameterParseTests() {
+    juce::String error;
+    require(cmd::name(cmd::SetTrackVolume{}) == "SetTrackVolume" && cmd::name(cmd::SetTrackPan{}) == "SetTrackPan",
+        "parameter commands have stable external names");
+    for (const auto& command : std::vector<cmd::Command>{cmd::SetTrackVolume{2, .125}, cmd::SetTrackPan{1, -.75}}) {
+        const auto parsed = cmd::parse(cmd::name(command), cmd::arguments(command), error);
+        require(parsed && parsed->index() == command.index()
+            && juce::JSON::toString(cmd::arguments(*parsed)) == juce::JSON::toString(cmd::arguments(command)),
+            "parameter commands round-trip by stable name and arguments");
+    }
+    for (const char* json : {R"({"track":0,"gain":0})", R"({"track":0,"gain":1.5})"})
+        require(cmd::parse("SetTrackVolume", juce::JSON::parse(json), error).has_value(), "integer and decimal gains parse");
+    require(cmd::parse("SetTrackPan", juce::JSON::parse(R"({"track":0,"pan":-0.25})"), error).has_value(),
+        "signed pan values parse by their external name");
+    for (const char* json : {R"({"track":0})", R"({"track":0,"gain":true})", R"({"track":0,"gain":"0.5"})",
+                             R"({"track":0,"gain":null})", R"({"track":0,"gain":1,"extra":0})",
+                             R"({"track":0.5,"gain":1})"})
+        require(!cmd::parse("SetTrackVolume", juce::JSON::parse(json), error) && error.isNotEmpty(),
+            "missing, mistyped, fractional-index and unknown arguments are refused");
+    const auto valid = cmd::arguments(cmd::SetTrackPan{0, .5});
+    for (const double value : {std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::quiet_NaN()}) {
+        auto args = valid.clone(); args.getDynamicObject()->setProperty("pan", value);
+        require(!cmd::parse("SetTrackPan", args, error) && error.contains("finite-number"), "non-finite numeric variants are refused");
+    }
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     nameTests();
@@ -238,6 +340,8 @@ int main() {
     previewTests();
     invalidArgumentTests();
     parseTests();
+    parameterCommandTests();
+    parameterParseTests();
     std::cout << "CommandEngineTests passed\n";
     return 0;
 }

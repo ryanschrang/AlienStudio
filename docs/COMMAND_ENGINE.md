@@ -1,6 +1,6 @@
 # Command Engine
 
-Roadmap workstream T1-02, checklist ID CMD-01. This note covers the first slice and what later
+Roadmap workstream T1-02, checklist ID CMD-01. This note covers the structural-track and volume/pan slices and what later
 slices need.
 
 ## Why
@@ -10,12 +10,12 @@ layer then serves undo/redo, macros, key bindings, MIDI controller scripts, user
 much later, the Workflow Assistant, which would plan and preview through the same commands
 instead of driving the UI.
 
-## Design (first slice)
+## Design
 
 Code: `src/CommandEngine.h`, tests: `tests/CommandEngineTests.cpp`.
 
 - **Command.** A `std::variant` of small argument structs (`CreateTrack`, `DeleteTrack`,
-  `MoveTrack`, `RenameTrack`, `ColorTrack`). `name()` gives the stable name (for example
+  `MoveTrack`, `RenameTrack`, `ColorTrack`, `SetTrackVolume`, `SetTrackPan`). `name()` gives the stable name (for example
   `"RenameTrack"`) and `label()` the undo-menu text. `arguments()` and `parse()` convert a command
   to and from its name plus a JSON-style object (`{"track": 1, "name": "Bass"}`), so scripts and
   macros can store and replay commands. `parse()` refuses unknown names, missing or mistyped
@@ -29,7 +29,7 @@ Code: `src/CommandEngine.h`, tests: `tests/CommandEngineTests.cpp`.
   command would be refused, it returns that command's index and reason and touches nothing: not
   the document, the engine, playback or the history (the redo stack survives). Otherwise it runs
   each command through the existing `ProjectController` operation (`addTrack`, `deleteTrack`,
-  `moveTrack`, `renameTrack`, `setTrackColour`) and calls `commit(label)` once, which makes the
+  `moveTrack`, `renameTrack`, `setTrackColour`, `setTrackVolume`, `setTrackPan`) and calls `commit(label)` once, which makes the
   batch one `DocumentHistory` step. If the controller still refuses a command part way (it should
   not, since the preview accepted it), `ProjectController::revertTo()` restores the document
   captured before the batch and nothing is committed.
@@ -44,11 +44,32 @@ Code: `src/CommandEngine.h`, tests: `tests/CommandEngineTests.cpp`.
 - `MoveTrack {track, to}` is a real move (the tracks in between shift by one), done as adjacent
   swaps with the controller's `moveTrack(t, +-1)` and recorded as one undo step.
 
-Controller changes are additive: `setTrackColour()` with `trackColourCount` (the colour index
-was already stored and saved; there was no operation to change it) and `revertTo()`. No project
-format change.
+Controller additions are `setTrackColour()` with `trackColourCount`, `revertTo()`,
+and the validated, uncommitted setters `setTrackVolume()` / `setTrackPan()`.
+The command engine records the final history step. No project format change.
 
-### Known limits of this slice
+### Track volume and pan
+
+`SetTrackVolume {track, gain}` uses linear gain from 0 to 2: 0 silences the fader,
+1 is unity and 2 is twice unity. `SetTrackPan {track, pan}` uses -1 for left,
+0 for centre and 1 for right. Tracks are zero-based. Their argument objects are
+`{"track": 0, "gain": 0.5}` and `{"track": 0, "pan": -0.25}` respectively.
+Numbers may be integers or decimals; strings, booleans, null, missing/unknown
+arguments and non-finite values are refused. Ranges are checked before narrowing
+to the float values stored by the mixer.
+
+Preview changes only its copied document. Execute writes the document and only
+the addressed engine atomic through the controller, preserving the other track
+settings. The caller commits once per batch. A repeated value (including a double
+that rounds to the same stored float) adds no history entry. A later invalid
+command prevents every earlier write; undo and redo restore document and controls.
+These commands can follow CreateTrack or MoveTrack in the same batch.
+
+CommandEngineTests covers these contracts, argument round trips and boundary
+values. Build/test results are recorded in the feature PR. Real hardware listening
+and automation interaction remain manual checks.
+
+### Known limits of these slices
 
 - The Session view still calls the controller directly; no UI calls the command engine yet.
   Moving the track menu, rename box and add-track button onto commands is the next small step.
@@ -66,7 +87,8 @@ format change.
 | CreateClip | `ProjectController::placeNewClip`, `setClipPattern`, `importAudio` | Async audio import needs a command that completes later |
 | DuplicateClip | `editTimeline` with `Timeline::duplicate`; `duplicateScene` | Command wrapper only |
 | MakeClipUnique | Song regions share Session clip notes | New operation (T1-03 shared clip model) |
-| SetParameter | Mixer edits via `trackSettingsEdited`, `returnSettingsEdited`, `masterGainEdited` with coalesced `commit` | Mixer writes the engine first today; a command must write document then engine |
+| SetTrackVolume, SetTrackPan | Implemented: command setters write document then the addressed engine control | Existing mixer UI still uses its direct editing path |
+| SetParameter (other targets) | Mixer edits via `trackSettingsEdited`, `returnSettingsEdited`, `masterGainEdited` with coalesced `commit` | Remaining targets need command wrappers |
 | AutomateParameter | `editTimeline` on `parameterLanes`, plugin automation targets | Command wrapper over lane edits |
 | CreateSend | Four fixed returns with per-track send level and pre/post (`TrackSettings`) | "Create" means new return tracks: T1-05 routing |
 | CreateBus, RouteTrack, CreateGroup, AddToGroup | None | T1-05 mixer routing (MIX-03, MIX-04, MIX-05) |

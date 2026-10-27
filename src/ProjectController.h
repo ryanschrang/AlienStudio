@@ -498,6 +498,23 @@ public:
         return true;
     }
 
+    // Message-thread command setters. Only the addressed control changes; the
+    // caller commits after the complete command/batch, just like track renaming.
+    bool setTrackVolume(int track, double gain) {
+        if (busy || track < 0 || track >= doc.trackCount() || !std::isfinite(gain) || gain < 0 || gain > 2) return false;
+        const auto value = static_cast<float>(gain);
+        doc.tracks[static_cast<std::size_t>(track)].settings.gain = value;
+        engine.tracks[static_cast<std::size_t>(track)].gain.store(value);
+        return true;
+    }
+    bool setTrackPan(int track, double pan) {
+        if (busy || track < 0 || track >= doc.trackCount() || !std::isfinite(pan) || pan < -1 || pan > 1) return false;
+        const auto value = static_cast<float>(pan);
+        doc.tracks[static_cast<std::size_t>(track)].settings.pan = value;
+        engine.tracks[static_cast<std::size_t>(track)].pan.store(value);
+        return true;
+    }
+
     void trackSettingsEdited(int track) {
         if (track < 0 || track >= doc.trackCount() || track >= static_cast<int>(engine.tracks.size())) return;
         auto next=engine.tracks[static_cast<std::size_t>(track)].snapshot();

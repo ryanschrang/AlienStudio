@@ -36,6 +36,13 @@ inline std::int64_t snapSize(Snap s) {
     case Snap::sixteenth: return timeline::ticksPerStep; default: return 0;
     }
 }
+// Removes a recording take from the take list, as one undo step. The comp and the audio file stay.
+inline bool forgetTake(ProjectController& controller, std::uint32_t id) {
+    if (controller.isBusy() || controller.isRecording()) return false;
+    return controller.editTimeline("Forget recording take", [=](timeline::Timeline& t) {
+        return std::erase_if(t.takes, [=](const auto& take) { return take.id == id; }) != 0;
+    });
+}
 } // namespace tlui
 
 class TimelineCanvas final : public juce::Component, public juce::DragAndDropTarget {
@@ -43,10 +50,11 @@ public:
     static constexpr int headerWidth = 156, markerStripHeight = 20, loopStripHeight = 16, rulerHeight = 24;
     static constexpr int topHeight = markerStripHeight + loopStripHeight + rulerHeight;
     static constexpr int rowHeight = 46, edgeGrab = 6, dragThreshold = 3;
+    static constexpr int takeLaneHeight = 30;   // one recording take under its track, when the track shows its take lanes
     static constexpr float fadeHandleHeight = 10.0f;   // the top strip of an audio clip where its fade handles are grabbed
     static constexpr double minPixelsPerTick = 0.00001, maxPixelsPerTick = 0.6, defaultPixelsPerTick = 64.0 / 3840.0;
 
-    enum class Zone { none, corner, header, markerStrip, loopStrip, ruler, region, lane };
+    enum class Zone { none, corner, header, markerStrip, loopStrip, ruler, region, lane, take };
     enum class Edge { none, left, right };
     struct Hit {
         Zone zone{Zone::none};
@@ -57,6 +65,8 @@ public:
         Edge edge{Edge::none};
         Edge fade{Edge::none};   // a fade handle at the top of an audio clip: left is the fade in (or crossfade), right the fade out
         enum class LoopPart { none, start, end, body } loopPart{LoopPart::none};
+        std::uint32_t take{0};    // a take lane under a track (its label in the header, or the lane itself)
+        int takeLane{-1};         // which of the track's take lanes, from 0
     };
 
     explicit TimelineCanvas(ProjectController& projectController) : controller(projectController) {
@@ -77,6 +87,7 @@ public:
     std::function<void(const juce::String&)> onMessage;
     std::function<void()> onViewChanged;                       // zoom or scroll changed
     std::function<void()> onStateChanged;                      // selection, cursor, loop or length changed
+    std::function<void()> onTakesChanged;                      // a take was comped or forgotten from its lane
     std::function<void(juce::PopupMenu, juce::Rectangle<int>, std::function<void(int)>)> menuLauncher;   // seams: the tests answer for the user
     std::function<void(const juce::String&, const juce::String&, std::function<void(const juce::String&)>)> nameRequester;
 
@@ -100,15 +111,26 @@ public:
         return std::max<std::int64_t>(t.length(), t.contentEnd()) + timeline::ticksPerBar;
     }
     double maxScrollTicks() const noexcept { return std::max(0.0, static_cast<double>(contentTicks()) - visibleTicks()); }
-    int contentHeight() const noexcept { return displayRowCount() * rowHeight; }
+    int contentHeight() const noexcept { return displayRowCount() * rowHeight + takeLanesAbove(displayRowCount()); }
     int maxScrollY() const noexcept { return std::max(0, contentHeight() - laneAreaHeight()); }
     double xForTick(double tick) const noexcept { return headerWidth + (tick - scrollX) * ppt; }
     double tickAtX(double x) const noexcept { return scrollX + (x - headerWidth) / ppt; }
-    int rowTop(int displayRow) const noexcept { return topHeight + displayRow * rowHeight - scrollYpx; }
+    // A row is `rowHeight` tall, plus its take lanes under it when its track shows them.
+    int rowTop(int displayRow) const noexcept { return topHeight + displayRow * rowHeight + takeLanesAbove(displayRow) - scrollYpx; }
+    int blockHeight(int displayRow) const noexcept { return rowHeight + takeLaneCount(timelineRow(displayRow)) * takeLaneHeight; }
+    // The row whose block (the row and its take lanes) is at `y`.
     int displayRowAt(int y) const noexcept {
         if (y < topHeight) return -1;
-        const int row = (y - topHeight + scrollYpx) / rowHeight;
-        return row >= 0 && row < displayRowCount() ? row : -1;
+        const int at = y - topHeight + scrollYpx;
+        if (laneTracks.empty()) {
+            const int row = at / rowHeight;
+            return row >= 0 && row < displayRowCount() ? row : -1;
+        }
+        for (int d = 0, top = 0; d < displayRowCount(); ++d) {
+            top += blockHeight(d);
+            if (at < top) return d;
+        }
+        return -1;
     }
     juce::Rectangle<int> rowBounds(int row) const noexcept { return {0, rowTop(displayRowOf(row)), getWidth(), rowHeight}; }
     juce::Rectangle<float> regionBounds(const timeline::Region& r) const noexcept {
@@ -135,6 +157,100 @@ public:
         const auto& t = shown();
         const float x0 = static_cast<float>(xForTick(static_cast<double>(t.loopStart))), x1 = static_cast<float>(xForTick(static_cast<double>(t.loopEnd)));
         return {x0, static_cast<float>(markerStripHeight), std::max(1.0f, x1 - x0), static_cast<float>(loopStripHeight)};
+    }
+
+    // ---- take lanes -----------------------------------------------------------------------------------------------------
+    // A track can show its recording takes (every loop pass is one) in lanes under its row, in the order they were
+    // recorded. Which tracks show them is a view setting of this window: it is not saved and is not an undo step.
+    std::vector<const timeline::Region*> takesOf(int track) const {
+        std::vector<const timeline::Region*> list;
+        if (timeline::isPatternRow(track)) return list;
+        for (const auto& take : committed().takes) if (take.row == track) list.push_back(&take);
+        return list;
+    }
+    const timeline::Region* takeById(std::uint32_t id) const noexcept {
+        for (const auto& take : committed().takes) if (take.id == id) return &take;
+        return nullptr;
+    }
+    bool takeLanesShown(int track) const noexcept {
+        const auto& d = controller.document();
+        if (track < 0 || track >= d.trackCount()) return false;
+        return std::find(laneTracks.begin(), laneTracks.end(), d.tracks[static_cast<std::size_t>(track)].id) != laneTracks.end();
+    }
+    // How many take lanes are open under a row: none unless its track shows them and has takes.
+    int takeLaneCount(int row) const noexcept {
+        if (laneTracks.empty() || !takeLanesShown(row)) return 0;
+        int count = 0;
+        for (const auto& take : committed().takes) count += take.row == row ? 1 : 0;
+        return count;
+    }
+    // The height of the take lanes open above a row.
+    int takeLanesAbove(int displayRow) const noexcept {
+        if (laneTracks.empty()) return 0;
+        int lanes = 0;
+        for (int t = 0, tracks = std::min(displayRow, trackCount()); t < tracks; ++t) lanes += takeLaneCount(t);
+        return lanes * takeLaneHeight;
+    }
+    bool setTakeLanesShown(int track, bool show) {
+        const auto& d = controller.document();
+        if (track < 0 || track >= d.trackCount() || takeLanesShown(track) == show) return false;
+        const auto id = d.tracks[static_cast<std::size_t>(track)].id;
+        if (show) laneTracks.push_back(id); else std::erase(laneTracks, id);
+        scrollYpx = std::clamp(scrollYpx, 0, maxScrollY());
+        repaint(); notifyView();
+        return true;
+    }
+    bool toggleTakeLanes(int track) {
+        if (!takeLanesShown(track) && takesOf(track).empty()) { say("This track has no recording takes yet."); return false; }
+        return setTakeLanesShown(track, !takeLanesShown(track));
+    }
+    // Lane `lane` under a track, across the header and the lanes.
+    juce::Rectangle<int> takeLaneBounds(int track, int lane) const noexcept {
+        return {0, rowTop(displayRowOf(track)) + rowHeight + lane * takeLaneHeight, getWidth(), takeLaneHeight};
+    }
+    // Where a take is drawn in its lane: at its song position, like a clip.
+    juce::Rectangle<float> takeBounds(std::uint32_t id) const {
+        const auto* take = takeById(id);
+        if (take == nullptr) return {};
+        const auto list = takesOf(take->row);
+        const auto lane = static_cast<int>(std::find(list.begin(), list.end(), take) - list.begin());
+        const float x0 = static_cast<float>(xForTick(static_cast<double>(take->start))), x1 = static_cast<float>(xForTick(static_cast<double>(take->end())));
+        return {x0, static_cast<float>(takeLaneBounds(take->row, lane).getY() + 2), std::max(1.0f, x1 - x0), static_cast<float>(takeLaneHeight - 4)};
+    }
+    // The small button in a track's header that shows and hides its take lanes (drawn when it has takes).
+    juce::Rectangle<int> takeLanesButtonRect(int displayRow) const { return {headerWidth - 28, rowTop(displayRow) + 28, 20, 11}; }
+    std::uint32_t selectedTakeId() const noexcept { return selectedTake; }
+    void selectTake(std::uint32_t id) { if (id == selectedTake) return; selectedTake = takeById(id) != nullptr ? id : 0; repaint(); }
+    // Whether a take can be comped into the arrangement: a plain pass of an audio clip.
+    bool canComp(const timeline::Region& take) const {
+        const auto& d = controller.document();
+        return !take.reversed && !take.loopSource && d.isValidCell(take.row, take.source) && d.clip(take.row, take.source).isAudioClip()
+            && !controller.isBusy() && !controller.isRecording();
+    }
+    // Plays `from`..`to` of a take on its track (one undo step through the controller); the take itself is kept.
+    bool compFromTake(std::uint32_t id, std::int64_t from, std::int64_t to) {
+        if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return false; }
+        const bool done = controller.compRecordedTake(id, from, to);
+        if (done) {
+            afterEdit();
+            say("Comped bar " + barBeat(from) + " to " + barBeat(to) + " from the take. The take is kept; Undo restores the previous comp.");
+            if (onTakesChanged) onTakesChanged();
+        }
+        return done;
+    }
+    bool playWholeTake(std::uint32_t id) {
+        const auto* take = takeById(id);
+        return take != nullptr && compFromTake(id, take->start, take->end());
+    }
+    bool forgetTake(std::uint32_t id) {
+        const bool done = tlui::forgetTake(controller, id);
+        if (done) {
+            if (selectedTake == id) selectedTake = 0;
+            scrollYpx = std::clamp(scrollYpx, 0, maxScrollY());
+            afterEdit();
+            if (onTakesChanged) onTakesChanged();
+        }
+        return done;
     }
 
     // ---- snapping ---------------------------------------------------------------------------------------------------
@@ -237,8 +353,8 @@ public:
         repaint(); notifyView();
     }
     void scrollRowIntoView(int row) {
-        const int d = displayRowOf(row), top = d * rowHeight, bottom = top + rowHeight;
-        if (top < scrollYpx) setScrollY(top); else if (bottom > scrollYpx + laneAreaHeight()) setScrollY(bottom - laneAreaHeight());
+        const int d = displayRowOf(row), top = rowTop(d) - topHeight + scrollYpx, bottom = top + blockHeight(d);
+        if (top < scrollYpx) setScrollY(top); else if (bottom > scrollYpx + laneAreaHeight()) setScrollY(std::min(top, bottom - laneAreaHeight()));
     }
 
     // ---- selection, cursor, focus -------------------------------------------------------------------------------------------
@@ -297,6 +413,11 @@ public:
         selected = keep;
         const bool markerThere = std::any_of(t.markers.begin(), t.markers.end(), [&](const auto& m) { return m.id == selectedMarker; });
         if (!markerThere) selectedMarker = 0;
+        if (takeById(selectedTake) == nullptr) selectedTake = 0;
+        std::erase_if(laneTracks, [&](std::uint32_t id) {
+            const auto& tracks = controller.document().tracks;
+            return std::none_of(tracks.begin(), tracks.end(), [=](const auto& track) { return track.id == id; });
+        });
         cursor = std::clamp<std::int64_t>(cursor, 0, t.length());
         const int d = displayRowOf(focus);
         if (d < 0 || d >= displayRowCount()) focus = timelineRow(0);
@@ -677,7 +798,8 @@ public:
     enum Command { cmdSplit = 1, cmdMute, cmdDuplicate, cmdCopy, cmdCut, cmdDelete, cmdGroup, cmdUngroup, cmdOpen, cmdPaste, cmdSelectAll, cmdAddMarker,
                    cmdSlipLeft, cmdSlipRight, cmdSourceLoop, cmdReverse, cmdNormalize, cmdFade, cmdCrossfade,
                    cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdRemoveFades, cmdTempo, cmdRemoveTempo, cmdMeter, cmdRemoveMeter, cmdColourBase = 100,
-                   cmdArm = 200, cmdFreeze = 201, cmdUnfreeze = 202, cmdMonitorBase = 210, cmdInputMonoBase = 300, cmdInputStereoBase = 400 };
+                   cmdArm = 200, cmdFreeze = 201, cmdUnfreeze = 202, cmdTakeLanes = 203, cmdPlayTake = 204, cmdPlayTakeLoop = 205, cmdForgetTake = 206,
+                   cmdMonitorBase = 210, cmdInputMonoBase = 300, cmdInputStereoBase = 400 };
     juce::PopupMenu placeMenu(int row) const {
         juce::PopupMenu menu;
         const auto& d = controller.document();
@@ -784,6 +906,13 @@ public:
             return hit;
         }
         hit.displayRow = displayRowAt(p.y);
+        if (const int below = hit.displayRow >= 0 ? p.y - rowTop(hit.displayRow) - rowHeight : -1; below >= 0) {
+            // Under the row: one of its track's take lanes, in the header (its label) or across the lanes.
+            const auto list = takesOf(timelineRow(hit.displayRow));
+            const int lane = below / takeLaneHeight;
+            if (lane < static_cast<int>(list.size())) { hit.zone = Zone::take; hit.take = list[static_cast<std::size_t>(lane)]->id; hit.takeLane = lane; }
+            return hit;
+        }
         if (p.x < headerWidth) { hit.zone = hit.displayRow >= 0 ? Zone::header : Zone::none; return hit; }
         if (hit.displayRow < 0) return hit;
         hit.zone = Zone::lane;
@@ -842,6 +971,7 @@ public:
         else if (hit.zone == Zone::loopStrip && (hit.loopPart == Hit::LoopPart::start || hit.loopPart == Hit::LoopPart::end)) cursorType = juce::MouseCursor::LeftRightResizeCursor;
         else if (hit.zone == Zone::markerStrip && hit.marker != 0) cursorType = juce::MouseCursor::PointingHandCursor;
         else if (hit.zone == Zone::ruler && hit.tempo >= 0) cursorType = juce::MouseCursor::PointingHandCursor;
+        else if (hit.zone == Zone::take && e.x >= headerWidth) cursorType = juce::MouseCursor::IBeamCursor;   // drag across a take to comp that range
         setMouseCursor(cursorType);
     }
     void mouseDown(const juce::MouseEvent& e) override {
@@ -862,6 +992,7 @@ public:
             if (hit.displayRow >= 0) {
                 const int row = timelineRow(hit.displayRow);
                 if (!timeline::isPatternRow(row) && armRect(hit.displayRow).expanded(2).contains(e.getPosition())) { toggleArm(row); break; }
+                if (!takesOf(row).empty() && takeLanesButtonRect(hit.displayRow).expanded(2).contains(e.getPosition())) { toggleTakeLanes(row); break; }
                 setFocusRow(row); scrollRowIntoView(focus);
             }
             break;
@@ -950,6 +1081,11 @@ public:
         case Zone::lane:
             drag.kind = DragKind::marquee; drag.additive = extend; drag.previousSelection = selected;
             drag.emptyRow = timelineRow(hit.displayRow);
+            break;
+        case Zone::take:
+            // A click picks the take; a drag across it comps that range (on release, one undo step).
+            selectTake(hit.take);
+            if (e.x >= headerWidth) { drag.kind = DragKind::comp; drag.grabbed = hit.take; drag.base = baseTimeline(); }
             break;
         default: break;
         }
@@ -1064,6 +1200,19 @@ public:
             selected = committed().expandGroups(next); selectedMarker = 0;
             repaint(); break;
         }
+        case DragKind::comp: {
+            const auto* take = takeById(drag.grabbed);
+            if (take == nullptr) break;
+            auto from = snapTick(drag.anchorTick, bypass), to = snapTick(tickNow, bypass);
+            if (to < from) std::swap(from, to);
+            from = std::clamp(from, take->start, take->end()); to = std::clamp(to, take->start, take->end());
+            drag.newAnchor = from; drag.edgeTick = to;
+            if (to <= from) { drag.apply = nullptr; preview.reset(); repaint(); break; }
+            const auto id = drag.grabbed;
+            drag.label = "Comp recording take";
+            drag.apply = [=](timeline::Timeline& t) { return t.compTake(id, from, to); };
+            updatePreview(); break;
+        }
         default: break;
         }
     }
@@ -1110,6 +1259,11 @@ public:
             if (active && finished.apply) {
                 if (!tempoEdit(finished.label, finished.apply) && hadPreview && !controller.isBusy()) say("A tempo change cannot go there.");
             } else if (!active) setCursor(finished.newAnchor);   // a click on a tempo change plays from there
+            break;
+        case DragKind::comp:
+            if (active && finished.apply) {
+                if (!compFromTake(finished.grabbed, finished.newAnchor, finished.edgeTick) && !controller.isBusy()) say("That take cannot be comped.");
+            } else if (!active) setCursor(snapTick(finished.anchorTick, bypass));   // a click: the take is picked, and plays from there
             break;
         default: break;
         }
@@ -1226,7 +1380,7 @@ public:
     }
 
 private:
-    enum class DragKind { none, scrub, move, copy, slip, trimStart, trimEnd, fadeIn, fadeOut, marker, tempo, loopNew, loopStart, loopEnd, loopMove, marquee };
+    enum class DragKind { none, scrub, move, copy, slip, trimStart, trimEnd, fadeIn, fadeOut, marker, tempo, loopNew, loopStart, loopEnd, loopMove, marquee, comp };
     struct Drag {
         DragKind kind{DragKind::none};
         bool active{};
@@ -1286,7 +1440,7 @@ private:
     }
     void autoScroll(int x) {
         if (drag.kind == DragKind::marquee || drag.kind == DragKind::move || drag.kind == DragKind::copy || drag.kind == DragKind::slip || drag.kind == DragKind::trimEnd
-            || drag.kind == DragKind::loopNew || drag.kind == DragKind::loopEnd || drag.kind == DragKind::scrub) {
+            || drag.kind == DragKind::loopNew || drag.kind == DragKind::loopEnd || drag.kind == DragKind::scrub || drag.kind == DragKind::comp) {
             const int right = getWidth() - 24;
             if (x > right) setScrollTicks(scrollX + std::min(40, x - right) * 0.6 / ppt);
             else if (x < headerWidth + 24 && scrollX > 0) setScrollTicks(scrollX - std::min(40, headerWidth + 24 - x) * 0.6 / ppt);
@@ -1415,6 +1569,28 @@ private:
             menu.addItem(cmdJump, committed().loopEnabled ? "Loop off" : "Loop on");
             menu.addItem(cmdLoopSelection, "Loop the selected clips", !selected.empty());
             launch(std::move(menu), area, [this](int id) { if (id == cmdJump) toggleLoop(); else if (id == cmdLoopSelection) loopSelection(); });
+        } else if (hit.zone == Zone::take) {
+            selectTake(hit.take);
+            const int track = timelineRow(hit.displayRow);
+            setFocusRow(track);
+            if (e.x >= headerWidth) setCursor(tick, false);
+            const auto* take = takeById(hit.take);
+            if (take == nullptr) return;
+            const auto& t = committed();
+            const bool ready = canComp(*take);
+            juce::PopupMenu menu;
+            menu.addSectionHeader("Take " + juce::String(hit.takeLane + 1));
+            menu.addItem(cmdPlayTake, "Play this take", ready);
+            menu.addItem(cmdPlayTakeLoop, "Play this take in the loop range", ready && t.loopStart >= take->start && t.loopEnd <= take->end());
+            menu.addSeparator();
+            menu.addItem(cmdForgetTake, "Forget take", !controller.isBusy() && !controller.isRecording());
+            menu.addItem(cmdTakeLanes, "Hide take lanes");
+            launch(std::move(menu), area, [this, id = hit.take, track](int chosen) {
+                if (chosen == cmdPlayTake) playWholeTake(id);
+                else if (chosen == cmdPlayTakeLoop) compFromTake(id, committed().loopStart, committed().loopEnd);
+                else if (chosen == cmdForgetTake) forgetTake(id);
+                else if (chosen == cmdTakeLanes) setTakeLanesShown(track, false);
+            });
         } else if (hit.zone == Zone::header && hit.displayRow >= 0 && !timeline::isPatternRow(timelineRow(hit.displayRow))) {
             const int track = timelineRow(hit.displayRow);
             launch(recordingMenu(track), area, [this, track](int id) { recordingMenuChosen(track, id); });
@@ -1492,10 +1668,15 @@ private:
         menu.addItem(s.frozen()?cmdUnfreeze:cmdFreeze,s.frozen()?"Unfreeze track":"Freeze track (render audio)",!controller.isBusy() && !controller.isRecording());
         menu.addSubMenu("Input (" + inputText(track) + ")", inputs,!s.frozen());
         menu.addSubMenu("Monitor input", monitor,!s.frozen());
+        menu.addSeparator();
+        const auto takes = takesOf(track).size();
+        menu.addItem(cmdTakeLanes, takes == 0 ? juce::String("Show take lanes (no takes yet)") : "Show take lanes (" + juce::String(static_cast<int>(takes)) + ")",
+                     takes > 0 || takeLanesShown(track), takeLanesShown(track));
         return menu;
     }
     void recordingMenuChosen(int track, int id) {
-        if(id==cmdFreeze){if(onFreezeTrack)onFreezeTrack(track);}
+        if (id == cmdTakeLanes) toggleTakeLanes(track);
+        else if(id==cmdFreeze){if(onFreezeTrack)onFreezeTrack(track);}
         else if(id==cmdUnfreeze){if(onUnfreezeTrack)onUnfreezeTrack(track);}
         else if (id == cmdArm) toggleArm(track);
         else if (id >= cmdMonitorBase && id <= cmdMonitorBase + 2) setTrackMonitor(track, static_cast<InputMonitor>(id - cmdMonitorBase));
@@ -1541,11 +1722,16 @@ private:
         const int rows = displayRowCount();
         for (int d = 0; d < rows; ++d) {
             const int y = rowTop(d);
-            if (y + rowHeight < topHeight || y > getHeight()) continue;
+            if (y + blockHeight(d) < topHeight || y > getHeight()) continue;
             g.setColour(d % 2 == 0 ? col::surface : col::raised.withAlpha(0.55f));
             g.fillRect(lanes.getX(), y, lanes.getWidth(), rowHeight);
             if (d == displayRowOf(focus)) { g.setColour(col::accent.withAlpha(0.05f)); g.fillRect(lanes.getX(), y, lanes.getWidth(), rowHeight); }
             if (d == trackCount()) { g.setColour(col::lineStrong); g.fillRect(lanes.getX(), y, lanes.getWidth(), 2); }
+            for (int lane = 0, count = takeLaneCount(timelineRow(d)); lane < count; ++lane) {   // the take lanes: sunk below the row
+                const int top = y + rowHeight + lane * takeLaneHeight;
+                g.setColour(col::inset); g.fillRect(lanes.getX(), top, lanes.getWidth(), takeLaneHeight);
+                g.setColour(col::line); g.fillRect(lanes.getX(), top, lanes.getWidth(), 1);
+            }
         }
         // The song's end, and the loop.
         const float endX = static_cast<float>(xForTick(static_cast<double>(t.length())));
@@ -1574,6 +1760,15 @@ private:
             const auto box = regionBounds(r);
             if (box.getRight() < headerWidth || box.getX() > getWidth() || box.getBottom() < topHeight || box.getY() > getHeight()) continue;
             paintRegion(g, r, box, isSelected(r.id));
+        }
+        // Takes, in their lanes.
+        for (int track = 0; track < trackCount() && !laneTracks.empty(); ++track) {
+            if (takeLaneCount(track) == 0) continue;
+            for (const auto* take : takesOf(track)) {
+                const auto box = takeBounds(take->id);
+                if (box.getRight() < headerWidth || box.getX() > getWidth() || box.getBottom() < topHeight || box.getY() > getHeight()) continue;
+                paintTake(g, t, *take, box);
+            }
         }
         if (preview && drag.base && (drag.kind == DragKind::move || drag.kind == DragKind::copy)) {
             // A guide where the grabbed clip will start.
@@ -1641,6 +1836,37 @@ private:
         g.drawRoundedRectangle(box, 4.0f, isSel ? 1.6f : 1.0f);
     }
 
+    // A take in its lane: its waveform dim, and bright where the arrangement plays it (the range being dragged is outlined).
+    void paintTake(juce::Graphics& g, const timeline::Timeline& t, const timeline::Region& take, juce::Rectangle<float> box) {
+        namespace col = ui::colours;
+        const auto colour = rowColour(take.row);
+        const bool isSel = take.id == selectedTake;
+        g.setColour(colour.withAlpha(isSel ? 0.14f : 0.08f)); g.fillRoundedRectangle(box, 3.0f);
+        {
+            juce::Graphics::ScopedSaveState state(g);
+            g.reduceClipRegion(box.toNearestInt());
+            paintContent(g, take, box, colour.withAlpha(0.32f), 2.0f);
+        }
+        for (const auto& [from, to] : t.takePlays(take.id, controller.songTempo())) {
+            const float x0 = std::max(box.getX(), static_cast<float>(xForTick(static_cast<double>(from))));
+            const float x1 = std::min(box.getRight(), static_cast<float>(xForTick(static_cast<double>(to))));
+            if (x1 - x0 < 0.5f) continue;
+            const auto part = juce::Rectangle<float>(x0, box.getY(), x1 - x0, box.getHeight());
+            juce::Graphics::ScopedSaveState state(g);
+            g.reduceClipRegion(part.toNearestInt());
+            g.setColour(colour.withAlpha(0.30f)); g.fillRect(part);
+            paintContent(g, take, box, colour.withAlpha(0.95f), 2.0f);
+            g.setColour(colour); g.fillRect(part.withHeight(2.0f));
+        }
+        if (drag.kind == DragKind::comp && drag.active && drag.grabbed == take.id && drag.edgeTick > drag.newAnchor) {
+            const float x0 = static_cast<float>(xForTick(static_cast<double>(drag.newAnchor))), x1 = static_cast<float>(xForTick(static_cast<double>(drag.edgeTick)));
+            g.setColour(col::accent.withAlpha(0.18f)); g.fillRect(juce::Rectangle<float>(x0, box.getY(), x1 - x0, box.getHeight()));
+            g.setColour(col::accent); g.drawRect(juce::Rectangle<float>(x0, box.getY(), x1 - x0, box.getHeight()), 1.5f);
+        }
+        g.setColour(isSel ? juce::Colours::white.withAlpha(0.85f) : colour.withAlpha(0.5f));
+        g.drawRoundedRectangle(box, 3.0f, isSel ? 1.4f : 1.0f);
+    }
+
     bool isAudioRegion(const timeline::Region& r) const {
         const auto& d = controller.document();
         return !r.isPattern() && d.isValidCell(r.row, r.source) && d.clip(r.row, r.source).audio != nullptr;
@@ -1693,9 +1919,9 @@ private:
     }
 
     // What is inside a region: notes, a waveform, or a pattern's steps, repeated for as long as the region lasts.
-    void paintContent(juce::Graphics& g, const timeline::Region& r, juce::Rectangle<float> box, juce::Colour ink) {
+    void paintContent(juce::Graphics& g, const timeline::Region& r, juce::Rectangle<float> box, juce::Colour ink, float labelSpace = 16.0f) {
         const auto& d = controller.document();
-        const auto inner = box.withTrimmedTop(16.0f).withTrimmedBottom(3.0f).reduced(2.0f, 0.0f);
+        const auto inner = box.withTrimmedTop(labelSpace).withTrimmedBottom(3.0f).reduced(2.0f, 0.0f);
         if (inner.getHeight() < 4.0f || box.getWidth() < 12.0f) return;
         const float visibleLeft = std::max(inner.getX(), static_cast<float>(headerWidth)), visibleRight = std::min(inner.getRight(), static_cast<float>(getWidth()));
         const double x0 = xForTick(static_cast<double>(r.start));
@@ -1812,7 +2038,7 @@ private:
         g.setColour(col::raised); g.fillRect(area);
         for (int i = 0; i < displayRowCount(); ++i) {
             const int y = rowTop(i);
-            if (y + rowHeight < topHeight || y > getHeight()) continue;
+            if (y + blockHeight(i) < topHeight || y > getHeight()) continue;
             const int row = timelineRow(i);
             const bool isLane = timeline::isPatternRow(row);
             g.setColour(i == displayRowOf(focus) ? col::hover : (i % 2 == 0 ? col::raised : col::control.withAlpha(0.5f)));
@@ -1826,8 +2052,33 @@ private:
             if (isLane) { g.drawText("Channel Rack", 12, y + 24, textWidth, 14, juce::Justification::centredLeft, true); }
             else paintRecordingControls(g, i, row);
             g.setColour(col::line); g.fillRect(0, y + rowHeight - 1, headerWidth, 1);
+            if (!isLane) paintTakeLaneHeaders(g, i, row);
         }
         g.setColour(col::lineStrong); g.fillRect(headerWidth - 1, topHeight, 1, getHeight() - topHeight);
+    }
+
+    // The button that shows a track's take lanes (with how many takes it has), and the label of each open lane.
+    void paintTakeLaneHeaders(juce::Graphics& g, int displayRow, int track) {
+        namespace col = ui::colours;
+        const auto list = takesOf(track);
+        if (list.empty()) return;
+        const bool open = takeLanesShown(track);
+        const auto button = takeLanesButtonRect(displayRow).toFloat();
+        g.setColour(open ? col::accent.withAlpha(0.8f) : col::control); g.fillRoundedRectangle(button, 2.5f);
+        g.setColour(open ? col::accentInk : col::textDim); g.setFont(ui::monoFont(9.0f));
+        g.drawText(juce::String(static_cast<int>(list.size())), button.toNearestInt(), juce::Justification::centred, false);
+        if (!open) return;
+        const auto tempo = controller.songTempo();
+        for (std::size_t lane = 0; lane < list.size(); ++lane) {
+            const auto area = takeLaneBounds(track, static_cast<int>(lane)).withWidth(headerWidth - 1);
+            const bool isSel = list[lane]->id == selectedTake;
+            g.setColour(isSel ? col::hover : col::inset); g.fillRect(area);
+            g.setColour(rowColour(track).withAlpha(0.6f)); g.fillRect(area.withWidth(4).withTrimmedLeft(2));
+            g.setColour(col::line); g.fillRect(area.withHeight(1));
+            const bool plays = !shown().takePlays(list[lane]->id, tempo).empty();
+            g.setColour(plays ? col::text : col::textDim); g.setFont(ui::font(11.0f, plays));
+            g.drawText("Take " + juce::String(static_cast<int>(lane) + 1) + (plays ? "  (playing)" : ""), area.withTrimmedLeft(14), juce::Justification::centredLeft, true);
+        }
     }
 
     // The second line of a track's header (its input, and whether it monitors), its arm button and its input meter.
@@ -1951,6 +2202,8 @@ private:
     int focus{0};
     bool follow{true};
     std::optional<timeline::Timeline> preview;
+    std::vector<std::uint32_t> laneTracks;   // ids of the tracks showing their take lanes (view only, not saved)
+    std::uint32_t selectedTake{0};
     DropPlan dropGhost;   // where a row dragged from the clip list would land, while it is over the lanes
     Drag drag;
 };
@@ -2121,12 +2374,9 @@ public:
         forget.setButtonText("Forget take"); forget.setName("Forget recording take");
         forget.setTooltip("Remove this pass from the take list. Active comp and audio file stay; Undo restores the list entry.");
         forget.onClick = [this] {
-            const auto id = selectedId;
-            if (controller.isBusy() || controller.isRecording()) return;
-            controller.editTimeline("Forget recording take", [=](timeline::Timeline& t) {
-                return std::erase_if(t.takes, [=](const auto& take) { return take.id == id; }) != 0;
-            });
+            const bool done = tlui::forgetTake(controller, selectedId);
             refresh();
+            if (done && onChanged) onChanged();
         };
         whole.onClick = [this] { apply(false); };
         range.onClick = [this] { apply(true); };
@@ -2135,6 +2385,7 @@ public:
         refresh();
     }
     ~RecordingTakesPanel() override { list.setModel(nullptr); }
+    std::function<void()> onChanged;   // a take was comped or forgotten here
     void refresh() {
         const auto old = selectedId;
         ids.clear();
@@ -2194,8 +2445,9 @@ private:
         const auto id = take->id;
         const auto from = loopRange ? controller.timeline().loopStart : take->start;
         const auto to = loopRange ? controller.timeline().loopEnd : take->end();
-        controller.compRecordedTake(id, from, to);
+        const bool done = controller.compRecordedTake(id, from, to);
         refresh();
+        if (done && onChanged) onChanged();
     }
     ProjectController& controller;
     juce::ListBox list;
@@ -2283,6 +2535,8 @@ public:
         canvas.onViewChanged = [this] { layoutScroll(); };
         canvas.onStateChanged = [this] { updateControls(); };
         canvas.onMessage = [this](const juce::String& text) { setStatus(text); };
+        canvas.onTakesChanged = [this] { takesPanel.refresh(); };
+        takesPanel.onChanged = [this] { canvas.refresh(); };
         refresh();
     }
     ~TimelineView() override { hBar.removeListener(this); vBar.removeListener(this); }
