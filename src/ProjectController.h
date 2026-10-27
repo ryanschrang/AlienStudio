@@ -96,7 +96,7 @@ public:
         if (racks.size() != doc.tracks.size()) return;
         for (std::size_t t=0;t<racks.size();++t) doc.tracks[t].plugins = racks[t];
         doc.masterPlugins = master; runtimeDirty = false;
-        for (std::size_t r=0;r<returns.size();++r) doc.returns[r].plugins = returns[r];
+        for (std::size_t r=0;r<returns.size();++r) if (doc.returns[r].used) doc.returns[r].plugins = returns[r];
         for (std::size_t b=0;b<buses.size();++b) if (doc.buses[b].used) doc.buses[b].plugins = buses[b];
         commit("Change plugins");
     }
@@ -107,10 +107,10 @@ public:
         return racks;
     }
 
-    // The return tracks' FX racks, in the shape PluginHost takes them.
+    // The return tracks' FX racks (empty for unused slots), in the shape PluginHost takes them.
     ReturnRacks returnRacks() const {
         ReturnRacks racks;
-        for (std::size_t r=0;r<racks.size();++r) racks[r] = doc.returns[r].plugins;
+        for (std::size_t r=0;r<racks.size();++r) if (doc.returns[r].used) racks[r] = doc.returns[r].plugins;
         return racks;
     }
     bool canUndo() const noexcept { return history.canUndo(); }
@@ -267,7 +267,10 @@ public:
             engine.tracks[t].set(t < doc.tracks.size() ? doc.tracks[t].settings : TrackSettings{});
         engine.activeTracks.store(doc.trackCount());
         engine.masterControls.gain.store(doc.masterGain);
-        for (std::size_t r = 0; r < engine.returns.size(); ++r) engine.returns[r].set(doc.returns[r].settings);
+        for (std::size_t r = 0; r < engine.returns.size(); ++r) {
+            engine.returns[r].set(doc.returns[r].settings);
+            engine.returns[r].active.store(doc.returns[r].used);
+        }
         for (std::size_t b = 0; b < engine.buses.size(); ++b) {
             engine.buses[b].set(doc.buses[b].settings);
             engine.buses[b].active.store(doc.buses[b].used);
@@ -404,7 +407,7 @@ public:
     // the result back into the document.
     void masterGainEdited() { doc.masterGain = sanitizedMasterGain(engine.masterControls.gain.load()); }
     void returnSettingsEdited(int r) {
-        if (r < 0 || r >= maxReturns) return;
+        if (r < 0 || r >= maxReturns || !doc.returns[static_cast<std::size_t>(r)].used) return;
         const auto next = engine.returns[static_cast<std::size_t>(r)].snapshot();
         if (next.valid()) doc.returns[static_cast<std::size_t>(r)].settings = next;
     }
@@ -450,6 +453,40 @@ public:
         pushDocumentToEngine();
         return true;
     }
+    // Return tracks (MIX-05). A new return takes the first free slot (its index, or -1 when all are
+    // in use) and that slot's letter: sends and send automation name the slot, so removing a return
+    // never moves another's. Removing one turns every track's send to it off, drops its send
+    // automation and its FX. The caller commits, and rebuilds the plugin racks after a removal.
+    int addReturn(const juce::String& name = {}) {
+        if (busy) return -1;
+        for (std::size_t r = 0; r < doc.returns.size(); ++r) {
+            if (doc.returns[r].used) continue;
+            const auto trimmed = name.trim().substring(0, 64);
+            doc.returns[r] = {true, trimmed.isNotEmpty() ? trimmed : defaultReturnName(static_cast<int>(r)), {}, {}};
+            pushDocumentToEngine();
+            return static_cast<int>(r);
+        }
+        return -1;
+    }
+    bool renameReturn(int r, const juce::String& name) {
+        const auto trimmed = name.trim().substring(0, 64);
+        if (busy || r < 0 || r >= maxReturns || !doc.returns[static_cast<std::size_t>(r)].used || trimmed.isEmpty()
+            || doc.returns[static_cast<std::size_t>(r)].name == trimmed) return false;
+        doc.returns[static_cast<std::size_t>(r)].name = trimmed;
+        return true;
+    }
+    bool deleteReturn(int r) {
+        if (busy || r < 0 || r >= maxReturns || !doc.returns[static_cast<std::size_t>(r)].used) return false;
+        const auto slot = static_cast<std::size_t>(r);
+        for (int t = 0; t < doc.trackCount(); ++t) trackSettingsEdited(t);
+        for (auto& track : doc.tracks) { track.settings.send[slot] = 0.0f; track.settings.sendPre[slot] = false; }
+        auto& lanes = doc.timeline.automationLanes;
+        lanes.erase(std::remove_if(lanes.begin(), lanes.end(), [r](const auto& lane) { return automation::sendIndex(lane.parameter) == r; }), lanes.end());
+        doc.returns[slot] = {};
+        pushDocumentToEngine();
+        return true;
+    }
+
     // -1 sends the track to the master. The engine hears the change at once; the caller commits.
     bool setTrackOutput(int track, int output) {
         if (busy || track < 0 || track >= doc.trackCount() || track >= static_cast<int>(engine.tracks.size())
@@ -475,6 +512,19 @@ public:
         const auto value = static_cast<float>(pan);
         doc.tracks[static_cast<std::size_t>(track)].settings.pan = value;
         engine.tracks[static_cast<std::size_t>(track)].pan.store(value);
+        return true;
+    }
+
+    bool setTrackMute(int track, bool muted) {
+        if (busy || track < 0 || track >= doc.trackCount()) return false;
+        doc.tracks[static_cast<std::size_t>(track)].settings.mute = muted;
+        engine.tracks[static_cast<std::size_t>(track)].mute.store(muted);
+        return true;
+    }
+    bool setTrackSolo(int track, bool soloed) {
+        if (busy || track < 0 || track >= doc.trackCount()) return false;
+        doc.tracks[static_cast<std::size_t>(track)].settings.solo = soloed;
+        engine.tracks[static_cast<std::size_t>(track)].solo.store(soloed);
         return true;
     }
 
@@ -1163,6 +1213,9 @@ public:
         if (!edit(next) || !next.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount) || next == doc.timeline)
             return false;
         if(next.frozenOriginals!=doc.timeline.frozenOriginals)return false;
+        // Send automation only for a return that exists.
+        for(const auto& lane:next.automationLanes)
+            if(const int send=automation::sendIndex(lane.parameter);send>=0&&!doc.returns[static_cast<std::size_t>(send)].used)return false;
         for(int track=0;track<doc.trackCount();++track)if(isTrackFrozen(track)) {
             std::vector<timeline::Region> before,after;
             for(const auto& region:doc.timeline.regions)if(region.row==track)before.push_back(region);

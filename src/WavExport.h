@@ -149,7 +149,10 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     const auto faultsBefore = engine->plugins->faultCount.load();
     engine->renderStreamsDeterministically();   // streamed clips are read here, on this thread, in order
     engine->masterControls.gain.store(project.masterGain);
-    for (std::size_t r = 0; r < engine->returns.size(); ++r) engine->returns[r].set(project.returns[r]);
+    for (std::size_t r = 0; r < engine->returns.size(); ++r) {
+        engine->returns[r].set(project.returns[r].settings);
+        engine->returns[r].active.store(project.returns[r].used);
+    }
     // A freeze renders one track on its own, so it goes through no bus.
     for (std::size_t b = 0; b < engine->buses.size(); ++b) {
         engine->buses[b].set(project.buses[b].settings);
@@ -231,10 +234,19 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
             }
         }
 
-        for (int r=0; r<maxReturns; ++r)
-            if (!add(StemCapture::returnBase+r, "Return " + juce::String::charToString(static_cast<juce::juce_wchar>('A'+r)) + ".wav")) {
+        // One file per return that exists, named by its slot ("Return A.wav"), and by its name too once it is renamed.
+        for (int r=0; r<maxReturns; ++r) {
+            const auto& ret = project.returns[static_cast<std::size_t>(r)];
+            if (!ret.used) continue;
+            auto name = defaultReturnName(r);
+            if (ret.name != name) {
+                const auto own = juce::File::createLegalFileName(ret.name).substring(0,64);
+                if (own.isNotEmpty()) name += " - " + own;
+            }
+            if (!add(StemCapture::returnBase+r, name + ".wav")) {
                 error="Cannot create return stem."; return false;
             }
+        }
         if (!add(StemCapture::directBus,"Channel Rack - Master.wav")) { error="Cannot create rack stem."; return false; }
     } else {
         temporary=std::make_unique<juce::TemporaryFile>(target);

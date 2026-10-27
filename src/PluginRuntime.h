@@ -2,6 +2,7 @@
 #include "PluginFault.h"
 #include "SessionCapacity.h"
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -20,7 +21,7 @@ namespace alien {
 // because its internal state (held locks, half-freed memory) is unknown. It is parked instead.
 class PluginRuntime {
 public:
-    // Racks: one per Session track, then the master, then return tracks A-D, then the group buses.
+    // Racks: one per Session track, then the master, then the return slots (A-H), then the group buses.
     static constexpr int blockSize = 512, maxDelay = 96000, masterIndex = maxSessionTracks;
     static constexpr int returnBase = masterIndex + 1, busBase = returnBase + maxReturns, rackCount = busBase + maxBuses;
     static constexpr int returnIndex(int r) noexcept { return returnBase + r; }
@@ -219,7 +220,8 @@ public:
             if(!rack.frozen)for (int i = 0; i < rack.effectCount; ++i) { emptyMidi.clear(); process(rack.effects[i], busIndex(b), i, buffer, emptyMidi, samples); }
             busDelays[static_cast<std::size_t>(b)].process(buffer, samples, slowest - rackLatency(rack));
         }
-        for (int r = 0; r < maxReturns; ++r) sendDelays[static_cast<std::size_t>(r)].process(returns[static_cast<std::size_t>(r)], samples, slowest);
+        for (int r = 0; r < maxReturns; ++r)
+            if (returnLive[static_cast<std::size_t>(r)]) sendDelays[static_cast<std::size_t>(r)].process(returns[static_cast<std::size_t>(r)], samples, slowest);
         directDelay.process(master, samples, slowest);
     }
     // The delay the bus chains add (the slowest one).
@@ -234,14 +236,24 @@ public:
     void processReturns(int samples) {
         int slowest = 0;
         for (int r = 0; r < maxReturns; ++r) {
+            if (!returnLive[static_cast<std::size_t>(r)]) continue;
             auto& rack = racks[static_cast<std::size_t>(returnIndex(r))];
             if(!rack.frozen)for (int i = 0; i < rack.effectCount; ++i) { emptyMidi.clear(); process(rack.effects[i], returnIndex(r), i, returns[static_cast<std::size_t>(r)], emptyMidi, samples); }
             slowest = std::max(slowest, rackLatency(rack));
         }
         for (int r = 0; r < maxReturns; ++r)
-            returnDelays[static_cast<std::size_t>(r)].process(returns[static_cast<std::size_t>(r)], samples,
+            if (returnLive[static_cast<std::size_t>(r)]) returnDelays[static_cast<std::size_t>(r)].process(returns[static_cast<std::size_t>(r)], samples,
                                                               slowest - rackLatency(racks[static_cast<std::size_t>(returnIndex(r))]));
         dryDelay.process(master, samples, slowest);
+    }
+    // Audio thread, before the mix: whether return slot `r` exists. A slot not in use is skipped (its
+    // buffer stays silent and costs nothing); one that comes back starts with empty delay lines, so
+    // nothing left over from the return that was there before can play.
+    void setReturnActive(int r, bool active) noexcept {
+        if (r < 0 || r >= maxReturns) return;
+        const auto i = static_cast<std::size_t>(r);
+        if (active && !returnLive[i]) { returnDelays[i].clear(); sendDelays[i].clear(); }
+        returnLive[i] = active;
     }
     // The delay the return chains add (the slowest one).
     int returnLatency() const noexcept {
@@ -297,6 +309,7 @@ private:
         std::vector<float> left,right;
         int position{};
         void prepare() { left.assign(maxDelay+1,0); right.assign(maxDelay+1,0); position=0; }
+        void clear() noexcept { std::fill(left.begin(),left.end(),0.0f); std::fill(right.begin(),right.end(),0.0f); position=0; }
         void process(juce::AudioBuffer<float>& buffer,int samples,int count) noexcept {
             for (int i=0;i<samples;++i) {
                 left[position]=buffer.getSample(0,i); right[position]=buffer.getSample(1,i);
@@ -341,6 +354,7 @@ private:
     std::array<Delay,maxReturns> returnDelays;
     std::array<Delay,maxBuses> busDelays;
     std::array<Delay,maxReturns> sendDelays;   // what the tracks send, waiting for the bus stage
+    std::array<bool,maxReturns> returnLive = [] { std::array<bool,maxReturns> live{}; live.fill(true); return live; }();   // audio thread: setReturnActive
     Delay dryDelay, directDelay;
     juce::MidiBuffer emptyMidi;
     double rate{44100};

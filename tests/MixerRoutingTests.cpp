@@ -164,7 +164,7 @@ static void projectFormat() {
     alien::SessionProjectData project;
     project.trackSettings[1].send = {0.25f, 0.0f, 1.0f, 0.5f};
     project.trackSettings[1].sendPre = {true, false, false, true};
-    project.returns[2] = {0.5f, -0.25f, true};
+    project.returns[2].settings = {0.5f, -0.25f, true};
     juce::PluginDescription desc; desc.name = "Missing reverb"; desc.pluginFormatName = "VST3"; desc.fileOrIdentifier = "/missing/reverb.vst3";
     project.returnPlugins[2].effects.push_back({desc.createXml()->toString(), "YWJj", false});
     require(project.valid(), "a project with sends and returns is valid");
@@ -183,7 +183,7 @@ static void projectFormat() {
         require(alien::parseSessionProject(juce::JSON::toString(old), older, error), "a version 12 project opens");
         bool off = true;
         for (const auto& t : older.trackSettings) for (std::size_t r = 0; r < t.send.size(); ++r) off = off && t.send[r] == 0.0f && !t.sendPre[r];
-        require(off && older.returns == std::array<alien::ReturnSettings, alien::maxReturns>{} && older.returnPlugins == alien::ReturnRacks{},
+        require(off && older.returns == alien::defaultSessionReturns() && older.returnPlugins == alien::ReturnRacks{},
                 "with every send off and the returns at unity with no FX");
     }
     auto damage = [&](const char* what, auto&& mutate) {
@@ -239,16 +239,16 @@ static void undoAndPanels() {
     juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
     require(engine.tracks[0].sendPre[2].load(), "its switch makes it pre-fader");
     require(strip->sendKnob(0).getTooltip().contains("off") && strip->sendKnob(2).getTooltip().contains("pre-fader"), "the knob's tooltip says its level and mode");
-    auto& returnB = panel.returnStrip(1);
+    auto& returnB = *panel.returnStrip(1);
     juce::Slider* volume = nullptr;
     for (auto* child : returnB.getChildren()) if (child->getName() == "Return B volume") volume = dynamic_cast<juce::Slider*>(child);
     require(volume != nullptr, "a return strip has a volume fader");
     volume->setValue(50.0, juce::sendNotificationSync);
     require(approx(engine.returns[1].gain.load(), 0.5f) && returnEdits > 0 && lastReturn == 1, "moving it sets that return's level");
-    for (int r = 0; r < alien::maxReturns; ++r) {
-        const auto b = panel.returnStrip(r).getBounds();
-        require(panel.returnStrip(r).isVisible() && b.getWidth() > 60 && b.getRight() <= panel.getWidth(), "every return strip is laid out");
-        if (r > 0) require(panel.returnStrip(r - 1).getRight() < b.getX(), "side by side, in order");
+    for (int r = 0; r < alien::defaultReturns; ++r) {
+        const auto b = panel.returnStrip(r)->getBounds();
+        require(panel.returnStrip(r)->isVisible() && b.getWidth() > 60 && b.getRight() <= panel.getWidth(), "every return strip is laid out");
+        if (r > 0) require(panel.returnStrip(r - 1)->getRight() < b.getX(), "side by side, in order");
     }
     panel.refreshSettings();
     require(strip->sendKnob(1).getValue() == 70.0, "refreshing keeps what the engine holds");

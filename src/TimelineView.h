@@ -2232,8 +2232,7 @@ public:
         addAndMakeVisible(trackBox); addAndMakeVisible(parameterBox); addAndMakeVisible(curveBox);
         addAndMakeVisible(enableButton); addAndMakeVisible(hint);
         trackBox.setName("Automation track"); parameterBox.setName("Automation parameter");
-        parameterBox.addItem("Volume", 1); parameterBox.addItem("Pan", 2); parameterBox.setSelectedId(1);
-        for (int r = 0; r < maxReturns; ++r) parameterBox.addItem("Send " + juce::String::charToString(static_cast<juce::juce_wchar>('A' + r)), 3 + r);
+        refreshSends(); parameterBox.setSelectedId(1);
         curveBox.setName("Automation interpolation");
         curveBox.addItem("Linear", 1); curveBox.addItem("Hold", 2); curveBox.setSelectedId(1);
         enableButton.setButtonText("Read"); enableButton.setName("Automation read"); enableButton.setClickingTogglesState(true);
@@ -2259,6 +2258,7 @@ public:
         trackBox.clear(juce::dontSendNotification);
         for (int t = 0; t < d.trackCount(); ++t) trackBox.addItem("Track " + juce::String(t + 1), t + 1);
         trackBox.setSelectedId(juce::jlimit(1, d.trackCount(), previous > 0 ? previous : 1), juce::dontSendNotification);
+        refreshSends();
         const auto* lane = find(controller.timeline());
         enableButton.setToggleState(lane != nullptr && lane->enabled, juce::dontSendNotification);
         enableButton.setEnabled(lane != nullptr && !controller.isBusy());
@@ -2314,6 +2314,26 @@ public:
     void mouseUp(const juce::MouseEvent&) override { if (preview) finish("Edit automation point"); }
 private:
     int selectedTrack() const { return std::max(0, trackBox.getSelectedId() - 1); }
+    // One "Send" item per return that exists (its slot's lane); a removed return's choice falls back to Volume.
+    void refreshSends() {
+        juce::StringArray items{"Volume", "Pan"};
+        juce::Array<int> ids{1, 2};
+        const auto& returns = controller.document().returns;
+        for (int r = 0; r < maxReturns; ++r) {
+            const auto& ret = returns[static_cast<std::size_t>(r)];
+            if (!ret.used) continue;
+            const auto letter = juce::String::charToString(static_cast<juce::juce_wchar>('A' + r));
+            items.add("Send " + letter + (ret.name != defaultReturnName(r) ? " (" + ret.name + ")" : juce::String{}));
+            ids.add(3 + r);
+        }
+        bool same = parameterBox.getNumItems() == items.size();
+        for (int i = 0; same && i < items.size(); ++i) same = parameterBox.getItemId(i) == ids[i] && parameterBox.getItemText(i) == items[i];
+        if (same) return;
+        const int selected = parameterBox.getSelectedId();
+        parameterBox.clear(juce::dontSendNotification);
+        for (int i = 0; i < items.size(); ++i) parameterBox.addItem(items[i], ids[i]);
+        parameterBox.setSelectedId(ids.contains(selected) ? selected : 1, juce::dontSendNotification);
+    }
     automation::Parameter selectedParameter() const { return static_cast<automation::Parameter>(std::clamp(parameterBox.getSelectedId() - 1, 0, automation::parametersPerTrack - 1)); }
     const automation::Lane* find(const timeline::Timeline& t) const {
         for (const auto& lane : t.automationLanes) if (lane.track == selectedTrack() && lane.parameter == selectedParameter()) return &lane;

@@ -32,7 +32,7 @@ int main() {
     check(l == 0.125f && r == 0.25f, "automation applies the exact sample without extra smoothing");
     settings.mute = true; l = r = 1; mixer.processAutomated(l, r, settings, false);
     check(l == 0 && r == 0, "mute still overrides automation");
-    for (int k = 0; k < 4; ++k) {
+    for (int k = 0; k < alien::maxReturns; ++k) {   // one send lane per return slot, A-H
         const auto parameter = static_cast<Parameter>(2 + k);
         Lane send{0, parameter, true, {}};
         check(sendIndex(parameter) == k && send.put({0, 0.0f}) && send.put({100, 1.0f}), "send targets and endpoints");
@@ -41,9 +41,9 @@ int main() {
         t.automationLanes.push_back(send);
     }
     t.automationLanes.push_back({0, Parameter::pan, true, {{0, 0}}});
-    check(t.valid(), "all six parameters fit on a track");
-    auto invalid = t; invalid.automationLanes.back().parameter = static_cast<Parameter>(6);
-    check(!invalid.valid() && !validValue(static_cast<Parameter>(6), 0), "unknown target rejected even with a valid value");
+    check(t.valid(), "every parameter fits on a track");
+    auto invalid = t; invalid.automationLanes.back().parameter = static_cast<Parameter>(alien::automation::parametersPerTrack);
+    check(!invalid.valid() && !validValue(static_cast<Parameter>(alien::automation::parametersPerTrack), 0), "unknown target rejected even with a valid value");
     alien::SendRamp ramp; ramp.prepare(48000); ramp.setTarget(0.25f);
     check(ramp.automated(1) == 1, "automation applies without smoothing");
     const float firstManual = ramp.next();

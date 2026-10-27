@@ -332,6 +332,87 @@ static void parameterParseTests() {
     }
 }
 
+static void muteSoloTests() {
+    ToneEngine engine;
+    alien::ProjectController c(engine);
+    cmd::CommandEngine commands(c);
+    c.pushDocumentToEngine();
+    require(c.setTrackVolume(0, .5) && c.setTrackPan(0, -.25) && c.setTrackSolo(2, true), "prepare unrelated settings");
+    c.markAsNewBaseline();
+    const auto before = c.document();
+    const auto history = historyOf(c);
+    const std::vector<cmd::Command> edits{cmd::SetTrackMute{0, true}, cmd::SetTrackSolo{1, true}};
+    const auto preview = commands.preview(edits);
+    require(preview.ok && preview.changed && preview.changes.size() == 2
+        && preview.changes[0].contains("Mute") && preview.changes[1].contains("Solo")
+        && preview.after.tracks[0].settings.mute && preview.after.tracks[1].settings.solo,
+        "mute/solo preview predicts and describes the requested states");
+    require(alien::sameContent(before, c.document()) && historyOf(c) == history
+        && !engine.tracks[0].mute.load() && !engine.tracks[1].solo.load(), "preview has no live or history side effects");
+    require(commands.batch(edits, "Audition tracks").ok && alien::sameContent(preview.after, c.document())
+        && engine.tracks[0].mute.load() && engine.tracks[1].solo.load() && engine.tracks[2].solo.load()
+        && engine.tracks[0].gain.load() == .5f && engine.tracks[0].pan.load() == -.25f,
+        "execution matches preview, preserves mix values and does not exclusively solo");
+    require(c.undoLabel() == "Audition tracks" && commands.undo() && !c.canUndo()
+        && alien::sameContent(before, c.document()) && !engine.tracks[0].mute.load()
+        && !engine.tracks[1].solo.load() && engine.tracks[2].solo.load(), "one undo restores document and live states");
+    const auto redoHistory = historyOf(c);
+    for (const auto& edit : std::vector<cmd::Command>{cmd::SetTrackMute{0, false}, cmd::SetTrackSolo{1, false}}) {
+        const auto result = commands.execute(edit);
+        require(result.ok && !result.changed && historyOf(c) == redoHistory, "unchanged booleans preserve redo and create no history");
+    }
+    const auto invalid = commands.batch({cmd::SetTrackMute{0, true}, cmd::SetTrackSolo{99, true}}, "Invalid audition");
+    require(!invalid.ok && invalid.failedCommand == 1 && historyOf(c) == redoHistory
+        && alien::sameContent(before, c.document()) && !engine.tracks[0].mute.load(), "invalid later target prevents every batch write");
+    require(!commands.execute(cmd::SetTrackMute{-1, true}).ok && !c.setTrackMute(-1, true)
+        && !c.setTrackSolo(c.document().trackCount(), true), "negative and out-of-range targets are refused");
+    c.setExternalBusy(true);
+    require(!commands.execute(cmd::SetTrackSolo{0, true}).ok && !c.setTrackMute(0, true) && !c.setTrackSolo(0, true),
+        "busy commands and direct setters refuse writes");
+    c.setExternalBusy(false);
+    require(historyOf(c) == redoHistory && alien::sameContent(before, c.document())
+        && !engine.tracks[0].mute.load() && !engine.tracks[0].solo.load(), "refusals preserve document, live controls and history");
+    require(commands.redo() && engine.tracks[0].mute.load() && engine.tracks[1].solo.load(), "redo restores the complete audition");
+    require(commands.execute(cmd::SetTrackMute{0, false}).ok && c.undoLabel() == "Set track mute"
+        && !engine.tracks[0].mute.load(), "explicit unmute uses a named undo step");
+    require(commands.execute(cmd::SetTrackSolo{1, false}).ok && c.undoLabel() == "Set track solo"
+        && !engine.tracks[1].solo.load() && engine.tracks[2].solo.load(), "explicit unsolo preserves other solo states");
+    const auto structureBase = c.document();
+    const std::vector<cmd::Command> structure{cmd::CreateTrack{}, cmd::SetTrackMute{4, true}, cmd::MoveTrack{4, 0},
+        cmd::SetTrackSolo{0, true}, cmd::SetTrackMute{0, true}};
+    const auto structurePreview = commands.preview(structure);
+    require(structurePreview.ok && commands.batch(structure, "Create audition track").ok
+        && structurePreview.after.trackCount() == c.document().trackCount()
+        && structurePreview.after.tracks[0].settings.mute == c.document().tracks[0].settings.mute
+        && structurePreview.after.tracks[0].settings.solo == c.document().tracks[0].settings.solo
+        && engine.tracks[0].mute.load() && engine.tracks[0].solo.load(),
+        "boolean commands follow create/reorder in a batch, including a repeated state");
+    require(commands.undo() && alien::sameContent(structureBase, c.document()), "structural/boolean batch is one undo step");
+}
+
+static void muteSoloParseTests() {
+    juce::String error;
+    require(cmd::name(cmd::SetTrackMute{}) == "SetTrackMute" && cmd::name(cmd::SetTrackSolo{}) == "SetTrackSolo", "stable mute/solo names");
+    for (const auto& edit : std::vector<cmd::Command>{cmd::SetTrackMute{0, true}, cmd::SetTrackMute{1, false},
+                                                   cmd::SetTrackSolo{2, true}, cmd::SetTrackSolo{3, false}}) {
+        const auto parsed = cmd::parse(cmd::name(edit), juce::JSON::parse(juce::JSON::toString(cmd::arguments(edit))), error);
+        require(parsed && parsed->index() == edit.index()
+            && juce::JSON::toString(cmd::arguments(*parsed)) == juce::JSON::toString(cmd::arguments(edit)), "boolean commands round-trip through JSON");
+    }
+    for (const auto* key : {"muted", "soloed"}) {
+        const juce::String command = juce::String(key) == "muted" ? "SetTrackMute" : "SetTrackSolo";
+        for (const auto* value : {"0", "1", "0.0", "\"true\"", "null", "[]", "{}"}) {
+            const auto json = "{\"track\":0,\"" + juce::String(key) + "\":" + value + "}";
+            require(!cmd::parse(command, juce::JSON::parse(json), error) && error.contains("boolean"), "boolean arguments reject truthy numbers, strings, null and containers");
+        }
+        require(!cmd::parse(command, juce::JSON::parse(R"({"track":0})"), error), "missing boolean is refused");
+        const auto args = juce::JSON::parse("{\"track\":true,\"" + juce::String(key) + "\":true}");
+        require(!cmd::parse(command, args, error) && error.contains("whole-number"), "boolean track indices are refused");
+        require(!cmd::parse(command, juce::JSON::parse("{\"track\":0,\"" + juce::String(key) + "\":true,\"toggle\":true}"), error),
+            "unknown boolean command arguments are refused");
+    }
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     nameTests();
@@ -342,6 +423,8 @@ int main() {
     parseTests();
     parameterCommandTests();
     parameterParseTests();
+    muteSoloTests();
+    muteSoloParseTests();
     std::cout << "CommandEngineTests passed\n";
     return 0;
 }

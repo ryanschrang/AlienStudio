@@ -338,3 +338,11 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Link an audio clip into two cells and clear one: the other keeps its audio. Place a linked clip twice on the Song, use Make this placement unique on one, edit it and listen: the other placement is unchanged.
 - Save, reopen, undo and redo after each step; open the project in an older build and confirm it refuses the file instead of losing the links.
 
+## Flexible returns (MIX-05)
+- In the mixer, click Add return until there are eight (E to H appear beside A-D; Add return then greys out). Every track strip shows a send knob per return, in two rows past four; check the strips stay readable at 960x650 and at 150/200% scaling.
+- Put a reverb on return F and a delay on return H (Plugins > "Return F FX"), send two tracks to each, and listen: each return is heard at its own level, with no click when a send knob moves; pre-fader sends ignore the track fader; muting or soloing a track gates its sends; a soloed track is still heard through F and H.
+- Rename return F (click its name), and check the new name appears in Plugins, in the send knob's tooltip and in the Song view's automation parameter list.
+- Remove return B while sends to C, D and F are up and playing: B's strip and knobs disappear without a click or a stuck tail, and every other send keeps its level and its return. Undo brings B back with its sends and FX; redo removes it again. Add a return: it takes slot B again, with every send to it off.
+- Put a latent VST3 (a look-ahead limiter or linear-phase EQ) on return G and check dry and G stay aligned (no flamming), then remove G and check the other returns still line up.
+- Save, reopen and Save portable with returns removed, added past D and renamed; open a project saved by an older build and check it has returns A-D exactly as before.
+- Export a WAV and stems: one stem per return that exists ("Return A.wav", "Return F - <name>.wav"), none for removed ones, and the stems sum back to the mix. Freeze a track that sends to return F: the frozen audio has the track alone.
