@@ -786,6 +786,9 @@ static void placementClipTests() {
     std::uint32_t a = 0, b = 0;
     require(c.placeRegion(1, 0, 0, &a) && c.placeRegion(1, 0, 2 * ticksPerBar, &b) && c.makePlacementUnique(a), "a placement clip");
     const auto clip = d.timeline.find(a)->clip;
+    const auto cell = d.cellClip(1, 0);
+    require(!c.setPlacementPattern(0, patternWith(70)) && !c.setPlacementPattern(cell.value, patternWith(70))
+            && d.clip(1, 0).notes().notes[0].pitch == 48, "placement edits refuse zero and Session clip ids without changing cells");
     // Copies of a placement share its clip, as copies of a cell's placement share the cell.
     require(c.editTimeline("Duplicate", [&](alien::timeline::Timeline& t) { return t.duplicate({a}); }), "duplicate the placement");
     std::uint32_t copy = 0;
@@ -833,6 +836,9 @@ static void placementClipFileTests() {
     require(c.placeRegion(0, 0, 0, &a) && c.placeRegion(0, 0, ticksPerBar, &b) && c.makePlacementUnique(a), "a placement clip");
     require(c.editTimeline("Duplicate", [&](alien::timeline::Timeline& t) { return t.duplicate({a}); }), "and a copy of it");
     require(c.setPlacementPattern(d.timeline.find(a)->clip, patternWith(66)), "with notes of its own"); c.commit("Edit notes");
+    require(c.deleteReturn(1) && c.addReturn("Song echo") == 1 && c.addReturn("Extra return") == 4,
+            "placement project supports renamed and extra returns");
+    require(c.deleteReturn(2), "placement project supports a removed return");
     const auto data = alien::toProjectData(d);
     require(data.valid() && data.placementClips.size() == 1, "saved once, however many regions play it");
     const auto json = alien::serializeSessionProject(data);
@@ -845,6 +851,9 @@ static void placementClipFileTests() {
             [](const auto& r) { return r.ownsClip(); })).notes().notes[0].pitch == 66 && reopened.placementName(shared) == "Scene 1",
             "both regions reopen sharing one clip with its notes and name");
     require(reopened.library.valid() && alien::toProjectData(reopened).valid(), "the reopened library is consistent");
+    require(reopened.returns[1].used && reopened.returns[1].name == "Song echo" && !reopened.returns[2].used
+            && reopened.returns[4].used && reopened.returns[4].name == "Extra return",
+            "format 24 preserves renamed, removed and extra return slots alongside placement clips");
     // Damaged and older files.
     auto broken = juce::JSON::parse(json);
     broken.getProperty("placementClips", {})[0].getDynamicObject()->setProperty("id", "0000000000000000");
