@@ -41,11 +41,11 @@ Ordered by importance. Rows without dependencies can run in parallel.
 
 | Order | Workstream | Checklist IDs | Status today | Depends on | Main area |
 | --- | --- | --- | --- | --- | --- |
-| T1-01 | Tempo and time-signature map | TEMPO-01 | Not started | - | `Timeline.h`, `StepClock.h`, `ToneEngine.h`, export |
-| T1-02 | Command Engine (see below) | CMD-01 | Partial: structural track commands and track volume/pan, Execute/Undo/Redo/Batch/Preview; remaining operations and UI adoption pending | - | `CommandEngine.h`, `ProjectController.h`, `DocumentHistory.h` |
-| T1-03 | One clip/pattern model shared by Create, Perform and Arrange | ARCH-01, LIVE-03 | Partial: Song regions share Session clip notes; Channel Rack patterns are a separate model | Design doc first; T1-02 helps | `RackModel.h`, `SessionProject.h`, `Timeline.h`, `Arrangement.h` |
+| T1-01 | Tempo and time-signature map | TEMPO-01 | Implemented on Song (#104, #114); Windows listening pending | - | `Timeline.h`, `StepClock.h`, `ToneEngine.h`, export |
+| T1-02 | Command Engine (see below) | CMD-01 | Partial: structural track commands and track volume/pan, Execute/Undo/Redo/Batch/Preview; Session track menus use commands; remaining operations and other UI adoption pending | - | `CommandEngine.h`, `ProjectController.h`, `DocumentHistory.h` |
+| T1-03 | One clip/pattern model shared by Create, Perform and Arrange | ARCH-01, LIVE-03 | Partial: Session library and linked cells implemented (#116, #124); direct region clip IDs and Channel Rack integration remain | Design doc first; T1-02 helps | `RackModel.h`, `SessionProject.h`, `Timeline.h`, `Arrangement.h` |
 | T1-04 | Universal tracks and higher limits | TRACK-01, LIVE-04 | Partial: 16 tracks / 32 scenes; rack channels are a separate track kind | T1-03 design | `SessionCapacity.h`, `SessionProject.h`, `ToneEngine.h` |
-| T1-05 | Mixer routing: groups, buses, sidechain, flexible returns | MIX-03, MIX-04, MIX-05 | Partial: volume, pan, mute/solo, meters, four returns, pre/post sends, latency compensation (MIX-01, MIX-02) | - | `TrackMixer.h`, `ToneEngine.h` routing, mixer view |
+| T1-05 | Mixer routing: groups, buses, sidechain, flexible returns | MIX-03, MIX-04, MIX-05 | Partial: group buses (#106), stock/VST3 sidechain routing (#119), four fixed returns, pre/post sends and latency compensation; flexible returns remain | - | `TrackMixer.h`, `ToneEngine.h` routing, mixer view |
 | T1-06 | Piano Roll V1 completion | PROD-05 | Transpose and cursor split implemented; missing ghost notes and multi-clip editing | - | `PianoRoll*.h` |
 | T1-07 | Recording completion | REC-02 | Done in code: loop-pass recording (#107) and waveform take lanes (#121); Windows listening checks pending | - | `SongRecording.h`, `TimelineView.h` |
 | T1-08 | Audio editing completion | EDIT-01, WARP-03 | Partial: trim, split, menu/Alt-drag slip, gain, fades, crossfades; missing selectable fade curves and warp markers | Warp markers need T1-01 | `Timeline.h`, `TimelineView.h`, `TempoWarp.h` |
