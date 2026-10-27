@@ -3,6 +3,7 @@
 #include "ToneEngine.h"
 #include "TypingPianoRouter.h"
 #include "PianoRollEditor.h"
+#include "PianoRollGhostSources.h"
 #include "CompactWorkspace.h"
 #include "TrackMixerPanel.h"
 #include "ProjectController.h"
@@ -445,6 +446,7 @@ private:
         };
         controller.onClipContentChanged = [this](int track, int scene) {
             sessionView.refreshSelectedClip();
+            refreshGhostNotes();
             const auto& d = controller.document();
             if (track == d.selectedTrack && scene == d.selectedScene) tabs.setCurrentTabIndex(2);
         };
@@ -479,6 +481,7 @@ private:
             const auto& d = controller.document();
             controller.commit("Edit notes", d.selectedTrack, d.selectedScene);
         };
+        pianoRoll.onGhostSourceChanged = [this](alien::GhostNoteSource) { refreshGhostNotes(); };
         pianoRoll.onAudition = [this](int note, float velocity) {
             if (rollTarget.rack) {
                 controller.previewRackChannel(rollTarget.channel, velocity, note - alien::rack::channelRootPitch, true);
@@ -549,10 +552,14 @@ private:
                 controller.commit("Change " + controller.document().tracks[static_cast<std::size_t>(track)].name + " mix",
                                   -1, -1, "mixer-" + juce::String(track));
         };
-        // The Session view's track headers hold the same volume, pan, mute and solo as the Mixer; an edit made there is committed like one made here.
+        // Session knob gestures share the Mixer's commit path. Mute/solo commands already own their undo step.
         sessionView.onTrackMixEdited = [this](int track, bool committed) {
             mixerPanel.refreshSettings();
             if (mixerPanel.onTrackEdited) mixerPanel.onTrackEdited(track, committed);
+        };
+        sessionView.onTrackMixCommandExecuted = [this](int) {
+            mixerPanel.refreshSettings();
+            sessionView.repaint();
         };
         devicesView.onPresetChanged = [this](int preset) {
             releaseNotes();
@@ -592,9 +599,17 @@ private:
         } else pianoRoll.setPattern(controller.document().selectedClip().notes());
         pianoRoll.setEnabled(rollTarget.rack || !controller.isTrackFrozen(rollTarget.placement != 0 ? controller.placementTrack(rollTarget.placement)
                                                                                                  : controller.document().selectedTrack));
+        refreshGhostNotes();
         loadingClip = false;
         sessionView.refreshSelectedClip();
         updateEditorTitle();
+    }
+
+    // Other clips' notes, shown dimmed behind a Session clip (none for a Channel Rack channel).
+    void refreshGhostNotes() {
+        const auto& d = controller.document();
+        pianoRoll.setGhostClips(rollTarget.rack ? std::vector<alien::PianoRollGhostClip> {}
+            : alien::ghostClipsFor(d, d.selectedTrack, d.selectedScene, pianoRoll.getGhostSource()));
     }
 
     // Recording --------------------------------------------------------------

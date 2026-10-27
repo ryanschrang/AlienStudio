@@ -46,11 +46,13 @@ struct Rig {
     ProjectController controller{engine};
     SessionView view{controller, engine};
     std::vector<std::pair<int, bool>> mixEdits;   // what the view reported: track, committed
+    std::vector<int> mixCommands; // refresh notifications for edits already committed by commands
 
     explicit Rig(int width = 1280, int height = 720) {
         engine.prepare(48000);
         controller.pushDocumentToEngine();
         view.onTrackMixEdited = [this](int track, bool committed) { mixEdits.emplace_back(track, committed); };
+        view.onTrackMixCommandExecuted = [this](int track) { mixCommands.push_back(track); };
         view.setSize(width, height);
         view.rebuildGrid();
     }
@@ -329,19 +331,20 @@ static void headerControls() {
         }
     }
 
-    // The light mutes; a right-click on it soloes; the S button soloes. All are Mixer values and are reported as committed.
+    // The light mutes; a right-click on it soloes; the S button soloes. Commands report refresh-only notifications.
     rig.click(centre(strip.ledRect(1)));
     require(rig.muted(1) && !rig.muted(0), "the light mutes its track");
-    require(rig.mixEdits.size() == 1 && rig.mixEdits[0] == std::pair<int, bool>{1, true}, "and says so, as a final value");
+    require(rig.mixCommands == std::vector<int>{1} && rig.mixEdits.empty(), "mute reports refresh without a legacy edit commit");
     rig.click(centre(strip.ledRect(1)));
     require(!rig.muted(1), "clicking the light again unmutes");
     rig.click(centre(strip.ledRect(2)), rightButton);
     require(rig.soloed(2), "right-clicking the light soloes");
-    require(rig.mixEdits.back() == std::pair<int, bool>{2, true}, "and says so, as a final value");
+    require(rig.mixCommands.back() == 2 && rig.mixEdits.empty(), "solo reports refresh without a legacy edit commit");
     rig.mixEdits.clear();
+    rig.mixCommands.clear();
     rig.click(centre(strip.soloRect(2)));
     require(!rig.soloed(2), "the S button toggles solo");
-    require(rig.mixEdits.size() == 1 && rig.mixEdits[0] == std::pair<int, bool>{2, true}, "and says so too");
+    require(rig.mixCommands == std::vector<int>{2} && rig.mixEdits.empty(), "the S button also uses the command notification");
     rig.click(centre(strip.soloRect(3)));
     require(rig.soloed(3) && !rig.soloed(2), "and soloes the track it is on");
     rig.click(centre(strip.soloRect(3)));
@@ -531,6 +534,57 @@ static void selectionAndStructure() {
     rig.view.refreshFromDocument();
     const auto image = rig.snapshot();
     require(rig.controller.document().tracks[0].name == "Track 3" && image.getWidth() > 0, "tracks keep their order after a move");
+}
+
+static void muteSoloCommandHistory() {
+    Rig rig;
+    auto& c = rig.controller;
+    auto& strip = rig.strip();
+    c.selectClip(3, 2);
+    require(c.setTrackVolume(0, .5) && c.setTrackPan(0, -.25) && c.setTrackSolo(2, true), "prepare mix settings");
+    c.markAsNewBaseline();
+    const auto baseline = c.document();
+    rig.engine.requestedPianoRollClip[0].store(1);
+    int legacyCommits = 0;
+    rig.view.onTrackMixEdited = [&](int track, bool committed) {
+        ++legacyCommits;
+        c.trackSettingsEdited(track);
+        if (committed) c.commit("Legacy mix");
+    };
+    rig.click(centre(strip.ledRect(0)));
+    require(c.document().tracks[0].settings.mute && rig.muted(0) && c.undoLabel() == "Set track mute"
+        && c.isDirty() && rig.mixCommands == std::vector<int>{0} && legacyCommits == 0,
+        "mute click uses the named command, commits once and refreshes without the legacy callback");
+    require(c.undo() && !c.canUndo() && !c.isDirty() && sameContent(c.document(), baseline) && !rig.muted(0),
+        "one undo restores document, live mute and clean baseline");
+    require(c.redo() && rig.muted(0) && c.document().tracks[0].settings.mute, "redo restores mute");
+    rig.click(centre(strip.ledRect(0)));
+    require(!rig.muted(0) && !c.document().tracks[0].settings.mute && c.undoLabel() == "Set track mute", "second mute click unmutes through a command");
+    require(c.undo() && rig.muted(0), "undo unmute restores mute");
+    require(c.undo() && sameContent(c.document(), baseline), "restore baseline and redo for refusal checks");
+    const auto redoLabel = c.redoLabel();
+    const auto notifications = rig.mixCommands.size();
+    c.setExternalBusy(true);
+    rig.click(centre(strip.ledRect(0)));
+    rig.click(centre(strip.ledRect(1)), rightButton);
+    rig.click(centre(strip.soloRect(1)));
+    c.setExternalBusy(false);
+    require(sameContent(c.document(), baseline) && !rig.muted(0) && !rig.soloed(1) && rig.soloed(2)
+        && c.canRedo() && c.redoLabel() == redoLabel && rig.mixCommands.size() == notifications && legacyCommits == 0,
+        "all three busy controls refuse without live writes, notifications or lost redo");
+    require(c.redo() && rig.muted(0) && c.undo(), "redo still works after busy refusal");
+    rig.click(centre(strip.ledRect(1)), rightButton);
+    require(rig.soloed(1) && rig.soloed(2) && c.document().tracks[1].settings.solo && c.undoLabel() == "Set track solo",
+        "right-click light solo is a named additive command");
+    require(c.undo() && !rig.soloed(1) && rig.soloed(2) && sameContent(c.document(), baseline), "one undo restores the previous solo set");
+    require(c.redo() && rig.soloed(1) && rig.soloed(2), "redo restores additive solo");
+    rig.click(centre(strip.soloRect(1)));
+    require(!rig.soloed(1) && rig.soloed(2) && !c.document().tracks[1].settings.solo && c.undoLabel() == "Set track solo",
+        "the S button unsolos through the same command without clearing another solo");
+    require(c.undo() && rig.soloed(1) && c.redo() && !rig.soloed(1), "S button command undo and redo restore live solo");
+    require(c.document().selectedTrack == 3 && c.document().selectedScene == 2 && rig.requested(0) == 1
+        && rig.gain(0) == .5f && rig.pan(0) == -.25f && legacyCommits == 0,
+        "mute/solo preserve selection, queued launch and unrelated mix settings");
 }
 
 // The light is small, so its click zone reaches a few pixels past the drawn circle; further out is something else.
@@ -892,6 +946,7 @@ int main() {
     launching();
     engineStopsOneTrack();
     headerControls();
+    muteSoloCommandHistory();
     lightHitArea();
     knobReadouts();
     selectionAndStructure();
