@@ -374,6 +374,36 @@ private:
     ReductionMeter meter;
 };
 
+// ---- Gate ------------------------------------------------------------------------------
+
+class GateEditor final : public EffectEditor {
+public:
+    explicit GateEditor(GateEffect& e) : EffectEditor(e, juce::Colour(0xff5fd3a6), 560, 300), meter(80.0) {
+        addAndMakeVisible(meter);
+        addKnob(gate::threshold, "Threshold"); addKnob(gate::range, "Range"); addKnob(gate::attack, "Attack");
+        addKnob(gate::hold, "Hold"); addKnob(gate::release, "Release");
+        finishSetup();
+    }
+    void resized() override {
+        auto area = content();
+        meter.setBounds(area.removeFromRight(80));
+        area.removeFromRight(12);
+        layoutKnobs(area.removeFromTop(150).withTrimmedTop(8), 0, 5, area.getWidth() / 5);
+        noteArea = area.withTrimmedTop(10);
+    }
+    void paint(juce::Graphics& g) override {
+        EffectEditor::paint(g);
+        g.setColour(ui::colours::textFaint);
+        g.setFont(ui::font(12.0f));
+        g.drawFittedText("Opens at the threshold and closes a little below it after the hold time. Plugins > Sidechain... "
+                         "lets another track, bus or return open it.", noteArea, juce::Justification::topLeft, 3);
+    }
+    void tick() override { meter.setReduction(static_cast<GateEffect&>(effect).attenuationDb()); }
+private:
+    ReductionMeter meter;
+    juce::Rectangle<int> noteArea;
+};
+
 // ---- Saturator ---------------------------------------------------------------------
 
 // The curve as heard: input level (-1..1) against output for the current drive and character.
@@ -756,6 +786,7 @@ inline juce::AudioProcessorEditor* makeEditor(Effect& effect) {
     if (id == catalog[4].id) return new LimiterEditor(static_cast<LimiterEffect&>(effect));
     if (id == catalog[5].id) return new FilterEditor(static_cast<FilterEffect&>(effect));
     if (id == catalog[6].id) return new SaturatorEditor(static_cast<SaturatorEffect&>(effect));
+    if (id == catalog[7].id) return new GateEditor(static_cast<GateEffect&>(effect));
     return nullptr;
 }
 // Including this header installs the editors; without it the host shows its generic one.

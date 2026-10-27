@@ -195,14 +195,14 @@ public:
             for (std::size_t i=0;i<state.effects.size() && i<rack.effects.size();++i) capture(rack.effects[i],state.effects[i],t,static_cast<int>(i));
         }
     }
-    // An effect keyed by a track gets its second input bus switched on in stereo (a stock compressor,
-    // or a VST3 effect with a sidechain input). An effect without one, or one that refuses, stays unkeyed.
+    // A keyed effect gets its second input bus switched on in stereo (a stock compressor or gate, or a
+    // VST3 effect with a sidechain input). An effect without one, or one that refuses, stays unkeyed.
     static void applySidechain(PluginRuntime::Slot& slot,const PluginState& state,int index) {
-        slot.keyTrack=-1;
+        slot.keyIndex=-1; slot.keyFrom=KeySource::track;
         if (index<0 || !slot.processor || slot.processor->getBusCount(true)<2) return;
         auto layout=slot.processor->getBusesLayout();
         layout.inputBuses.getReference(1)=state.sidechain>=0?juce::AudioChannelSet::stereo():juce::AudioChannelSet::disabled();
-        if (slot.processor->setBusesLayout(layout) && state.sidechain>=0) slot.keyTrack=state.sidechain;
+        if (slot.processor->setBusesLayout(layout) && state.sidechain>=0) { slot.keyIndex=state.sidechain; slot.keyFrom=state.sidechainFrom; }
     }
     // Whether the effect in this slot has a sidechain input to key.
     bool hasSidechainInput(int rack,int index) const {

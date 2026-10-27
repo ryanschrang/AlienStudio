@@ -542,6 +542,7 @@ private:
                 }
                 if (automated) trackMixers[t].processAutomated(l, r, settings, anySolo);
                 else trackMixers[t].process(l,r);
+                plugins->keyPostFader(t, i, l, r);   // a sidechain key for the buses', returns' and master's FX
                 if (stemCapture) { stemCapture->buses[t].setSample(0,i,stemCapture->freezeTrack==static_cast<int>(t)?preLeft:l); stemCapture->buses[t].setSample(1,i,stemCapture->freezeTrack==static_cast<int>(t)?preRight:r); }
                 peaks[t] = std::max(peaks[t], std::max(std::abs(l), std::abs(r)));
                 if (const int bus = trackOutputs[t]; bus >= 0) {
@@ -567,6 +568,7 @@ private:
                 if (!returnActive[k]) continue;
                 float l = plugins->returns[k].getSample(0, i), r = plugins->returns[k].getSample(1, i);
                 returnMixers[k].process(l, r);
+                plugins->keyReturn(k, i, l, r);   // a sidechain key for the master's FX
                 if (stemCapture) {
                     stemCapture->buses[alien::StemCapture::returnBase + k].setSample(0,i,l);
                     stemCapture->buses[alien::StemCapture::returnBase + k].setSample(1,i,r);
@@ -624,6 +626,7 @@ private:
             for (int i = 0; i < samples; ++i) {
                 float l = buffer.getSample(0, i), r = buffer.getSample(1, i);
                 busMixers[index].process(l, r);
+                plugins->keyBus(index, i, l, r);   // a sidechain key for the returns' and master's FX
                 if (stemCapture) {
                     stemCapture->buses[static_cast<std::size_t>(alien::StemCapture::busBase + b)].setSample(0, i, l);
                     stemCapture->buses[static_cast<std::size_t>(alien::StemCapture::busBase + b)].setSample(1, i, r);

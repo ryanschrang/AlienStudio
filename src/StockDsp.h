@@ -363,6 +363,63 @@ private:
     double rate{44100}, fall{0.99}, envelope{}, reductionDb{}, lastReduction{};
 };
 
+// Stereo-linked noise gate. It opens when its detector (a sidechain key, when given, otherwise its own
+// input) rises to the threshold, stays open for the hold time once the level drops, and closes when the
+// level is a few dB below the threshold, so a level hovering at the threshold does not chatter. Closed, it
+// turns the sound down by `rangeDb` (-80 dB is as good as silent; a smaller range lets some through).
+// Attack and release are how fast it opens and closes.
+class Gate {
+public:
+    struct Settings { double thresholdDb{-40}, rangeDb{-80}, attackMs{1}, holdMs{50}, releaseMs{150}; };
+    static constexpr double hysteresisDb = 4.0, detectorFallMs = 5.0;
+
+    void prepare(double sampleRate) noexcept {
+        rate = sampleRate;
+        fall = std::exp(-1.0 / (detectorFallMs * 0.001 * rate));
+        reset();
+    }
+    // Closed, as when nothing has played yet.
+    void reset() noexcept { envelope = 0; gain = -1; open = false; holding = 0; lastAttenuation = 0; }
+    // Most the gate turned the sound down during the last block, in dB (>= 0).
+    double lastBlockAttenuationDb() const noexcept { return lastAttenuation; }
+    bool isOpen() const noexcept { return open; }
+
+    void process(float* left, float* right, int count, const Settings& s,
+                 const float* keyLeft = nullptr, const float* keyRight = nullptr) noexcept {
+        const double closed = dbToGain(std::clamp(s.rangeDb, -120.0, 0.0));
+        const double attack = std::exp(-1.0 / (std::max(s.attackMs, 0.05) * 0.001 * rate));
+        const double release = std::exp(-1.0 / (std::max(s.releaseMs, 0.5) * 0.001 * rate));
+        const auto hold = static_cast<long>(std::max(s.holdMs, 0.0) * 0.001 * rate);
+        if (gain < 0) gain = closed;
+        double worst = 0;
+        for (int i = 0; i < count; ++i) {
+            double kl = keyLeft != nullptr ? static_cast<double>(keyLeft[i]) : static_cast<double>(left[i]);
+            double kr = keyRight != nullptr ? static_cast<double>(keyRight[i]) : static_cast<double>(right[i]);
+            if (!std::isfinite(kl)) kl = 0;   // a broken key reads as silence
+            if (!std::isfinite(kr)) kr = 0;
+            envelope = std::max(std::max(std::abs(kl), std::abs(kr)), envelope * fall);
+            const double levelDb = envelope > 1.0e-6 ? gainToDb(envelope) : -120.0;
+            if (levelDb >= s.thresholdDb) { open = true; holding = hold; }
+            else if (open && levelDb < s.thresholdDb - hysteresisDb) {
+                if (holding > 0) --holding;
+                else open = false;
+            }
+            const double target = open ? 1.0 : closed;
+            const double coefficient = target > gain ? attack : release;
+            gain = coefficient * gain + (1.0 - coefficient) * target;
+            worst = std::max(worst, -gainToDb(gain));
+            left[i] = static_cast<float>(left[i] * gain);
+            right[i] = static_cast<float>(right[i] * gain);
+        }
+        lastAttenuation = worst;
+    }
+
+private:
+    double rate{44100}, fall{0.99}, envelope{}, gain{-1}, lastAttenuation{};
+    bool open{};
+    long holding{};
+};
+
 // ---- Delay ------------------------------------------------------------------
 
 // Circular buffer with a four-point (Catmull-Rom) fractional read.

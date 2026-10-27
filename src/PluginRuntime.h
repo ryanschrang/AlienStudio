@@ -1,5 +1,6 @@
 #pragma once
 #include "PluginFault.h"
+#include "PluginState.h"
 #include "SessionCapacity.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <algorithm>
@@ -47,7 +48,8 @@ public:
         std::uint64_t instanceId{}; // assigned by the host off the audio thread
         Flag faulted;               // set by whichever thread saw the failure; cleared only by unloading the slot
         juce::String name;          // for reports; the host fills it in when it loads the plugin
-        int keyTrack{-1};           // the Session track keying this effect's sidechain input (set while the slot is loaded), or -1
+        int keyIndex{-1};           // what keys this effect's sidechain input (set while the slot is loaded), or -1
+        KeySource keyFrom{KeySource::track};
     };
     struct Rack {
         Slot instrument;
@@ -149,6 +151,9 @@ public:
         for (auto& b : returns) b.clear();
         for (auto& b : buses) b.clear();
         for (auto& m : midi) m.clear();
+        // The mixer writes every track's and bus's key each block; a return that does not exist is skipped,
+        // so its key is cleared here rather than left over from when it did.
+        for (auto& key : returnKeys) for (auto& channel : key) channel.fill(0.0f);
         sampleOffset = 0; currentSamples = samples; eventCounts.fill(0);
         playHead.info.setBpm(bpm);
         const auto timelineSamples = static_cast<juce::int64>(std::llround(seconds >= 0.0 ? seconds * rate : ppq * rate * 60.0 / bpm));
@@ -162,6 +167,16 @@ public:
             for (int ch = 1; ch <= 16; ++ch) { m.addEvent(juce::MidiMessage::allSoundOff(ch),0); m.addEvent(juce::MidiMessage::allNotesOff(ch),0); }
     }
     bool hasInstrument(std::size_t track) const noexcept { return racks[track].instrumentAssigned; }
+    // The mixer hands over the keys it makes, sample by sample: each track after its fader and pan,
+    // each bus after its strip, each return after its strip (MIX-04).
+    void keyPostFader(std::size_t track, int i, float left, float right) noexcept { store(postKeys, track, i, left, right); }
+    void keyBus(std::size_t bus, int i, float left, float right) noexcept { store(busKeys, bus, i, left, right); }
+    void keyReturn(std::size_t r, int i, float left, float right) noexcept { store(returnKeys, r, i, left, right); }
+    // Where in the mix a rack runs, which decides the keys it can hear.
+    static constexpr RackStage stageOf(int rack) noexcept {
+        return rack < maxSessionTracks ? RackStage::track : rack == masterIndex ? RackStage::master
+             : isReturn(rack) ? RackStage::returnTrack : RackStage::bus;
+    }
     void controller(std::size_t track,int channel,int number,int value) noexcept {
         if(track<tracks.size()&&!racks[track].frozen&&channel>=1&&channel<=16&&number>=0&&number<128&&value>=0&&value<128)
             midi[track].addEvent(juce::MidiMessage::controllerEvent(channel,number,value),sampleOffset);
@@ -326,7 +341,10 @@ private:
     void process(Slot& slot,int rack,int index,juce::AudioBuffer<float>& buffer,juce::MidiBuffer& messages,int samples) {
         if (!slot.processor || slot.bypass || slot.faulted.get()) return;
         // A keyed effect takes its sidechain as channels 2 and 3 (a copy, so it cannot spoil the key for another).
-        const bool keyed=index>=0 && slot.keyTrack>=0 && slot.keyTrack<maxSessionTracks && slot.processor->getTotalNumInputChannels()==4;
+        // Only a key the mix has made by the time this rack runs is handed over.
+        const auto* key=index>=0 && slot.keyIndex>=0 && slot.keyIndex<keySlots(slot.keyFrom) && keyReady(stageOf(rack),slot.keyFrom)
+            ? &keyFor(slot.keyFrom,slot.keyIndex) : nullptr;
+        const bool keyed=key!=nullptr && slot.processor->getTotalNumInputChannels()==4;
         if (slot.processor->getTotalNumOutputChannels()!=2 || (slot.processor->getTotalNumInputChannels()>2 && !keyed)) return;
         samples=std::min(samples,blockSize);
         // Stack view, no heap or channel-pointer allocation for stereo buffers.
@@ -334,7 +352,7 @@ private:
         const bool effect=index>=0;
         if (effect) for (int c=0;c<2;++c) std::memcpy(dry[static_cast<std::size_t>(c)].data(),pointers[c],sizeof(float)*static_cast<std::size_t>(samples));
         if (keyed) for (int c=0;c<2;++c)
-            std::memcpy(keyScratch[static_cast<std::size_t>(c)].data(),keys[static_cast<std::size_t>(slot.keyTrack)][static_cast<std::size_t>(c)].data(),sizeof(float)*static_cast<std::size_t>(samples));
+            std::memcpy(keyScratch[static_cast<std::size_t>(c)].data(),(*key)[static_cast<std::size_t>(c)].data(),sizeof(float)*static_cast<std::size_t>(samples));
         juce::AudioBuffer<float> view(pointers,keyed?4:2,samples);
         fault::Fault fault;
         const bool completed=fault::guarded([&]{ slot.processor->processBlock(view,messages); },fault);
@@ -347,8 +365,27 @@ private:
         }
     }
     static std::atomic<std::size_t>& quarantineTally() { static std::atomic<std::size_t> tally{0}; return tally; }
+    using Key = std::array<std::array<float,blockSize>,2>;
+    template <std::size_t N>
+    static void store(std::array<Key,N>& set, std::size_t which, int i, float left, float right) noexcept {
+        if (which >= N || i < 0 || i >= blockSize) return;
+        set[which][0][static_cast<std::size_t>(i)] = left; set[which][1][static_cast<std::size_t>(i)] = right;
+    }
+    const Key& keyFor(KeySource from, int index) const noexcept {
+        const auto i = static_cast<std::size_t>(index);
+        switch (from) {
+        case KeySource::trackPostFader: return postKeys[i];
+        case KeySource::bus: return busKeys[i];
+        case KeySource::returnTrack: return returnKeys[i];
+        case KeySource::track: break;
+        }
+        return keys[i];
+    }
     std::array<std::array<float,blockSize>,2> dry{};
-    std::array<std::array<std::array<float,blockSize>,2>,maxSessionTracks> keys{};   // each track before its FX, this block
+    std::array<Key,maxSessionTracks> keys{};       // each track before its FX, this block
+    std::array<Key,maxSessionTracks> postKeys{};   // each track after its fader and pan
+    std::array<Key,maxBuses> busKeys{};            // each bus after its strip
+    std::array<Key,maxReturns> returnKeys{};       // each return after its strip
     std::array<std::array<float,blockSize>,2> keyScratch{};
     std::array<Delay,maxSessionTracks+1> delays;
     std::array<Delay,maxReturns> returnDelays;

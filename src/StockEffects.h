@@ -16,7 +16,7 @@ namespace alien::stock {
 inline constexpr const char* formatName = "AlienStock";
 
 struct Info { const char* id; const char* name; const char* summary; };
-inline constexpr std::array<Info, 7> catalog{{
+inline constexpr std::array<Info, 8> catalog{{
     {"eq", "Alien EQ", "Four-band equaliser with low and high shelves and two bells"},
     {"compressor", "Alien Compressor", "Stereo-linked compressor with soft knee and parallel mix"},
     {"reverb", "Alien Reverb", "Stereo room reverb with pre-delay"},
@@ -24,6 +24,7 @@ inline constexpr std::array<Info, 7> catalog{{
     {"limiter", "Alien Limiter", "Look-ahead peak limiter that never passes its ceiling"},
     {"filter", "Alien Filter", "Resonant low-pass, high-pass, band-pass and notch filter, 12 or 24 dB/oct"},
     {"saturator", "Alien Saturator", "Oversampled soft, warm or hard saturation with tone and mix"},
+    {"gate", "Alien Gate", "Noise gate with hold and range; key it from another track for rhythmic gating"},
 }};
 
 // Parameter identifiers, shared by the processors and their editors.
@@ -34,6 +35,9 @@ inline constexpr const char *lowFreq = "lowFreq", *lowGain = "lowGain", *m1Freq 
 namespace comp {
 inline constexpr const char *threshold = "threshold", *ratio = "ratio", *attack = "attack", *release = "release",
     *knee = "knee", *makeup = "makeup", *mix = "mix";
+}
+namespace gate {
+inline constexpr const char *threshold = "threshold", *range = "range", *attack = "attack", *hold = "hold", *release = "release";
 }
 namespace saturator {
 inline constexpr const char *drive = "drive", *character = "character", *tone = "tone", *mix = "mix", *output = "output";
@@ -266,6 +270,47 @@ private:
     std::atomic<float> *threshold{}, *ratio{}, *attack{}, *release{}, *knee{}, *makeup{}, *mix{};
     std::atomic<float> reduction{0.0f};
     dsp::Compressor compressor;
+};
+
+// ---- Gate ---------------------------------------------------------------------
+
+class GateEffect final : public Effect {
+public:
+    GateEffect() : Effect(catalog[7], layout(), true) {
+        threshold = raw(gate::threshold); range = raw(gate::range); attack = raw(gate::attack);
+        hold = raw(gate::hold); release = raw(gate::release);
+    }
+    void prepareToPlay(double sampleRate, int) override { rate = sampleRate; engine.prepare(sampleRate); prepared = true; }
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
+        juce::ScopedNoDenormals noDenormals;
+        if (!prepared || buffer.getNumChannels() < 2) return;
+        float* left = buffer.getWritePointer(0);
+        float* right = buffer.getWritePointer(1);
+        sanitise(left, right, buffer.getNumSamples());
+        const auto key = sidechainKey(buffer);   // another track's, bus's or return's signal, when the host keys it
+        engine.process(left, right, buffer.getNumSamples(), settings(), key.first, key.second);
+        attenuation.store(static_cast<float>(engine.lastBlockAttenuationDb()), std::memory_order_relaxed);
+    }
+    double getTailLengthSeconds() const override { return 0.0; }
+    dsp::Gate::Settings settings() const noexcept {
+        return {value(threshold), value(range), value(attack), value(hold), value(release)};
+    }
+    // How far the gate turned the sound down in the most recent block, for the editor's meter.
+    float attenuationDb() const noexcept { return attenuation.load(std::memory_order_relaxed); }
+
+private:
+    static Layout layout() {
+        Layout l;
+        l.add(floatParameter(gate::threshold, "Threshold", {-80, 0, -30}, -40, dbFormat()));
+        l.add(floatParameter(gate::range, "Range", {-80, 0, -24}, -80, dbFormat()));
+        l.add(floatParameter(gate::attack, "Attack", {0.05f, 50, 2}, 1, millisecondsFormat()));
+        l.add(floatParameter(gate::hold, "Hold", {0, 500, 60}, 50, millisecondsFormat()));
+        l.add(floatParameter(gate::release, "Release", {5, 2000, 150}, 150, millisecondsFormat()));
+        return l;
+    }
+    std::atomic<float> *threshold{}, *range{}, *attack{}, *hold{}, *release{};
+    std::atomic<float> attenuation{0.0f};
+    dsp::Gate engine;
 };
 
 // ---- Saturator ----------------------------------------------------------------
@@ -540,6 +585,7 @@ inline std::unique_ptr<Effect> create(const juce::String& id) {
     if (id == catalog[4].id) return std::make_unique<LimiterEffect>();
     if (id == catalog[5].id) return std::make_unique<FilterEffect>();
     if (id == catalog[6].id) return std::make_unique<SaturatorEffect>();
+    if (id == catalog[7].id) return std::make_unique<GateEffect>();
     return {};
 }
 
