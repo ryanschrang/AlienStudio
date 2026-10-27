@@ -3,10 +3,13 @@
 #include <cmath>
 #include <cstdint>
 #include <vector>
+#include "SessionCapacity.h"
 
 namespace alien::automation {
-enum class Parameter : int { volume = 0, pan = 1, sendA = 2, sendB = 3, sendC = 4, sendD = 5 };
-inline constexpr int parametersPerTrack = 6;
+// A send's lane follows its return's slot (sendA is always return A), so removing a return never moves another's curve.
+enum class Parameter : int { volume = 0, pan = 1, sendA = 2, sendB = 3, sendC = 4, sendD = 5, sendE = 6, sendF = 7, sendG = 8, sendH = 9 };
+inline constexpr int parametersPerTrack = 2 + maxReturns;
+static_assert(static_cast<int>(Parameter::sendH) == parametersPerTrack - 1, "one send lane per return slot");
 inline bool validParameter(Parameter p) noexcept { return static_cast<int>(p) >= 0 && static_cast<int>(p) < parametersPerTrack; }
 inline int sendIndex(Parameter p) noexcept { return static_cast<int>(p) >= 2 && validParameter(p) ? static_cast<int>(p) - 2 : -1; }
 inline float minimum(Parameter p) noexcept { return p == Parameter::pan ? -1.0f : 0.0f; }

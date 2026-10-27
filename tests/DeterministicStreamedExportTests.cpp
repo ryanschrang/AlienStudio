@@ -179,7 +179,7 @@ static void stemTests() {
     alien::DrumSamplePointers drums{};
     check(alien::exportArrangementWav(target,*song.project,*song.playback,drums,stop,error,nullptr,options), error.toRawUTF8());
     const auto files = target.findChildFiles(juce::File::findFiles,false,"*.wav");
-    check(files.size() == song.project->trackCount() + alien::maxReturns + 1 && target.getChildFile("README.txt").existsAsFile(),
+    check(files.size() == song.project->trackCount() + alien::defaultReturns + 1 && target.getChildFile("README.txt").existsAsFile(),
         "one file per track, return and direct-rack bus plus routing notes");
     std::vector<float> summed(static_cast<std::size_t>(reference.frames),0);
     for (const auto& file : files) {
