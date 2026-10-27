@@ -105,7 +105,7 @@ public:
         caption.setExtraKerningFactor(0.18f);
         g.setFont(caption);
         g.setColour(colours::accent);
-        g.drawText("PATTERN STUDIO", text.removeFromTop(22), juce::Justification::centredLeft, true);
+        g.drawText("Digital Audio Workstation", text.removeFromTop(22), juce::Justification::centredLeft, true);
         text.removeFromTop(16);
         g.setColour(colours::textDim);
         g.setFont(font(14.0f));
