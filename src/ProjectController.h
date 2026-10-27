@@ -851,22 +851,41 @@ public:
         republishIfLive(track, scene);
         return true;
     }
-    // Whether a Song placement shares what it plays with something else: another placement of its cell,
-    // or a linked cell.
+    // Whether a Song placement shares what it plays with something else: another placement of the same
+    // cell or placement clip, or a linked cell.
     bool placementShared(std::uint32_t regionId) const {
         const auto* r = doc.timeline.find(regionId);
-        if (r == nullptr || r->isPattern() || !doc.isValidCell(r->row, r->source) || !doc.cellClip(r->row, r->source)) return false;
+        if (r == nullptr || r->isPattern()) return false;
+        if (r->ownsClip()) {
+            int uses = 0;
+            for (const auto& other : doc.timeline.regions) uses += other.clip == r->clip ? 1 : 0;
+            return uses > 1;
+        }
+        if (!doc.isValidCell(r->row, r->source) || !doc.cellClip(r->row, r->source)) return false;
         int uses = 0;
-        for (const auto& other : doc.timeline.regions) uses += other.row == r->row && other.source == r->source ? 1 : 0;
+        for (const auto& other : doc.timeline.regions) uses += other.playsCell() && other.row == r->row && other.source == r->source ? 1 : 0;
         return uses > 1 || doc.linkedCells(r->row, r->source) > 1;
     }
-    // Gives one Song placement content of its own: an independent copy of what it plays, in a free cell
-    // of its track (a scene is added when there is none). The cell and the other placements keep theirs.
+    // Gives one Song placement content of its own: an independent copy of what it plays. A MIDI placement
+    // gets a placement clip, which no Session cell launches; an audio placement gets a free cell of its track
+    // (a scene is added when there is none). The cell and the other placements keep theirs.
     bool makePlacementUnique(std::uint32_t regionId) {
         if (busy || isRecording() || !placementShared(regionId)) return false;
         const auto* r = doc.timeline.find(regionId);
         const int row = r->row, from = r->source;
         if (isTrackFrozen(row)) return false;
+        const auto content = doc.placementContent(*r);
+        if (!content.isAudioClip()) {
+            const auto name = r->ownsClip() ? doc.placementName(r->clip) : doc.scenes[static_cast<std::size_t>(from)].name;
+            const auto saved = doc;
+            const auto id = doc.addPlacementClip(content.pattern, name);
+            auto* region = doc.timeline.find(regionId);
+            region->clip = id.value; region->source = -1;
+            if (!id || !doc.timeline.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount)) { doc = saved; return false; }
+            doc.prune();
+            commit("Make placement unique");
+            return true;
+        }
         const auto saved = doc;
         const auto used = [&](int scene) {
             if (doc.cellClip(row, scene)) return true;
@@ -982,6 +1001,28 @@ public:
         engine.requestedPianoRollClip[index].store(scene);
         if (engine.activePianoRollClip[index].load() == scene) engine.pianoRollNotes[index].publish(pattern);
         else publishClip(track, scene);
+    }
+
+    // Called by the piano roll as a placement clip's notes change: every region that plays it follows.
+    bool setPlacementPattern(std::uint64_t clip, const PianoRollPattern& pattern) {
+        const auto id = alien::library::ClipId{clip};
+        if (busy || placementTrack(clip) < 0 || doc.library.clip(id) == nullptr) return false;
+        for (const auto& r : doc.timeline.regions) if (r.clip == clip && isTrackFrozen(r.row)) return false;
+        if (samePianoRollPattern(*doc.contentOf(id).pattern, pattern)) return false;
+        if (!doc.setPlacementNotes(id, std::make_shared<const PianoRollPattern>(pattern))) return false;
+        publishArrangement();
+        return true;
+    }
+    // A placement clip with `notes`, for a paste that brings back a clip that was cut. Nothing plays it until a
+    // region names it (an unused one is dropped at the next edit). Returns its id, or 0.
+    std::uint64_t restorePlacementClip(std::shared_ptr<const PianoRollPattern> notes, const juce::String& name) {
+        if (busy || notes == nullptr || !notes->valid()) return 0;
+        return doc.addPlacementClip(std::move(notes), name).value;
+    }
+    // The track whose Song regions play placement clip `clip` (-1 when none does).
+    int placementTrack(std::uint64_t clip) const {
+        for (const auto& r : doc.timeline.regions) if (clip != 0 && r.clip == clip) return r.row;
+        return -1;
     }
 
     bool removeAudio(int track, int scene) {
@@ -1158,6 +1199,7 @@ public:
             if (!doc.clip(t, s).audioOffline()) song->clips[s][t].pattern = doc.clip(t, s).pattern;   // shared, not copied
             song->clips[s][t].audio = doc.clip(t, s).audio.get();
         }
+        for (const auto id : doc.placementClips()) song->placements.push_back({id, {doc.contentOf(alien::library::ClipId{id}).pattern, nullptr}});
         return song;
     }
     // What the engine currently holds. Commits that do not touch the song (mixer,
@@ -1170,6 +1212,7 @@ public:
         int tracks{}, scenes{};
         std::vector<std::shared_ptr<const PianoRollPattern>> patterns;
         std::vector<std::shared_ptr<const SessionAudioClip>> audio;
+        std::vector<std::shared_ptr<const PianoRollPattern>> placements;   // by doc.placementClips()
     };
     bool songDiffersFromPublished() const {
         if (!published.known || published.tracks != doc.trackCount() || published.scenes != doc.sceneCount()
@@ -1180,6 +1223,10 @@ public:
                 const auto& clip = doc.clip(t, s);
                 if (published.patterns[index] != clip.pattern || published.audio[index] != clip.audio) return true;
             }
+        const auto ids = doc.placementClips();
+        if (ids.size() != published.placements.size()) return true;
+        for (std::size_t i = 0; i < ids.size(); ++i)
+            if (published.placements[i] != doc.contentOf(alien::library::ClipId{ids[i]}).pattern) return true;
         return false;
     }
     void rememberPublishedSong() {
@@ -1193,6 +1240,8 @@ public:
                 published.patterns.push_back(doc.clip(t, s).pattern);
                 published.audio.push_back(doc.clip(t, s).audio);
             }
+        published.placements.clear();
+        for (const auto id : doc.placementClips()) published.placements.push_back(doc.contentOf(alien::library::ClipId{id}).pattern);
     }
     void publishArrangement() {
         if (!songDiffersFromPublished()) return;
@@ -1212,6 +1261,7 @@ public:
         next.tempo = doc.bpm;
         if (!edit(next) || !next.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount) || next == doc.timeline)
             return false;
+        for (const auto& r : next.regions) if (r.ownsClip() && doc.library.clip(alien::library::ClipId{r.clip}) == nullptr) return false;
         if(next.frozenOriginals!=doc.timeline.frozenOriginals)return false;
         // Send automation only for a return that exists.
         for(const auto& lane:next.automationLanes)
@@ -1224,6 +1274,7 @@ public:
         }
         if(anyFrozenTrack() && next.lengthBars!=doc.timeline.lengthBars)next.freezeBaseLengthBars=next.lengthBars;
         doc.timeline = std::move(next);
+        doc.prune();   // a placement clip no region plays any more is gone (undo keeps it)
         commit(label, -1, -1, coalesceKey);
         return true;
     }
@@ -1398,7 +1449,7 @@ public:
         for(int c=0;c<doc.channelRack.channelCount;++c)if(doc.channelRack.channels[static_cast<std::size_t>(c)].output==track)
             return "Freeze currently supports Session tracks without Channel Rack inputs. Reroute those channels first.";
         for(const auto& region:doc.timeline.regions)if(region.row==track) {
-            if(doc.clip(track,region.source).audioOffline())return "Relink missing audio before freezing.";
+            if(doc.placementContent(region).audioOffline())return "Relink missing audio before freezing.";
             if(region.group!=0)for(const auto& other:doc.timeline.regions)if(other.group==region.group && other.row!=track)
                 return "Ungroup clips shared with other tracks before freezing.";
         }

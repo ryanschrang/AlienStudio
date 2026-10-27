@@ -379,6 +379,7 @@ private:
         canvas.onSeek = [this](std::int64_t tick) { engine.timelineSeek.store(tick); };
         canvas.onPlayToggle = [this] { togglePlay(); };
         canvas.onOpenSource = [this](int row, int source) { openTimelineSource(row, source); };
+        canvas.onOpenPlacement = [this](std::uint64_t clip) { openPlacementClip(clip); };
         // A double-click on an empty lane made a new clip (and a Session scene for it when every cell of the track was taken).
         canvas.onClipCreated = [this](int, int, bool sceneAdded) {
             if (sceneAdded) sessionView.rebuildGrid();
@@ -401,6 +402,18 @@ private:
         sessionView.refreshFromDocument();
         if (controller.document().selectedClip().isAudioClip()) showView(2);
         else { showView(1); pianoRoll.grabKeyboardFocus(); }
+    }
+
+    // Double-click on a placement clip: edit its notes in the piano roll. Every region that plays it follows.
+    void openPlacementClip(std::uint64_t clip) {
+        const int track = controller.placementTrack(clip);
+        if (track < 0) return;
+        controller.selectClip(track, controller.document().selectedScene);
+        rollTarget = {false, 0, clip};
+        loadSelectedClip();
+        sessionView.refreshFromDocument();
+        showView(1);
+        pianoRoll.grabKeyboardFocus();
     }
 
     void wireController() {
@@ -449,6 +462,10 @@ private:
                 rackView.refresh();
                 return;
             }
+            if (rollTarget.placement != 0) {
+                if (!loadingClip) controller.setPlacementPattern(rollTarget.placement, pianoRoll.getPattern());
+                return;
+            }
             const auto& d = controller.document();
             controller.setClipPattern(d.selectedTrack, d.selectedScene, pianoRoll.getPattern(), !loadingClip);
             if (!loadingClip) sessionView.refreshSelectedClip();
@@ -460,6 +477,7 @@ private:
                 ++rollGesture;
                 return;
             }
+            if (rollTarget.placement != 0) { controller.commit("Edit notes"); timelineView.refresh(); return; }
             const auto& d = controller.document();
             controller.commit("Edit notes", d.selectedTrack, d.selectedScene);
         };
@@ -485,7 +503,7 @@ private:
         };
         sessionView.onClearClip = [this] { clearSelectedClip(); };
         sessionView.onCellContentChanged = [this] {
-            if (!rollTarget.rack) loadSelectedClip();
+            if (!rollTarget.rack && rollTarget.placement == 0) loadSelectedClip();
             sessionView.refreshFromDocument();
             refreshExtraViews();
         };
@@ -571,12 +589,16 @@ private:
 
     void loadSelectedClip() {
         if (rollTarget.rack && !controller.channelRack().validChannel(rollTarget.channel)) rollTarget = {};
+        if (rollTarget.placement != 0 && controller.placementTrack(rollTarget.placement) < 0) rollTarget = {};   // no region plays it any more
         loadingClip = true;
-        if (rollTarget.rack) {
+        if (rollTarget.placement != 0) {
+            pianoRoll.setPattern(controller.document().contentOf(alien::library::ClipId{rollTarget.placement}).notes());
+        } else if (rollTarget.rack) {
             const auto& rack = controller.channelRack();
             pianoRoll.setPattern(alien::rack::channelNotes(rack.pattern(rack.selectedPattern), rollTarget.channel));
         } else pianoRoll.setPattern(controller.document().selectedClip().notes());
-        pianoRoll.setEnabled(rollTarget.rack || !controller.isTrackFrozen(controller.document().selectedTrack));
+        pianoRoll.setEnabled(rollTarget.rack || !controller.isTrackFrozen(rollTarget.placement != 0 ? controller.placementTrack(rollTarget.placement)
+                                                                                                 : controller.document().selectedTrack));
         refreshGhostNotes();
         loadingClip = false;
         sessionView.refreshSelectedClip();
@@ -594,7 +616,7 @@ private:
     void toggleRecording() {
         if (controller.isRecording()) { controller.stopRecording(); return; }
         if (projectBusy || controller.isBusy()) return;
-        if (rollTarget.rack) { rollTarget = {}; loadSelectedClip(); }   // takes go into Session clips
+        if (rollTarget.rack || rollTarget.placement != 0) { rollTarget = {}; loadSelectedClip(); }   // takes go into Session clips
         // In the Song view (or with Song mode on) Record records audio from the armed tracks onto the timeline.
         if (!workspace.isDeviceView() && engine.patternMode.load() == alien::songMode) { startSongTake(); return; }
         // MIDI recording plays Session clips, so it needs the clip mode that Song mode would replace.
@@ -688,7 +710,7 @@ private:
     }
 
     void clearSelectedClip() {
-        if (rollTarget.rack) { rollTarget = {}; loadSelectedClip(); }   // "Clear clip" is about the Session clip
+        if (rollTarget.rack || rollTarget.placement != 0) { rollTarget = {}; loadSelectedClip(); }   // "Clear clip" is about the Session clip
         const auto& d = controller.document();
         const int track = d.selectedTrack, scene = d.selectedScene;
         if(controller.isTrackFrozen(track)){timelineView.setStatus("Unfreeze the track before editing its source clips.");return;}
@@ -746,6 +768,10 @@ private:
                 const auto& pattern = rack.patternNames[static_cast<std::size_t>(rack.selectedPattern)];
                 workspace.setEditorTitle("Piano Roll", "Channel Rack" + dot + juce::String::fromUTF8(name.c_str(), static_cast<int>(name.size()))
                                          + dot + juce::String::fromUTF8(pattern.c_str(), static_cast<int>(pattern.size())));
+            } else if (rollTarget.placement != 0) {
+                const auto name = d.placementName(rollTarget.placement);
+                workspace.setEditorTitle("Piano Roll", d.tracks[static_cast<std::size_t>(d.selectedTrack)].name + dot + "Song clip"
+                                         + (name.isNotEmpty() ? dot + name : juce::String{}));
             } else workspace.setEditorTitle("Piano Roll", d.tracks[static_cast<std::size_t>(d.selectedTrack)].name + dot
                                             + d.scenes[static_cast<std::size_t>(d.selectedScene)].name);
             break;
@@ -891,7 +917,7 @@ private:
         // A take the engine has not picked up yet already shows as recording.
         topBar.setRecordState(controller.isRecording() && recordPhase == alien::RecordControls::idle
                                   ? static_cast<int>(alien::RecordControls::recording) : recordPhase);
-        pianoRoll.setLocked(!rollTarget.rack && controller.isRecording() && controller.recordingTrack() == controller.document().selectedTrack
+        pianoRoll.setLocked(!rollTarget.rack && rollTarget.placement == 0 && controller.isRecording() && controller.recordingTrack() == controller.document().selectedTrack
                             && controller.recordingScene() == controller.document().selectedScene);
         const bool isPlaying = engine.playing.load();
         topBar.setPlaying(isPlaying);
@@ -1575,7 +1601,9 @@ private:
     juce::Component::SafePointer<juce::Component> keySource;
     bool loadingClip{}, suppressPianoRollCommit{}, wasDirty{};
     // What the piano roll edits: the selected Session clip, or a Channel Rack channel in the rack's selected pattern.
-    struct RollTarget { bool rack{}; int channel{}; };
+    // What the piano roll edits: the selected Session clip (the default), a Channel Rack channel,
+    // or a Song placement clip (placement: its library id).
+    struct RollTarget { bool rack{}; int channel{}; std::uint64_t placement{}; };
     RollTarget rollTarget;
     int rollGesture{};                  // one undo step per piano-roll gesture on a rack channel
     alien::rack::ChannelNotesFit rollFit;

@@ -5,6 +5,7 @@
 #include "SessionProject.h"
 #include "TrackMixer.h"
 #include <juce_core/juce_core.h>
+#include <algorithm>
 #include <array>
 #include <map>
 #include <memory>
@@ -157,9 +158,11 @@ struct ProjectDocument {
         return cells[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)];
     }
     // What a cell plays, resolved from the library: an empty clip for an empty cell.
-    SessionClip clip(int track, int scene) const {
+    SessionClip clip(int track, int scene) const { return contentOf(cellClip(track, scene)); }
+    // What a library clip plays (an empty clip for an unknown id).
+    SessionClip contentOf(library::ClipId id) const {
         SessionClip view;
-        const auto content = library.content(cellClip(track, scene));
+        const auto content = library.content(id);
         if (content == nullptr) return view;
         for (const auto& lane : content->lanes) {
             if (const auto* notes = std::get_if<library::NoteLane>(&lane.content)) view.pattern = notes->notes;
@@ -171,6 +174,44 @@ struct ProjectDocument {
         return view;
     }
     SessionClip selectedClip() const { return clip(selectedTrack, selectedScene); }
+    // What a Song region on a track plays: its placement clip, or its cell (empty if that is gone).
+    SessionClip placementContent(const alien::timeline::Region& r) const {
+        if (r.ownsClip()) return contentOf(library::ClipId{r.clip});
+        return isValidCell(r.row, r.source) ? clip(r.row, r.source) : SessionClip{};
+    }
+    // Every placement clip the song uses (its regions and frozen originals), each once, ascending.
+    std::vector<std::uint64_t> placementClips() const {
+        std::vector<std::uint64_t> ids;
+        for (const auto* list : {&timeline.regions, &timeline.frozenOriginals})
+            for (const auto& r : *list) if (r.ownsClip()) ids.push_back(r.clip);
+        std::sort(ids.begin(), ids.end());
+        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+        return ids;
+    }
+    // A new placement clip holding `notes` (MIDI only; placement clips have no audio).
+    library::ClipId addPlacementClip(std::shared_ptr<const PianoRollPattern> notes, juce::String name = {}) {
+        auto data = std::make_shared<library::PatternData>();
+        if (notes == nullptr) notes = emptyPattern();
+        data->lengthTicks = library::PatternData::loopTicks(*notes);
+        data->lanes.push_back({library::LaneId{1}, library::NoteLane{std::move(notes)}});
+        return library.addClip(std::shared_ptr<const library::PatternData>(std::move(data)), {name.toStdString(), 0});
+    }
+    // New notes for a placement clip, as a new revision: every region that names it hears them.
+    bool setPlacementNotes(library::ClipId id, std::shared_ptr<const PianoRollPattern> notes) {
+        const auto* existing = library.clip(id);
+        const auto* pattern = existing != nullptr ? library.pattern(existing->pattern) : nullptr;
+        if (pattern == nullptr || notes == nullptr || !notes->valid()) return false;
+        auto data = std::make_shared<library::PatternData>(*pattern->data);
+        data->lengthTicks = library::PatternData::loopTicks(*notes);
+        data->lanes.clear();
+        data->lanes.push_back({library::LaneId{1}, library::NoteLane{std::move(notes)}});
+        return library.editPattern(existing->pattern, pattern->revision, std::move(data)) == library::EditResult::done;
+    }
+    // A placement clip's name (the scene it was made from), for the Song view.
+    juce::String placementName(std::uint64_t id) const {
+        const auto* c = library.clip(library::ClipId{id});
+        return c != nullptr ? juce::String::fromUTF8(c->info.name.c_str(), static_cast<int>(c->info.name.size())) : juce::String{};
+    }
     // The pattern a cell's clip plays (0 for an empty cell). Cells with the same value are linked.
     std::uint64_t linkOf(int track, int scene) const {
         const auto* c = library.clip(cellClip(track, scene));
@@ -210,10 +251,11 @@ struct ProjectDocument {
         cell = {};
         prune();
     }
-    // Drops clips no cell uses any more, and audio no clip plays. (Undo keeps its own copies.)
+    // Drops clips no cell or Song placement uses any more, and audio no clip plays. (Undo keeps its own copies.)
     void prune() {
         std::vector<library::ClipId> roots;
         for (const auto& scene : cells) for (const auto id : scene) if (id) roots.push_back(id);
+        for (const auto id : placementClips()) roots.push_back(library::ClipId{id});
         library.prune(roots);
         std::erase_if(media, [&](const auto& entry) {
             for (const auto& scene : cells) for (const auto id : scene) {
@@ -321,6 +363,9 @@ inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
             // Which cells share content is part of the song: linking two equal cells is an edit.
             if (a.linkOf(t, s) != b.linkOf(t, s)) return false;
         }
+    // The timelines are equal, so both name the same placement clips.
+    for (const auto id : a.placementClips())
+        if (a.contentOf(library::ClipId{id}).pattern != b.contentOf(library::ClipId{id}).pattern) return false;
     return true;
 }
 
@@ -372,6 +417,11 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
             destination.audioFilePath = doc.clip(t, s).audioFilePath;
             if (const auto link = doc.linkOf(t, s); link != 0 && uses[link] > 1) destination.link = link;   // saved only where content is shared
         }
+    for (const auto id : doc.placementClips()) {
+        auto& destination = data.placementClips[id];
+        destination.pattern = doc.contentOf(library::ClipId{id}).pattern;
+        destination.name = doc.placementName(id);
+    }
     return data;
 }
 
@@ -425,6 +475,13 @@ inline ProjectDocument fromProjectData(const SessionProjectData& data) {
             doc.setClip(t, s, clip);
             if (source.link != 0 && doc.cellClip(t, s)) links[source.link] = doc.cellClip(t, s);
         }
+    // Placement clips get new ids in this library; the regions follow.
+    std::map<std::uint64_t, std::uint64_t> placed;
+    for (const auto& [saved, source] : data.placementClips)
+        placed[saved] = doc.addPlacementClip(source.pattern.shared() != nullptr ? source.pattern.shared() : emptyPattern(), source.name).value;
+    for (auto* list : {&doc.timeline.regions, &doc.timeline.frozenOriginals})
+        for (auto& r : *list) if (r.ownsClip()) { const auto found = placed.find(r.clip); r.clip = found != placed.end() ? found->second : 0; }
+    doc.prune();
     doc.clampSelection();
     return doc;
 }

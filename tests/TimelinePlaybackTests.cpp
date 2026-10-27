@@ -1474,6 +1474,41 @@ static void takeCompPlaybackTests() {
     require(allocationCount == before, "seeking within a comp allocates nothing on callback");
 }
 
+// A placement clip (Region::clip) plays exactly as the same notes in a Session cell would, and an edit of it
+// joins the playing region as a cell edit does.
+static void placementClipTests() {
+    const auto notes = oneNote(60, 4, 4);
+    Rig cell; auto viaCell = newSong(2);
+    viaCell->clips[0][0].pattern = notes;
+    place(*viaCell, regionOf(0, 0, 0, 2 * ticksPerBar));
+    cell.publish(viaCell); cell.seek(0); cell.play(); cell.render(2 * barFrames);
+
+    auto placed = [](const alien::PianoRollPattern& content) {
+        auto song = newSong(2);
+        Region r = regionOf(0, -1, 0, 2 * ticksPerBar); r.clip = 0x5150;
+        place(*song, r);
+        alien::ArrangementPlacement mine{0x5150, {}}, other{0x9000, {}};   // other: a clip nothing plays here
+        mine.content.pattern = content; other.content.pattern = held(40);
+        song->placements.push_back(mine); song->placements.push_back(other);
+        return song;
+    };
+    Rig own; own.publish(placed(notes)); own.seek(0); own.play(); own.render(2 * barFrames);
+    require(cell.energy(0, 2 * barFrames) > 0, "the cell's notes sound");
+    double worst = 0;
+    for (long i = 0; i < 2 * barFrames; ++i)
+        worst = std::max(worst, static_cast<double>(std::abs(own.out[static_cast<std::size_t>(i)] - cell.out[static_cast<std::size_t>(i)])));
+    require(worst < 1.0e-6, "a placement clip sounds exactly like the same notes in a cell");
+
+    auto more = notes; require(more.add(67, 12, 2, 0.8f) != 0, "add a note");
+    Rig whole; whole.publish(placed(more)); whole.seek(0); whole.play(); whole.render(barFrames);
+    Rig edited; edited.publish(placed(notes)); edited.seek(0); edited.play(); edited.render(20000);
+    edited.publish(placed(more)); edited.render(barFrames - 20000);
+    worst = 0;
+    for (long i = 0; i < barFrames; ++i)
+        worst = std::max(worst, static_cast<double>(std::abs(edited.out[static_cast<std::size_t>(i)] - whole.out[static_cast<std::size_t>(i)])));
+    require(worst < 1.0e-6, "an edit of a playing placement clip is heard as if it had always been there");
+}
+
 int main() {
     timed("take comp", takeCompPlaybackTests);
     timed("fades", fadeTests);
@@ -1486,6 +1521,7 @@ int main() {
     timed("rack lanes", rackLaneTests);
     timed("audio", audioTests);
     timed("live edits", liveEditTests);
+    timed("placement clips", placementClipTests);
     timed("exactness", exactnessTests);
     timed("details", detailTests);
     timed("real time", realTimeTests);

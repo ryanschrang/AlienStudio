@@ -2,10 +2,13 @@
 #include "SessionAudioClip.h"
 #include "SessionCapacity.h"
 #include "Timeline.h"
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 namespace alien {
 // One Session clip as the song plays it: its notes (shared with the document, never
@@ -15,12 +18,30 @@ struct ArrangementClip {
     const SessionAudioClip* audio{};
 };
 
+// Silence, for a region whose placement clip is missing (never in a validated snapshot).
+inline const ArrangementClip silentArrangementClip{};
+
+// A placement clip as the song plays it (Region::clip): MIDI only.
+struct ArrangementPlacement {
+    std::uint64_t clip{};
+    ArrangementClip content;
+};
+
 // What the audio thread plays in the Arrangement view: the timeline (where
-// everything sits) plus every Session clip it can refer to. Clips point at shared,
-// immutable notes, so a snapshot is a few KiB however many notes the song holds.
+// everything sits) plus every Session clip and placement clip it can refer to.
+// Clips point at shared, immutable notes, so a snapshot is a few KiB however
+// many notes the song holds.
 struct ArrangementPlayback {
     alien::timeline::Timeline timeline;
     std::array<std::array<ArrangementClip, maxSessionTracks>, maxSessionScenes> clips{};
+    std::vector<ArrangementPlacement> placements;   // ascending by clip id
+    // What a track's region plays. Audio thread safe: a binary search, no allocation.
+    const ArrangementClip& clipFor(const alien::timeline::Region& region, std::size_t track) const noexcept {
+        if (region.clip == 0) return clips[static_cast<std::size_t>(region.source)][track];
+        const auto found = std::lower_bound(placements.begin(), placements.end(), region.clip,
+                                            [](const ArrangementPlacement& p, std::uint64_t id) { return p.clip < id; });
+        return found != placements.end() && found->clip == region.clip ? found->content : silentArrangementClip;
+    }
 };
 
 // Hands complete, immutable song snapshots from the message thread to the audio
@@ -40,6 +61,13 @@ public:
         if (!value.timeline.valid()) return false;
         for (const auto& scene : value.clips) for (const auto& clip : scene)
             if (!clip.pattern->valid()) return false;
+        for (std::size_t i = 0; i < value.placements.size(); ++i) {
+            const auto& p = value.placements[i];
+            if (p.clip == 0 || p.content.audio != nullptr || !p.content.pattern->valid()
+                || (i > 0 && value.placements[i - 1].clip >= p.clip)) return false;
+        }
+        for (const auto& r : value.timeline.regions)
+            if (r.clip != 0 && &value.clipFor(r, 0) == &silentArrangementClip) return false;   // every placement clip is there
         return true;
     }
     // Message thread. Copies the value into a fresh snapshot.

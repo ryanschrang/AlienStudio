@@ -2288,9 +2288,46 @@ static void sendAutomationEditorChecks() {
     require(rig->controller.timeline().automationLanes.back().points.back().value < 0.01f, "send graph bottom means off, not negative gain");
 }
 
+// A placement clip (T1-03 B2b): a Song region with notes of its own and no Session cell.
+static void placementClipChecks() {
+    Rig rig; rig.song();
+    std::vector<std::uint64_t> openedClips;
+    rig.c.onOpenPlacement = [&](std::uint64_t clip) { openedClips.push_back(clip); };
+    std::uint32_t second = 0;
+    require(rig.controller.placeRegion(0, 0, 4 * bar, &second), "a second placement of clip a");
+    rig.view.refresh();
+    const auto scenes = rig.controller.document().sceneCount();
+    require(rig.c.makePlacementUnique(second), "Make this placement unique");
+    const auto clip = rig.reg(second).clip;
+    require(clip != 0 && rig.reg(rig.id.a).playsCell() && rig.controller.document().sceneCount() == scenes,
+            "it gets a clip of its own without taking a Session cell");
+    rig.opened.clear();
+    rig.doubleClick(rig.at(4 * bar + 100, 0));
+    require(openedClips == std::vector<std::uint64_t>{clip} && rig.opened.empty(), "double-clicking it opens its own notes, not the cell");
+    rig.rightClick(rig.at(4 * bar + 100, 0));
+    require(rig.menu.shown, "its menu opens");
+    rig.menu.done(TimelineCanvas::cmdOpen);
+    require(openedClips.size() == 2 && openedClips[1] == clip, "Open in the menu does the same");
+    // Cut and paste: the clip is dropped with its last region, and the paste brings it back with its notes.
+    rig.c.setSelection({second});
+    require(rig.c.cutSelection() && !rig.has(second)
+            && rig.controller.document().library.clip(library::ClipId{clip}) == nullptr, "cutting the only region drops the clip");
+    require(rig.c.paste(8 * bar) && rig.c.selection().size() == 1, "paste it back");
+    const auto pasted = rig.reg(rig.c.selection()[0]);
+    require(pasted.ownsClip() && pasted.start == 8 * bar && rig.controller.document().placementContent(pasted).notes().count == 3
+            && rig.valid(), "the paste plays a clip with the copied notes");
+    // A copy pasted while the clip is still there shares it.
+    rig.c.setSelection({pasted.id});
+    require(rig.c.copySelection() && rig.c.paste(12 * bar), "copy and paste again");
+    int sharing = 0;
+    for (const auto& r : rig.t().regions) sharing += r.ownsClip() && r.clip == pasted.clip ? 1 : 0;
+    require(sharing == 2, "the two placements share one clip");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     freezeMenuChecks();
+    placementClipChecks();
     sendAutomationEditorChecks();
     takeCompChecks();
     takeLaneChecks();

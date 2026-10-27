@@ -1,5 +1,6 @@
 #include "ProjectController.h"
 #include "AudioFileWrite.h"
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 
@@ -751,24 +752,122 @@ static void placementUniqueTests() {
     ToneEngine engine;
     alien::ProjectController c(engine);
     const auto& d = c.document();
+    using alien::timeline::ticksPerBar;
     c.setClipPattern(0, 0, patternWith(60), false); c.commit("Notes", 0, 0);
     std::uint32_t first = 0, second = 0;
-    require(c.placeRegion(0, 0, 0, &first) && c.placeRegion(0, 0, 4 * alien::timeline::ticksPerBar, &second), "two placements of one cell");
+    require(c.placeRegion(0, 0, 0, &first) && c.placeRegion(0, 0, 4 * ticksPerBar, &second), "two placements of one cell");
     require(c.placementShared(first) && c.placementShared(second), "they share what they play");
     const auto scenes = d.sceneCount();
-    // Fill every other cell of track 0 so a new scene is needed.
-    for (int s = 1; s < d.sceneCount(); ++s) { c.setClipPattern(0, s, patternWith(40 + s), false); }
-    c.commit("Fill");
+    const auto clips = d.library.clipCount();
     require(c.makePlacementUnique(second) && c.undoLabel() == "Make placement unique", "Make placement unique is one undo step");
-    const auto* moved = d.timeline.find(second);
-    require(moved != nullptr && moved->source == scenes && d.sceneCount() == scenes + 1 && d.timeline.find(first)->source == 0,
-            "with no free cell, a scene is added for the placement's own copy; the other placement keeps the cell");
-    require(d.clip(0, moved->source).notes().notes[0].pitch == 60 && d.linkOf(0, moved->source) != d.linkOf(0, 0), "an independent copy of the same notes");
-    c.setClipPattern(0, moved->source, patternWith(70), false); c.commit("Notes");
-    require(d.clip(0, 0).notes().notes[0].pitch == 60, "editing it leaves the other placement alone");
-    require(!c.makePlacementUnique(second) && !c.placementShared(first), "neither placement shares anything now");
-    require(c.undo() && c.undo() && d.timeline.find(second)->source == 0 && d.sceneCount() == scenes, "undo puts it back on the shared cell");
+    const auto* own = d.timeline.find(second);
+    require(own != nullptr && own->ownsClip() && own->source == -1 && d.sceneCount() == scenes && d.library.clipCount() == clips + 1
+            && d.timeline.find(first)->playsCell(), "a MIDI placement gets a clip of its own, with no Session cell or new scene");
+    require(d.placementContent(*own).notes().notes[0].pitch == 60 && d.placementName(own->clip) == d.scenes[0].name,
+            "an independent copy of the same notes, named after the scene it came from");
+    require(c.setPlacementPattern(own->clip, patternWith(70)), "the piano roll edits a placement clip");
+    c.commit("Edit notes");
+    require(d.clip(0, 0).notes().notes[0].pitch == 60 && d.placementContent(*d.timeline.find(second)).notes().notes[0].pitch == 70,
+            "editing it leaves the cell and the other placement alone");
+    require(!c.makePlacementUnique(second) && !c.placementShared(first) && !c.placementShared(second), "neither placement shares anything now");
+    require(c.undo() && d.placementContent(*d.timeline.find(second)).notes().notes[0].pitch == 60, "undo takes the edit back");
+    require(c.undo() && d.timeline.find(second)->playsCell() && d.timeline.find(second)->source == 0 && d.library.clipCount() == clips,
+            "undo puts it back on the shared cell, and its clip is gone");
+    require(c.redo() && d.timeline.find(second)->ownsClip(), "redo makes it unique again");
     std::puts("PASS: making one placement unique");
+}
+
+static void placementClipTests() {
+    ToneEngine engine;
+    alien::ProjectController c(engine);
+    const auto& d = c.document();
+    using alien::timeline::ticksPerBar;
+    c.setClipPattern(1, 0, patternWith(48), false); c.commit("Notes", 1, 0);
+    std::uint32_t a = 0, b = 0;
+    require(c.placeRegion(1, 0, 0, &a) && c.placeRegion(1, 0, 2 * ticksPerBar, &b) && c.makePlacementUnique(a), "a placement clip");
+    const auto clip = d.timeline.find(a)->clip;
+    const auto cell = d.cellClip(1, 0);
+    require(!c.setPlacementPattern(0, patternWith(70)) && !c.setPlacementPattern(cell.value, patternWith(70))
+            && d.clip(1, 0).notes().notes[0].pitch == 48, "placement edits refuse zero and Session clip ids without changing cells");
+    // Copies of a placement share its clip, as copies of a cell's placement share the cell.
+    require(c.editTimeline("Duplicate", [&](alien::timeline::Timeline& t) { return t.duplicate({a}); }), "duplicate the placement");
+    std::uint32_t copy = 0;
+    for (const auto& r : d.timeline.regions) if (r.id != a && r.clip == clip) copy = r.id;
+    require(copy != 0 && c.placementShared(a) && c.placementShared(copy), "the duplicate shares the placement clip");
+    require(c.setPlacementPattern(clip, patternWith(55)), "edit the shared clip");
+    c.commit("Edit notes");
+    require(d.placementContent(*d.timeline.find(copy)).notes().notes[0].pitch == 55 && d.clip(1, 0).notes().notes[0].pitch == 48,
+            "both placements hear the edit; the cell does not");
+    // The engine gets the placement clip with the song.
+    const auto song = c.captureArrangement();
+    require(alien::ArrangementMailbox::validSnapshot(*song) && song->placements.size() == 1
+            && song->clipFor(*d.timeline.find(copy), 1).pattern->notes[0].pitch == 55
+            && song->clipFor(*d.timeline.find(b), 1).pattern->notes[0].pitch == 48, "the song snapshot plays each region's own content");
+    auto missing = *song; missing.placements.clear();
+    require(!alien::ArrangementMailbox::validSnapshot(missing), "a snapshot without a region's placement clip is refused");
+    // A placement clip belongs to no scene: deleting or moving scenes leaves it where it is.
+    const auto regions = d.timeline.regions.size();
+    require(c.deleteScene(0), "delete the scene the clip came from");
+    c.commit("Delete scene");
+    require(d.timeline.regions.size() == regions - 1 && d.timeline.find(a) != nullptr && d.timeline.find(copy) != nullptr && d.timeline.find(b) == nullptr,
+            "the cell's placement goes with its scene; the placement clips stay");
+    require(c.undo() && d.timeline.find(b) != nullptr, "undo brings the scene back");
+    // Removing every region that plays it drops the clip; undo brings it back.
+    const auto clips = d.library.clipCount();
+    require(c.editTimeline("Delete", [&](alien::timeline::Timeline& t) { return t.remove({a, copy}); }) && d.library.clipCount() == clips - 1,
+            "a placement clip nothing plays is dropped");
+    require(c.undo() && d.library.clip(alien::library::ClipId{clip}) != nullptr && d.placementContent(*d.timeline.find(a)).notes().notes[0].pitch == 55,
+            "undo restores it with its notes");
+    // A paste can bring a cut clip back as a new one.
+    const auto restored = c.restorePlacementClip(std::make_shared<const alien::PianoRollPattern>(patternWith(62)), "Scene 9");
+    require(restored != 0 && restored != clip && d.placementName(restored) == "Scene 9", "a clip restored for a paste");
+    require(!c.editTimeline("Bad", [&](alien::timeline::Timeline& t) { t.regions[0].clip = 0x7777; t.regions[0].source = -1; return true; }),
+            "a region naming a clip the project does not have is refused");
+    std::puts("PASS: placement clips (copies, engine, scenes, pruning)");
+}
+
+static void placementClipFileTests() {
+    ToneEngine engine;
+    alien::ProjectController c(engine);
+    const auto& d = c.document();
+    using alien::timeline::ticksPerBar;
+    c.setClipPattern(0, 0, patternWith(60), false); c.commit("Notes", 0, 0);
+    std::uint32_t a = 0, b = 0;
+    require(c.placeRegion(0, 0, 0, &a) && c.placeRegion(0, 0, ticksPerBar, &b) && c.makePlacementUnique(a), "a placement clip");
+    require(c.editTimeline("Duplicate", [&](alien::timeline::Timeline& t) { return t.duplicate({a}); }), "and a copy of it");
+    require(c.setPlacementPattern(d.timeline.find(a)->clip, patternWith(66)), "with notes of its own"); c.commit("Edit notes");
+    require(c.deleteReturn(1) && c.addReturn("Song echo") == 1 && c.addReturn("Extra return") == 4,
+            "placement project supports renamed and extra returns");
+    require(c.deleteReturn(2), "placement project supports a removed return");
+    const auto data = alien::toProjectData(d);
+    require(data.valid() && data.placementClips.size() == 1, "saved once, however many regions play it");
+    const auto json = alien::serializeSessionProject(data);
+    alien::SessionProjectData parsed; juce::String error;
+    require(static_cast<int>(juce::JSON::parse(json).getProperty("version", 0)) == 24 && alien::parseSessionProject(json, parsed, error), "written and read as format 24");
+    const auto reopened = alien::fromProjectData(parsed);
+    int own = 0; std::uint64_t shared = 0; bool same = true;
+    for (const auto& r : reopened.timeline.regions) if (r.ownsClip()) { ++own; same = same && (shared == 0 || shared == r.clip); shared = r.clip; }
+    require(own == 2 && same && reopened.placementContent(*std::find_if(reopened.timeline.regions.begin(), reopened.timeline.regions.end(),
+            [](const auto& r) { return r.ownsClip(); })).notes().notes[0].pitch == 66 && reopened.placementName(shared) == "Scene 1",
+            "both regions reopen sharing one clip with its notes and name");
+    require(reopened.library.valid() && alien::toProjectData(reopened).valid(), "the reopened library is consistent");
+    require(reopened.returns[1].used && reopened.returns[1].name == "Song echo" && !reopened.returns[2].used
+            && reopened.returns[4].used && reopened.returns[4].name == "Extra return",
+            "format 24 preserves renamed, removed and extra return slots alongside placement clips");
+    // Damaged and older files.
+    auto broken = juce::JSON::parse(json);
+    broken.getProperty("placementClips", {})[0].getDynamicObject()->setProperty("id", "0000000000000000");
+    require(!alien::parseSessionProject(juce::JSON::toString(broken), parsed, error), "a Song clip with id 0 is rejected");
+    broken = juce::JSON::parse(json);
+    broken.getDynamicObject()->removeProperty("placementClips");
+    require(!alien::parseSessionProject(juce::JSON::toString(broken), parsed, error), "a region naming a missing Song clip is rejected");
+    broken = juce::JSON::parse(json);
+    broken.getProperty("placementClips", {})[0].getDynamicObject()->setProperty("audioFilePath", "C:/x.wav");
+    require(!alien::parseSessionProject(juce::JSON::toString(broken), parsed, error), "a Song clip with audio is rejected");
+    broken = juce::JSON::parse(json);
+    broken.getDynamicObject()->setProperty("version", 22);
+    require(!alien::parseSessionProject(juce::JSON::toString(broken), parsed, error), "Song clips in an older format are rejected");
+    std::puts("PASS: placement clips save and reopen (format 24)");
 }
 
 int main() {
@@ -784,6 +883,8 @@ int main() {
     clipLibraryOwnershipTests();
     linkedClipTests();
     placementUniqueTests();
+    placementClipTests();
+    placementClipFileTests();
     structureTests();
     fileFormatTests();
     undoTests();
