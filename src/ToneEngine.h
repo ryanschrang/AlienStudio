@@ -55,7 +55,7 @@ public:
     std::atomic<bool> playing{false};
     std::atomic<int> bpm{120}, currentStep{-1}, preset{0};
     std::array<alien::TrackControls, sessionTracks> tracks;
-    std::array<alien::ReturnControls, alien::maxReturns> returns;
+    std::array<alien::ReturnControls, alien::maxReturns> returns;   // return slots; `active` says which exist
     std::array<alien::BusControls, alien::maxBuses> buses;   // group buses; `active` says which exist
     std::unique_ptr<alien::StemCapture> stemCapture; // Idle offline engine only; never set on live engine.
     alien::MasterControls masterControls;
@@ -118,6 +118,8 @@ public:
             requestedPianoRollClip[t].store(-1, std::memory_order_relaxed);
             activePianoRollClip[t].store(-1, std::memory_order_relaxed);
         }
+        // Like a new project: returns A-D.
+        for (int r = 0; r < alien::defaultReturns; ++r) returns[static_cast<std::size_t>(r)].active.store(true, std::memory_order_relaxed);
     }
 
     const alien::DiskAudioFile* retainDiskAudioSource(std::shared_ptr<const alien::DiskAudioFile> source) {
@@ -253,6 +255,11 @@ private:
             trackOutputs[t] = output >= 0 && output < alien::maxBuses && buses[static_cast<std::size_t>(output)].active.load() ? output : -1;
             soloState.addTrack(trackOutputs[t], tracks[t].solo.load());
         }
+        // Which returns exist this block. A missing one takes no send and is not mixed.
+        for (std::size_t r = 0; r < static_cast<std::size_t>(alien::maxReturns); ++r) {
+            returnActive[r] = returns[r].active.load();
+            plugins->setReturnActive(static_cast<int>(r), returnActive[r]);
+        }
         for (int b = 0; b < alien::maxBuses; ++b)
             soloState.addBus(b, buses[static_cast<std::size_t>(b)].active.load() && buses[static_cast<std::size_t>(b)].solo.load());
         const bool anySolo = soloState.any;
@@ -272,7 +279,7 @@ private:
             const float gate = settings.mute || (anySolo && !settings.solo) ? 0.0f : 1.0f;
             for (std::size_t r = 0; r < static_cast<std::size_t>(alien::maxReturns); ++r) {
                 sendPre[t][r] = settings.sendPre[r];
-                sendRamps[t][r].setTarget(settings.send[r] * (settings.sendPre[r] ? gate : 1.0f));
+                sendRamps[t][r].setTarget(returnActive[r] ? settings.send[r] * (settings.sendPre[r] ? gate : 1.0f) : 0.0f);
             }
             if (instrumentModes[t] != settings.instrument) {
                 trackSynths[t].allSoundOff(); drumSamplers[t].stop();
@@ -538,8 +545,8 @@ private:
                 if (!sending[t]) continue;
                 for (std::size_t k = 0; k < static_cast<std::size_t>(alien::maxReturns); ++k) {
                     const float gate = sendPre[t][k] && (settings.mute || (anySolo && !settings.solo)) ? 0.0f : 1.0f;
-                    const float level = automatedSends[k] ? sendRamps[t][k].automated(settings.send[k] * gate) : sendRamps[t][k].next();
-                    if (level == 0.0f) continue;
+                    const float level = automatedSends[k] ? sendRamps[t][k].automated(returnActive[k] ? settings.send[k] * gate : 0.0f) : sendRamps[t][k].next();
+                    if (level == 0.0f || !returnActive[k]) continue;
                     plugins->returns[k].addSample(0, i, (sendPre[t][k] ? preLeft : l) * level);
                     plugins->returns[k].addSample(1, i, (sendPre[t][k] ? preRight : r) * level);
                 }
@@ -551,6 +558,7 @@ private:
         std::array<float, alien::maxReturns> returnPeaks{};
         for (int i = 0; i < samples; ++i)
             for (std::size_t k = 0; k < static_cast<std::size_t>(alien::maxReturns); ++k) {
+                if (!returnActive[k]) continue;
                 float l = plugins->returns[k].getSample(0, i), r = plugins->returns[k].getSample(1, i);
                 returnMixers[k].process(l, r);
                 if (stemCapture) {
@@ -1418,6 +1426,7 @@ private:
     // Each track's send to each return: its glided level, and (for this block) whether it is taken before the fader.
     FixedHeapArray<std::array<alien::SendRamp, alien::maxReturns>, sessionTracks> sendRamps;
     std::array<std::array<bool, alien::maxReturns>, sessionTracks> sendPre{};
+    std::array<bool, alien::maxReturns> returnActive{};   // this block: which returns exist
     float masterRamp{1.0f}, masterRampCoefficient{1.0f};
     FixedHeapArray<alien::DrumSampler, sessionTracks> drumSamplers;
     std::array<int, sessionTracks> instrumentModes{};

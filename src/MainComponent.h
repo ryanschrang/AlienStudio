@@ -526,7 +526,7 @@ private:
         };
         mixerPanel.onReturnEdited = [this](int r, bool committed) {
             controller.returnSettingsEdited(r);
-            if (committed) controller.commit("Change return " + alien::mixer_text::returnLetter(r) + " mix", -1, -1, "return-" + juce::String(r));
+            if (committed) controller.commit("Change " + controller.document().returns[static_cast<std::size_t>(r)].name + " mix", -1, -1, "return-" + juce::String(r));
         };
         mixerPanel.onBusEdited = [this](int b, bool committed) {
             controller.busSettingsEdited(b);
@@ -535,9 +535,11 @@ private:
         // A bus was added, renamed or deleted, or a track's output changed: one undo step, and the
         // plugin racks follow (a deleted bus takes its FX with it).
         mixerPanel.beforeBusDeleted = [this] { snapshotPlugins(SnapshotReason::whenEdited); };
+        mixerPanel.beforeReturnDeleted = [this] { snapshotPlugins(SnapshotReason::whenEdited); };
         mixerPanel.onRoutingChanged = [this](const juce::String& label) {
             controller.commit(label);
             restorePlugins();
+            timelineView.refresh();   // the automation editor offers only the sends that exist
         };
 
         mixerPanel.onTrackEdited = [this](int track, bool committed) {
@@ -1256,6 +1258,8 @@ private:
         const int t=pluginPanel.destination();
         // A deleted bus is no longer a destination: fall back to the master.
         if(alien::PluginRuntime::isBus(t) && !controller.document().buses[static_cast<std::size_t>(t-alien::PluginRuntime::busBase)].used)return alien::maxSessionTracks;
+        // So is a removed return.
+        if(alien::PluginRuntime::isReturn(t) && !controller.document().returns[static_cast<std::size_t>(t-alien::PluginRuntime::returnBase)].used)return alien::maxSessionTracks;
         return t>=alien::maxSessionTracks && t<alien::PluginRuntime::rackCount ? t : juce::jlimit(0,controller.document().trackCount()-1,t);
 
     }
@@ -1278,10 +1282,12 @@ private:
         const auto& d=controller.document();
         std::array<juce::String,alien::maxBuses> busNames;
         for(std::size_t b=0;b<busNames.size();++b)if(d.buses[b].used)busNames[b]=d.buses[b].name;
+        std::array<juce::String,alien::maxReturns> returnNames;
+        for(std::size_t r=0;r<returnNames.size();++r)if(d.returns[r].used)returnNames[r]=d.returns[r].name;
         const int t=pluginTarget();
         pluginPanel.refresh(names,alien::PluginRuntime::isBus(t)?d.buses[static_cast<std::size_t>(t-alien::PluginRuntime::busBase)].plugins
                                   :alien::PluginRuntime::isReturn(t)?d.returns[static_cast<std::size_t>(t-alien::PluginRuntime::returnBase)].plugins
-                                  :t==alien::maxSessionTracks?d.masterPlugins:d.tracks[static_cast<std::size_t>(t)].plugins,knownPlugins,busNames);
+                                  :t==alien::maxSessionTracks?d.masterPlugins:d.tracks[static_cast<std::size_t>(t)].plugins,knownPlugins,busNames,returnNames);
 
     }
     double deviceRate() const { auto* device=audio.getCurrentAudioDevice(); return device?device->getCurrentSampleRate():44100.0; }

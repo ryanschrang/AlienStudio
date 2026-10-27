@@ -132,6 +132,8 @@ public:
                 edited(true);
             };
             updateSendTooltip(static_cast<int>(r));
+            knob.setVisible(returnNames[r].isNotEmpty());
+            mode.setVisible(returnNames[r].isNotEmpty());
         }
 
         // Where the fader goes: the master, or one of the group buses.
@@ -154,6 +156,18 @@ public:
         for (int b = 0; b < maxBuses; ++b)
             if (busNames[static_cast<std::size_t>(b)].isNotEmpty()) output.addItem(busNames[static_cast<std::size_t>(b)], b + 2);
         output.setSelectedId(output.indexOfItemId(current + 2) >= 0 ? current + 2 : 1, juce::dontSendNotification);
+    }
+
+    // returnNames: one per return slot, empty for a slot not in use. Only the existing returns get a knob.
+    void setReturns(const std::array<juce::String, maxReturns>& names) {
+        if (names == returnNames) return;
+        returnNames = names;
+        for (std::size_t r = 0; r < sends.size(); ++r) {
+            sends[r].setVisible(names[r].isNotEmpty());
+            sendModes[r].setVisible(names[r].isNotEmpty());
+            updateSendTooltip(static_cast<int>(r));
+        }
+        resized();
     }
 
     void setTrack(const juce::String& name, juce::Colour newColour) {
@@ -207,12 +221,21 @@ public:
         r.removeFromTop(6);
         sendsLabel.setBounds(r.removeFromTop(12));
 
-        auto knobs = r.removeFromTop(28), modes = r.removeFromTop(16);
-        const int cell = knobs.getWidth() / static_cast<int>(sends.size());
+        // Up to four sends to a row, in slot order; more returns add a row.
+        int shown = 0;
+        for (const auto& n : returnNames) shown += n.isNotEmpty() ? 1 : 0;
+        const int perRow = juce::jmin(sendsPerRow, juce::jmax(1, shown));
+        const int cell = r.getWidth() / perRow;
+        juce::Rectangle<int> knobs, modes;
+        int column = perRow;
         for (std::size_t i = 0; i < sends.size(); ++i) {
+            if (returnNames[i].isEmpty()) continue;
+            if (column == perRow) { knobs = r.removeFromTop(28); modes = r.removeFromTop(16); column = 0; }
             sends[i].setBounds(knobs.removeFromLeft(cell).withSizeKeepingCentre(juce::jmin(cell, 28), 28));
             sendModes[i].setBounds(modes.removeFromLeft(cell).withSizeKeepingCentre(juce::jmin(cell - 2, 24), 16));
+            ++column;
         }
+        if (shown == 0) r.removeFromTop(44);
         r.removeFromTop(6);
         panLabel.setBounds(r.removeFromTop(12));
         pan.setBounds(r.removeFromTop(64).withSizeKeepingCentre(60, 64));
@@ -256,8 +279,10 @@ private:
     void updateSendTooltip(int r) {
         const auto i = static_cast<std::size_t>(r);
         const auto letter = mixer_text::returnLetter(r);
+        const auto destination = returnNames[i].isNotEmpty() && returnNames[i] != defaultReturnName(r)
+            ? returnNames[i] + " (return " + letter + ")" : "return " + letter;
         const bool pre = sendModes[i].getToggleState();
-        sends[i].setTooltip("Send to return " + letter + ": " + (sends[i].getValue() <= 0 ? juce::String("off") : mixer_text::gainToText(sends[i].getValue()))
+        sends[i].setTooltip("Send to " + destination + ": " + (sends[i].getValue() <= 0 ? juce::String("off") : mixer_text::gainToText(sends[i].getValue()))
                             + (pre ? " (pre-fader)" : " (post-fader)") + ". Double-click to turn it off.");
         sendModes[i].setTooltip(pre ? "Send " + letter + " is pre-fader: it ignores this track's fader and pan. Click for post-fader."
                                     : "Send " + letter + " is post-fader: it follows this track's fader and pan. Click for pre-fader.");
@@ -269,8 +294,14 @@ private:
     juce::ComboBox preset, output;
 
     juce::Slider gain, pan;
+    static constexpr int sendsPerRow = 4;
     std::array<juce::Slider, maxReturns> sends;
     std::array<juce::TextButton, maxReturns> sendModes;
+    std::array<juce::String, maxReturns> returnNames = [] {
+        std::array<juce::String, maxReturns> names;
+        for (int r = 0; r < defaultReturns; ++r) names[static_cast<std::size_t>(r)] = defaultReturnName(r);
+        return names;
+    }();
     juce::TextButton mute, solo;
     ui::LevelMeter meter;
     juce::Rectangle<int> scaleBounds;
@@ -279,18 +310,21 @@ private:
 
 // A return track's strip: its level (the same range as a track fader), pan, mute and meter.
 // What the tracks send arrives here, through the return's FX (chosen in Plugins as
-// "Return A FX" and so on), and goes on to the master.
+// "Return A FX" and so on), and goes on to the master. Its name button opens a menu to rename
+// or remove it; the slot letter above the pan knob matches the send buttons on the tracks.
 class ReturnChannelStrip final : public juce::Component {
 public:
     ReturnChannelStrip(int returnIndex, ReturnControls& returnControls, std::function<void(bool)> editedCallback)
         : index(returnIndex), controls(returnControls), edited(std::move(editedCallback)) {
-        for (auto* c : std::array<juce::Component*, 7>{&title, &panLabel, &pan, &mute, &gainLabel, &gain, &meter}) addAndMakeVisible(c);
+        for (auto* c : std::array<juce::Component*, 8>{&title, &slotLabel, &panLabel, &pan, &mute, &gainLabel, &gain, &meter}) addAndMakeVisible(c);
         const auto letter = mixer_text::returnLetter(index);
-        title.setText("RETURN " + letter, juce::dontSendNotification);
-        title.setFont(ui::font(12.0f, true));
-        title.setJustificationType(juce::Justification::centred);
-        title.setColour(juce::Label::textColourId, ui::colours::accentInk);
-        title.setInterceptsMouseClicks(false, false);
+        title.setColour(juce::TextButton::buttonColourId, ui::colours::accent.withAlpha(0.75f));
+        title.setColour(juce::TextButton::textColourOffId, ui::colours::accentInk);
+        title.onClick = [this] { if (onMenu) onMenu(); };
+        slotLabel.setText("SEND " + letter, juce::dontSendNotification);
+        slotLabel.setFont(ui::font(10.0f, true));
+        slotLabel.setColour(juce::Label::textColourId, ui::colours::accent);
+        slotLabel.setJustificationType(juce::Justification::centred);
         for (auto* label : {&gainLabel, &panLabel}) {
             label->setFont(ui::font(10.0f, true));
             label->setColour(juce::Label::textColourId, ui::colours::textFaint);
@@ -325,8 +359,15 @@ public:
         gain.onDragEnd = [this] { edited(true); };
         gain.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 60, 20);
         gain.setColour(juce::Slider::trackColourId, ui::colours::accent);
+        setReturnName(defaultReturnName(index));
     }
 
+    std::function<void()> onMenu;   // the name button: rename or remove
+
+    void setReturnName(const juce::String& name) {
+        title.setButtonText(name);
+        title.setTooltip(name + " (send " + mixer_text::returnLetter(index) + "): click to rename or remove this return");
+    }
     void refreshSettings() {
         const auto s = controls.snapshot();
         gain.setValue(s.gain * 100, juce::dontSendNotification);
@@ -340,6 +381,8 @@ public:
         auto r = getLocalBounds().reduced(6, 8);
         title.setBounds(r.removeFromBottom(26));
         r.removeFromBottom(8);
+        slotLabel.setBounds(r.removeFromTop(12));
+        r.removeFromTop(2);
         panLabel.setBounds(r.removeFromTop(12));
         pan.setBounds(r.removeFromTop(44).withSizeKeepingCentre(44, 44));
         r.removeFromTop(6);
@@ -354,17 +397,17 @@ public:
         meter.setBounds(area.withTrimmedBottom(22).withSizeKeepingCentre(meterW * 2 + 2, area.getHeight() - 22));
     }
 
-    void paint(juce::Graphics& g) override {
-        ui::drawCard(g, getLocalBounds().toFloat(), ui::colours::raised, 6.0f);
-        g.setColour(ui::colours::accent.withAlpha(0.75f));
-        g.fillRoundedRectangle(title.getBounds().toFloat(), 4.0f);
-    }
+    void paint(juce::Graphics& g) override { ui::drawCard(g, getLocalBounds().toFloat(), ui::colours::raised, 6.0f); }
+
+    // For the tests.
+    juce::TextButton& nameButton() { return title; }
 
 private:
     int index;
     ReturnControls& controls;
     std::function<void(bool)> edited;
-    juce::Label title, panLabel, gainLabel;
+    juce::TextButton title;
+    juce::Label slotLabel, panLabel, gainLabel;
     juce::Slider pan, gain;
     juce::TextButton mute;
     ui::LevelMeter meter;
@@ -555,21 +598,16 @@ class TrackMixerPanel final : public juce::Component {
 public:
     TrackMixerPanel(ProjectController& projectController,
                     std::array<TrackControls, ToneEngine::sessionTracks>& engineControls,
-                    std::array<ReturnControls, maxReturns>& returnControls,
+                    std::array<ReturnControls, maxReturns>& engineReturnControls,
                     MasterControls& masterControls,
                     std::array<BusControls, maxBuses>& engineBusControls)
-        : controller(projectController), controls(engineControls), busControls(engineBusControls),
+        : controller(projectController), controls(engineControls), returnControls(engineReturnControls), busControls(engineBusControls),
 
           masterStrip(masterControls, [this](bool committed) { if (onMasterEdited) onMasterEdited(committed); }) {
         addAndMakeVisible(masterStrip);
-        for (int r = 0; r < maxReturns; ++r) {
-            returnStrips[static_cast<std::size_t>(r)] = std::make_unique<ReturnChannelStrip>(r, returnControls[static_cast<std::size_t>(r)],
-                [this, r](bool committed) { if (onReturnEdited) onReturnEdited(r, committed); });
-            addAndMakeVisible(*returnStrips[static_cast<std::size_t>(r)]);
-        }
         addAndMakeVisible(help);
         help.setText("Independent instrument, level, balance and sends for each Session track. Output sends a track to the master "
-                     "or a group bus; sends A-D feed the return tracks (bus and return FX are set in Plugins).",
+                     "or a group bus; each send feeds the return with its letter (bus and return FX are set in Plugins).",
             juce::dontSendNotification);
         help.setColour(juce::Label::textColourId, ui::colours::textFaint);
         help.setFont(ui::font(12.5f));
@@ -577,6 +615,10 @@ public:
         addBusButton.setButtonText("Add bus");
         addBusButton.setTooltip("Add a group bus: route tracks to it with their Output menu, then mix them together");
         addBusButton.onClick = [this] { addBus(); };
+        addAndMakeVisible(addReturnButton);
+        addReturnButton.setButtonText("Add return");
+        addReturnButton.setTooltip("Add a return track: every track gets a send knob for it, and it has its own FX in Plugins");
+        addReturnButton.onClick = [this] { addReturn(); };
 
         addAndMakeVisible(viewport);
         viewport.setViewedComponent(&content, false);
@@ -596,6 +638,7 @@ public:
     // The panel has already updated itself; the owner commits it.
     std::function<void(const juce::String&)> onRoutingChanged;
     std::function<void()> beforeBusDeleted;      // the owner can capture the bus's plugin state first
+    std::function<void()> beforeReturnDeleted;   // the same, before a return is removed
 
     // Recreate strips after tracks are added, removed or reordered.
     void rebuild() {
@@ -609,19 +652,32 @@ public:
             strips.push_back(std::move(strip));
         }
         rebuildBuses();
+        rebuildReturns();
         refreshSettings();
         resized();
     }
 
     void refreshSettings() {
         masterStrip.refreshSettings();
-        for (auto& strip : returnStrips) strip->refreshSettings();
         const auto& d = controller.document();
+        // A strip that came or went (an undo, a loaded project) is rebuilt first.
+        std::vector<int> used;
+        for (int r = 0; r < maxReturns; ++r) if (d.returns[static_cast<std::size_t>(r)].used) used.push_back(r);
+        std::vector<int> shown;
+        for (const auto& [slot, strip] : returnStrips) shown.push_back(slot);
+        if (used != shown) { rebuildReturns(); resized(); }
+        for (auto& [slot, strip] : returnStrips) {
+            strip->setReturnName(d.returns[static_cast<std::size_t>(slot)].name);
+            strip->refreshSettings();
+        }
         std::array<juce::String, maxBuses> busNames;
         for (std::size_t b = 0; b < busNames.size(); ++b) if (d.buses[b].used) busNames[b] = d.buses[b].name;
+        std::array<juce::String, maxReturns> returnNames;
+        for (std::size_t r = 0; r < returnNames.size(); ++r) if (d.returns[r].used) returnNames[r] = d.returns[r].name;
         for (std::size_t t = 0; t < strips.size() && t < d.tracks.size(); ++t) {
             strips[t]->setTrack(d.tracks[t].name, ui::trackColour(d.tracks[t].colour));
             strips[t]->setOutputs(busNames, d.tracks[t].settings.output);
+            strips[t]->setReturns(returnNames);
             strips[t]->refreshSettings();
         }
         for (auto& [slot, strip] : busStrips) {
@@ -629,13 +685,14 @@ public:
             strip->refreshSettings();
         }
         addBusButton.setEnabled(busStrips.size() < static_cast<std::size_t>(maxBuses));
+        addReturnButton.setEnabled(returnStrips.size() < static_cast<std::size_t>(maxReturns));
     }
 
     void tick() {
         if (!isShowing()) return;
         for (auto& strip : strips) strip->tick();
         for (auto& [slot, strip] : busStrips) strip->tick();
-        for (auto& strip : returnStrips) strip->tick();
+        for (auto& [slot, strip] : returnStrips) strip->tick();
         masterStrip.tick();
     }
 
@@ -657,6 +714,23 @@ public:
         routingChanged("Delete bus");
         return true;
     }
+    int addReturn() {
+        const int r = controller.addReturn();
+        if (r >= 0) routingChanged("Add return");
+        return r;
+    }
+    bool renameReturn(int r, const juce::String& name) {
+        if (!controller.renameReturn(r, name)) return false;
+        routingChanged("Rename return");
+        return true;
+    }
+    bool deleteReturn(int r) {
+        if (r < 0 || r >= maxReturns || !controller.document().returns[static_cast<std::size_t>(r)].used) return false;
+        if (beforeReturnDeleted) beforeReturnDeleted();
+        if (!controller.deleteReturn(r)) return false;
+        routingChanged("Remove return");
+        return true;
+    }
     bool chooseOutput(int track, int output) {
         if (!controller.setTrackOutput(track, output)) { refreshSettings(); return false; }
         routingChanged("Change track output");
@@ -669,14 +743,21 @@ public:
         auto header = area.removeFromTop(22);
         addBusButton.setBounds(header.removeFromRight(90));
         header.removeFromRight(gap);
+        addReturnButton.setBounds(header.removeFromRight(100));
+        header.removeFromRight(gap);
         help.setBounds(header);
         area.removeFromTop(10);
 
         masterStrip.setBounds(area.removeFromRight(minStripWidth));
         area.removeFromRight(gap);
-        for (int r = maxReturns - 1; r >= 0; --r) {
-            returnStrips[static_cast<std::size_t>(r)]->setBounds(area.removeFromRight(returnStripWidth));
-            area.removeFromRight(r == 0 ? gap * 2 : 4);
+        // The returns stay in view beside the master, narrower when there are many of them.
+        if (!returnStrips.empty()) {
+            const int count = static_cast<int>(returnStrips.size());
+            const int width = juce::jlimit(minReturnStripWidth, returnStripWidth, (area.getWidth() * 2 / 5 - (count - 1) * 4) / count);
+            for (auto it = returnStrips.rbegin(); it != returnStrips.rend(); ++it) {
+                it->second->setBounds(area.removeFromRight(width));
+                area.removeFromRight(std::next(it) == returnStrips.rend() ? gap * 2 : 4);
+            }
         }
         viewport.setBounds(area);
         // The group buses scroll with the tracks, after them.
@@ -698,7 +779,12 @@ public:
 
     // For the tests.
     MixerChannelStrip* trackStrip(int t) { return t >= 0 && t < static_cast<int>(strips.size()) ? strips[static_cast<std::size_t>(t)].get() : nullptr; }
-    ReturnChannelStrip& returnStrip(int r) { return *returnStrips[static_cast<std::size_t>(r)]; }
+    ReturnChannelStrip* returnStrip(int r) {
+        for (auto& [slot, strip] : returnStrips) if (slot == r) return strip.get();
+        return nullptr;
+    }
+    int returnStripCount() const noexcept { return static_cast<int>(returnStrips.size()); }
+    juce::TextButton& addReturnControl() { return addReturnButton; }
     BusChannelStrip* busStrip(int b) {
         for (auto& [slot, strip] : busStrips) if (slot == b) return strip.get();
         return nullptr;
@@ -707,7 +793,45 @@ public:
     juce::TextButton& addBusControl() { return addBusButton; }
 
 private:
-    static constexpr int gap = 10, minStripWidth = 118, returnStripWidth = 84;
+    static constexpr int gap = 10, minStripWidth = 118, returnStripWidth = 84, minReturnStripWidth = 64;
+
+    void rebuildReturns() {
+        returnStrips.clear();
+        const auto& d = controller.document();
+        for (int r = 0; r < maxReturns; ++r) {
+            if (!d.returns[static_cast<std::size_t>(r)].used) continue;
+            auto strip = std::make_unique<ReturnChannelStrip>(r, returnControls[static_cast<std::size_t>(r)],
+                [this, r](bool committed) { if (onReturnEdited) onReturnEdited(r, committed); });
+            strip->onMenu = [this, r] { showReturnMenu(r); };
+            addAndMakeVisible(*strip);
+            returnStrips.emplace_back(r, std::move(strip));
+        }
+    }
+    void showReturnMenu(int r) {
+        auto* strip = returnStrip(r);
+        if (strip == nullptr) return;
+        juce::PopupMenu menu;
+        menu.addItem(1, "Rename...");
+        menu.addItem(2, "Remove return (its sends and FX go with it)");
+        juce::Component::SafePointer<TrackMixerPanel> safe(this);
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(strip), [safe, r](int result) {
+            if (safe == nullptr) return;
+            if (result == 2) safe->deleteReturn(r);
+            else if (result == 1) safe->askReturnName(r);
+        });
+    }
+    void askReturnName(int r) {
+        if (r < 0 || r >= maxReturns || !controller.document().returns[static_cast<std::size_t>(r)].used) return;
+        auto* window = new juce::AlertWindow("Rename return", {}, juce::MessageBoxIconType::NoIcon, this);
+        window->addTextEditor("name", controller.document().returns[static_cast<std::size_t>(r)].name);
+        window->addButton("Rename", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        juce::Component::SafePointer<TrackMixerPanel> safe(this);
+        window->enterModalState(true, juce::ModalCallbackFunction::create(
+            [safe, window, r](int result) {
+                if (safe != nullptr && result == 1) safe->renameReturn(r, window->getTextEditorContents("name"));
+            }), true);
+    }
 
     void rebuildBuses() {
         busStrips.clear();
@@ -723,6 +847,7 @@ private:
     }
     void routingChanged(const juce::String& label) {
         rebuildBuses();
+        rebuildReturns();
         refreshSettings();
         resized();
         if (onRoutingChanged) onRoutingChanged(label);
@@ -755,12 +880,13 @@ private:
 
     ProjectController& controller;
     std::array<TrackControls, ToneEngine::sessionTracks>& controls;
+    std::array<ReturnControls, maxReturns>& returnControls;
     std::array<BusControls, maxBuses>& busControls;
 
     MasterChannelStrip masterStrip;
-    std::array<std::unique_ptr<ReturnChannelStrip>, maxReturns> returnStrips;
+    std::vector<std::pair<int, std::unique_ptr<ReturnChannelStrip>>> returnStrips;   // (slot, strip), in slot order
     juce::Label help;
-    juce::TextButton addBusButton;
+    juce::TextButton addBusButton, addReturnButton;
     juce::Viewport viewport;
     juce::Component content;
     std::vector<std::unique_ptr<MixerChannelStrip>> strips;

@@ -24,7 +24,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 24;   // 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 24: Song placement clips
+inline constexpr int sessionProjectFormatVersion = 24;   // 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips
 
 // A group bus slot. Slots keep their index while other buses come and go, so a track's output
 // (TrackSettings::output) and the bus's FX rack never need renumbering.
@@ -36,6 +36,25 @@ struct SessionBus {
     bool valid() const { return settings.valid() && (used ? name.isNotEmpty() && name.length() <= 64 : name.isEmpty()); }
 };
 using SessionBuses = std::array<SessionBus, maxBuses>;
+
+// A return track slot. Like a bus, a return keeps its slot (its letter) while others are added and
+// removed, so each track's send to it (TrackSettings::send) and its FX rack never move. A slot not
+// in use has no name, no FX and no sends.
+inline juce::String defaultReturnName(int r) { return "Return " + juce::String::charToString(static_cast<juce::juce_wchar>('A' + r)); }
+struct SessionReturn {
+    bool used{};
+    juce::String name;
+    ReturnSettings settings;
+    bool operator==(const SessionReturn&) const = default;
+    bool valid() const { return settings.valid() && (used ? name.isNotEmpty() && name.length() <= 64 : name.isEmpty()); }
+};
+using SessionReturns = std::array<SessionReturn, maxReturns>;
+// Returns A-D at unity: a new project, and every project saved before version 23.
+inline SessionReturns defaultSessionReturns() {
+    SessionReturns returns{};
+    for (int r = 0; r < defaultReturns; ++r) returns[static_cast<std::size_t>(r)] = {true, defaultReturnName(r), {}};
+    return returns;
+}
 
 struct SessionProjectClip {
     SharedPianoRoll pattern;   // shared with the document; empty clips share nothing at all
@@ -59,8 +78,9 @@ struct SessionProjectData {
     alien::timeline::Timeline timeline;   // Absent before version 8: the old bar-based arrangement, converted on load.
     std::vector<PluginRackState> plugins;
     PluginRackState masterPlugins;
-    // Return tracks A-D and their FX. Absent before version 15: unity, centred, no FX (and every send off).
-    std::array<ReturnSettings, maxReturns> returns{};
+    // Return track slots and their FX. Before version 23 always A-D; absent before version 15: unity,
+    // centred, no FX (and every send off).
+    SessionReturns returns = defaultSessionReturns();
     ReturnRacks returnPlugins{};
     // Group buses and their FX. Absent before version 19: none, so every track goes to the master.
     SessionBuses buses{};
@@ -119,8 +139,17 @@ struct SessionProjectData {
             return false;
         if (plugins.size() != trackSettings.size() || !masterPlugins.valid() || !masterPlugins.instrument.descriptionXml.isEmpty()) return false;
         for (const auto& pluginRack : plugins) if (!pluginRack.valid()) return false;
-        for (const auto& r : returns) if (!r.valid()) return false;
-        for (const auto& pluginRack : returnPlugins) if (!pluginRack.valid() || !pluginRack.instrument.descriptionXml.isEmpty()) return false;
+        for (std::size_t r = 0; r < returns.size(); ++r) {
+            const auto& pluginRack = returnPlugins[r];
+            if (!returns[r].valid() || !pluginRack.valid() || !pluginRack.instrument.descriptionXml.isEmpty()
+                || (!returns[r].used && !pluginRack.effects.empty())) return false;
+        }
+        // Nothing points at a return that does not exist: no send level or pre-fader switch, no send automation.
+        for (const auto& track : trackSettings)
+            for (std::size_t r = 0; r < returns.size(); ++r)
+                if (!returns[r].used && (track.send[r] != 0.0f || track.sendPre[r])) return false;
+        for (const auto& lane : timeline.automationLanes)
+            if (const int send = automation::sendIndex(lane.parameter); send >= 0 && !returns[static_cast<std::size_t>(send)].used) return false;
         for (std::size_t b = 0; b < buses.size(); ++b) {
             const auto& pluginRack = busPlugins[b];
             if (!buses[b].valid() || !pluginRack.valid() || !pluginRack.instrument.descriptionXml.isEmpty()
@@ -254,13 +283,17 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     for (const auto& pluginRack : project.plugins) pluginRacks.add(rackToVar(pluginRack));
     rootObject->setProperty("plugins", juce::var(pluginRacks));
     rootObject->setProperty("masterPlugins", rackToVar(project.masterPlugins));
-    juce::Array<juce::var> returns;
+    juce::Array<juce::var> returns;   // only the slots in use, each with its slot number
     for (std::size_t r = 0; r < project.returns.size(); ++r) {
+        const auto& ret = project.returns[r];
+        if (!ret.used) continue;
         auto value = juce::var(new juce::DynamicObject());
         auto* object = value.getDynamicObject();
-        object->setProperty("gain", project.returns[r].gain);
-        object->setProperty("pan", project.returns[r].pan);
-        object->setProperty("mute", project.returns[r].mute);
+        object->setProperty("slot", static_cast<int>(r));
+        object->setProperty("name", ret.name);
+        object->setProperty("gain", ret.settings.gain);
+        object->setProperty("pan", ret.settings.pan);
+        object->setProperty("mute", ret.settings.mute);
         object->setProperty("plugins", rackToVar(project.returnPlugins[r]));
         returns.add(value);
     }
@@ -806,12 +839,15 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
             const auto output = object->getProperty("output");
             if ((formatVersion >= 19 && !output.isInt()) || (!output.isVoid() && !output.isInt())) { error = "Invalid track output."; return false; }
             if (output.isInt()) track.output = static_cast<int>(output);
-            // Sends are optional (absent before version 15: all off); when present there is one [level, pre] per return.
+            // Sends are optional (absent before version 15: all off); when present there is one [level, pre] per
+            // return slot (A-D before version 23, where any more must be off). A send to a slot not in use is
+            // refused with the rest of the project.
             if (object->hasProperty("sends")) {
                 const auto sendsValue = object->getProperty("sends");
                 const auto* sends = sendsValue.getArray();
-                if (sends == nullptr || sends->size() != maxReturns) { error = "Invalid track sends."; return false; }
-                for (int r = 0; r < maxReturns; ++r) {
+                const int slots = sends == nullptr ? 0 : sends->size();
+                if (sends == nullptr || (slots != maxReturns && (formatVersion >= 23 || slots != defaultReturns))) { error = "Invalid track sends."; return false; }
+                for (int r = 0; r < slots; ++r) {
                     const auto* send = (*sends)[r].getArray();
                     if (send == nullptr || send->size() != 2 || !((*send)[0].isDouble() || (*send)[0].isInt()) || !(*send)[1].isBool()) {
                         error = "Invalid track sends."; return false;
@@ -936,20 +972,41 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
     if (rootObject->hasProperty("returns")) {
         const auto returnsValue = rootObject->getProperty("returns");
         const auto* returns = returnsValue.getArray();
-        if (returns == nullptr || returns->size() != maxReturns) { error = "Invalid return tracks."; return false; }
-        for (int r = 0; r < maxReturns; ++r) {
-            const auto* object = (*returns)[r].getDynamicObject();
+        // Version 23 lists the slots in use, each with its slot and name; before that there were always A-D, in order.
+        const bool slotted = formatVersion >= 23;
+        if (returns == nullptr || (slotted ? returns->size() > maxReturns : returns->size() != defaultReturns)) { error = "Invalid return tracks."; return false; }
+        if (slotted) parsed.returns = {};
+        for (int i = 0; i < returns->size(); ++i) {
+            const auto* object = (*returns)[i].getDynamicObject();
             if (object == nullptr) { error = "Invalid return tracks."; return false; }
+            int r = i;
+            if (slotted) {
+                const auto slot = object->getProperty("slot"), name = object->getProperty("name");
+                if (!slot.isInt() || static_cast<int>(slot) < 0 || static_cast<int>(slot) >= maxReturns
+                    || parsed.returns[static_cast<std::size_t>(static_cast<int>(slot))].used) { error = "Invalid return track slot."; return false; }
+                if (!name.isString() || name.toString().trim().isEmpty()) { error = "Invalid return tracks."; return false; }
+                r = static_cast<int>(slot);
+                parsed.returns[static_cast<std::size_t>(r)].name = name.toString().trim().substring(0, 64);
+            }
             const auto g = object->getProperty("gain"), pan = object->getProperty("pan"), mute = object->getProperty("mute");
-            auto& settings = parsed.returns[static_cast<std::size_t>(r)];
+            auto& ret = parsed.returns[static_cast<std::size_t>(r)];
             auto& plugins = parsed.returnPlugins[static_cast<std::size_t>(r)];
             if (!(g.isDouble() || g.isInt()) || !(pan.isDouble() || pan.isInt()) || !mute.isBool()
                 || !rackFromVar(object->getProperty("plugins"), plugins) || !plugins.instrument.descriptionXml.isEmpty()) {
                 error = "Invalid return tracks."; return false;
             }
-            settings = {static_cast<float>(static_cast<double>(g)), static_cast<float>(static_cast<double>(pan)), static_cast<bool>(mute)};
-            if (!settings.valid()) { error = "A return track's level or pan is out of range."; return false; }
+            ret.used = true;
+            if (!slotted) ret.name = defaultReturnName(r);
+            ret.settings = {static_cast<float>(static_cast<double>(g)), static_cast<float>(static_cast<double>(pan)), static_cast<bool>(mute)};
+            if (!ret.settings.valid()) { error = "A return track's level or pan is out of range."; return false; }
         }
+        for (const auto& track : parsed.trackSettings)
+            for (std::size_t r = 0; r < parsed.returns.size(); ++r)
+                if (!parsed.returns[r].used && (track.send[r] != 0.0f || track.sendPre[r])) { error = "A track sends to a return that does not exist."; return false; }
+        for (const auto& lane : parsed.timeline.automationLanes)
+            if (const int send = automation::sendIndex(lane.parameter); send >= 0 && !parsed.returns[static_cast<std::size_t>(send)].used) {
+                error = "Send automation goes to a return that does not exist."; return false;
+            }
     }
     if (formatVersion >= 19) {
         const auto busesValue = rootObject->getProperty("buses");

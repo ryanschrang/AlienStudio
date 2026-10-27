@@ -82,6 +82,7 @@ struct ReturnSettings {
 struct ReturnControls {
     std::atomic<float> gain{1.0f}, pan{0.0f}, peak{0.0f};
     std::atomic<bool> mute{false};
+    std::atomic<bool> active{false};   // the return exists; a slot not in use is skipped and stays silent
     ReturnSettings snapshot() const noexcept { return {gain.load(), pan.load(), mute.load()}; }
     void set(const ReturnSettings& s) noexcept { gain.store(s.gain); pan.store(s.pan); mute.store(s.mute); }
 };

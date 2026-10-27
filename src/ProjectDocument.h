@@ -73,12 +73,20 @@ struct SessionTrack {
     std::uint32_t id = newObjectId();
 };
 
-// A return track: its strip and its FX rack. There are always maxReturns of them (A-D).
+// A return track slot (see SessionReturn): whether it exists, its name, strip and FX rack.
 struct ReturnTrack {
+    bool used{};
+    juce::String name;
     ReturnSettings settings;
     PluginRackState plugins;
     bool operator==(const ReturnTrack&) const = default;
 };
+// Returns A-D, as in a new project.
+inline std::array<ReturnTrack, maxReturns> defaultReturnTracks() {
+    std::array<ReturnTrack, maxReturns> returns{};
+    for (int r = 0; r < defaultReturns; ++r) returns[static_cast<std::size_t>(r)] = {true, defaultReturnName(r), {}, {}};
+    return returns;
+}
 
 // A group bus slot (see SessionBus): whether it exists, its name, strip and FX rack.
 struct GroupBus {
@@ -122,7 +130,7 @@ struct ProjectDocument {
     StepSequence steps;
     alien::timeline::Timeline timeline;   // the Arrangement view: where clips and rack patterns sit on the song
     PluginRackState masterPlugins;
-    std::array<ReturnTrack, maxReturns> returns{};   // return tracks A-D
+    std::array<ReturnTrack, maxReturns> returns = defaultReturnTracks();   // return tracks, by slot
     std::array<GroupBus, maxBuses> buses{};          // group buses, by slot
 
     rack::Project channelRack = rack::Project::createDefault(); // the Channel Rack; decoded samples are held by the ProjectController
@@ -367,7 +375,11 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
     SessionProjectData data(doc.trackCount(), doc.sceneCount());
     data.timeline = doc.timeline;
     data.masterPlugins = doc.masterPlugins;
-    for (std::size_t r = 0; r < doc.returns.size(); ++r) { data.returns[r] = doc.returns[r].settings; data.returnPlugins[r] = doc.returns[r].plugins; }
+    for (std::size_t r = 0; r < doc.returns.size(); ++r) {
+        const auto& ret = doc.returns[r];
+        data.returns[r] = {ret.used, ret.used ? ret.name : juce::String{}, ret.settings};
+        data.returnPlugins[r] = ret.used ? ret.plugins : PluginRackState{};
+    }
     for (std::size_t b = 0; b < doc.buses.size(); ++b) {
         const auto& bus = doc.buses[b];
         data.buses[b] = {bus.used, bus.used ? bus.name : juce::String{}, bus.settings};
@@ -418,7 +430,8 @@ inline ProjectDocument fromProjectData(const SessionProjectData& data) {
     doc.timeline = data.timeline;
     doc.timeline.tempo = data.bpm;
     doc.masterPlugins = data.masterPlugins;
-    for (std::size_t r = 0; r < doc.returns.size(); ++r) doc.returns[r] = {data.returns[r], data.returnPlugins[r]};
+    for (std::size_t r = 0; r < doc.returns.size(); ++r)
+        doc.returns[r] = {data.returns[r].used, data.returns[r].name, data.returns[r].settings, data.returnPlugins[r]};
     for (std::size_t b = 0; b < doc.buses.size(); ++b)
         doc.buses[b] = {data.buses[b].used, data.buses[b].name, data.buses[b].settings, data.busPlugins[b]};
 
