@@ -1,6 +1,6 @@
 # Command Engine
 
-Roadmap workstream T1-02, checklist ID CMD-01. This note covers the structural-track and volume/pan slices and what later
+Roadmap workstream T1-02, checklist ID CMD-01. This note covers structural tracks, volume/pan, mute/solo and what later
 slices need.
 
 ## Why
@@ -15,7 +15,7 @@ instead of driving the UI.
 Code: `src/CommandEngine.h`, tests: `tests/CommandEngineTests.cpp`.
 
 - **Command.** A `std::variant` of small argument structs (`CreateTrack`, `DeleteTrack`,
-  `MoveTrack`, `RenameTrack`, `ColorTrack`, `SetTrackVolume`, `SetTrackPan`). `name()` gives the stable name (for example
+  `MoveTrack`, `RenameTrack`, `ColorTrack`, `SetTrackVolume`, `SetTrackPan`, `SetTrackMute`, `SetTrackSolo`). `name()` gives the stable name (for example
   `"RenameTrack"`) and `label()` the undo-menu text. `arguments()` and `parse()` convert a command
   to and from its name plus a JSON-style object (`{"track": 1, "name": "Bass"}`), so scripts and
   macros can store and replay commands. `parse()` refuses unknown names, missing or mistyped
@@ -29,7 +29,7 @@ Code: `src/CommandEngine.h`, tests: `tests/CommandEngineTests.cpp`.
   command would be refused, it returns that command's index and reason and touches nothing: not
   the document, the engine, playback or the history (the redo stack survives). Otherwise it runs
   each command through the existing `ProjectController` operation (`addTrack`, `deleteTrack`,
-  `moveTrack`, `renameTrack`, `setTrackColour`, `setTrackVolume`, `setTrackPan`) and calls `commit(label)` once, which makes the
+  `moveTrack`, `renameTrack`, `setTrackColour`, `setTrackVolume`, `setTrackPan`, `setTrackMute`, `setTrackSolo`) and calls `commit(label)` once, which makes the
   batch one `DocumentHistory` step. If the controller still refuses a command part way (it should
   not, since the preview accepted it), `ProjectController::revertTo()` restores the document
   captured before the batch and nothing is committed.
@@ -45,7 +45,7 @@ Code: `src/CommandEngine.h`, tests: `tests/CommandEngineTests.cpp`.
   swaps with the controller's `moveTrack(t, +-1)` and recorded as one undo step.
 
 Controller additions are `setTrackColour()` with `trackColourCount`, `revertTo()`,
-and the validated, uncommitted setters `setTrackVolume()` / `setTrackPan()`.
+and the validated, uncommitted setters `setTrackVolume()` / `setTrackPan()` / `setTrackMute()` / `setTrackSolo()`.
 The command engine records the final history step. No project format change.
 
 ### Track volume and pan
@@ -68,6 +68,20 @@ These commands can follow CreateTrack or MoveTrack in the same batch.
 CommandEngineTests covers these contracts, argument round trips and boundary
 values. Build/test results are recorded in the feature PR. Real hardware listening
 and automation interaction remain manual checks.
+
+### Track mute and solo
+
+`SetTrackMute {track, muted}` and `SetTrackSolo {track, soloed}` set explicit states.
+JSON arguments are `{"track": 0, "muted": true}` and `{"track": 1, "soloed": false}`.
+The state must be a boolean: numeric 0/1, strings, null and missing/unknown arguments
+are refused. Solo is additive; it does not clear another track's solo state or change mute.
+Preview, batch refusal, no-op detection and undo/redo follow the volume/pan contracts.
+Only the addressed document field and live engine control change. Existing mixer and
+Session mute/solo gestures retain their current direct editing paths.
+
+CommandEngineTests covers true/false JSON round trips, strict types, side-effect-free
+preview, live controls, preserved mix/other solo states, busy/invalid-target refusal,
+redo preservation and sequential create/reorder batches. Manual listening remains pending.
 
 ### Known limits of these slices
 
