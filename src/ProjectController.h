@@ -478,6 +478,19 @@ public:
         return true;
     }
 
+    bool setTrackMute(int track, bool muted) {
+        if (busy || track < 0 || track >= doc.trackCount()) return false;
+        doc.tracks[static_cast<std::size_t>(track)].settings.mute = muted;
+        engine.tracks[static_cast<std::size_t>(track)].mute.store(muted);
+        return true;
+    }
+    bool setTrackSolo(int track, bool soloed) {
+        if (busy || track < 0 || track >= doc.trackCount()) return false;
+        doc.tracks[static_cast<std::size_t>(track)].settings.solo = soloed;
+        engine.tracks[static_cast<std::size_t>(track)].solo.store(soloed);
+        return true;
+    }
+
     void trackSettingsEdited(int track) {
         if (track < 0 || track >= doc.trackCount() || track >= static_cast<int>(engine.tracks.size())) return;
         auto next=engine.tracks[static_cast<std::size_t>(track)].snapshot();
