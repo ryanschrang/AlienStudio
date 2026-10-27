@@ -360,6 +360,11 @@ if(BUILD_TESTING)
     target_link_libraries(ClipLibraryTests PRIVATE Threads::Threads)
     add_test(NAME ClipLibraryTests COMMAND ClipLibraryTests)
 
+    add_executable(RackLibraryTests tests/RackLibraryTests.cpp)
+    target_include_directories(RackLibraryTests PRIVATE src)
+    target_link_libraries(RackLibraryTests PRIVATE Threads::Threads)
+    add_test(NAME RackLibraryTests COMMAND RackLibraryTests)
+
     add_executable(RackModelTests tests/RackModelTests.cpp)
     target_include_directories(RackModelTests PRIVATE src)
     target_link_libraries(RackModelTests PRIVATE Threads::Threads)

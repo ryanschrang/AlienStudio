@@ -1,6 +1,7 @@
 #pragma once
 #include "ClipLibrary.h"
 #include "PianoRollSequence.h"
+#include "RackLibrary.h"
 #include "SessionAudioClip.h"
 #include "SessionProject.h"
 #include "TrackMixer.h"
@@ -133,7 +134,11 @@ struct ProjectDocument {
     std::array<ReturnTrack, maxReturns> returns = defaultReturnTracks();   // return tracks, by slot
     std::array<GroupBus, maxBuses> buses{};          // group buses, by slot
 
-    rack::Project channelRack = rack::Project::createDefault(); // the Channel Rack; decoded samples are held by the ProjectController
+    // The Channel Rack: its channels, and its pattern bank as the library holds it. Each pattern slot names a clip
+    // (channelRack.clips) whose lanes are the channels' rows (T1-03 increment C). The patterns here are that
+    // content as the rack views and the engine read it; change them only with setRack. Decoded samples are held
+    // by the ProjectController.
+    rack::Project channelRack = rack::Project::createDefault();
 
     static ProjectDocument createDefault(int trackCount = sessionProjectTrackCount,
                                          int sceneCount = sessionProjectSceneCount) {
@@ -143,6 +148,7 @@ struct ProjectDocument {
         d.cells.assign(static_cast<std::size_t>(sceneCount),
                        std::vector<library::ClipId>(static_cast<std::size_t>(trackCount)));
         for (const int step : {0, 4, 8, 12}) d.steps.on[static_cast<std::size_t>(step)] = true;
+        d.setRack(rack::Project::createDefault());
         return d;
     }
 
@@ -256,6 +262,8 @@ struct ProjectDocument {
         std::vector<library::ClipId> roots;
         for (const auto& scene : cells) for (const auto id : scene) if (id) roots.push_back(id);
         for (const auto id : placementClips()) roots.push_back(library::ClipId{id});
+        for (int p = 0; p < channelRack.patternCount; ++p)
+            if (const auto id = channelRack.clips[static_cast<std::size_t>(p)]) roots.push_back(library::ClipId{id});
         library.prune(roots);
         std::erase_if(media, [&](const auto& entry) {
             for (const auto& scene : cells) for (const auto id : scene) {
@@ -266,6 +274,71 @@ struct ProjectDocument {
             }
             return true;
         });
+    }
+
+    // The only way to change the Channel Rack's patterns: every slot whose content changed becomes a new revision of
+    // its clip (a slot without one, such as a new or copied pattern, gets a clip of its own), pattern names become
+    // clip names, and clips of deleted slots are dropped. Each slot must come back exactly from what the library now
+    // holds; if one does not, or `next` is invalid, nothing changes and this returns false. Channels, routing and
+    // view settings are taken as they are.
+    bool setRack(rack::Project next) {
+        if (!next.valid()) return false;
+        auto lib = library;
+        std::vector<std::uint64_t> used;
+        for (int p = 0; p < next.patternCount; ++p) {
+            const auto i = static_cast<std::size_t>(p);
+            auto& key = next.clips[i];
+            // One clip per slot, and only a clip this rack already owns: an id from another document's library
+            // (a rack read from a file, say) could name some other clip here.
+            const auto owned = channelRack.clips.begin() + channelRack.patternCount;
+            if (std::find(used.begin(), used.end(), key) != used.end() || std::find(channelRack.clips.begin(), owned, key) == owned) key = 0;
+            const library::ClipInfo info{next.patternNames[i], 0};
+            const auto* clip = key != 0 ? lib.clip(library::ClipId{key}) : nullptr;
+            // The same pattern object, in the same slot of the same clip, over the same lanes: nothing to do.
+            if (clip != nullptr && next.lanes == channelRack.lanes && next.channelCount == channelRack.channelCount) {
+                bool same = false;
+                for (int q = 0; q < channelRack.patternCount && !same; ++q)
+                    same = channelRack.clips[static_cast<std::size_t>(q)] == key && channelRack.patterns[static_cast<std::size_t>(q)] == next.patterns[i];
+                if (same) { lib.setClipInfo(library::ClipId{key}, info); used.push_back(key); continue; }
+            }
+            const auto data = rack::toPatternData(next, p);
+            if (data == nullptr || !data->valid()) return false;
+            if (clip != nullptr) {
+                const auto* pattern = lib.pattern(clip->pattern);
+                if (pattern == nullptr) return false;
+                if (!rack::samePatternData(*pattern->data, *data)
+                    && lib.editPattern(clip->pattern, pattern->revision, data) != library::EditResult::done) return false;
+                lib.setClipInfo(library::ClipId{key}, info);
+            } else if ((key = lib.addClip(data, info).value) == 0) return false;
+            used.push_back(key);
+            const auto rebuilt = rack::fromPatternData(*lib.content(library::ClipId{key}), next, next.patterns[i].get());
+            if (rebuilt == nullptr || !(*rebuilt == next.pattern(p))) return false;   // never lose a step or a note
+        }
+        library = std::move(lib);
+        channelRack = std::move(next);
+        prune();
+        return true;
+    }
+    // The Channel Rack rebuilt from the library alone (what a save writes). Equal to channelRack.
+    rack::Project rackFromLibrary() const {
+        auto rebuilt = channelRack;
+        for (int p = 0; p < channelRack.patternCount; ++p) {
+            const auto i = static_cast<std::size_t>(p);
+            const auto content = library.content(library::ClipId{channelRack.clips[i]});
+            if (content == nullptr) continue;   // not in the library (a document made without createDefault)
+            if (auto pattern = rack::fromPatternData(*content, channelRack, channelRack.patterns[i].get())) rebuilt.patterns[i] = std::move(pattern);
+        }
+        return rebuilt;
+    }
+    // Whether every rack pattern is in the library and is exactly what it holds.
+    bool rackMatchesLibrary() const {
+        for (int p = 0; p < channelRack.patternCount; ++p) {
+            const auto i = static_cast<std::size_t>(p);
+            const auto content = library.content(library::ClipId{channelRack.clips[i]});
+            const auto rebuilt = content != nullptr ? rack::fromPatternData(*content, channelRack, nullptr) : nullptr;
+            if (rebuilt == nullptr || !(*rebuilt == channelRack.pattern(p))) return false;
+        }
+        return true;
     }
 
     bool canAddTrack() const noexcept { return trackCount() < maxSessionTracks; }
@@ -386,7 +459,7 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
         data.busPlugins[b] = bus.used ? bus.plugins : PluginRackState{};
     }
 
-    data.channelRack = doc.channelRack;
+    data.channelRack = doc.rackFromLibrary();
     data.launchQuantizationSteps = doc.launchQuantizationSteps;
     data.masterGain = doc.masterGain;
     data.recording = doc.recording;
@@ -435,7 +508,8 @@ inline ProjectDocument fromProjectData(const SessionProjectData& data) {
     for (std::size_t b = 0; b < doc.buses.size(); ++b)
         doc.buses[b] = {data.buses[b].used, data.buses[b].name, data.buses[b].settings, data.busPlugins[b]};
 
-    doc.channelRack = data.channelRack;
+    // Each saved pattern becomes a clip of its own (copies made with addPattern stay independent).
+    if (!doc.setRack(data.channelRack)) doc.channelRack = data.channelRack;   // only for data that failed validation
     doc.launchQuantizationSteps = data.launchQuantizationSteps;
     doc.masterGain = data.masterGain;
     doc.recording = data.recording;

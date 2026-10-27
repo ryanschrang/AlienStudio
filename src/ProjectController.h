@@ -1495,8 +1495,7 @@ public:
     // Deleting a pattern renumbers the ones after it, and the timeline must follow.
     bool deleteRackPattern(int index) {
         auto next = doc.channelRack;
-        if (!next.deletePattern(index)) return false;
-        doc.channelRack = std::move(next);
+        if (!next.deletePattern(index) || !doc.setRack(std::move(next))) return false;
         doc.timeline.patternDeleted(index);
         pushRackToEngine();
         commit("Delete pattern");
@@ -1564,7 +1563,7 @@ public:
         for(int c=0;c<next.channelCount;++c)if(isTrackFrozen(next.channels[static_cast<std::size_t>(c)].output))return false;
         const bool content = !next.sameContent(doc.channelRack);
         const bool fewerPatterns = next.patternCount < doc.channelRack.patternCount;
-        doc.channelRack = std::move(next);
+        if (!doc.setRack(std::move(next))) return false;   // the library takes the new content
         if (fewerPatterns) doc.timeline.prune(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount);
         pushRackToEngine();
         if (content) commit(label, -1, -1, coalesceKey);
