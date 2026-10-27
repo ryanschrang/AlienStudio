@@ -366,3 +366,8 @@ Nothing should sound or look different: this moves where the rack's patterns are
 - Queue another clip, then Stop rack before the boundary: only the latest request should apply. Stop rack leaves Session tracks playing; Stop all stops both. Stop the transport with a launch queued and restart: the queued clip must not start on its own.
 - Delete a bank slot preceding the active one: it keeps playing. Delete the active source: notes release without a stuck voice. Delete a queued source: it does not launch whichever source takes that slot.
 - Save/reopen: the rack's musical content and independent copies remain intact; live launch requests are not saved. Use Song placements and export as before; compare against playback. Check the menu and caption at 960x650 and 150/200% display scale.
+
+## Launching Session clips
+- With the transport stopped and Song mode off, click a MIDI clip in the Session view: the transport starts and the clip is heard at once; the top bar's Play button lights. Click a scene's launch button while stopped: the whole scene plays.
+- While playing, clicking another clip keeps the transport running and switches at the next Beat/Bar boundary.
+- Turn Song mode on, stop, and click a clip: the transport stays stopped and the status bar says Song mode is on. Turn Song mode off and click again: it plays.
