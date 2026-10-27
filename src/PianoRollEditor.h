@@ -4,6 +4,7 @@
 #include "PianoRollSequence.h"
 #include "PianoRollProcessing.h"
 #include "PianoRollClipboard.h"
+#include "PianoRollGhostNotes.h"
 #include "PianoRollChordStamp.h"
 #include "PianoRollProgression.h"
 #include "PianoRollScale.h"
@@ -31,6 +32,7 @@ public:
                     "The Edit menu transposes by semitone or octave. Ctrl A selects all, Ctrl Z undoes, "
                     "and Ctrl Y redoes. Ctrl C copies, Ctrl V pastes at the amber cursor, and Ctrl D duplicates. "
                     "Click the ruler to place the amber edit cursor; Edit > Split selected notes at cursor cuts crossing notes there. "
+                    "Edit > Ghost notes shows other clips' notes, dimmed and read-only, behind this clip. "
                     "Alt C opens chord stamps; Alt L opens scale guides; Alt I inverts, Alt V reverses, and Alt A arpeggiates. Tab moves between controls.");
         setWantsKeyboardFocus(true);
         setMouseClickGrabsKeyboardFocus(true);
@@ -100,7 +102,7 @@ public:
         exampleButton.setTooltip("Add an original example to an empty loop; clear existing notes first");
         exampleButton.onClick = [this] { loadExample(); };
         configureButton(editActionsButton, "Edit", "Piano roll edit actions");
-        editActionsButton.setTooltip("Select all, Copy, Paste, Duplicate, Transpose and Split selected notes at the amber cursor");
+        editActionsButton.setTooltip("Select all, Copy, Paste, Duplicate, Transpose, Split selected notes at the amber cursor, and Ghost notes");
         editActionsButton.onClick = [this] { showEditMenu(); };
 
         addAndMakeVisible(tools);
@@ -268,6 +270,26 @@ public:
     std::function<void()> onEditCommitted;
     // Positive velocity starts a preview; zero releases that same pitch.
     std::function<void(int, float)> onAudition;
+    // The user picked another ghost-note source; the owner answers with setGhostClips.
+    std::function<void(GhostNoteSource)> onGhostSourceChanged;
+
+    // Ghost notes are drawn only: no selection, hit-testing, history or onChange.
+    GhostNoteSource getGhostSource() const noexcept { return ghostSource; }
+    void setGhostSource(GhostNoteSource source) {
+        if (ghostSource == source) return;
+        ghostSource = source;
+        if (source == GhostNoteSource::off) ghostClips.clear();
+        if (onGhostSourceChanged) onGhostSourceChanged(source);
+        repaint();
+    }
+    std::span<const PianoRollGhostClip> getGhostClips() const noexcept { return ghostClips; }
+    void setGhostClips(std::vector<PianoRollGhostClip> clips) {
+        ghostClips = ghostSource == GhostNoteSource::off ? std::vector<PianoRollGhostClip> {} : std::move(clips);
+        repaint();
+    }
+    std::size_t ghostNoteCount() const {
+        return forEachGhostNote(ghostClips, pattern.loopSteps, [](const PianoRollGhostNote&) {});
+    }
 
     const PianoRollPattern& getPattern() const noexcept { return pattern; }
 
@@ -532,6 +554,7 @@ public:
                            juce::Justification::centredLeft);
             }
         }
+        forEachGhostNote(ghostClips, pattern.loopSteps, [&](const PianoRollGhostNote& ghost) { paintGhost(g, ghost, a); });
         for (std::size_t i = 0; i < pattern.count; ++i)
             if (!selection.contains(pattern.notes[i].id)) paintNote(g, pattern.notes[i], a, false);
         for (std::size_t i = 0; i < pattern.count; ++i)
@@ -587,6 +610,10 @@ public:
             + juce::String(static_cast<int>(pattern.count)) + "/" + juce::String(static_cast<int>(PianoRollPattern::maxNotes)) + " notes";
         status += "  |  " + juce::String(static_cast<int>(selection.count)) + " selected";
         status += "  |  Edit cursor: step " + juce::String(insertionStep + 1.0, 3);
+        if (ghostSource != GhostNoteSource::off) {
+            const auto ghosts = static_cast<int>(ghostNoteCount());
+            status += "  |  " + juce::String(ghosts) + (ghosts == 1 ? " ghost note" : " ghost notes");
+        }
         if (const auto* note = pattern.find(activeId))
             status += "  |  " + noteName(note->pitch) + ": step " + juce::String(note->startStep + 1, 3)
                    + ", length " + juce::String(note->lengthSteps, 3) + ", velocity "
@@ -892,6 +919,15 @@ private:
             g.drawText(noteName(note.pitch), bounds.reduced(4.0f, 0.0f), juce::Justification::centredLeft);
         }
     }
+    void paintGhost(juce::Graphics& g, const PianoRollGhostNote& ghost, const Areas& a) const {
+        if (ghost.pitch < lowestVisiblePitch || ghost.pitch > topPitch()) return;
+        const PianoRollNote shape { 0, ghost.pitch, ghost.startStep, ghost.lengthSteps };
+        const auto bounds = noteBounds(shape, a);
+        g.setColour(juce::Colour(0x389ea3ab));
+        g.fillRoundedRectangle(bounds, 2.0f);
+        g.setColour(juce::Colour(0x709ea3ab));
+        g.drawRoundedRectangle(bounds.reduced(0.5f), 1.5f, 1.0f);
+    }
     void paintVelocity(juce::Graphics& g, const PianoRollNote& note, const Areas& a, bool isSelected) const {
         const auto x = velocityX(note, a), y = velocityY(note.velocity, a);
         g.setColour(isSelected ? juce::Colour(0xffb8f7e4) : juce::Colour(0xff3fc9a2));
@@ -1108,6 +1144,12 @@ private:
         add(8, "Transpose down an octave", "Shift+Down", selection.count != 0);
         menu.addSeparator();
         add(9, "Split selected notes at cursor", "", selection.count != 0);
+        menu.addSeparator();
+        juce::PopupMenu ghosts;
+        ghosts.addItem(20, "Off", true, ghostSource == GhostNoteSource::off);
+        ghosts.addItem(21, "Other clips in this scene", true, ghostSource == GhostNoteSource::sameScene);
+        ghosts.addItem(22, "This track's clips in other scenes", true, ghostSource == GhostNoteSource::sameTrack);
+        menu.addSubMenu("Ghost notes", ghosts);
         juce::Component::SafePointer<PianoRollEditor> safe(this);
         menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(editActionsButton).withMinimumWidth(200),
             [safe](int action) {
@@ -1122,6 +1164,9 @@ private:
                 else if (action >= 5 && action <= 8)
                     safe->transposeSelectedNotes(action == 5 ? 1 : action == 6 ? -1 : action == 7 ? 12 : -12);
                 else if (action == 9) safe->splitSelectedNotes();
+                else if (action >= 20 && action <= 22)
+                    safe->setGhostSource(action == 20 ? GhostNoteSource::off
+                                         : action == 21 ? GhostNoteSource::sameScene : GhostNoteSource::sameTrack);
                 if (action != 0) safe->grabKeyboardFocus();
             });
     }
@@ -1499,6 +1544,8 @@ private:
     juce::ScrollBar pitchScroll { true };
     PianoRollSelection selection, marqueeBase;
     PianoRollClipboard clipboard;
+    GhostNoteSource ghostSource { GhostNoteSource::off };
+    std::vector<PianoRollGhostClip> ghostClips;
     std::uint32_t activeId {};
     PianoRollPattern dragPattern;
     PianoRollNote dragOriginal {};

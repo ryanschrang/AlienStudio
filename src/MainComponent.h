@@ -3,6 +3,7 @@
 #include "ToneEngine.h"
 #include "TypingPianoRouter.h"
 #include "PianoRollEditor.h"
+#include "PianoRollGhostSources.h"
 #include "CompactWorkspace.h"
 #include "TrackMixerPanel.h"
 #include "ProjectController.h"
@@ -432,6 +433,7 @@ private:
         };
         controller.onClipContentChanged = [this](int track, int scene) {
             sessionView.refreshSelectedClip();
+            refreshGhostNotes();
             const auto& d = controller.document();
             if (track == d.selectedTrack && scene == d.selectedScene) tabs.setCurrentTabIndex(2);
         };
@@ -461,6 +463,7 @@ private:
             const auto& d = controller.document();
             controller.commit("Edit notes", d.selectedTrack, d.selectedScene);
         };
+        pianoRoll.onGhostSourceChanged = [this](alien::GhostNoteSource) { refreshGhostNotes(); };
         pianoRoll.onAudition = [this](int note, float velocity) {
             if (rollTarget.rack) {
                 controller.previewRackChannel(rollTarget.channel, velocity, note - alien::rack::channelRootPitch, true);
@@ -570,9 +573,17 @@ private:
             pianoRoll.setPattern(alien::rack::channelNotes(rack.pattern(rack.selectedPattern), rollTarget.channel));
         } else pianoRoll.setPattern(controller.document().selectedClip().notes());
         pianoRoll.setEnabled(rollTarget.rack || !controller.isTrackFrozen(controller.document().selectedTrack));
+        refreshGhostNotes();
         loadingClip = false;
         sessionView.refreshSelectedClip();
         updateEditorTitle();
+    }
+
+    // Other clips' notes, shown dimmed behind a Session clip (none for a Channel Rack channel).
+    void refreshGhostNotes() {
+        const auto& d = controller.document();
+        pianoRoll.setGhostClips(rollTarget.rack ? std::vector<alien::PianoRollGhostClip> {}
+            : alien::ghostClipsFor(d, d.selectedTrack, d.selectedScene, pianoRoll.getGhostSource()));
     }
 
     // Recording --------------------------------------------------------------

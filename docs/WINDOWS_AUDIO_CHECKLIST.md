@@ -273,6 +273,13 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Cancel midway; confirm no final WAV or abandoned partial/journal remains. Try an existing target, a missing source, and a full/slow drive; preserve all source and existing destination audio.
 - Confirm RF64 long sources/results work in Windows and an external editor. Physical multi-hour rendering and listening remain manual checks.
 
+## Piano-roll ghost notes (T1-06)
+- Put MIDI clips on three tracks in one scene (one a one-bar loop, one four bars) plus an audio clip, and a clip on the first track in another scene. Open the first clip and choose Edit > Ghost notes > Other clips in this scene: the other MIDI clips show as dim grey notes, the one-bar clip repeating across the loop; the audio clip shows nothing. The footer counts the ghost notes.
+- Switch to This track's clips in other scenes, then Off; confirm the ghosts change at once, and that the menu shows a tick on the current choice. Select another clip and confirm the ghosts follow it.
+- Click, drag, right-click and Shift-drag over ghost notes and press Ctrl+A: only the open clip's notes are created, moved, erased or selected. Toggling only ghosts adds no Undo step and does not mark the project as changed.
+- Edit another clip (Session paste/clear, record a take into it, undo) while a clip is open; confirm the ghosts update. Link a cell to the open clip and confirm its notes are not ghosted twice.
+- Save and reopen: ghost notes start Off (the setting is not saved). Open a Channel Rack note row; it shows no ghosts. Listen during playback to confirm ghosts are silent and nothing else changes. These real-menu and listening checks remain manual.
+
 ## Piano-roll note split (T1-06)
 - In Session and a Channel Rack note row, select a chord with different note lengths, click its middle on the ruler and choose Edit > Split selected notes at cursor. Both halves stay selected, adjoining at the cursor with pitch, velocity and probability preserved. Unselected notes stay unchanged.
 - Undo/redo once restores the whole chord and selection. Repeat at a note start/end, at loop boundaries, with no selection and near the note-capacity limit; confirm no partial split or extra undo step on refusal.
