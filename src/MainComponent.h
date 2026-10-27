@@ -534,10 +534,14 @@ private:
                 controller.commit("Change " + controller.document().tracks[static_cast<std::size_t>(track)].name + " mix",
                                   -1, -1, "mixer-" + juce::String(track));
         };
-        // The Session view's track headers hold the same volume, pan, mute and solo as the Mixer; an edit made there is committed like one made here.
+        // Session knob gestures share the Mixer's commit path. Mute/solo commands already own their undo step.
         sessionView.onTrackMixEdited = [this](int track, bool committed) {
             mixerPanel.refreshSettings();
             if (mixerPanel.onTrackEdited) mixerPanel.onTrackEdited(track, committed);
+        };
+        sessionView.onTrackMixCommandExecuted = [this](int) {
+            mixerPanel.refreshSettings();
+            sessionView.repaint();
         };
         devicesView.onPresetChanged = [this](int preset) {
             releaseNotes();
