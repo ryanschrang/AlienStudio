@@ -40,7 +40,7 @@ commit, automated test result and Windows listening result before promoting a st
 "Implemented" means code exists; it does not mean all hardware or plugin combinations pass.
 Every row and section below describes main unless it says otherwise. "Planned" rows are not
 started; the gap list from the FL Studio / Ableton Live / Logic Pro comparison is at the end.
-The current project format is 22 (18: song tempo changes, #104; 19: group buses, #106; 20: song time signatures, #114; 21: effect sidechains; 22: linked Session clips; 24: Song placement clips).
+The current project format is 24 (18: song tempo changes, #104; 19: group buses, #106; 20: song time signatures, #114; 21: effect sidechains; 22: linked Session clips, #124; 23: return slots, #130; 24: Song placement clips).
 
 | ID | Capability | Status | Evidence / remaining acceptance |
 | --- | --- | --- | --- |

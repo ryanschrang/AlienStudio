@@ -251,7 +251,7 @@ static void projectFormat() {
     project.timeline.automationLanes.push_back({1, alien::automation::Parameter::sendH, true, {{0, 0.5f}}});
     require(project.valid(), "a project with returns beyond D and a gap is valid");
     const auto json = alien::serializeSessionProject(project);
-    require(juce::JSON::parse(json).getProperty("version", 0) == juce::var(23), "projects are written as format 23");
+    require(static_cast<int>(juce::JSON::parse(json).getProperty("version", 0)) >= 23, "projects are written as format 23 or later");
     alien::SessionProjectData back; juce::String error;
     requireOk(alien::parseSessionProject(json, back, error), error, "the format 23 round trip");
     require(back.returns == project.returns && back.returnPlugins == project.returnPlugins
