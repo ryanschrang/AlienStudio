@@ -227,10 +227,11 @@ static void automationFormatTests() {
     require(!alien::parseSessionProject(juce::JSON::toString(badSend), loaded, error) && loaded.timeline == beforeDamage,
         "invalid send value rejected without replacing the loaded song");
     alien::SessionProjectData full;
+    for (int r = 0; r < alien::maxReturns; ++r) full.returns[static_cast<std::size_t>(r)] = {true, alien::defaultReturnName(r), {}};   // a send lane needs its return
     for (int t = 0; t < full.trackCount(); ++t) for (int p = 0; p < alien::automation::parametersPerTrack; ++p)
         full.timeline.automationLanes.push_back({t, static_cast<alien::automation::Parameter>(p), true, {{0, 0.5f}}});
     require(alien::parseSessionProject(alien::serializeSessionProject(full), loaded, error)
-        && loaded.timeline.automationLanes == full.timeline.automationLanes, "all six lanes per track survive save and load");
+        && loaded.timeline.automationLanes == full.timeline.automationLanes, "every lane of every track (volume, pan and eight sends) survives save and load");
     auto legacy = juce::JSON::parse(json);
     auto* timeline = legacy.getDynamicObject()->getProperty("timeline").getDynamicObject();
     timeline->removeProperty("automation");
@@ -384,10 +385,11 @@ static void parameterPersistenceTests() {
     source.returnPlugins[0].effects = {{xml, {}, false}};
     source.timeline.parameterLanes = {{{first.instanceId, "cutoff"}, false,
         {{0, 0.125f, automation::Curve::hold}, {960, 0.875f, automation::Curve::linear}}}};
-    // Compatibility fixture: all six mixer targets on every track coexist with
+    // Compatibility fixture: every mixer target on every track coexists with
     // a plugin parameter lane. This is deliberately beyond the old 2/track cap.
+    // A send lane needs its return; the fixture is also reopened as version 15, so it keeps returns A-D.
     for (int track = 0; track < source.trackCount(); ++track)
-        for (int parameter = 0; parameter < automation::parametersPerTrack; ++parameter)
+        for (int parameter = 0; parameter < 2 + defaultReturns; ++parameter)
             source.timeline.automationLanes.push_back({track, static_cast<automation::Parameter>(parameter), true, {{0, 0.25f}}});
     juce::String error;
     require(parseSessionProject(serializeSessionProject(source), loaded, error), "parameter project reopens");

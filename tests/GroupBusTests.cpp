@@ -319,7 +319,7 @@ static void panels() {
     for (auto* child : plugins.getChildren()) if (child->getName().startsWith("Plugin destination")) target = dynamic_cast<juce::ComboBox*>(child);
     require(target != nullptr, "the plugin panel has a destination chooser");
     juce::StringArray items; for (int i = 0; i < target->getNumItems(); ++i) items.add(target->getItemText(i));
-    require(items.contains("Strings FX (bus)") && items.size() == 1 + 1 + alien::maxReturns + 1, "it lists only the buses in use");
+    require(items.contains("Strings FX (bus)") && items.size() == 1 + 1 + alien::defaultReturns + 1, "it lists only the buses in use");
     target->setSelectedId(alien::PluginRuntime::busIndex(3) + 1, juce::sendNotificationSync);
     plugins.refresh({"Track 1"}, {}, none, names);
     require(plugins.destination() == alien::PluginRuntime::busIndex(3), "choosing a bus targets its rack");

@@ -57,15 +57,27 @@ public:
     std::function<bool(int,int)> hasSidechainInput;
     std::function<void(int,int)> onSidechain;
     int destination() const { return target.getSelectedId()-1; }
-    // busNames: one per group bus slot, empty for a slot that is not in use.
+    // Returns A-D, as in a new project.
+    static std::array<juce::String,maxReturns> defaultReturnNames() {
+        std::array<juce::String,maxReturns> names;
+        for(int r=0;r<defaultReturns;++r)names[static_cast<std::size_t>(r)]="Return "+juce::String::charToString(static_cast<juce::juce_wchar>('A'+r));
+        return names;
+    }
+    // busNames and returnNames: one per slot, empty for a slot that is not in use.
     void refresh(const juce::StringArray& names, const PluginRackState& rack, const juce::KnownPluginList& list,
-                 const std::array<juce::String,maxBuses>& busNames = {}) {
+                 const std::array<juce::String,maxBuses>& busNames = {},
+                 const std::array<juce::String,maxReturns>& returnNames = defaultReturnNames()) {
         const int t=target.getSelectedId(); target.clear(juce::dontSendNotification);
         for(int i=0;i<names.size();++i)target.addItem(names[i],i+1);
         // Ids are destination + 1: tracks, then Master FX (maxSessionTracks), then the returns right after it, then the buses.
         constexpr int busFirstId=maxSessionTracks+2+maxReturns;
         for(int b=0;b<maxBuses;++b)if(busNames[static_cast<std::size_t>(b)].isNotEmpty())target.addItem(busNames[static_cast<std::size_t>(b)]+" FX (bus)",busFirstId+b);
-        for(int r=0;r<maxReturns;++r)target.addItem("Return "+juce::String::charToString(static_cast<juce::juce_wchar>('A'+r))+" FX",maxSessionTracks+2+r);
+        for(int r=0;r<maxReturns;++r){
+            const auto& returnName=returnNames[static_cast<std::size_t>(r)];
+            if(returnName.isEmpty())continue;
+            const auto letter=juce::String::charToString(static_cast<juce::juce_wchar>('A'+r));
+            target.addItem(returnName=="Return "+letter?returnName+" FX":returnName+" FX (return "+letter+")",maxSessionTracks+2+r);
+        }
         target.addItem("Master FX",maxSessionTracks+1);
         target.setSelectedId(t>maxSessionTracks&&target.indexOfItemId(t)>=0?t:t>maxSessionTracks?maxSessionTracks+1:juce::jlimit(1,names.size(),t),juce::dontSendNotification);
         const int selectedPlugin=available.getSelectedId(); available.clear(juce::dontSendNotification);

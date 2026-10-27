@@ -263,6 +263,14 @@ if(BUILD_TESTING)
         juce::juce_audio_formats juce::juce_audio_basics)
     add_test(NAME GroupBusTests COMMAND GroupBusTests)
 
+    # Flexible returns (MIX-05): adding, removing and renaming returns, more than four, format, undo, panels, stems.
+    add_executable(FlexibleReturnTests tests/FlexibleReturnTests.cpp)
+    target_include_directories(FlexibleReturnTests PRIVATE src)
+    target_compile_definitions(FlexibleReturnTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(FlexibleReturnTests PRIVATE AlienStudioBranding juce::juce_audio_processors juce::juce_gui_basics juce::juce_gui_extra
+        juce::juce_audio_devices juce::juce_audio_formats juce::juce_audio_basics)
+    add_test(NAME FlexibleReturnTests COMMAND FlexibleReturnTests)
+
     # Containment of crashes inside plugin code. Plain C++ (no JUCE): it really faults on purpose.
     add_executable(FaultGuardTests tests/FaultGuardTests.cpp)
     target_include_directories(FaultGuardTests PRIVATE src)
