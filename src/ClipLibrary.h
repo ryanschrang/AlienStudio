@@ -153,6 +153,8 @@ public:
     }
     std::size_t patternCount() const noexcept { return patterns.size(); }
     std::size_t clipCount() const noexcept { return clips.size(); }
+    // Undo can restore content, but must not reissue an id still held by a live launch request.
+    void retainIssuedIdsFrom(const Library& previous) noexcept { nextId = std::max(nextId, previous.nextId); }
     // How many clips use a pattern: more than one means they are linked.
     std::size_t usesOf(PatternId id) const noexcept {
         return static_cast<std::size_t>(std::count_if(clips.begin(), clips.end(), [&](const auto& c) { return c.second.pattern == id; }));

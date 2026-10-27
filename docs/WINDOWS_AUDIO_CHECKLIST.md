@@ -359,3 +359,10 @@ Nothing should sound or look different: this moves where the rack's patterns are
 - Open a project saved before this change with several rack patterns (steps with drawn velocity, pan, pitch, gate, nudge and ratchets, and a channel with piano-roll notes). Play each pattern and the Song: it sounds as it did, and the graph editor shows the same values, including on steps that are off.
 - Edit steps and notes, copy a pattern and edit the copy (the original keeps its steps), move, duplicate and remove channels, delete a pattern, and undo and redo each step. Play the Channel Rack while editing: no stuck notes or clicks.
 - Save, reopen and export a WAV and stems of a Song with rack lanes: the files match an export made before the edits that were undone.
+
+## Explicit rack-clip launch (T1-03 D1)
+- In Pattern playback, open Session > Rack clips > Launch rack clip. Launch a rack pattern while a Session track plays; both should sound through their existing routing. Beat/Bar applies to rack launch and Stop rack.
+- While it plays, choose another pattern in Create. Confirm the playing pattern stays the same and the playhead is hidden on the other source. Open the playing source with Session > Rack clips > Edit rack clip; edit its steps or notes and listen for the change on its next occurrence without relaunching. Undo/redo the edit.
+- Queue another clip, then Stop rack before the boundary: only the latest request should apply. Stop rack leaves Session tracks playing; Stop all stops both. Stop the transport with a launch queued and restart: the queued clip must not start on its own.
+- Delete a bank slot preceding the active one: it keeps playing. Delete the active source: notes release without a stuck voice. Delete a queued source: it does not launch whichever source takes that slot.
+- Save/reopen: the rack's musical content and independent copies remain intact; live launch requests are not saved. Use Song placements and export as before; compare against playback. Check the menu and caption at 960x650 and 150/200% display scale.

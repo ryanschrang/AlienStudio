@@ -4,7 +4,7 @@ Status: design proposal. Increment A (the identity and library model) is impleme
 [ClipLibrary.h](../src/ClipLibrary.h) with ClipLibraryTests (#111). Increment B is split in two:
 B1 (Session cells owned by the library), B2a (linked cells, saved links, make unique), B2b
 (placement clips) and C (Channel Rack patterns in the library) are implemented; increments D and E
-are not started.
+remain; D1 explicit rack launch is implemented (see the delivery plan below).
 Baseline: main `1587c17` (project format 17). Roadmap source: T1-03 in
 [PR #100](https://github.com/ryanschrang/AlienStudio/pull/100), workstream
 ARCH-01 / LIVE-03. The numbered priority plan is not yet on this baseline's
@@ -272,3 +272,13 @@ listening remains a separate acceptance task; do not infer it from compilation.
 - Keep T1-01 tempo maps, T1-02 commands and T1-04 track limits independent workstreams.
   Their adapters must use these identity/time/lifetime contracts; they are not
   prerequisites for writing increment A's model and tests.
+
+## Increment D delivery plan
+
+D is split into complete, separately reviewable changes:
+
+1. **D1: explicit composite rack launch (this increment).** Perform > Rack clips lists the library-owned rack sources. Launch and Stop rack use the existing Beat/Bar boundary; Edit rack clip opens that exact source in Create. A playing rack clip is latched by clip identity, independent of the editor selection, and can play alongside Session tracks. One composite rack clip is active at a time. Replacement releases the previous instance and clears its nudged/ratcheted/fractional hits. Deleting a preceding bank slot keeps the active source; deleting an active/queued source stops/cancels it. The audio callback uses a bounded lookup and a lock-free latest-request mailbox. Playback state is transient: stop clears pending launches; Session transport restart waits for an explicit rack launch. No save-format change or new Session-cell content kind.
+2. **D2: saved rack bindings and placement identity.** Add the complete reader/writer migration for persistent rack clip/lane identities and explicit Session/Song bindings. Preserve legacy independent-copy defaults, portable/offline media, freeze/takes and transactional load failure. Do not save ephemeral transport requests.
+3. **D3: complete cross-view playback instances.** Prove linked/unique edits from each view, independent overlapping launch/placement note ownership, quantized launch/stop and live/export parity. Finish with the existing regression suites before E removes old adapters.
+
+D1 acceptance evidence: RackLaunchTests covers exact beat/bar timing, callback-block independence, selection independence, live source revisions, deleted active/queued/preceding slots, held-note identity after slot deletion, delayed-hit cancellation, transport restart and no callback allocations. RackIntegrationTests runs explicit launches alongside a Session track through the real callback; SessionViewTests drives the actual launch/edit/stop menu callbacks, stale menus, refusal and unchanged document/history. Rack playback from the Create screen still starts its selected pattern when the transport begins, then holds that source until stopped or explicitly launched elsewhere. Song playback/export retains its existing timeline path. D is not complete until D2/D3 acceptance gates pass.
