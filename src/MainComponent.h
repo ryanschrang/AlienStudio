@@ -481,6 +481,11 @@ private:
             }
         };
         sessionView.onClearClip = [this] { clearSelectedClip(); };
+        sessionView.onCellContentChanged = [this] {
+            if (!rollTarget.rack) loadSelectedClip();
+            sessionView.refreshFromDocument();
+            refreshExtraViews();
+        };
         sessionView.onRelinkAudio = [this] { chooseRelinkFolder(); };
         sessionView.onTitleChanged = [this] { updateEditorTitle(); };
         sessionView.onEdited = [this](const juce::String& label) {
@@ -672,7 +677,7 @@ private:
         const auto& d = controller.document();
         const int track = d.selectedTrack, scene = d.selectedScene;
         if(controller.isTrackFrozen(track)){timelineView.setStatus("Unfreeze the track before editing its source clips.");return;}
-        controller.removeAudio(track, scene);
+        controller.clearCell(track, scene);   // only this cell: content it shares stays with the others
         // The selected clip is the one loaded in the piano roll, so this clears
         // it and republishes it through onChange; one undo step covers both.
         suppressPianoRollCommit = true;

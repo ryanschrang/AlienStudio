@@ -171,6 +171,19 @@ struct ProjectDocument {
         return view;
     }
     SessionClip selectedClip() const { return clip(selectedTrack, selectedScene); }
+    // The pattern a cell's clip plays (0 for an empty cell). Cells with the same value are linked.
+    std::uint64_t linkOf(int track, int scene) const {
+        const auto* c = library.clip(cellClip(track, scene));
+        return c != nullptr ? c->pattern.value : 0;
+    }
+    // How many cells play the same content as this one (1 when it is its own, 0 when empty).
+    int linkedCells(int track, int scene) const {
+        const auto link = linkOf(track, scene);
+        if (link == 0) return 0;
+        int n = 0;
+        for (int s = 0; s < sceneCount(); ++s) for (int t = 0; t < trackCount(); ++t) n += linkOf(t, s) == link ? 1 : 0;
+        return n;
+    }
     // Gives a cell new content, as a new revision of the clip it already has (every use of that
     // clip hears it), or as a new clip for an empty cell. Content that is just a new, empty clip (no
     // audio, no notes, the default loop) empties the cell; an empty clip with its own loop is kept.
@@ -305,6 +318,8 @@ inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
             // Audio paths are excluded: they only change with the audio itself, or
             // when a portable save re-points them at collected copies.
             if (x.pattern != y.pattern || x.audio != y.audio) return false;
+            // Which cells share content is part of the song: linking two equal cells is an edit.
+            if (a.linkOf(t, s) != b.linkOf(t, s)) return false;
         }
     return true;
 }
@@ -347,11 +362,15 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
     data.stepPattern = doc.steps.on;
     data.stepPitches = doc.steps.pitch;
     data.stepVelocities = doc.steps.velocity;
+    std::map<std::uint64_t, int> uses;   // how many cells play each pattern
+    for (int s = 0; s < doc.sceneCount(); ++s)
+        for (int t = 0; t < doc.trackCount(); ++t) if (const auto link = doc.linkOf(t, s)) ++uses[link];
     for (int s = 0; s < doc.sceneCount(); ++s)
         for (int t = 0; t < doc.trackCount(); ++t) {
             auto& destination = data.clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
             destination.pattern = doc.clip(t, s).pattern;   // shared, not copied
             destination.audioFilePath = doc.clip(t, s).audioFilePath;
+            if (const auto link = doc.linkOf(t, s); link != 0 && uses[link] > 1) destination.link = link;   // saved only where content is shared
         }
     return data;
 }
@@ -388,13 +407,23 @@ inline ProjectDocument fromProjectData(const SessionProjectData& data) {
     doc.steps.on = data.stepPattern;
     doc.steps.pitch = data.stepPitches;
     doc.steps.velocity = data.stepVelocities;
+    std::map<std::uint64_t, library::ClipId> links;   // saved link -> the first clip with it
     for (int s = 0; s < data.sceneCount(); ++s)
         for (int t = 0; t < data.trackCount(); ++t) {
             const auto& source = data.clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
-            SessionClip clip;   // each saved cell is a clip of its own
+            // A linked cell after the first of its link shares that cell's content; every other cell is its own.
+            if (source.link != 0) {
+                const auto first = links.find(source.link);
+                if (first != links.end() && doc.library.clip(first->second) != nullptr) {
+                    doc.cells[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)] = doc.library.linkClip(first->second);
+                    continue;
+                }
+            }
+            SessionClip clip;
             clip.pattern = source.pattern.shared() != nullptr ? source.pattern.shared() : emptyPattern();
             clip.audioFilePath = source.audioFilePath;
             doc.setClip(t, s, clip);
+            if (source.link != 0 && doc.cellClip(t, s)) links[source.link] = doc.cellClip(t, s);
         }
     doc.clampSelection();
     return doc;

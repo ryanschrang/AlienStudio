@@ -23,7 +23,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 23;   // 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 23: return slots
+inline constexpr int sessionProjectFormatVersion = 23;   // 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots
 
 // A group bus slot. Slots keep their index while other buses come and go, so a track's output
 // (TrackSettings::output) and the bus's FX rack never need renumbering.
@@ -58,6 +58,9 @@ inline SessionReturns defaultSessionReturns() {
 struct SessionProjectClip {
     SharedPianoRoll pattern;   // shared with the document; empty clips share nothing at all
     juce::String audioFilePath;
+    // Cells with the same nonzero link play one shared clip content: an edit of one is an edit of
+    // all. 0: the cell's content is its own. Saved from format 22 (absent before: every cell its own).
+    std::uint64_t link{};
 };
 
 // On-disk representation of a session. clips is [scene][track].
@@ -147,6 +150,20 @@ struct SessionProjectData {
             const auto& pluginRack = busPlugins[b];
             if (!buses[b].valid() || !pluginRack.valid() || !pluginRack.instrument.descriptionXml.isEmpty()
                 || (!buses[b].used && !pluginRack.effects.empty())) return false;
+        }
+        // Cells that share a link hold the same content (the file repeats it in each).
+        {
+            std::vector<std::pair<std::uint64_t, const SessionProjectClip*>> firsts;
+            for (const auto& scene : clips) for (const auto& clip : scene) {
+                if (clip.link == 0) continue;
+                const auto found = std::find_if(firsts.begin(), firsts.end(), [&](const auto& f) { return f.first == clip.link; });
+                if (found == firsts.end()) { firsts.push_back({clip.link, &clip}); continue; }
+                const PianoRollPattern& a = clip.pattern; const PianoRollPattern& b = found->second->pattern;
+                if (clip.audioFilePath != found->second->audioFilePath || a.loopSteps != b.loopSteps || a.count != b.count) return false;
+                for (std::size_t i = 0; i < a.count; ++i)
+                    if (a.notes[i].pitch != b.notes[i].pitch || a.notes[i].startStep != b.notes[i].startStep || a.notes[i].lengthSteps != b.notes[i].lengthSteps
+                        || a.notes[i].velocity != b.notes[i].velocity || a.notes[i].probability != b.notes[i].probability) return false;
+            }
         }
         // A sidechain listens to a track that exists.
         const auto keysExist = [&](const PluginRackState& rack) {
@@ -419,6 +436,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
             const PianoRollPattern& pattern = clip.pattern;
             clipObject->setProperty("loopSteps", pattern.loopSteps);
             clipObject->setProperty("audioFilePath", clip.audioFilePath);
+            if (clip.link != 0) clipObject->setProperty("link", instanceIdString(clip.link));
 
             juce::Array<juce::var> notes;
             for (std::size_t i = 0; i < pattern.count; ++i) {
@@ -823,6 +841,9 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
                 error = "A project clip has an unsupported loop length."; return false;
             }
             if (path.isString()) clip.audioFilePath = path.toString();
+            if (clipObject->hasProperty("link") && (!parseInstanceId(clipObject->getProperty("link"), clip.link) || clip.link == 0)) {
+                error = "A project clip has an invalid link."; return false;
+            }
             for (const auto& noteValue : *notes) {
                 const auto* note = noteValue.getDynamicObject();
                 if (note == nullptr) { error = "A piano-roll note is invalid."; return false; }

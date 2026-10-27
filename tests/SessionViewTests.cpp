@@ -802,6 +802,36 @@ static void snapshots() {
     }
 }
 
+// The Copy / link menu for the selected cell (T1-03 B2a).
+static void linkMenu() {
+    Rig rig;
+    auto& c = rig.controller;
+    rig.fillClip(0, 0);
+    juce::PopupMenu shown; std::function<void(int)> choose;
+    rig.view.linkMenuLauncher = [&](juce::PopupMenu m, std::function<void(int)> done) { shown = std::move(m); choose = std::move(done); };
+    int changed = 0;
+    rig.view.onCellContentChanged = [&] { ++changed; };
+    const auto enabled = [&](int id) {
+        for (juce::PopupMenu::MenuItemIterator it(shown); it.next();) if (it.getItem().itemID == id) return it.getItem().isEnabled;
+        return false;
+    };
+    c.selectClip(0, 0); rig.view.showLinkMenu();
+    require(enabled(1) && !enabled(2) && !enabled(3) && !enabled(4), "a filled cell can be copied; nothing to paste or unlink yet");
+    choose(1);
+    c.selectClip(1, 2); rig.view.showLinkMenu();
+    require(enabled(2) && enabled(3) && !enabled(1), "after Copy, an empty cell offers both pastes");
+    choose(3);
+    require(changed == 1 && c.document().linkedCells(1, 2) == 2 && c.undoLabel() == "Paste linked clip", "Paste linked here links the cell");
+    rig.view.refreshClips();
+    c.selectClip(0, 0); rig.view.showLinkMenu();
+    bool namesOther = false;
+    for (juce::PopupMenu::MenuItemIterator it(shown); it.next();) namesOther = namesOther || it.getItem().text == "Make unique (linked with 1 other cell)";
+    require(enabled(4) && namesOther, "Make unique says how many cells it is linked with");
+    choose(4);
+    require(changed == 2 && c.document().linkedCells(0, 0) == 1 && c.document().linkedCells(1, 2) == 1, "and makes the cell its own again");
+    std::cout << "PASS: the Copy / link menu\n";
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     layoutChecks();
@@ -817,6 +847,7 @@ int main() {
     headerLook();
     tileLook();
     sceneAndTrackLook();
+    linkMenu();
     snapshots();
     std::cout << "SessionViewTests passed\n";
     return 0;

@@ -785,6 +785,96 @@ public:
 
     // Republish only when the clip is playing or queued, so content changes
     // are heard without launching anything new.
+    // Republishes every other cell that shares this cell's content, where it is playing or queued.
+    void republishLinked(int track, int scene) {
+        const auto link = doc.isValidCell(track, scene) ? doc.linkOf(track, scene) : 0;
+        if (link == 0) return;
+        for (int s = 0; s < doc.sceneCount(); ++s) for (int t = 0; t < doc.trackCount(); ++t)
+            if ((t != track || s != scene) && doc.linkOf(t, s) == link) republishIfLive(t, s);
+    }
+
+    // ---- linked clips (T1-03): Session cells that share one clip's content ----------------------
+    // Copy remembers a cell's clip. Paste puts an independent copy of it in a cell; Paste linked puts a
+    // clip that shares its content (an edit of either is an edit of both). Make unique gives a linked
+    // cell its own copy again. Each is one undo step; a pasted cell's old content is replaced, not edited.
+    bool copyCell(int track, int scene) {
+        if (!doc.isValidCell(track, scene) || !doc.cellClip(track, scene)) return false;
+        copiedCell = doc.cellClip(track, scene);
+        copiedContent = doc.clip(track, scene);
+        return true;
+    }
+    bool hasCopiedCell() const noexcept { return copiedContent.has_value(); }
+    bool canPasteLinked() const { return copiedCell && doc.library.clip(copiedCell) != nullptr; }
+    bool pasteCell(int track, int scene, bool linked) {
+        if (busy || isRecording() || !doc.isValidCell(track, scene) || isTrackFrozen(track) || !copiedContent) return false;
+        if (take.active && track == take.track && scene == take.scene) return false;
+        if (linked) {
+            if (!canPasteLinked()) return false;
+            const auto* source = doc.library.clip(copiedCell);
+            if (doc.linkOf(track, scene) == source->pattern.value) return false;   // already plays that content
+            doc.cells[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)] = doc.library.linkClip(copiedCell);
+            doc.prune();
+        } else {
+            doc.clearClip(track, scene);
+            doc.setClip(track, scene, *copiedContent);
+        }
+        republishIfLive(track, scene);
+        commit(linked ? "Paste linked clip" : "Paste clip", track, scene);
+        return true;
+    }
+    bool makeCellUnique(int track, int scene) {
+        if (busy || isRecording() || !doc.isValidCell(track, scene) || isTrackFrozen(track)) return false;
+        const auto id = doc.cellClip(track, scene);
+        if (!id || !doc.library.makeClipUnique(id)) return false;
+        commit("Make clip unique", track, scene);
+        return true;
+    }
+    // Empties one cell. Content other cells share stays theirs; Song regions on the cell fall silent.
+    bool clearCell(int track, int scene) {
+        if (busy || !doc.isValidCell(track, scene) || isTrackFrozen(track)) return false;
+        if (take.active && track == take.track && scene == take.scene) return false;
+        if (!doc.cellClip(track, scene)) return false;
+        doc.clearClip(track, scene);
+        republishIfLive(track, scene);
+        return true;
+    }
+    // Whether a Song placement shares what it plays with something else: another placement of its cell,
+    // or a linked cell.
+    bool placementShared(std::uint32_t regionId) const {
+        const auto* r = doc.timeline.find(regionId);
+        if (r == nullptr || r->isPattern() || !doc.isValidCell(r->row, r->source) || !doc.cellClip(r->row, r->source)) return false;
+        int uses = 0;
+        for (const auto& other : doc.timeline.regions) uses += other.row == r->row && other.source == r->source ? 1 : 0;
+        return uses > 1 || doc.linkedCells(r->row, r->source) > 1;
+    }
+    // Gives one Song placement content of its own: an independent copy of what it plays, in a free cell
+    // of its track (a scene is added when there is none). The cell and the other placements keep theirs.
+    bool makePlacementUnique(std::uint32_t regionId) {
+        if (busy || isRecording() || !placementShared(regionId)) return false;
+        const auto* r = doc.timeline.find(regionId);
+        const int row = r->row, from = r->source;
+        if (isTrackFrozen(row)) return false;
+        const auto saved = doc;
+        const auto used = [&](int scene) {
+            if (doc.cellClip(row, scene)) return true;
+            for (const auto& x : doc.timeline.regions) if (x.row == row && x.source == scene) return true;
+            for (const auto& x : doc.timeline.takes) if (x.row == row && x.source == scene) return true;
+            for (const auto& x : doc.timeline.frozenOriginals) if (x.row == row && x.source == scene) return true;
+            return false;
+        };
+        int free = -1;
+        for (int s = 0; s < doc.sceneCount() && free < 0; ++s) if (!used(s)) free = s;
+        if (free < 0) {
+            if (!doc.canAddScene() || !insertScene(doc.sceneCount(), nullptr)) { doc = saved; return false; }
+            free = doc.sceneCount() - 1;
+        }
+        doc.cells[static_cast<std::size_t>(free)][static_cast<std::size_t>(row)] = doc.library.duplicateClip(doc.cellClip(row, from));
+        doc.timeline.find(regionId)->source = free;
+        if (!doc.timeline.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount)) { doc = saved; return false; }
+        commit("Make placement unique", row, free);
+        return true;
+    }
+
     void republishIfLive(int track, int scene) {
         if (!doc.isValidCell(track, scene)) return;
         const auto index = static_cast<std::size_t>(track);
@@ -873,6 +963,7 @@ public:
         if (samePianoRollPattern(*clip.pattern, pattern)) return;
         clip.pattern = std::make_shared<const PianoRollPattern>(pattern);
         doc.setClip(track, scene, clip);
+        republishLinked(track, scene);   // cells linked to this one now play the new notes too
         if (!publishToEngine || clip.isAudioClip()) return;
         const auto index = static_cast<std::size_t>(track);
         engine.requestedPianoRollClip[index].store(scene);
@@ -889,6 +980,7 @@ public:
         clip.audioFilePath.clear();
         doc.setClip(track, scene, clip);
         republishIfLive(track, scene);
+        republishLinked(track, scene);
         return true;
     }
 
@@ -2148,6 +2240,8 @@ private:
         pool.addJob(std::move(job));
     }
     std::uint32_t lastTakeId{};
+    library::ClipId copiedCell{};                  // what Copy remembered, for Paste linked
+    std::optional<SessionClip> copiedContent;      // and its content, for Paste (kept if the cell changes)
 
     ToneEngine& engine;
     ProjectDocument doc;
