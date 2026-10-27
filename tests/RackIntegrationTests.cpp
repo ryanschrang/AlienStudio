@@ -463,7 +463,50 @@ static void synthCallback() {
     rig.render(6000); require(rig.render(1000).peak < 0.001f, "Song region sends note-offs with the synth's release envelope");
 }
 
+static void performLaunches() {
+    for (int tab : {1, 2, alien::rackTabIndex}) {
+        require(alien::patternModeForTab(tab, alien::sessionMode, false, true) == alien::sessionMode,
+                "editing the shared source keeps Perform transport");
+        require(alien::patternModeForTab(tab, alien::sessionMode, true, true) == alien::songMode,
+                "Song mode still takes precedence over Perform launches");
+    }
+    Rig rig(8000);
+    rig.project.clips[0] = 101;
+    require(rig.project.setStepOn(0, 0, 0, true) && rig.project.addPattern(0), "two Perform sources");
+    rig.project.clips[1] = 102; rig.project.selectPattern(0); rig.publish();
+    rig.engine.patternMode.store(1); rig.engine.launchQuantizationSteps.store(4);
+    alien::SessionClipLaunch session;
+    session.pattern.add(60, 0, 16); session.clipIndex = 0;
+    rig.engine.pianoRollLaunches[0].publish(session);
+    rig.engine.requestedRackClip.store(101); rig.engine.playing.store(true);
+    rig.render(1500);
+    require(rig.engine.activeRackClip.load() == 101 && rig.engine.activePianoRollClip[0].load() == 0,
+            "a composite rack clip and a Session track play together");
+    rig.project.selectPattern(1); rig.publish();
+    rig.engine.requestedRackClip.store(102);
+    const auto before = allocationCount;
+    rig.render(2500);
+    const auto after = allocationCount;
+    require(before == after && rig.engine.activeRackClip.load() == 101 && rig.engine.queuedRackClip.load() == 102,
+            "callback keeps old identity until beat boundary, without allocation");
+    rig.render(1);
+    require(rig.engine.activeRackClip.load() == 102 && rig.engine.rackStep.load() == 0,
+            "callback launches the requested clip, rather than following selection");
+    rig.engine.requestedRackClip.store(0); rig.render(4000);
+    require(rig.engine.activeRackClip.load() == 0 && rig.engine.activePianoRollClip[0].load() == 0,
+            "rack stop leaves the independently playing Session track alone");
+    rig.engine.playing.store(false); rig.render(64);
+    rig.engine.playing.store(true); rig.render(8000);
+    require(rig.engine.activeRackClip.load() == 0, "Session restart does not launch the editor's selected pattern");
+    rig.engine.requestedRackClip.store(101); rig.render(1);
+    require(rig.engine.activeRackClip.load() == 101, "rack can be launched again after transport restart");
+    rig.engine.resetRackPlayback.store(true); rig.render(64);
+    require(rig.engine.activeRackClip.load() == 0,
+            "a document reset cannot carry a live clip into a different document's identity namespace");
+}
+
 int main() {
+    performLaunches();
     synthCallback();
     melodicCallback();
     silentInEveryOtherMode();

@@ -184,7 +184,13 @@ struct Snapshot {
     int selectedPattern{};
     float swing{};
     std::array<std::shared_ptr<const Pattern>, maxPatterns> patterns{};
+    std::array<std::uint64_t, maxPatterns> clips{}; // library identities, independent of editor selection
     bool anySolo{};
+    int indexOfClip(std::uint64_t clip) const noexcept {
+        if (clip != 0) for (int i = 0; i < maxPatterns; ++i)
+            if (clips[static_cast<std::size_t>(i)] == clip && pattern(i) != nullptr) return i;
+        return -1;
+    }
     const Pattern* pattern(int index) const noexcept {
         return index >= 0 && index < maxPatterns ? patterns[static_cast<std::size_t>(index)].get() : nullptr;
     }
@@ -556,7 +562,11 @@ struct Project {
     std::shared_ptr<const Snapshot> snapshot() const {
         auto s = std::make_shared<Snapshot>();
         s->channelCount = channelCount; s->channels = channels; s->selectedPattern = selectedPattern; s->swing = swing;
-        s->patterns = patterns; s->anySolo = anySolo();
+        s->patterns = patterns; s->clips = clips; s->anySolo = anySolo();
+        // Standalone legacy rack models have no document library (offline tools and tests).
+        // Their immutable snapshots still need distinct local identities for latched playback.
+        for (int p = 0; p < patternCount; ++p)
+            if (s->clips[static_cast<std::size_t>(p)] == 0) s->clips[static_cast<std::size_t>(p)] = static_cast<std::uint64_t>(p + 1);
         return s;
     }
 

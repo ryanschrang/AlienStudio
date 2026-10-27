@@ -93,8 +93,13 @@ public:
     // Channel Rack. The project is published as an immutable snapshot; each
     // channel's decoded sample is an immutable clip retained by the session
     // owner; previews from the GUI arrive as (channel, velocity) events.
-    // Pattern mode (patternMode 3) plays the selected pattern in a loop.
+    // Rack mode seeds playback from selection once; explicit launches use library identities.
     alien::rack::SnapshotMailbox rackMailbox;
+    std::atomic<std::uint64_t> requestedRackClip{alien::rack::RackPlayer::noLaunchRequest};
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free, "Rack launch requests must be lock-free");
+    std::atomic<std::uint64_t> activeRackClip{0}, queuedRackClip{alien::rack::RackPlayer::noLaunchRequest};
+    std::atomic<bool> rackPerformMode{false}; // GUI view changes keep Perform playback while editing rack notes
+    std::atomic<bool> resetRackPlayback{false}; // a new/opened document has its own identity namespace
     alien::rack::RackPlayer::SampleTable rackSamples{};
     NoteQueue rackAuditions;
     // Rack preview pitch is relative to C4 (-60..67); retain the original packing for drum-range previews.
@@ -234,6 +239,7 @@ private:
             midi.requestReset();
         }
         if (const auto* fresh = rackMailbox.consume()) rackSnapshot = fresh;
+        if (resetRackPlayback.exchange(false)) rackPlayer.stop();
         if (modeNow == 2) {
             // A requested position is where the song starts when it next plays, or
             // where it jumps to if it already is.
@@ -494,7 +500,7 @@ private:
             for (int c = 0; c < 2; ++c) plugins->tracks[t].addFrom(c,0,clipBuffers[t],c,0,samples);
         addTrackInputs(samples, outputOffset);
         if (modeNow == 2) captureSongTake(samples, outputOffset);
-        renderRack(samples, playNow && modeNow == 3, playNow && modeNow == 2);
+        renderRack(samples, playNow && (modeNow == 3 || modeNow == 1), playNow && modeNow == 2, modeNow == 3);
         plugins->effectsAndAlign(samples);
         for (std::size_t r = 0; r < static_cast<std::size_t>(alien::maxReturns); ++r)
             returnMixers[r].setTarget(returns[r].snapshot().asTrack(), false);
@@ -632,7 +638,7 @@ private:
     // instruments, so a plug-in instrument on a track cannot replace it: buses
     // for Session tracks join that track (and so pass through its effects and
     // mixer strip), the master bus joins the live bus, aligned like the tracks.
-    void renderRack(int samples, bool running, bool timelineRunning) noexcept {
+    void renderRack(int samples, bool running, bool timelineRunning, bool startSelected) noexcept {
         auto& buses = *rackBuses;
         std::array<float*, alien::rack::RackPlayer::busCount> left{}, right{};
         for (std::size_t b = 0; b < left.size(); ++b) {
@@ -640,11 +646,15 @@ private:
             std::fill_n(buses.right[b].begin(), samples, 0.0f);
             left[b] = buses.left[b].data(); right[b] = buses.right[b].data();
         }
+        const auto request = requestedRackClip.exchange(alien::rack::RackPlayer::noLaunchRequest);
         if (timelineRunning)
             rackPlayer.processTimeline(*rackSnapshot, rackSamples, true, rackHits.data(), rackHitCount, songTempo().tempoAt(timelineTick), activeTracks.load(),
                                        samples, left.data(), right.data());
         else
-            rackPlayer.process(*rackSnapshot, rackSamples, running, bpm.load(), activeTracks.load(), samples, left.data(), right.data());
+            rackPlayer.processLaunched(*rackSnapshot, rackSamples, running, bpm.load(), activeTracks.load(), samples, left.data(), right.data(),
+                                      request, launchQuantizationSteps.load(), startSelected);
+        activeRackClip.store(timelineRunning ? 0 : rackPlayer.playingClip(), std::memory_order_relaxed);
+        queuedRackClip.store(timelineRunning ? alien::rack::RackPlayer::noLaunchRequest : rackPlayer.waitingClip(), std::memory_order_relaxed);
         rackStep.store(running ? rackPlayer.currentStep() : -1, std::memory_order_relaxed);
         for (std::size_t t = 0; t < sessionTracks; ++t) {
             if(plugins->racks[t].frozen)continue;

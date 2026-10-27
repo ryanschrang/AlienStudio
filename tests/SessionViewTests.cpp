@@ -939,6 +939,42 @@ static void linkMenu() {
     std::cout << "PASS: the Copy / link menu\n";
 }
 
+static void rackLaunchMenu() {
+    Rig rig;
+    auto& c = rig.controller;
+    require(c.editRack("Second pattern", [](rack::Project& p) { return p.addPattern(0); }), "second rack source");
+    c.selectRackPattern(0); c.markAsNewBaseline();
+    const auto before = c.document();
+    const auto second = c.channelRack().clips[1];
+    std::function<void(int)> choose;
+    rig.view.rackMenuLauncher = [&](juce::PopupMenu, std::function<void(int)> done) { choose = std::move(done); };
+    rig.view.showRackClipMenu(); choose(2);
+    require(rig.engine.requestedRackClip.load() == second && rig.engine.playing.load()
+        && c.channelRack().selectedPattern == 0 && sameContent(before, c.document()) && !c.canUndo() && !c.isDirty(),
+        "Perform launch addresses the shared source without selection, edit, dirty state or undo");
+    std::uint64_t opened{};
+    rig.view.onEditRackClip = [&](std::uint64_t id) { opened = id; };
+    rig.view.showRackClipMenu(); choose(1002);
+    require(opened == second && rig.engine.requestedRackClip.load() == second, "Edit opens the same source without launching another clip");
+    rig.view.showRackClipMenu(); choose(2000);
+    require(rig.engine.requestedRackClip.load() == 0, "menu offers quantized rack stop");
+    rig.view.showRackClipMenu();
+    require(c.deleteRackPattern(1), "remove a source while popup is open"); choose(2);
+    require(rig.engine.requestedRackClip.load() == 0, "a stale menu cannot launch whichever slot replaced its source");
+    c.setExternalBusy(true); require(!c.launchRackClip(c.channelRack().clips[0]), "busy launches refused"); c.setExternalBusy(false);
+    rig.engine.patternMode.store(2); require(!c.launchRackClip(c.channelRack().clips[0]), "Song playback is not silently replaced");
+    c.newProject();
+    require(rig.engine.requestedRackClip.load() == rack::RackPlayer::noLaunchRequest && !rig.engine.rackPerformMode.load(),
+            "new document clears pending rack launches and Perform mode");
+    rig.engine.patternMode.store(1);
+    require(c.editRack("New pattern", [](rack::Project& p) { return p.addPattern(); }), "new source for undo");
+    const auto removed = c.channelRack().clips[1];
+    require(c.launchRackClip(removed) && c.undo(), "undo creation with launch still pending");
+    require(c.editRack("Another pattern", [](rack::Project& p) { return p.addPattern(); }), "a different source after undo");
+    require(c.channelRack().clips[1] != removed && !c.launchRackClip(removed),
+            "undo followed by creation cannot redirect an old launch to a different clip");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     layoutChecks();
@@ -956,6 +992,7 @@ int main() {
     tileLook();
     sceneAndTrackLook();
     linkMenu();
+    rackLaunchMenu();
     snapshots();
     std::cout << "SessionViewTests passed\n";
     return 0;

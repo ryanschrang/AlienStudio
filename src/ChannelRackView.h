@@ -1186,7 +1186,7 @@ public:
         lengthLabel.setText("STEPS", juce::dontSendNotification);
         swingLabel.setText("SWING", juce::dontSendNotification);
         addAndMakeVisible(patternBox); patternBox.setName("Pattern");
-        patternBox.setTooltip("Choose the pattern to edit and play");
+        patternBox.setTooltip("Choose the pattern to edit. While playing, use Session > Rack clips to launch a different clip.");
         patternBox.onChange = [this] {
             if (updating) return;
             controller.selectRackPattern(patternBox.getSelectedId() - 1);

@@ -491,6 +491,13 @@ private:
             else keyboardState.noteOff(3, note, 0);
         };
         sessionView.onSelectionChanged = [this] { rollTarget = {}; loadSelectedClip(); };
+        sessionView.onEditRackClip = [this](std::uint64_t clip) {
+            const int pattern = controller.rackPatternForClip(clip);
+            if (pattern < 0) return;
+            controller.selectRackPattern(pattern);
+            rackView.refresh();
+            showView(alien::rackTabIndex);
+        };
         sessionView.onEditClip = [this](int track, int scene) {
             rollTarget = {};
             controller.selectClip(track, scene);
@@ -727,8 +734,8 @@ private:
 
     // The engine plays what the view shows; the piano roll editing a rack channel plays the rack's pattern.
     int modeForTab(int tab) const {
-        if (tab == 1 && rollTarget.rack && !songPlayback) return alien::rackMode;
-        return alien::patternModeForTab(tab, engine.patternMode.load(), songPlayback);
+        if (tab == 1 && rollTarget.rack && !songPlayback && !engine.rackPerformMode.load()) return alien::rackMode;
+        return alien::patternModeForTab(tab, engine.patternMode.load(), songPlayback, engine.rackPerformMode.load());
     }
     // FL Studio's channel piano roll: the piano roll edits a rack channel's steps in the selected pattern as notes.
     void openRackChannel(int channel) {
@@ -928,7 +935,9 @@ private:
         const auto& d = controller.document();
         const bool rackMode = engine.patternMode.load() == 3;
         const int rackStep = rackMode && isPlaying ? engine.rackStep.load() : -1;
-        rackView.setPlayhead(rackStep);
+        const bool rackEditorPlaying = isPlaying && engine.activeRackClip.load() != 0
+            && engine.activeRackClip.load() == d.channelRack.clips[static_cast<std::size_t>(d.channelRack.selectedPattern)];
+        rackView.setPlayhead(rackEditorPlaying ? engine.rackStep.load() : -1);
         int displayStep = rackMode ? rackStep : currentStep;
         if (!stepMode && !rackMode) {
             const int position = engine.sessionTrackPositions[static_cast<std::size_t>(d.selectedTrack)].load();
@@ -970,7 +979,7 @@ private:
                 else keyboardState.noteOff(4, note, 0.0f);
             }
         }
-        if (rollTarget.rack) pianoRoll.setPlayheadStep(rackMode && isPlaying ? engine.rackStep.load() : -1.0);
+        if (rollTarget.rack) pianoRoll.setPlayheadStep(rackEditorPlaying ? engine.rackStep.load() : -1.0);
         else pianoRoll.setPlayheadStep(engine.sessionTrackPositions[static_cast<std::size_t>(d.selectedTrack)].load() / 1000.0);
         pluginHost.poll();   // plugins that failed on the audio thread are reported here, never from it
         if (pluginHost.changed.exchange(false)) controller.runtimePluginEdited();

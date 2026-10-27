@@ -141,6 +141,9 @@ public:
     void newProject() {
         abandonRecording();
         engine.playing.store(false);
+        engine.requestedRackClip.store(rack::RackPlayer::noLaunchRequest);
+        engine.rackPerformMode.store(false);
+        engine.resetRackPlayback.store(true);
         if (beforeDocumentReplaced) beforeDocumentReplaced();
         stopEverySlot();
         doc = ProjectDocument::createDefault();
@@ -582,6 +585,30 @@ public:
     void stopAllTracks() {
         engine.synchronizedSceneLaunch.store(true);
         for (int track = 0; track < doc.trackCount(); ++track) publishStop(static_cast<std::size_t>(track));
+        stopRackClip();
+    }
+
+    // A launch is transport state, not an edit or a change of the pattern being edited.
+    int rackPatternForClip(std::uint64_t clip) const noexcept {
+        if (clip != 0) for (int p = 0; p < doc.channelRack.patternCount; ++p)
+            if (doc.channelRack.clips[static_cast<std::size_t>(p)] == clip) return p;
+        return -1;
+    }
+    bool launchRackClip(std::uint64_t clip) {
+        if (busy || isRecording() || engine.patternMode.load() == 2 || rackPatternForClip(clip) < 0) return false;
+        for (int c = 0; c < doc.channelRack.channelCount; ++c)
+            if (isTrackFrozen(doc.channelRack.channels[static_cast<std::size_t>(c)].output)) return false;
+        pushRackToEngine();
+        engine.rackPerformMode.store(true);
+        engine.patternMode.store(1);
+        engine.requestedRackClip.store(clip);
+        engine.playing.store(true);
+        return true;
+    }
+    bool stopRackClip() {
+        if (busy || isRecording()) return false;
+        engine.requestedRackClip.store(0);
+        return true;
     }
 
     // Stops one Session track at the next launch boundary; the other tracks keep playing.
@@ -1944,6 +1971,9 @@ private:
         }
         abandonRecording();
         engine.playing.store(false);
+        engine.requestedRackClip.store(rack::RackPlayer::noLaunchRequest);
+        engine.rackPerformMode.store(false);
+        engine.resetRackPlayback.store(true);
         engine.synchronizedSceneLaunch.store(false);
         if (beforeDocumentReplaced) beforeDocumentReplaced();
         for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track) publishStop(track);
@@ -2030,6 +2060,7 @@ private:
         for (int s = 0; !reordered && s < state.sceneCount(); ++s)
             reordered = previous.scenes[static_cast<std::size_t>(s)].id != state.scenes[static_cast<std::size_t>(s)].id;
         doc = state;
+        doc.library.retainIssuedIdsFrom(previous.library);
         // Keep the user's current selection unless the step names a clip.
         doc.selectedTrack = step.focusTrack >= 0 ? step.focusTrack : previous.selectedTrack;
         doc.selectedScene = step.focusScene >= 0 ? step.focusScene : previous.selectedScene;

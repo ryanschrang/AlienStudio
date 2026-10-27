@@ -68,6 +68,11 @@ public:
         addSceneButton.setName("Add scene");
         addSceneButton.setTooltip("Add a scene (up to " + juce::String(maxSessionScenes) + ")");
         addSceneButton.onClick = [this] { if (controller.addScene()) structureChanged(true, "Add scene"); };
+        addAndMakeVisible(rackClipsButton);
+        rackClipsButton.setButtonText("Rack clips...");
+        rackClipsButton.setName("Launch or edit a Channel Rack clip");
+        rackClipsButton.setTooltip("Launch a rack clip on the next beat or bar, stop it, or open its shared source for editing");
+        rackClipsButton.onClick = [this] { showRackClipMenu(); };
 
         addAndMakeVisible(launchTimingLabel);
         launchTimingLabel.setText("LAUNCH", juce::dontSendNotification);
@@ -148,8 +153,8 @@ public:
         addAndMakeVisible(stopClip);
         stopClip.setButtonText("Stop all");
         stopClip.setGlyph(ui::Glyph::stop);
-        stopClip.setName("Stop all Session tracks at selected launch boundary");
-        stopClip.setTooltip("Stop every Session track at the next launch boundary");
+        stopClip.setName("Stop all Session tracks and rack at selected launch boundary");
+        stopClip.setTooltip("Stop every Session track and the launched rack clip at the next launch boundary");
         stopClip.onClick = [this] { controller.stopAllTracks(); refreshClips(); };
         addAndMakeVisible(editSelectedClip);
         editSelectedClip.setButtonText("Edit clip");
@@ -210,6 +215,40 @@ public:
 
     // Notifications for the owner.
     std::function<void(int, int)> onEditClip;           // open a clip in its editor
+    std::function<void(std::uint64_t)> onEditRackClip;
+    std::function<void(juce::PopupMenu, std::function<void(int)>)> rackMenuLauncher;
+    void showRackClipMenu() {
+        const auto& rack = controller.channelRack();
+        std::vector<std::uint64_t> ids;
+        juce::PopupMenu menu, launch, edit;
+        const auto active = engine.activeRackClip.load();
+        const auto queued = engine.queuedRackClip.load();
+        for (int p = 0; p < rack.patternCount; ++p) {
+            const auto id = rack.clips[static_cast<std::size_t>(p)]; ids.push_back(id);
+            const auto name = juce::String::fromUTF8(rack.patternNames[static_cast<std::size_t>(p)].c_str());
+            launch.addItem(p + 1, name + (queued == id ? " (queued)" : active == id ? " (playing)" : ""), true, active == id);
+            edit.addItem(1001 + p, name);
+        }
+        menu.addSubMenu("Launch rack clip", launch);
+        menu.addSubMenu("Edit rack clip", edit);
+        menu.addItem(2000, "Stop rack at launch boundary");
+        juce::Component::SafePointer<SessionView> safe(this);
+        auto done = [safe, ids = std::move(ids)](int choice) {
+            if (safe == nullptr || choice == 0) return;
+            if (choice == 2000) { safe->controller.stopRackClip(); return; }
+            const bool editing = choice >= 1001;
+            const int slot = choice - (editing ? 1001 : 1);
+            if (slot < 0 || slot >= static_cast<int>(ids.size())) return;
+            const auto id = ids[static_cast<std::size_t>(slot)];
+            // The menu can outlive a deletion/reorder; resolve the captured identity again.
+            if (safe->controller.rackPatternForClip(id) < 0) return;
+            if (editing) { if (safe->onEditRackClip) safe->onEditRackClip(id); }
+            else if (!safe->controller.launchRackClip(id))
+                safe->setImportStatus("Rack launch unavailable: stop recording or busy work, and use Pattern playback.", {});
+        };
+        if (rackMenuLauncher) rackMenuLauncher(std::move(menu), std::move(done));
+        else menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(rackClipsButton), std::move(done));
+    }
     std::function<void()> onCellContentChanged;         // a paste or Make unique changed the selected cell or its links
     // Tests replace the popup: they get the menu and the function to call with a choice.
     std::function<void(juce::PopupMenu, std::function<void(int)>)> linkMenuLauncher;
@@ -391,6 +430,8 @@ public:
         header.removeFromRight(4);
         addTrackButton.setBounds(header.removeFromRight(84).reduced(0, 1));
         header.removeFromRight(12);
+        rackClipsButton.setBounds(header.removeFromRight(112).reduced(0, 1));
+        header.removeFromRight(8);
         sessionHelp.setBounds(header);
         r.removeFromTop(8);
 
@@ -488,6 +529,9 @@ public:
     void refreshClips() {
         namespace col = ui::colours;
         const auto& d = controller.document();
+        const auto rackQueued = engine.queuedRackClip.load();
+        rackClipsButton.setButtonText(rackQueued != rack::RackPlayer::noLaunchRequest ? "Rack queued..."
+            : engine.activeRackClip.load() != 0 ? "Rack playing..." : "Rack clips...");
         std::vector<bool> scenePlaying(static_cast<std::size_t>(d.sceneCount()), false);
         for (int track = 0; track < d.trackCount(); ++track) {
             const int active = engine.activePianoRollClip[static_cast<std::size_t>(track)].load();
@@ -684,6 +728,7 @@ private:
     juce::ComboBox launchTiming, controllerTarget;
     ui::GlyphButton addTrackButton, addSceneButton, learnController;
     juce::TextButton clearController;
+    juce::TextButton rackClipsButton;
     SessionTrackStrip trackStrip{controller, engine};
     GridViewport viewport;
     juce::Component gridContent, sceneStrip;

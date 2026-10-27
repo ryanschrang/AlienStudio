@@ -147,6 +147,15 @@ static void removalTests() {
 }
 
 int main() {
+    {
+        Library live;
+        auto restored = live;
+        const auto issued = live.addClip(notesPayload(60));
+        restored.retainIssuedIdsFrom(live);
+        const auto fresh = restored.addClip(notesPayload(62));
+        check(fresh.value > issued.value && restored.clip(issued) == nullptr && restored.valid(),
+              "restoring an older snapshot cannot reissue an identity held by playback");
+    }
     idTests();
     copyAndLinkTests();
     identityIsNotContentTests();
