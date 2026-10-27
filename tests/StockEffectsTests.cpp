@@ -79,7 +79,7 @@ static bool allFinite(const std::vector<float>& x) { for (float v : x) if (!dsp:
 
 // ---------------------------------------------------------------------------
 static void catalogueTests() {
-    check(stock::catalog.size() == 7, "seven stock effects");
+    check(stock::catalog.size() == 8, "eight stock effects");
     std::set<juce::String> names, ids;
     for (const auto& info : stock::catalog) {
         auto e = stock::create(info.id);
@@ -96,7 +96,7 @@ static void catalogueTests() {
         check(PluginState{xml->toString(), {}, false}.valid(), std::string("description is a valid rack entry: ") + info.id);
         check(e->hasEditor(), std::string("has an editor: ") + info.id);
     }
-    check(names.size() == 7 && ids.size() == 7, "names and ids are unique");
+    check(names.size() == 8 && ids.size() == 8, "names and ids are unique");
     check(stock::create("nonsense") == nullptr && stock::create("") == nullptr, "unknown ids create nothing");
     juce::PluginDescription vst; vst.pluginFormatName = "VST3";
     check(!stock::isStock(vst), "a VST3 is not a stock effect");

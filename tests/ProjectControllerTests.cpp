@@ -844,7 +844,7 @@ static void placementClipFileTests() {
     require(data.valid() && data.placementClips.size() == 1, "saved once, however many regions play it");
     const auto json = alien::serializeSessionProject(data);
     alien::SessionProjectData parsed; juce::String error;
-    require(static_cast<int>(juce::JSON::parse(json).getProperty("version", 0)) == 24 && alien::parseSessionProject(json, parsed, error), "written and read as format 24");
+    require(static_cast<int>(juce::JSON::parse(json).getProperty("version", 0)) >= 24 && alien::parseSessionProject(json, parsed, error), "written and read as format 24 or later");
     const auto reopened = alien::fromProjectData(parsed);
     int own = 0; std::uint64_t shared = 0; bool same = true;
     for (const auto& r : reopened.timeline.regions) if (r.ownsClip()) { ++own; same = same && (shared == 0 || shared == r.clip); shared = r.clip; }

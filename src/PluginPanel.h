@@ -53,9 +53,17 @@ public:
     std::function<void(bool,int)> onAdd;
     std::function<void(int,int)> onAction;
     // Whether the effect in (destination, effect index) has a sidechain input; and the choice of key:
-    // (effect index, Session track or -1 for none).
+    // (effect index, what kind of key, its track, bus or return slot, or -1 for none).
     std::function<bool(int,int)> hasSidechainInput;
-    std::function<void(int,int)> onSidechain;
+    std::function<void(int,KeySource,int)> onSidechain;
+    // Menu ids for the keys: Off is 1; then one block of ids per kind of key, by track, bus or return slot.
+    static constexpr int keyTrackBase = 2, keyPostBase = 200, keyBusBase = 300, keyReturnBase = 400;
+    // Where the shown rack runs in the mix (destinations: tracks, the master, the returns, then the buses).
+    RackStage stage() const {
+        const int where = destination();
+        return where < maxSessionTracks ? RackStage::track : where == maxSessionTracks ? RackStage::master
+             : where <= maxSessionTracks + maxReturns ? RackStage::returnTrack : RackStage::bus;
+    }
     int destination() const { return target.getSelectedId()-1; }
     // Returns A-D, as in a new project.
     static std::array<juce::String,maxReturns> defaultReturnNames() {
@@ -94,20 +102,51 @@ public:
         // A bus has no instrument row, so its first effect is id 2; a kept id of 1 would match no item.
         slot.setSelectedId(s>=(bus?2:1)&&s<=static_cast<int>(rack.effects.size()+1)?s:bus?(rack.effects.empty()?0:2):1,juce::dontSendNotification);
         addInstrument.setEnabled(!bus);
-        trackNames=names;
-        keyOf.clear(); for(const auto& effect:rack.effects) keyOf.push_back(effect.sidechain);
+        trackNames=names; keyBusNames=busNames; keyReturnNames=returnNames;
+        keyOf.clear(); for(const auto& effect:rack.effects) keyOf.push_back({effect.sidechainFrom,effect.sidechain});
         updateSidechainButton();
     }
-    // The menu of keys for the selected effect: Off, then every track except the effect's own.
+    // The menu of keys for the selected effect: Off, then what the mix has made by the time this rack runs.
+    // A track's FX hear other tracks before their FX; a bus's FX also tracks after their faders; a return's FX
+    // also the buses; the master's FX also the returns.
     void showSidechainMenu(){
         const int index=slot.getSelectedId()-2;
         if(index<0 || index>=static_cast<int>(keyOf.size()))return;
         juce::PopupMenu menu;
-        const int current=keyOf[static_cast<std::size_t>(index)], where=destination();
-        menu.addItem(1,"Off",true,current<0);
-        for(int t=0;t<trackNames.size();++t)if(t!=where)menu.addItem(t+2,"Key from "+trackNames[t],true,current==t);
+        const auto current=keyOf[static_cast<std::size_t>(index)];
+        const int where=destination();
+        const auto is=[&](KeySource from,int i){return current.second==i && current.first==from;};
+        const auto here=stage();
+        menu.addItem(1,"Off",true,current.second<0);
+        if(here!=RackStage::track)menu.addSectionHeader("Tracks, before their FX");
+        for(int t=0;t<trackNames.size();++t)if(t!=where)menu.addItem(keyTrackBase+t,"Key from "+trackNames[t],true,is(KeySource::track,t));
+        if(keyReady(here,KeySource::trackPostFader)){
+            menu.addSectionHeader("Tracks, after their faders");
+            for(int t=0;t<trackNames.size();++t)menu.addItem(keyPostBase+t,"Key from "+trackNames[t]+" (after its fader)",true,is(KeySource::trackPostFader,t));
+        }
+        if(keyReady(here,KeySource::bus)){
+            bool any=false;
+            for(int b=0;b<maxBuses;++b)if(keyBusNames[static_cast<std::size_t>(b)].isNotEmpty()){
+                if(!any)menu.addSectionHeader("Group buses");
+                any=true; menu.addItem(keyBusBase+b,"Key from "+keyBusNames[static_cast<std::size_t>(b)],true,is(KeySource::bus,b));
+            }
+        }
+        if(keyReady(here,KeySource::returnTrack)){
+            bool any=false;
+            for(int r=0;r<maxReturns;++r)if(keyReturnNames[static_cast<std::size_t>(r)].isNotEmpty()){
+                if(!any)menu.addSectionHeader("Returns");
+                any=true; menu.addItem(keyReturnBase+r,"Key from "+keyReturnNames[static_cast<std::size_t>(r)],true,is(KeySource::returnTrack,r));
+            }
+        }
         juce::Component::SafePointer<PluginPanel> safe(this);
-        const auto chosen=[safe,index](int id){if(safe&&id>0&&safe->onSidechain)safe->onSidechain(index,id-2);};
+        const auto chosen=[safe,index](int id){
+            if(!safe||id<=0||!safe->onSidechain)return;
+            if(id==1)safe->onSidechain(index,KeySource::track,-1);
+            else if(id>=keyReturnBase)safe->onSidechain(index,KeySource::returnTrack,id-keyReturnBase);
+            else if(id>=keyBusBase)safe->onSidechain(index,KeySource::bus,id-keyBusBase);
+            else if(id>=keyPostBase)safe->onSidechain(index,KeySource::trackPostFader,id-keyPostBase);
+            else safe->onSidechain(index,KeySource::track,id-keyTrackBase);
+        };
         if(sidechainMenuLauncher){sidechainMenuLauncher(std::move(menu),chosen);return;}
         menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&sidechain),chosen);
     }
@@ -156,7 +195,7 @@ private:
     juce::String name(const PluginState& p) const {
         auto xml=juce::parseXML(p.descriptionXml);
         auto text=(xml?xml->getStringAttribute("name"):"Empty")+(p.bypass?" [bypassed]":"");
-        if(p.sidechain>=0) text+=" [keyed by "+(p.sidechain<trackNames.size()?trackNames[p.sidechain]:"Track "+juce::String(p.sidechain+1))+"]";
+        if(p.sidechain>=0) text+=" [keyed by "+keyName(p.sidechainFrom,p.sidechain)+"]";
         return text;
     }
     void updateSidechainButton(){
@@ -166,8 +205,22 @@ private:
     void action(int op){if(onAction && slot.getSelectedId()>0)onAction(op,slot.getSelectedId()-2);}
     juce::ComboBox target,available,slot,liveInput;
     juce::TextButton scan,cancelScan,addInstrument,addEffect,open,bypass,sidechain,up,down,remove;
+    juce::String keyName(KeySource from,int i) const {
+        const auto slotName=[&](const auto& names,const juce::String& fallback){
+            const auto& n=names[static_cast<std::size_t>(i)]; return n.isNotEmpty()?n:fallback; };
+        switch(from){
+        case KeySource::bus: return i<maxBuses?slotName(keyBusNames,"a bus"):juce::String("a bus");
+        case KeySource::returnTrack: return i<maxReturns?slotName(keyReturnNames,"a return"):juce::String("a return");
+        case KeySource::trackPostFader:
+        case KeySource::track: break;
+        }
+        const auto track=i<trackNames.size()?trackNames[i]:"Track "+juce::String(i+1);
+        return from==KeySource::trackPostFader?track+" after its fader":track;
+    }
     juce::StringArray trackNames;
-    std::vector<int> keyOf;   // each effect's sidechain track, as last shown
+    std::array<juce::String,maxBuses> keyBusNames{};
+    std::array<juce::String,maxReturns> keyReturnNames{};
+    std::vector<std::pair<KeySource,int>> keyOf;   // each effect's key, as last shown
     juce::Label status;
     bool scanning{},preflightEnabled{true};
 };

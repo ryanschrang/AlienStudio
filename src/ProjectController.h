@@ -453,6 +453,7 @@ public:
         for (int t = 0; t < doc.trackCount(); ++t) trackSettingsEdited(t);
         for (auto& track : doc.tracks) if (track.settings.output == b) track.settings.output = -1;
         doc.buses[static_cast<std::size_t>(b)] = {};
+        doc.sidechainBusDeleted(b);   // effects keyed by its output lose their key
         pushDocumentToEngine();
         return true;
     }
@@ -486,6 +487,7 @@ public:
         auto& lanes = doc.timeline.automationLanes;
         lanes.erase(std::remove_if(lanes.begin(), lanes.end(), [r](const auto& lane) { return automation::sendIndex(lane.parameter) == r; }), lanes.end());
         doc.returns[slot] = {};
+        doc.sidechainReturnDeleted(r);   // effects keyed by its output lose their key
         pushDocumentToEngine();
         return true;
     }

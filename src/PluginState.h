@@ -11,13 +11,44 @@ namespace alien {
 // data). Sampler-style plugins can embed megabytes of data; the whole project
 // file must still stay under the 128 MiB limit enforced when saving.
 inline constexpr int maxPluginStateChars = 24 * 1024 * 1024;
+
+// What keys an effect's sidechain input (MIX-04): a Session track before its own FX, a track after its
+// fader and pan (what it sends on to its bus or the master), a group bus's output or a return's output.
+enum class KeySource : std::uint8_t { track, trackPostFader, bus, returnTrack };
+// Where in the mix a rack runs. Each block runs the tracks' FX, then the faders, then the buses' FX,
+// then the returns' FX, then the master's, so a key is ready only for the stages after it is made.
+enum class RackStage { track, bus, returnTrack, master };
+inline bool keyReady(RackStage stage, KeySource from) noexcept {
+    switch (stage) {
+    case RackStage::track: return from == KeySource::track;
+    case RackStage::bus: return from == KeySource::track || from == KeySource::trackPostFader;
+    case RackStage::returnTrack: return from != KeySource::returnTrack;
+    case RackStage::master: return true;
+    }
+    return false;
+}
+// How many keys of a kind there can be (the index is a track, a bus slot or a return slot).
+inline int keySlots(KeySource from) noexcept {
+    return from == KeySource::bus ? maxBuses : from == KeySource::returnTrack ? maxReturns : maxSessionTracks;
+}
+inline const char* keySourceName(KeySource from) noexcept {
+    switch (from) {
+    case KeySource::track: return "track";
+    case KeySource::trackPostFader: return "post";
+    case KeySource::bus: return "bus";
+    case KeySource::returnTrack: return "return";
+    }
+    return "track";
+}
+
 struct PluginState {
     juce::String descriptionXml, stateBase64;
     bool bypass{};
     std::uint64_t instanceId{};
-    // An effect with a sidechain input: the Session track whose signal (before its own FX) keys it,
-    // or -1 for none (the effect hears only its own input).
+    // An effect with a sidechain input: the index of what keys it (see sidechainFrom), or -1 for none
+    // (the effect hears only its own input).
     int sidechain{-1};
+    KeySource sidechainFrom{KeySource::track};   // a track before its FX unless saved otherwise (format 25)
     PluginState() = default;
     PluginState(juce::String description, juce::String state, bool bypassed = false)
         : descriptionXml(std::move(description)), stateBase64(std::move(state)), bypass(bypassed) {
@@ -26,7 +57,8 @@ struct PluginState {
     }
     bool operator==(const PluginState&) const = default;
     bool valid() const {
-        return (descriptionXml.isEmpty() ? instanceId == 0 && sidechain == -1 : instanceId != 0) && sidechain >= -1 && sidechain < maxSessionTracks
+        return (descriptionXml.isEmpty() ? instanceId == 0 && sidechain == -1 : instanceId != 0) && sidechain >= -1 && sidechain < keySlots(sidechainFrom)
+            && (sidechain >= 0 || sidechainFrom == KeySource::track)
             && descriptionXml.length() <= 65536 && stateBase64.length() <= maxPluginStateChars
             && (descriptionXml.isEmpty() ? stateBase64.isEmpty() : juce::parseXML(descriptionXml) != nullptr);
     }
@@ -76,6 +108,7 @@ inline juce::var pluginToVar(const PluginState& p) {
     o->setProperty("description", p.descriptionXml); o->setProperty("state", p.stateBase64); o->setProperty("bypass", p.bypass);
     o->setProperty("instance", instanceIdString(p.instanceId));
     if (p.sidechain >= 0) o->setProperty("sidechain", p.sidechain);
+    if (p.sidechain >= 0 && p.sidechainFrom != KeySource::track) o->setProperty("sidechainFrom", keySourceName(p.sidechainFrom));
     return value;
 }
 inline juce::var rackToVar(const PluginRackState& rack) {
@@ -95,6 +128,15 @@ inline bool pluginFromVar(const juce::var& value, PluginState& p) {
     if (o->hasProperty("sidechain")) {
         if (!o->getProperty("sidechain").isInt()) return false;
         parsed.sidechain = static_cast<int>(o->getProperty("sidechain"));
+    }
+    // Absent before format 25: a track before its FX.
+    if (o->hasProperty("sidechainFrom")) {
+        const auto from = o->getProperty("sidechainFrom").toString();
+        if (!o->getProperty("sidechainFrom").isString() || parsed.sidechain < 0) return false;
+        if (from == "post") parsed.sidechainFrom = KeySource::trackPostFader;
+        else if (from == "bus") parsed.sidechainFrom = KeySource::bus;
+        else if (from == "return") parsed.sidechainFrom = KeySource::returnTrack;
+        else if (from != "track") return false;
     }
     if (!parsed.valid()) return false;
     p = std::move(parsed); return true;

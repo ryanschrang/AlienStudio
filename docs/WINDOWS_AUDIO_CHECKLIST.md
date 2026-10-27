@@ -331,6 +331,10 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Move tracks and check the key follows the kick; delete the kick track and check the compressor is unkeyed (its slot no longer shows "keyed by").
 - Save, reopen and undo; export a WAV and compare it with playback.
 - Load a VST3 compressor or gate that has a sidechain input and key it from a track the same way; check it reacts (untested so far).
+- Gate: put a sustained pad through the stock Alien Gate on its own track, key it from a hi-hat track and play: the pad chops in time with the hats. Change Hold, Release and Range and listen; a level hovering near the threshold must not chatter.
+- Post-fader key: route a bass and a pad to a bus, put a compressor on the bus keyed by the kick track "after its fader", then pull the kick's fader down: the ducking stops. Keyed by the kick "before its FX", pulling the fader down keeps the ducking.
+- Bus and return keys: on return A (a reverb) put a compressor keyed by the drum bus: the reverb ducks under the drums. On the master put a compressor keyed by a return: the mix ducks while that return plays. Check the Sidechain menu offers only what each rack can hear (a track's FX: other tracks; a bus's: tracks before and after their faders; a return's: also buses; the master's: also returns).
+- Remove the bus or return that keys an effect: the effect's slot no longer shows "keyed by". Undo brings the key back. Save, reopen, and export a WAV: it matches playback. Open the project in an older build: it refuses the file.
 
 ## Linked clips
 - In the Session view, select a MIDI clip, choose Copy / link > Copy clip, select another cell and choose Paste linked here. Both cells show "linked x2". Edit the notes of either in the Piano Roll while both play on different tracks: both change at once.

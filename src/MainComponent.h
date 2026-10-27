@@ -93,7 +93,7 @@ public:
         pluginPanel.onAdd = [this](bool instrument, int choice) { addPlugin(instrument,choice); };
         pluginPanel.onAction = [this](int op,int slot) { pluginAction(op,slot); };
         pluginPanel.hasSidechainInput = [this](int rack,int slot) { return pluginHost.hasSidechainInput(rack,slot); };
-        pluginPanel.onSidechain = [this](int slot,int track) { setSidechain(slot,track); };
+        pluginPanel.onSidechain = [this](int slot,alien::KeySource from,int source) { setSidechain(slot,from,source); };
         if (auto xml = juce::parseXML(pluginListFile())) knownPlugins.recreateFromXml(*xml);
         controller.onBeforeSnapshot = [this] { snapshotPlugins(SnapshotReason::save); };
         controller.onBeforeAutosaveSnapshot = [this] { snapshotPlugins(SnapshotReason::autosave); };
@@ -1429,18 +1429,30 @@ private:
         controller.setPluginRacks(states,master,returns,buses);restorePlugins();
     }
 
-    // Keys the effect in `slot` of the shown rack from Session track `track` (-1: no key).
-    void setSidechain(int slot,int track) {
+    // Keys the effect in `slot` of the shown rack from a track (before its FX or after its fader), a bus or a
+    // return (`source` -1: no key). Only a key the mix makes before this rack runs is accepted.
+    void setSidechain(int slot,alien::KeySource from,int source) {
         const int t=pluginTarget();
         if(controller.isTrackFrozen(t)){pluginPanel.setStatus("Unfreeze the track before editing its effects.");return;}
-        if(projectBusy || controller.isBusy() || track==t || track>=controller.document().trackCount())return;
-        snapshotPlugins(SnapshotReason::always);auto states=pluginStates();auto master=controller.document().masterPlugins;auto returns=controller.returnRacks();auto buses=controller.busRacks();
+        const auto& d=controller.document();
+        const bool trackKey=from==alien::KeySource::track || from==alien::KeySource::trackPostFader;
+        if(projectBusy || controller.isBusy() || (source>=0 && !alien::keyReady(alien::PluginRuntime::stageOf(t),from))
+           || (trackKey && (source>=d.trackCount() || (source==t && from==alien::KeySource::track)))
+           || (from==alien::KeySource::bus && (source<0 || source>=alien::maxBuses || !d.buses[static_cast<std::size_t>(source)].used))
+           || (from==alien::KeySource::returnTrack && (source<0 || source>=alien::maxReturns || !d.returns[static_cast<std::size_t>(source)].used)))return;
+        snapshotPlugins(SnapshotReason::always);auto states=pluginStates();auto master=d.masterPlugins;auto returns=controller.returnRacks();auto buses=controller.busRacks();
         auto& rack=rackFor(t,states,master,returns,buses);
-        if(slot<0 || slot>=static_cast<int>(rack.effects.size()) || rack.effects[static_cast<std::size_t>(slot)].sidechain==track)return;
-        rack.effects[static_cast<std::size_t>(slot)].sidechain=track;
+        if(slot<0 || slot>=static_cast<int>(rack.effects.size()))return;
+        auto& effect=rack.effects[static_cast<std::size_t>(slot)];
+        if(source<0) from=alien::KeySource::track;
+        if(effect.sidechain==source && effect.sidechainFrom==from)return;
+        effect.sidechain=source; effect.sidechainFrom=from;
         controller.setPluginRacks(states,master,returns,buses);restorePlugins();
-        pluginPanel.setStatus(track<0?"The effect hears only its own input again."
-            :"The effect is keyed by "+controller.document().tracks[static_cast<std::size_t>(track)].name+": it reacts to that track as it plays.");
+        const auto name=from==alien::KeySource::bus?d.buses[static_cast<std::size_t>(std::max(source,0))].name
+                       :from==alien::KeySource::returnTrack?d.returns[static_cast<std::size_t>(std::max(source,0))].name
+                       :source>=0?d.tracks[static_cast<std::size_t>(source)].name+(from==alien::KeySource::trackPostFader?" after its fader":""):juce::String();
+        pluginPanel.setStatus(source<0?"The effect hears only its own input again."
+            :"The effect is keyed by "+name+": it reacts to that sound as it plays.");
     }
 
     // ---- plugin scanning -------------------------------------------------------------------------------

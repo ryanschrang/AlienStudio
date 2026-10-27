@@ -368,11 +368,19 @@ struct ProjectDocument {
         return trackCount() % 8;
     }
 
-    // Rewrites every effect's sidechain track with `map` (old track -> new track, or -1 for none),
-    // after tracks moved or one was deleted, so a key never lands on whatever takes a track's place.
+    // Rewrites every sidechain key of kind `from` with `map` (old index -> new index, or -1 for none), after
+    // tracks moved or a track, bus or return went away, so a key never lands on whatever takes its place.
     template <class Map>
-    void remapSidechains(Map&& map) {
-        const auto rack = [&](PluginRackState& r) { for (auto& effect : r.effects) if (effect.sidechain >= 0) effect.sidechain = map(effect.sidechain); };
+    void remapSidechains(Map&& map, KeySource from = KeySource::track) {
+        const auto rack = [&](PluginRackState& r) {
+            for (auto& effect : r.effects) {
+                const bool trackKey = effect.sidechainFrom == KeySource::track || effect.sidechainFrom == KeySource::trackPostFader;
+                const bool matches = from == KeySource::track ? trackKey : effect.sidechainFrom == from;
+                if (effect.sidechain < 0 || !matches) continue;
+                effect.sidechain = map(effect.sidechain);
+                if (effect.sidechain < 0) effect.sidechainFrom = KeySource::track;
+            }
+        };
         for (auto& track : tracks) rack(track.plugins);
         rack(masterPlugins);
         for (auto& r : returns) rack(r.plugins);
@@ -380,6 +388,9 @@ struct ProjectDocument {
     }
     void sidechainTracksSwapped(int a, int b) { remapSidechains([=](int t) { return t == a ? b : t == b ? a : t; }); }
     void sidechainTrackDeleted(int track) { remapSidechains([=](int t) { return t == track ? -1 : t > track ? t - 1 : t; }); }
+    // Buses and returns are slots: removing one leaves the others where they are, and drops keys from it.
+    void sidechainBusDeleted(int bus) { remapSidechains([=](int b) { return b == bus ? -1 : b; }, KeySource::bus); }
+    void sidechainReturnDeleted(int r) { remapSidechains([=](int k) { return k == r ? -1 : k; }, KeySource::returnTrack); }
 
     void clampSelection() noexcept {
         selectedTrack = juce::jlimit(0, juce::jmax(0, trackCount() - 1), selectedTrack);

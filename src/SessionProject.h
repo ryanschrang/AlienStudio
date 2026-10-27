@@ -24,7 +24,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 24;   // 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips
+inline constexpr int sessionProjectFormatVersion = 25;   // 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: sidechain keys from faders, buses and returns
 
 // A group bus slot. Slots keep their index while other buses come and go, so a track's output
 // (TrackSettings::output) and the bus's FX rack never need renumbering.
@@ -169,15 +169,24 @@ struct SessionProjectData {
                         || a.notes[i].velocity != b.notes[i].velocity || a.notes[i].probability != b.notes[i].probability) return false;
             }
         }
-        // A sidechain listens to a track that exists.
-        const auto keysExist = [&](const PluginRackState& rack) {
-            for (const auto& effect : rack.effects) if (effect.sidechain >= tracks) return false;
+        // A sidechain listens to a track, bus or return that exists, and that is ready before the effect runs.
+        const auto keysExist = [&](const PluginRackState& rack, RackStage stage) {
+            for (const auto& effect : rack.effects) {
+                if (effect.sidechain < 0) continue;
+                if (!keyReady(stage, effect.sidechainFrom)) return false;
+                const auto i = static_cast<std::size_t>(effect.sidechain);
+                switch (effect.sidechainFrom) {
+                case KeySource::track: case KeySource::trackPostFader: if (effect.sidechain >= tracks) return false; break;
+                case KeySource::bus: if (!buses[i].used) return false; break;
+                case KeySource::returnTrack: if (!returns[i].used) return false; break;
+                }
+            }
             return rack.instrument.sidechain == -1;
         };
-        for (const auto& rack : plugins) if (!keysExist(rack)) return false;
-        if (!keysExist(masterPlugins)) return false;
-        for (const auto& rack : returnPlugins) if (!keysExist(rack)) return false;
-        for (const auto& rack : busPlugins) if (!keysExist(rack)) return false;
+        for (const auto& rack : plugins) if (!keysExist(rack, RackStage::track)) return false;
+        if (!keysExist(masterPlugins, RackStage::master)) return false;
+        for (const auto& rack : returnPlugins) if (!keysExist(rack, RackStage::returnTrack)) return false;
+        for (const auto& rack : busPlugins) if (!keysExist(rack, RackStage::bus)) return false;
         // A track can only go to a bus that exists. Buses feed only the master, so there is no cycle to check.
         for (const auto& track : trackSettings)
             if (track.output >= 0 && (track.output >= maxBuses || !buses[static_cast<std::size_t>(track.output)].used)) return false;
@@ -1059,6 +1068,18 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         if (formatVersion >= 19)
             for (const auto& value : *rootObject->getProperty("buses").getArray())
                 if (!hasIds(value.getDynamicObject()->getProperty("plugins"))) { error = "Missing bus plugin identity."; return false; }
+    }
+    // Keys from faders, buses and returns arrived in format 25; an older file that names one was not written by us.
+    if (formatVersion < 25) {
+        const auto older = [](const PluginRackState& rack) {
+            for (const auto& effect : rack.effects) if (effect.sidechainFrom != KeySource::track) return false;
+            return true;
+        };
+        bool ok = older(parsed.masterPlugins);
+        for (const auto& rack : parsed.plugins) ok = ok && older(rack);
+        for (const auto& rack : parsed.returnPlugins) ok = ok && older(rack);
+        for (const auto& rack : parsed.busPlugins) ok = ok && older(rack);
+        if (!ok) { error = "An effect is keyed in a way this project's format does not allow."; return false; }
     }
     if (!parsed.valid()) { error = "Project settings are outside the supported range."; return false; }
     destination = std::move(parsed);
