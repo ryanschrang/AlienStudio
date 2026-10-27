@@ -1,6 +1,7 @@
 #pragma once
 #include "FlLook.h"
 #include "ProjectController.h"
+#include "CommandEngine.h"
 #include "SessionClipButton.h"
 #include "SessionTrackStrip.h"
 #include "AudioClipWaveform.h"
@@ -62,7 +63,7 @@ public:
         addTrackButton.setButtonText("Track");
         addTrackButton.setName("Add track");
         addTrackButton.setTooltip("Add a Session track (up to " + juce::String(maxSessionTracks) + ")");
-        addTrackButton.onClick = [this] { if (controller.addTrack()) structureChanged(true, "Add track"); };
+        addTrackButton.onClick = [this] { executeTrackCommand(command::CreateTrack{}); };
         addSceneButton.setButtonText("Scene");
         addSceneButton.setName("Add scene");
         addSceneButton.setTooltip("Add a scene (up to " + juce::String(maxSessionScenes) + ")");
@@ -570,12 +571,11 @@ private:
         juce::Component::SafePointer<SessionView> safe(this);
         std::function<void(int)> done = [safe, track](int result) {
             if (safe == nullptr) return;
-            auto& c = safe->controller;
             if (result == 1) safe->renameTrackAt(track);
-            else if (result == 2 && c.moveTrack(track, -1)) safe->structureChanged(true, "Move track");
-            else if (result == 3 && c.moveTrack(track, 1)) safe->structureChanged(true, "Move track");
-            else if (result == 4 && c.addTrack()) safe->structureChanged(true, "Add track");
-            else if (result == 5 && c.deleteTrack(track)) safe->structureChanged(true, "Delete track");
+            else if (result == 2) safe->executeTrackCommand(command::MoveTrack{track, track - 1});
+            else if (result == 3) safe->executeTrackCommand(command::MoveTrack{track, track + 1});
+            else if (result == 4) safe->executeTrackCommand(command::CreateTrack{});
+            else if (result == 5) safe->executeTrackCommand(command::DeleteTrack{track});
         };
         if (trackMenuLauncher) { trackMenuLauncher(std::move(menu), std::move(done)); return; }
         menu.showMenuAsync(juce::PopupMenu::Options().withMousePosition(), std::move(done));
@@ -607,7 +607,7 @@ private:
         if (track < 0 || track >= controller.document().trackCount()) return;
         askForName("Rename track", controller.document().tracks[static_cast<std::size_t>(track)].name,
             [this, track](const juce::String& name) {
-                if (controller.renameTrack(track, name)) structureChanged(true, "Rename track");
+                executeTrackCommand(command::RenameTrack{track, name});
             });
     }
 
@@ -631,13 +631,18 @@ private:
             }), true);
     }
 
-    void structureChanged(bool shapeChanged, const juce::String& label) {
+    void executeTrackCommand(const command::Command& edit) {
+        const auto result = command::CommandEngine(controller).execute(edit);
+        if (result.ok && result.changed) structureChanged(true, {}, false);
+    }
+
+    void structureChanged(bool shapeChanged, const juce::String& label, bool needsCommit = true) {
         if (shapeChanged) rebuildGrid();
         refreshSelectedClip();
         repaint();
         if (onStructureChanged) onStructureChanged();
         if (onTitleChanged) onTitleChanged();
-        if (onEdited) onEdited(label);
+        if (needsCommit && onEdited) onEdited(label);
     }
 
     SessionClipButton* clipButton(int track, int scene) const {

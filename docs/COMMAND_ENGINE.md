@@ -71,8 +71,10 @@ and automation interaction remain manual checks.
 
 ### Known limits of these slices
 
-- The Session view still calls the controller directly; no UI calls the command engine yet.
-  Moving the track menu, rename box and add-track button onto commands is the next small step.
+- The Session track menu, rename box and add-track button use named commands. Commands own
+  the undo commit; the view refreshes structure/title without invoking the legacy edit-commit callback.
+  Scene edits and mixer gestures retain their existing controller paths. SessionViewTests covers
+  menu add/move/delete, one-step undo/redo, busy refusal and host refresh notifications.
 - `applyTo()` repeats the document half of the controller's track operations so a preview can run
   without an engine. The preview-equals-execute tests guard against drift. A later slice could
   move those document edits into one shared place that both use.

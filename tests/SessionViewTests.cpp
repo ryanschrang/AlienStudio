@@ -461,7 +461,60 @@ static void selectionAndStructure() {
     menuResult(0);
     require(rig.controller.document().trackCount() == 4 && rig.controller.document().tracks[1].name == "Track 2",
         "cancelling the track menu leaves the document unchanged");
+    // Command-backed menus own their commit, even when the host's legacy edit callback commits.
+    int legacyEdits = 0, structureEdits = 0;
+    rig.view.onEdited = [&](const juce::String& label) { ++legacyEdits; rig.controller.commit(label); };
+    rig.view.onStructureChanged = [&] { ++structureEdits; };
+    rig.controller.commit("Baseline");
+    const auto baseline = rig.controller.document();
+    menuResult(4);
+    require(rig.controller.document().trackCount() == 5 && rig.controller.undoLabel() == "Add track",
+        "the menu adds a track through a named command");
+    require(structureEdits == 1 && legacyEdits == 0, "command menus refresh the host without a second commit");
+    require(rig.controller.undo() && sameContent(rig.controller.document(), baseline), "one undo restores the menu edit");
+    require(rig.controller.redo() && rig.controller.document().trackCount() == 5, "the menu edit can be redone");
+    require(rig.controller.undo(), "restore baseline for move");
+    rig.view.rebuildGrid();
+    rig.click(centre(strip.nameRect(1)), rightButton);
+    menuResult(2);
+    require(rig.controller.document().tracks[0].name == "Track 2" && rig.controller.undoLabel() == "Move track",
+        "the menu moves the selected track through a command");
+    require(rig.controller.undo() && sameContent(rig.controller.document(), baseline), "one undo restores track order");
+    rig.view.rebuildGrid();
+    rig.click(centre(strip.nameRect(1)), rightButton);
+    const int beforeBusy = structureEdits;
+    rig.controller.setExternalBusy(true);
+    menuResult(5);
+    rig.controller.setExternalBusy(false);
+    require(sameContent(rig.controller.document(), baseline) && structureEdits == beforeBusy && rig.controller.canRedo(),
+        "a stale menu refuses edits while busy and preserves redo and UI notifications");
+    menuResult(5);
+    require(rig.controller.document().trackCount() == 3 && rig.controller.undoLabel() == "Delete track",
+        "the menu deletes through a named command");
+    require(rig.controller.undo() && sameContent(rig.controller.document(), baseline), "one undo restores the deleted track");
+    rig.view.rebuildGrid();
+    rig.click(centre(strip.nameRect(1)), leftButton, 2);
+    auto* renameBox = dynamic_cast<juce::AlertWindow*>(juce::ModalComponentManager::getInstance()->getModalComponent(0));
+    require(renameBox != nullptr, "the track rename command uses the existing name dialog");
+    renameBox->getTextEditor("name")->setText("Command bass");
+    renameBox->exitModalState(1);
+    pump();
+    require(rig.controller.document().tracks[1].name == "Command bass" && rig.controller.undoLabel() == "Rename track",
+        "accepting the dialog executes the named rename command");
+    require(rig.controller.undo() && sameContent(rig.controller.document(), baseline), "one undo restores the old name");
+    juce::Button* addButton = nullptr;
+    for (auto* child : rig.view.getChildren())
+        if (child->getName() == "Add track") addButton = dynamic_cast<juce::Button*>(child);
+    require(addButton != nullptr, "the add-track toolbar button exists");
+    clickButton(*addButton);
+    require(rig.controller.document().trackCount() == 5 && rig.controller.undoLabel() == "Add track",
+        "the toolbar also creates a track through a command");
+    require(rig.controller.undo() && sameContent(rig.controller.document(), baseline) && legacyEdits == 0,
+        "toolbar and dialog commands each commit once without legacy notifications");
+    rig.view.onEdited = {};
+    rig.view.onStructureChanged = {};
     rig.view.trackMenuLauncher = {};
+    rig.view.rebuildGrid();
 
     // The rows follow the tracks: adding one adds a row, deleting one takes a row away.
     require(strip.trackAt(strip.rowBounds(4).getCentreY()) == -1, "there is no fifth row yet");
