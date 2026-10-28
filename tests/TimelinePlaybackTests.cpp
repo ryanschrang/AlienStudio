@@ -1558,7 +1558,36 @@ static void placementClipTests() {
     require(worst < 1.0e-6, "an edit of a playing placement clip is heard as if it had always been there");
 }
 
+static void streamedSessionRackScene() {
+    StreamedRig s(false);
+    auto rack = alien::rack::Project::createDefault(); rack.clips[0] = 101;
+    require(rack.setStepOn(0, 0, 0, true), "scene rack step"); s.rig.publishRack(rack);
+    auto& e = s.rig.engine;
+    e.patternMode.store(1); e.launchQuantizationSteps.store(4); e.activeTracks.store(4);
+    e.sceneRackClip.store(101); e.synchronizedSceneLaunch.store(true);
+    for (int t = 0; t < 4; ++t) {
+        alien::SessionClipLaunch launch; launch.clipIndex = 3;
+        if (t == 0) launch.audio = &s.clip;
+        e.pianoRollLaunches[static_cast<std::size_t>(t)].publish(launch);
+    }
+    e.playing.store(true); s.rig.render(4096);
+    require(e.activeRackClip.load() == 0 && e.queuedRackClip.load() == 101 && e.activePianoRollClip[0].load() == -1,
+            "rack and Session scene both wait while streamed audio is unready");
+    s.file->gate.store(true);
+    bool launched = false;
+    for (int i = 0; i < 400 && !launched; ++i) {
+        s.rig.render(256);
+        const bool rackStarted = e.activeRackClip.load() == 101;
+        const bool audioStarted = e.activePianoRollClip[0].load() == 3;
+        require(rackStarted == audioStarted, "rack and streamed scene activate in the same callback");
+        launched = rackStarted;
+        if (!launched) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    require(launched, "ready streamed scene eventually launches its rack source");
+}
+
 int main() {
+    timed("streamed Session rack scene", streamedSessionRackScene);
     timed("take comp", takeCompPlaybackTests);
     timed("fades", fadeTests);
     timed("fade shapes", fadeShapeTests);

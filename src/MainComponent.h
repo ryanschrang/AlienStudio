@@ -390,6 +390,11 @@ private:
 
     // Double-click on a clip: edit what it plays (the piano roll or Session for a clip, the Channel Rack for a pattern).
     void openTimelineSource(int row, int source) {
+        if (!alien::timeline::isPatternRow(row) && controller.document().isValidCell(row, source))
+            if (const auto id = controller.document().clip(row, source).rackClip; id != 0) {
+                controller.selectRackPattern(controller.rackPatternForClip(id)); rackView.refresh();
+                showView(alien::rackTabIndex); return;
+            }
         if (alien::timeline::isPatternRow(row)) {
             controller.selectRackPattern(source);
             rackView.refresh();
@@ -525,6 +530,10 @@ private:
             showView(alien::rackTabIndex);
         };
         sessionView.onEditClip = [this](int track, int scene) {
+            if (const auto id = controller.document().clip(track, scene).rackClip; id != 0) {
+                controller.selectRackPattern(controller.rackPatternForClip(id)); rackView.refresh();
+                showView(alien::rackTabIndex); return;
+            }
             rollTarget = {};
             controller.selectClip(track, scene);
             loadSelectedClip();
@@ -631,8 +640,8 @@ private:
             const auto& rack = controller.channelRack();
             pianoRoll.setPattern(alien::rack::channelNotes(rack.pattern(rack.selectedPattern), rollTarget.channel));
         } else if (!loadMultiClip(allowMultiClip)) pianoRoll.setPattern(controller.document().selectedClip().notes());
-        pianoRoll.setEnabled(rollTarget.rack || !controller.isTrackFrozen(rollTarget.placement != 0 ? controller.placementTrack(rollTarget.placement)
-                                                                                                 : controller.document().selectedTrack));
+        pianoRoll.setEnabled(rollTarget.rack || ((rollTarget.placement != 0 || controller.document().selectedClip().rackClip == 0) && !controller.isTrackFrozen(rollTarget.placement != 0 ? controller.placementTrack(rollTarget.placement)
+                                                                                                 : controller.document().selectedTrack)));
         refreshGhostNotes();
         loadingClip = false;
         sessionView.refreshSelectedClip();

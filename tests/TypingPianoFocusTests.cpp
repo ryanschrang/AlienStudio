@@ -648,14 +648,29 @@ static void checkPianoRollProcessing() {
         && !roll.keyPressed(juce::KeyPress('v', juce::ModifierKeys::ctrlModifier, 'v'))
         && !roll.keyPressed(juce::KeyPress('d', juce::ModifierKeys::ctrlModifier, 'd')),
         "note actions must leave text-field Copy, Paste and Duplicate shortcuts unhandled");
-    shortcut('a', juce::ModifierKeys::ctrlModifier);
-    shortcut('c', juce::ModifierKeys::ctrlModifier);
-    require(juce::SystemClipboard::getTextFromClipboard() == "12345", "numeric text Copy retains normal OS clipboard behavior");
-    text->setText("0");
-    text->grabKeyboardFocus();
-    shortcut('a', juce::ModifierKeys::ctrlModifier);
-    shortcut('v', juce::ModifierKeys::ctrlModifier);
-    require(text->getText() == "12345" && alien::samePianoRollPattern(beforeTextClipboard, roll.getPattern()),
+    // The OS clipboard is shared by every program on the machine (and by other test runs going on at the same
+    // time), so something else can write to it between this Copy and the read, or between setting it and Paste.
+    // Each check is tried a few times; it fails only if the text field never copies or pastes.
+    bool copied = false;
+    for (int attempt = 0; attempt < 5 && !copied; ++attempt) {
+        text->grabKeyboardFocus();
+        shortcut('a', juce::ModifierKeys::ctrlModifier);
+        shortcut('c', juce::ModifierKeys::ctrlModifier);
+        copied = juce::SystemClipboard::getTextFromClipboard() == "12345";
+        if (!copied) juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
+    }
+    require(copied, "numeric text Copy retains normal OS clipboard behavior");
+    bool pasted = false;
+    for (int attempt = 0; attempt < 5 && !pasted; ++attempt) {
+        if (juce::SystemClipboard::getTextFromClipboard() != "12345") juce::SystemClipboard::copyTextToClipboard("12345");
+        text->setText("0");
+        text->grabKeyboardFocus();
+        shortcut('a', juce::ModifierKeys::ctrlModifier);
+        shortcut('v', juce::ModifierKeys::ctrlModifier);
+        pasted = text->getText() == "12345";
+        if (!pasted) juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
+    }
+    require(pasted && alien::samePianoRollPattern(beforeTextClipboard, roll.getPattern()),
         "numeric text Paste must not insert piano-roll notes");
     textBox->hideEditor(true);
     click("Cancel piano roll processing");

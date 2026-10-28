@@ -89,6 +89,7 @@ public:
     // Number of Session tracks in use (scene launches wait for this many).
     std::atomic<int> activeTracks{alien::sessionProjectTrackCount};
     std::atomic<bool> synchronizedSceneLaunch{false};
+    std::atomic<std::uint64_t> sceneRackClip{alien::rack::RackPlayer::noLaunchRequest};
     std::atomic<int> launchQuantizationSteps{16}; // One bar by default (16 sixteenth-note steps).
     // Channel Rack. The project is published as an immutable snapshot; each
     // channel's decoded sample is an immutable clip retained by the session
@@ -225,11 +226,6 @@ private:
             clickBarKnown = false;   // the meter may have changed
             if (modeNow == 2 && playNow && wasPlaying && wasMode == 2) resyncTimeline();
         }
-        if (synchronizedSceneLaunch.exchange(false)) {
-            synchronizedScenePending = true;
-            synchronizedSceneTracksQueued = 0;
-            synchronizedSceneQuantizationSteps = launchQuantizationSteps.load();
-        }
         if ((wasPlaying && !playNow) || wasMode != modeNow) {
             for (std::size_t track = 0; track < sessionTracks; ++track)
                 rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
@@ -240,6 +236,12 @@ private:
         }
         if (const auto* fresh = rackMailbox.consume()) rackSnapshot = fresh;
         if (resetRackPlayback.exchange(false)) rackPlayer.stop();
+        if (synchronizedSceneLaunch.exchange(false)) {
+            synchronizedScenePending = true;
+            synchronizedSceneTracksQueued = 0;
+            synchronizedSceneQuantizationSteps = launchQuantizationSteps.load();
+            synchronizedRackSource = sceneRackClip.exchange(alien::rack::RackPlayer::noLaunchRequest);
+        }
         if (modeNow == 2) {
             // A requested position is where the song starts when it next plays, or
             // where it jumps to if it already is.
@@ -377,6 +379,9 @@ private:
         const float clickVolume = recording.metronomeVolume.load(std::memory_order_relaxed);
         const double beatsPerSample = clockTempo(modeNow) / (sampleRate * 60.0);
         rackHitCount = 0;
+        rackLaunchTickCount = 0; rackSceneDue = alien::rack::RackPlayer::noLaunchRequest; rackSceneSample = -1;
+        rackRequestInBlock = requestedRackClip.exchange(alien::rack::RackPlayer::noLaunchRequest);
+        if (rackRequestInBlock != alien::rack::RackPlayer::noLaunchRequest) synchronizedRackSource = alien::rack::RackPlayer::noLaunchRequest;
         if (timelineRate != songRate(timelineTick)) setTimelineTick(timelineTick);   // the project tempo or the tempo map changed: a new segment
         const double beatBase = countingIn ? countInBeats : transportBeat;
         if (!clockRunning) lastClickBeat = -1;
@@ -443,6 +448,8 @@ private:
                 if (synchronizedScenePending && synchronizedAudioReady
                     && (synchronizedSceneTracksQueued & allSessionTracks) == allSessionTracks
                     && rolls[0].launchBoundaryDue(synchronizedSceneQuantizationSteps)) {
+                    rackSceneDue = synchronizedRackSource; rackSceneSample = i;
+                    synchronizedRackSource = alien::rack::RackPlayer::noLaunchRequest;
                     for (std::size_t track = 0; track < sessionTracks; ++track)
                         rolls[track].launchPendingNow([this, track](int n, float v, bool on) {
                             sendPattern(track, n, v, on);
@@ -461,9 +468,11 @@ private:
                         const bool isAudioClip = audioPlayers[track].pendingIsAudio();
                         if (audioPlayers[track].launchPendingNow(sampleRate)) audioClipMode[track] = isAudioClip;
                     }
-                    rolls[track].nextSample([this, track](int n, float v, bool on) {
+                    const int tick = rolls[track].nextSample([this, track](int n, float v, bool on) {
                         sendPattern(track, n, v, on);
                     });
+                    if (track == 0 && tick >= 0 && rackLaunchTickCount < static_cast<int>(rackLaunchTicks.size()))
+                        rackLaunchTicks[static_cast<std::size_t>(rackLaunchTickCount++)] = {i, sessionRackGrid++};
                 }
             }
             const float value = synth.nextSample();
@@ -649,15 +658,17 @@ private:
             std::fill_n(buses.right[b].begin(), samples, 0.0f);
             left[b] = buses.left[b].data(); right[b] = buses.right[b].data();
         }
-        const auto request = requestedRackClip.exchange(alien::rack::RackPlayer::noLaunchRequest);
         if (timelineRunning)
             rackPlayer.processTimeline(*rackSnapshot, rackSamples, true, rackHits.data(), rackHitCount, songTempo().tempoAt(timelineTick), activeTracks.load(),
                                        samples, left.data(), right.data());
         else
             rackPlayer.processLaunched(*rackSnapshot, rackSamples, running, bpm.load(), activeTracks.load(), samples, left.data(), right.data(),
-                                      request, launchQuantizationSteps.load(), startSelected);
+                                      rackRequestInBlock, launchQuantizationSteps.load(), startSelected,
+                                      startSelected ? nullptr : rackLaunchTicks.data(), rackLaunchTickCount, rackSceneDue, rackSceneSample);
         activeRackClip.store(timelineRunning ? 0 : rackPlayer.playingClip(), std::memory_order_relaxed);
         queuedRackClip.store(timelineRunning ? alien::rack::RackPlayer::noLaunchRequest : rackPlayer.waitingClip(), std::memory_order_relaxed);
+        if (!timelineRunning && synchronizedScenePending && synchronizedRackSource != alien::rack::RackPlayer::noLaunchRequest)
+            queuedRackClip.store(synchronizedRackSource, std::memory_order_relaxed);
         rackStep.store(running ? rackPlayer.currentStep() : -1, std::memory_order_relaxed);
         for (std::size_t t = 0; t < sessionTracks; ++t) {
             if(plugins->racks[t].frozen)continue;
@@ -1418,6 +1429,7 @@ private:
         activeStepPitch = -1;
         synchronizedScenePending = false;
         synchronizedSceneTracksQueued = 0;
+        synchronizedRackSource = alien::rack::RackPlayer::noLaunchRequest; sessionRackGrid = 0;
         for (std::size_t track = 0; track < sessionTracks; ++track) {
             activePianoRollClip[track].store(-1);
             sessionTrackPositions[track].store(-1000);
@@ -1436,6 +1448,11 @@ private:
     std::array<TimelineLane, alien::timeline::rackLanes> rackLaneState{};
     std::array<alien::rack::RackPlayer::TimelineHit, 128> rackHits{};
     int rackHitCount{};
+    std::array<alien::rack::RackPlayer::LaunchTick, alien::PluginRuntime::blockSize> rackLaunchTicks{};
+    int rackLaunchTickCount{}, rackSceneSample{-1};
+    std::int64_t sessionRackGrid{};
+    std::uint64_t synchronizedRackSource{alien::rack::RackPlayer::noLaunchRequest};
+    std::uint64_t rackSceneDue{alien::rack::RackPlayer::noLaunchRequest}, rackRequestInBlock{alien::rack::RackPlayer::noLaunchRequest};
     std::array<juce::AudioBuffer<float>, sessionTracks> clipBuffers;
     alien::SynthEngine synth; // Live keyboard and legacy step sequencer.
     FixedHeapArray<alien::SynthEngine, sessionTracks> trackSynths;
