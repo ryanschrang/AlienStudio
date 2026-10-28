@@ -451,7 +451,8 @@ private:
         };
         controller.onClipContentChanged = [this](int track, int scene) {
             sessionView.refreshSelectedClip();
-            refreshGhostNotes();
+            if (multiClip.active()) loadSelectedClip();   // a clip being edited changed underneath: merge it again
+            else refreshGhostNotes();
             const auto& d = controller.document();
             if (track == d.selectedTrack && scene == d.selectedScene) tabs.setCurrentTabIndex(2);
         };
@@ -471,6 +472,10 @@ private:
                 if (!loadingClip) controller.setPlacementPattern(rollTarget.placement, pianoRoll.getPattern());
                 return;
             }
+            if (multiClip.active()) {
+                if (!loadingClip) writeMultiClipEdit();
+                return;
+            }
             const auto& d = controller.document();
             controller.setClipPattern(d.selectedTrack, d.selectedScene, pianoRoll.getPattern(), !loadingClip);
             if (!loadingClip) sessionView.refreshSelectedClip();
@@ -486,7 +491,22 @@ private:
             const auto& d = controller.document();
             controller.commit("Edit notes", d.selectedTrack, d.selectedScene);
         };
-        pianoRoll.onGhostSourceChanged = [this](alien::GhostNoteSource) { refreshGhostNotes(); };
+        pianoRoll.onGhostSourceChanged = [this](alien::GhostNoteSource) {
+            if (pianoRoll.isMultiClipEditing() || multiClip.active()) loadSelectedClip();   // a different set of clips to edit
+            else refreshGhostNotes();
+        };
+        pianoRoll.onMultiClipChanged = [this](bool) { loadSelectedClip(); };
+        pianoRoll.noteTint = [this](std::uint32_t id) -> std::optional<juce::Colour> {
+            if (!multiClip.active()) return std::nullopt;
+            const int owner = multiClip.ownerOf(id);
+            if (owner <= 0) return std::nullopt;
+            const auto& source = multiClip.sources()[static_cast<std::size_t>(owner)];
+            const auto& tracks = controller.document().tracks;
+            // Other tracks' clips in their track's colour; this track's other scenes in a colour per scene.
+            const int colour = source.track != controller.document().selectedTrack && source.track < static_cast<int>(tracks.size())
+                ? tracks[static_cast<std::size_t>(source.track)].colour : source.scene + 1;
+            return alien::ui::trackColour(colour).withSaturation(0.55f).brighter(0.15f);
+        };
         pianoRoll.onAudition = [this](int note, float velocity) {
             if (rollTarget.rack) {
                 controller.previewRackChannel(rollTarget.channel, velocity, note - alien::rack::channelRootPitch, true);
@@ -496,6 +516,12 @@ private:
             else keyboardState.noteOff(3, note, 0);
         };
         sessionView.onSelectionChanged = [this] { rollTarget = {}; loadSelectedClip(); };
+        // Launching a clip plays it. With Song mode on, Play plays the Song instead, so say so rather than stay silent.
+        sessionView.onLaunched = [this](bool) {
+            if (songPlayback && !engine.playing.load())
+                statusBar.setProjectStatus("Song mode is on, so Play plays the Song, not Session clips.",
+                                           "Turn Song mode off in the top bar to hear Session clips as you launch them.");
+        };
         sessionView.onEditRackClip = [this](std::uint64_t clip) {
             const int pattern = controller.rackPatternForClip(clip);
             if (pattern < 0) return;
@@ -603,16 +629,17 @@ private:
         refreshExtraViews();
     }
 
-    void loadSelectedClip() {
+    void loadSelectedClip(bool allowMultiClip = true) {
         if (rollTarget.rack && !controller.channelRack().validChannel(rollTarget.channel)) rollTarget = {};
         if (rollTarget.placement != 0 && controller.placementTrack(rollTarget.placement) < 0) rollTarget = {};   // no region plays it any more
+        if (rollTarget.rack || rollTarget.placement != 0) multiClip.end();   // only Session clips are edited together
         loadingClip = true;
         if (rollTarget.placement != 0) {
             pianoRoll.setPattern(controller.document().contentOf(alien::library::ClipId{rollTarget.placement}).notes());
         } else if (rollTarget.rack) {
             const auto& rack = controller.channelRack();
             pianoRoll.setPattern(alien::rack::channelNotes(rack.pattern(rack.selectedPattern), rollTarget.channel));
-        } else pianoRoll.setPattern(controller.document().selectedClip().notes());
+        } else if (!loadMultiClip(allowMultiClip)) pianoRoll.setPattern(controller.document().selectedClip().notes());
         pianoRoll.setEnabled(rollTarget.rack || ((rollTarget.placement != 0 || controller.document().selectedClip().rackClip == 0) && !controller.isTrackFrozen(rollTarget.placement != 0 ? controller.placementTrack(rollTarget.placement)
                                                                                                  : controller.document().selectedTrack)));
         refreshGhostNotes();
@@ -621,11 +648,44 @@ private:
         updateEditorTitle();
     }
 
-    // Other clips' notes, shown dimmed behind a Session clip (none for a Channel Rack channel).
+    // Other clips' notes, shown dimmed behind a Session clip (none for a Channel Rack channel or a Song clip).
+    // Clips being edited with it are not ghosts.
     void refreshGhostNotes() {
         const auto& d = controller.document();
-        pianoRoll.setGhostClips(rollTarget.rack ? std::vector<alien::PianoRollGhostClip> {}
-            : alien::ghostClipsFor(d, d.selectedTrack, d.selectedScene, pianoRoll.getGhostSource()));
+        auto ghosts = rollTarget.rack || rollTarget.placement != 0 ? std::vector<alien::PianoRollGhostClip> {}
+            : alien::ghostClipsFor(d, d.selectedTrack, d.selectedScene, pianoRoll.getGhostSource());
+        if (multiClip.active())
+            std::erase_if(ghosts, [&](const alien::PianoRollGhostClip& g) {
+                for (const auto& s : multiClip.sources()) if (s.track == g.track && s.scene == g.scene) return true;
+                return false;
+            });
+        pianoRoll.setGhostClips(std::move(ghosts));
+        pianoRoll.setEditingClipCount(multiClip.active() ? static_cast<int>(multiClip.sources().size()) : 1);
+    }
+    // Multi-clip editing (PROD-05): with Edit > Ghost notes > Edit them with this clip on, the piano roll edits the
+    // selected Session clip together with the shown clips of its loop length. Returns whether it merged any.
+    bool loadMultiClip(bool allowed) {
+        multiClip.end();
+        if (!allowed || !pianoRoll.isMultiClipEditing() || pianoRoll.getGhostSource() == alien::GhostNoteSource::off) return false;
+        const auto& d = controller.document();
+        const auto editable = [this](int track, int scene) {
+            return !controller.isTrackFrozen(track) && !(controller.isRecording() && controller.recordingTrack() == track
+                                                         && controller.recordingScene() == scene);
+        };
+        if (!multiClip.begin(alien::multiClipSourcesFor(d, d.selectedTrack, d.selectedScene, pianoRoll.getGhostSource(), editable))) return false;
+        pianoRoll.setPattern(multiClip.combined());
+        return true;
+    }
+    // Writes one edit of the merged notes back into each clip it changed. The commit after the gesture makes the
+    // whole edit, across every clip, one undo step.
+    void writeMultiClipEdit() {
+        std::vector<std::shared_ptr<const alien::PianoRollPattern>> parts;
+        if (!multiClip.split(pianoRoll.getPattern(), parts)) { loadSelectedClip(); return; }   // could not split: show what is there
+        const auto& sources = multiClip.sources();
+        for (std::size_t i = 0; i < sources.size() && i < parts.size(); ++i)
+            controller.setClipPattern(sources[i].track, sources[i].scene, *parts[i], true);
+        sessionView.refreshClips();
+        sessionView.refreshSelectedClip();
     }
 
     // Recording --------------------------------------------------------------
@@ -730,6 +790,7 @@ private:
         const auto& d = controller.document();
         const int track = d.selectedTrack, scene = d.selectedScene;
         if(controller.isTrackFrozen(track)){timelineView.setStatus("Unfreeze the track before editing its source clips.");return;}
+        if (multiClip.active()) loadSelectedClip(false);   // "Clear clip" clears this clip, not every clip being edited with it
         controller.clearCell(track, scene);   // only this cell: content it shares stays with the others
         // The selected clip is the one loaded in the piano roll, so this clears
         // it and republishes it through onChange; one undo step covers both.
@@ -1634,6 +1695,7 @@ private:
     // What the piano roll edits: the selected Session clip (the default), a Channel Rack channel,
     // or a Song placement clip (placement: its library id).
     struct RollTarget { bool rack{}; int channel{}; std::uint64_t placement{}; };
+    alien::MultiClipEdit multiClip;   // the Session clips the piano roll edits together, while that is on
     RollTarget rollTarget;
     int rollGesture{};                  // one undo step per piano-roll gesture on a rack channel
     alien::rack::ChannelNotesFit rollFit;

@@ -280,6 +280,12 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Edit another clip (Session paste/clear, record a take into it, undo) while a clip is open; confirm the ghosts update. Link a cell to the open clip and confirm its notes are not ghosted twice.
 - Save and reopen: ghost notes start Off (the setting is not saved). Open a Channel Rack note row; it shows no ghosts. Listen during playback to confirm ghosts are silent and nothing else changes. These real-menu and listening checks remain manual.
 
+## Piano-roll multi-clip editing (T1-06)
+- Put one-bar MIDI clips on three tracks in one scene, and a two-bar clip on a fourth. Open the first, choose Edit > Ghost notes > Other clips in this scene, then Edit them with this clip: the three one-bar clips' notes are all editable, each other clip's notes in its track's colour; the two-bar clip stays a dim ghost. The footer says "editing 3 clips".
+- Move, resize, delete and change the velocity of notes from each clip while the scene plays: each change is heard in its own track at once, with no stuck or doubled notes. Draw and paste notes: they go to the open clip. Undo once: the whole gesture is undone in every clip it touched; redo brings it back.
+- Switch to This track's clips in other scenes: this track's one-bar clips are edited together, coloured by scene. Freeze one track, or record into a clip: that clip is left as a ghost. Link two cells in the scene: their notes appear once.
+- Session > Clear clip clears only the open clip. Turn Edit them with this clip off: only the open clip is editable again. Save and reopen: the setting starts off and every clip has the notes you left it with.
+
 ## Piano-roll note split (T1-06)
 - In Session and a Channel Rack note row, select a chord with different note lengths, click its middle on the ruler and choose Edit > Split selected notes at cursor. Both halves stay selected, adjoining at the cursor with pitch, velocity and probability preserved. Unselected notes stay unchanged.
 - Undo/redo once restores the whole chord and selection. Repeat at a note start/end, at loop boundaries, with no selection and near the note-capacity limit; confirm no partial split or extra undo step on refusal.
@@ -377,3 +383,8 @@ Nothing should sound or look different: this moves where the rack's patterns are
 - Use Place rack clip at Song playhead, move/trim the placement in Song, then Make this placement unique and edit that bank source: the original placement/Session source stays unchanged. Delete an unused preceding bank slot: every remaining placement still plays the same source. Deleting a used source is disabled until its Session/Song uses are cleared.
 - Save, close and reopen; repeat the launch/edit checks. Save portable with external rack samples, move the folder and reopen; verify missing samples remain relinkable. Open older projects (including format 25 sidechains, takes and frozen tracks), save a copy, and compare playback/export. Test malformed references without losing the currently open project.
 - Verify rack tile labels, playing/queued state and the menus at 960x650 and 150/200% scaling. One distinct rack source per scene and one active composite rack clip remain the D2 limits; overlapping instances are D3.
+
+## Launching Session clips
+- With the transport stopped and Song mode off, click a MIDI clip in the Session view: the transport starts and the clip is heard at once; the top bar's Play button lights. Click a scene's launch button while stopped: the whole scene plays.
+- While playing, clicking another clip keeps the transport running and switches at the next Beat/Bar boundary.
+- Turn Song mode on, stop, and click a clip: the transport stays stopped and the status bar says Song mode is on. Turn Song mode off and click again: it plays.
