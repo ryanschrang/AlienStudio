@@ -6,6 +6,8 @@
 // handled like drum-pad samples (relative paths, collected on a portable save,
 // relinkable when missing).
 #include "RackModel.h"
+#include "ClipLibrary.h"
+#include <limits>
 #include <juce_core/juce_core.h>
 #include <cmath>
 
@@ -28,7 +30,15 @@ inline bool floatIn(const juce::var& v, float low, float high, float& out) {
 }
 } // namespace detail
 
-inline juce::var rackToVar(const Project& project) {
+inline std::uint64_t savedClipId(const Project& project, int slot) {
+    auto id = project.clips[static_cast<std::size_t>(slot)];
+    if (id == 0) {
+        id = static_cast<std::uint64_t>(slot + 1);
+        while (std::find(project.clips.begin(), project.clips.end(), id) != project.clips.end()) id += maxPatterns;
+    }
+    return id;
+}
+inline juce::var rackToVar(const Project& project, bool identities = false) {
     auto root = juce::var(new juce::DynamicObject());
     auto* object = root.getDynamicObject();
     object->setProperty("swing", static_cast<double>(project.swing));
@@ -40,6 +50,7 @@ inline juce::var rackToVar(const Project& project) {
         auto value = juce::var(new juce::DynamicObject());
         auto* channel = value.getDynamicObject();
         channel->setProperty("name", detail::text(project.info[i].name));
+        if (identities) channel->setProperty("lane", detail::text(library::toHex(project.lanes[i])));
         channel->setProperty("sample", detail::text(project.info[i].sample));
         channel->setProperty("volume", static_cast<double>(project.channels[i].volume));
         channel->setProperty("pan", static_cast<double>(project.channels[i].pan));
@@ -56,6 +67,7 @@ inline juce::var rackToVar(const Project& project) {
         const auto& source = project.pattern(p);
         auto value = juce::var(new juce::DynamicObject());
         auto* pattern = value.getDynamicObject();
+        if (identities) pattern->setProperty("clip", detail::text(library::toHex(savedClipId(project, p))));
         pattern->setProperty("name", detail::text(project.patternNames[static_cast<std::size_t>(p)]));
         pattern->setProperty("length", source.length);
         // Only steps that are on, or that keep non-default values drawn earlier,
@@ -99,7 +111,7 @@ inline juce::var rackToVar(const Project& project) {
 
 // Strict: anything unexpected rejects the whole rack, so a damaged file is
 // reported instead of being opened as something different.
-inline bool rackFromVar(const juce::var& value, Project& out, juce::String& error) {
+inline bool rackFromVar(const juce::var& value, Project& out, juce::String& error, bool identities = false) {
     auto fail = [&](const char* reason) { error = reason; return false; };
     const auto* object = value.getDynamicObject();
     if (object == nullptr) return fail("The project's Channel Rack is missing or invalid.");
@@ -141,6 +153,13 @@ inline bool rackFromVar(const juce::var& value, Project& out, juce::String& erro
         if (sampleText.size() > maxSampleBytes) return fail("A Channel Rack sample path is too long.");
         if (!parsed.addChannel(Project::clean(name.toString().toStdString()), sampleText)) return fail("The Channel Rack has too many channels.");
         parsed.channels[static_cast<std::size_t>(parsed.channelCount - 1)] = settings;
+        if (identities) {
+            if (!channel->getProperty("lane").isString()) return fail("Invalid rack lane identity.");
+            const auto id = library::parseId<library::LaneKind>(channel->getProperty("lane").toString().toStdString());
+            if (!id || id->value == std::numeric_limits<std::uint64_t>::max()) return fail("Invalid rack lane identity.");
+            parsed.lanes[static_cast<std::size_t>(parsed.channelCount - 1)] = id->value;
+            parsed.nextLane = std::max(parsed.nextLane, id->value + 1);
+        }
     }
 
     const auto patternsValue = object->getProperty("patterns");
@@ -153,6 +172,12 @@ inline bool rackFromVar(const juce::var& value, Project& out, juce::String& erro
         const auto* pattern = (*patterns)[p].getDynamicObject();
         if (pattern == nullptr) return fail("A Channel Rack pattern is invalid.");
         const auto name = pattern->getProperty("name");
+        if (identities) {
+            if (!pattern->getProperty("clip").isString()) return fail("Invalid rack clip identity.");
+            const auto id = library::parseId<library::ClipKind>(pattern->getProperty("clip").toString().toStdString());
+            if (!id) return fail("Invalid rack clip identity.");
+            parsed.clips[static_cast<std::size_t>(p)] = id->value;
+        }
         int length = 0;
         const auto stepsValue = pattern->getProperty("steps");
         const auto* steps = stepsValue.getArray();

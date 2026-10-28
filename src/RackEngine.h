@@ -53,6 +53,7 @@ class RackPlayer {
 public:
     static constexpr int voiceCount = 64;
     static constexpr std::uint64_t noLaunchRequest = std::numeric_limits<std::uint64_t>::max();
+    struct LaunchTick { int sample{}; std::int64_t grid{}; };
     // Hits waiting for their nudge or ratchet time: at most every channel's ratchets of two
     // overlapping steps (a step nudged a whole step late meets the next one's hits).
     static constexpr int maxPending = maxChannels * (maxRatchet * 2 + static_cast<int>(PianoRollPattern::maxNotes));
@@ -69,11 +70,13 @@ public:
         gain.fill(1.0f); pan.fill(0.0f); wasAudible.fill(true);
         clock.reset(); wasRunning = false; lastStep = -1; controlCountdown = 0; pendingCount = 0; now = 0;
         launchRunning = launchQueued = false; activeClip = queuedClip = 0; launchGrid = 0;
+        performSwingPending = false;
     }
     // Fades every sound out over a few milliseconds, drops hits not yet played and rewinds the clock.
     void stop() noexcept {
         releaseAll(); clock.reset(); wasRunning = false; lastStep = -1; pendingCount = 0;
         launchRunning = false; activeClip = queuedClip = 0; launchQueued = false;
+        performSwingPending = false;
     }
 
     std::uint64_t playingClip() const noexcept { return activeClip; }
@@ -84,9 +87,11 @@ public:
     // A request of 0 stops the rack on the same boundary as a launch. Latest request wins.
     void processLaunched(const Snapshot& snap, const SampleTable& clips, bool running, double bpm, int activeTracks,
                          int samples, float* const* left, float* const* right, std::uint64_t request,
-                         int quantization, bool startSelected) noexcept {
+                         int quantization, bool startSelected, const LaunchTick* ticks = nullptr, int tickCount = 0,
+                         std::uint64_t sceneRequest = noLaunchRequest, int sceneSample = -1) noexcept {
         if (!running) {
             launchRunning = false; activeClip = queuedClip = 0; launchQueued = false;
+            performSwingPending = false;
         } else {
             if (!launchRunning) {
                 activeClip = startSelected && snap.pattern(snap.selectedPattern) != nullptr
@@ -104,9 +109,21 @@ public:
         launchRunning = running;
         stepSamples = stepLength(bpm);
         const int quantum = quantization == 4 ? 4 : 16;
-        render(snap, clips, running, activeTracks, samples, left, right, [&](int) {
-            const auto grid = clock.next(sampleRate, bpm, snap.swing);
+        int nextTick = 0;
+        render(snap, clips, running, activeTracks, samples, left, right, [&](int sample) {
+            std::int64_t grid = -1;
+            if (ticks != nullptr) {
+                if (nextTick < tickCount && ticks[nextTick].sample == sample) grid = ticks[nextTick++].grid;
+                if (grid >= 0 && (grid & 1) != 0 && std::isfinite(snap.swing)) {
+                    const auto delay = static_cast<std::int64_t>(std::llround(std::clamp(static_cast<double>(snap.swing), 0.0, 1.0) * 0.5 * stepSamples));
+                    if (delay > 0) { performSwingGrid = grid; performSwingDue = now + delay; performSwingPending = true; grid = -1; }
+                }
+                if (performSwingPending && now >= performSwingDue) { grid = performSwingGrid; performSwingPending = false; }
+            } else grid = clock.next(sampleRate, bpm, snap.swing);
             if (grid < 0) return;
+            if (sample == sceneSample && sceneRequest != noLaunchRequest && (sceneRequest == 0 || snap.indexOfClip(sceneRequest) >= 0)) {
+                releasePlayback(); activeClip = sceneRequest; launchQueued = false; launchGrid = grid;
+            }
             if (launchQueued && grid % quantum == 0) {
                 releasePlayback(); activeClip = queuedClip; launchQueued = false; launchGrid = grid;
             }
@@ -179,6 +196,8 @@ private:
     bool launchRunning{}, launchQueued{};
     std::uint64_t activeClip{}, queuedClip{};
     std::int64_t launchGrid{};
+    bool performSwingPending{};
+    std::int64_t performSwingGrid{}, performSwingDue{};
     void releasePlayback() noexcept {
         for (auto& v : voices) if (!v.preview) releaseVoice(v);
         pendingCount = 0; nextDue = std::numeric_limits<std::int64_t>::max(); lastStep = -1;

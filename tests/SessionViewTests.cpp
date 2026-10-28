@@ -975,6 +975,28 @@ static void rackLaunchMenu() {
             "undo followed by creation cannot redirect an old launch to a different clip");
 }
 
+static void savedRackAssignmentMenu() {
+    Rig rig;
+    auto& c = rig.controller;
+    const auto source = c.channelRack().clips[0];
+    std::function<void(int)> choose;
+    rig.view.linkMenuLauncher = [&](juce::PopupMenu, std::function<void(int)> done) { choose = std::move(done); };
+    c.selectClip(0, 0); rig.view.showLinkMenu(); choose(1000);
+    require(c.document().clip(0, 0).rackClip == source && rig.view.clipSlot(0, 0)->getButtonText().contains("Rack"),
+            "the assignment submenu creates a labelled saved rack cell");
+    clickButton(*rig.view.clipSlot(0, 0));
+    require(rig.engine.requestedRackClip.load() == source, "the actual tile launches the composite source");
+    rig.view.showLinkMenu(); choose(5);
+    require(c.timeline().regions.size() == 1 && c.timeline().regions[0].isPattern() && c.timeline().regions[0].rackClip == source,
+            "the placement menu places that same shared rack source in Song");
+    require(c.copyCell(0, 0), "copy bound rack cell"); c.selectClip(1, 1);
+    rig.view.showLinkMenu(); choose(2);
+    require(c.document().clip(1, 1).rackClip != 0 && c.document().clip(1, 1).rackClip != source,
+            "Paste a copy creates an independent composite source");
+    require(c.undo() && c.document().clip(1, 1).isEmpty() && c.redo(), "assignment copies have one-step undo and redo");
+    std::cout << "PASS: saved rack assignment, tile launch, independent paste and Song placement menu\n";
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     layoutChecks();
@@ -993,6 +1015,7 @@ int main() {
     sceneAndTrackLook();
     linkMenu();
     rackLaunchMenu();
+    savedRackAssignmentMenu();
     snapshots();
     std::cout << "SessionViewTests passed\n";
     return 0;

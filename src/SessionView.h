@@ -261,9 +261,17 @@ public:
         menu.addItem(2, "Paste a copy here", controller.hasCopiedCell());
         menu.addItem(3, "Paste linked here", controller.canPasteLinked());
         menu.addSeparator();
-        menu.addItem(4, linked > 1 ? "Make unique (linked with " + juce::String(linked - 1) + (linked == 2 ? " other cell)" : " other cells)") : juce::String("Make unique"), linked > 1);
+        menu.addItem(4, linked > 1 ? "Make unique (linked with " + juce::String(linked - 1) + (linked == 2 ? " other cell)" : " other cells)") : juce::String("Make unique"), linked > 1 || d.selectedClip().rackClip != 0);
+        std::vector<std::uint64_t> rackIds;
+        juce::PopupMenu rackMenu;
+        for (int p = 0; p < d.channelRack.patternCount; ++p) {
+            rackIds.push_back(d.channelRack.clips[static_cast<std::size_t>(p)]);
+            rackMenu.addItem(1000 + p, juce::String::fromUTF8(d.channelRack.patternNames[static_cast<std::size_t>(p)].c_str()));
+        }
+        menu.addSubMenu("Assign rack clip (linked)", rackMenu);
+        menu.addItem(5, "Place rack clip at Song playhead", d.selectedClip().rackClip != 0);
         juce::Component::SafePointer<SessionView> safe(this);
-        auto done = [safe, track, scene](int choice) {
+        auto done = [safe, track, scene, rackIds = std::move(rackIds)](int choice) {
             if (safe == nullptr || choice == 0) return;
             auto& c = safe->controller;
             bool changed = false;
@@ -271,8 +279,13 @@ public:
             if (choice == 2) changed = c.pasteCell(track, scene, false);
             if (choice == 3) changed = c.pasteCell(track, scene, true);
             if (choice == 4) changed = c.makeCellUnique(track, scene);
+            if (choice == 5) changed = c.placeRegion(track, scene, std::max<std::int64_t>(0, safe->engine.timelinePosition.load()));
+            if (choice >= 1000 && choice < 1000 + static_cast<int>(rackIds.size()))
+                changed = c.assignRackClip(track, scene, rackIds[static_cast<std::size_t>(choice - 1000)]);
             if (!changed) { safe->setImportStatus("Nothing changed: that cell cannot take it (it may be frozen, recording or already linked).", {}); return; }
-            safe->setImportStatus(choice == 2 ? "Pasted an independent copy." : choice == 3 ? "Pasted a linked clip: editing it edits every linked cell."
+            safe->setImportStatus(choice >= 1000 ? "Assigned a shared rack source. One rack source can launch per scene; its channels keep their routing."
+                                  : choice == 5 ? "Placed the shared rack source in Song."
+                                  : choice == 2 ? "Pasted an independent copy." : choice == 3 ? "Pasted a linked clip: editing it edits every linked cell."
                                   : "The clip is unique again: its edits are its own.", {});
             if (safe->onCellContentChanged) safe->onCellContentChanged();
             safe->refreshClips();
@@ -536,6 +549,8 @@ public:
         for (int track = 0; track < d.trackCount(); ++track) {
             const int active = engine.activePianoRollClip[static_cast<std::size_t>(track)].load();
             if (active >= 0 && active < d.sceneCount()) scenePlaying[static_cast<std::size_t>(active)] = true;
+            for (int s = 0; s < d.sceneCount(); ++s)
+                if (const auto id = d.clip(track, s).rackClip; id != 0 && id == engine.activeRackClip.load()) scenePlaying[static_cast<std::size_t>(s)] = true;
         }
         for (int scene = 0; scene < static_cast<int>(sceneButtons.size()) && scene < d.sceneCount(); ++scene) {
             auto& sceneButton = *sceneButtons[static_cast<std::size_t>(scene)];
@@ -555,13 +570,15 @@ public:
                 const int active = engine.activePianoRollClip[index].load();
                 const int requested = engine.requestedPianoRollClip[index].load();
                 const auto& clip = d.clip(track, scene);
-                auto text = clip.hasAudio()
+                auto text = clip.rackClip != 0 ? "Rack | " + clip.rackName : clip.hasAudio()
                     ? "Track " + juce::String(track + 1) + " | AUDIO\n" + clip.audioFileName.substring(0, 20)
                     : clip.audioOffline()
                     ? "Track " + juce::String(track + 1) + " | AUDIO OFFLINE\n" + clip.audioFileName.substring(0, 20)
                     : "Track " + juce::String(track + 1) + "\nScene " + juce::String(scene + 1);
-                if (scene == active) text += " | Playing";
-                else if (scene == requested) text += " | Queued";
+                const bool playing = clip.rackClip != 0 ? engine.activeRackClip.load() == clip.rackClip : scene == active;
+                const bool queued = clip.rackClip != 0 ? !playing && engine.queuedRackClip.load() == clip.rackClip : scene != active && scene == requested;
+                if (playing) text += " | Playing";
+                else if (queued) text += " | Queued";
                 if (track == d.selectedTrack && scene == d.selectedScene) text += " | Edit";
                 if (button->getButtonText() != text) button->setButtonText(text);
 
@@ -569,20 +586,25 @@ public:
                 const auto noteCount = static_cast<int>(clip.notes().count);
                 visual.kind = clip.hasAudio() ? SessionClipButton::Kind::audio
                     : clip.audioOffline() ? SessionClipButton::Kind::offline
+                    : clip.rackClip != 0 ? SessionClipButton::Kind::rack
                     : noteCount > 0 ? SessionClipButton::Kind::midi : SessionClipButton::Kind::empty;
                 visual.colour = ui::trackColour(d.tracks[index].colour);
-                visual.label = clip.hasAudio() ? clip.audioFileName
+                visual.label = clip.rackClip != 0 ? "Rack: " + clip.rackName : clip.hasAudio() ? clip.audioFileName
                     : clip.audioOffline() ? clip.audioFileName
                     : juce::String(noteCount) + (noteCount == 1 ? " note" : " notes");
                 if (const int linked = d.linkedCells(track, scene); linked > 1) visual.label += "  linked x" + juce::String(linked);
-                visual.playing = scene == active;
-                visual.queued = scene != active && scene == requested;
+                visual.playing = playing;
+                visual.queued = queued;
                 visual.selected = track == d.selectedTrack && scene == d.selectedScene;
                 if (visual.playing && !clip.hasAudio() && clip.notes().loopSteps > 0) {
                     const int position = engine.sessionTrackPositions[index].load();
                     if (position >= 0)
                         visual.progress = static_cast<float>(std::fmod(position / 1000.0,
                             static_cast<double>(clip.notes().loopSteps)) / static_cast<double>(clip.notes().loopSteps));
+                }
+                if (visual.playing && clip.rackClip != 0) {
+                    const int p = controller.rackPatternForClip(clip.rackClip), step = engine.rackStep.load();
+                    if (p >= 0 && step >= 0) visual.progress = static_cast<float>(step) / controller.channelRack().pattern(p).length;
                 }
                 button->setVisual(visual);
             }

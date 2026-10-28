@@ -142,8 +142,11 @@ public:
         abandonRecording();
         engine.playing.store(false);
         engine.requestedRackClip.store(rack::RackPlayer::noLaunchRequest);
+        engine.sceneRackClip.store(rack::RackPlayer::noLaunchRequest);
         engine.rackPerformMode.store(false);
         engine.resetRackPlayback.store(true);
+        copiedCell = {};
+        if (copiedContent && copiedContent->rackClip != 0) copiedContent.reset();
         if (beforeDocumentReplaced) beforeDocumentReplaced();
         stopEverySlot();
         doc = ProjectDocument::createDefault();
@@ -575,13 +578,31 @@ public:
 
     void launchClip(int track, int scene) {
         selectClip(track, scene);
+        if (doc.isValidCell(track, scene) && doc.clip(track, scene).rackClip != 0) {
+            if (launchRackClip(doc.clip(track, scene).rackClip)) publishStop(static_cast<std::size_t>(track));
+            return;
+        }
+        if (doc.isValidCell(track, scene)) stopRackOnTrack(track);
         publishClip(doc.selectedTrack, doc.selectedScene);
     }
 
     void launchScene(int scene) {
         scene = juce::jlimit(0, doc.sceneCount() - 1, scene);
+        std::uint64_t rackSource = 0;
+        for (int track = 0; track < doc.trackCount(); ++track)
+            if (const auto rack = doc.clip(track, scene).rackClip) rackSource = rack;
+        if (rackSource != 0) {
+            if (!canLaunchRackClip(rackSource)) return;
+            pushRackToEngine(); engine.rackPerformMode.store(true); engine.patternMode.store(1); engine.playing.store(true);
+        }
+        engine.requestedRackClip.store(rack::RackPlayer::noLaunchRequest);
+        engine.sceneRackClip.store(rackSource);
         engine.synchronizedSceneLaunch.store(true);
-        for (int track = 0; track < doc.trackCount(); ++track) publishClip(track, scene);
+        for (int track = 0; track < doc.trackCount(); ++track) {
+            const auto rack = doc.clip(track, scene).rackClip;
+            if (rack != 0) publishStop(static_cast<std::size_t>(track));
+            else publishClip(track, scene);
+        }
     }
 
     void stopAllTracks() {
@@ -596,10 +617,21 @@ public:
             if (doc.channelRack.clips[static_cast<std::size_t>(p)] == clip) return p;
         return -1;
     }
-    bool launchRackClip(std::uint64_t clip) {
+    bool rackPatternInUse(int pattern) const {
+        if (!doc.channelRack.validPattern(pattern)) return false;
+        const auto id = doc.channelRack.clips[static_cast<std::size_t>(pattern)];
+        for (const auto& scene : doc.cells) for (auto cell : scene) if (cell.value == id) return true;
+        for (const auto& r : doc.timeline.regions) if (r.isPattern() && (r.rackClip == id || r.source == pattern)) return true;
+        return false;
+    }
+    bool canLaunchRackClip(std::uint64_t clip) const {
         if (busy || isRecording() || engine.patternMode.load() == 2 || rackPatternForClip(clip) < 0) return false;
         for (int c = 0; c < doc.channelRack.channelCount; ++c)
             if (isTrackFrozen(doc.channelRack.channels[static_cast<std::size_t>(c)].output)) return false;
+        return true;
+    }
+    bool launchRackClip(std::uint64_t clip) {
+        if (!canLaunchRackClip(clip)) return false;
         pushRackToEngine();
         engine.rackPerformMode.store(true);
         engine.patternMode.store(1);
@@ -615,11 +647,22 @@ public:
 
     // Stops one Session track at the next launch boundary; the other tracks keep playing.
     void stopTrack(int track) {
-        if (track >= 0 && track < doc.trackCount()) publishStop(static_cast<std::size_t>(track));
+        if (track < 0 || track >= doc.trackCount()) return;
+        publishStop(static_cast<std::size_t>(track));
+        stopRackOnTrack(track);
+    }
+    void stopRackOnTrack(int track) {
+        for (int scene = 0; scene < doc.sceneCount(); ++scene)
+            if (const auto id = doc.clip(track, scene).rackClip; id != 0
+                && (id == engine.activeRackClip.load() || id == engine.queuedRackClip.load() || id == engine.requestedRackClip.load()
+                    || id == engine.sceneRackClip.load())) {
+                stopRackClip(); break;
+            }
     }
 
     void publishClip(int track, int scene) {
         if (!doc.isValidCell(track, scene)) return;
+        if (doc.clip(track, scene).rackClip != 0) return;
         if(isTrackFrozen(track) && scene!=doc.tracks[static_cast<std::size_t>(track)].settings.freezeScene){publishStop(static_cast<std::size_t>(track));return;}
         const auto& clip = doc.clip(track, scene);
         const auto index = static_cast<std::size_t>(track);
@@ -658,7 +701,7 @@ public:
         if(isTrackFrozen(track))return {false,"Unfreeze the track before recording."};
         if (!doc.isValidCell(track, scene)) return {false, "Select a clip to record into."};
         const auto& clip = doc.clip(track, scene);
-        if (clip.isAudioClip()) return {false, "This clip holds audio. Choose an empty or MIDI clip to record into."};
+        if (clip.isAudioClip() || clip.rackClip != 0) return {false, "Choose an empty or MIDI cell to record into."};
 
         take = {};
         take.active = true;
@@ -836,6 +879,29 @@ public:
     }
 
     // ---- linked clips (T1-03): Session cells that share one clip's content ----------------------
+    bool assignRackClip(int track, int scene, std::uint64_t clip) {
+        if (busy || isRecording() || !doc.isValidCell(track, scene) || isTrackFrozen(track)) return false;
+        if (!doc.bindRackClip(track, scene, clip)) return false;
+        publishStop(static_cast<std::size_t>(track));
+        commit("Assign rack clip", track, scene);
+        return true;
+    }
+    bool copyRackToCell(int track, int scene, std::uint64_t clip) {
+        if (busy || isRecording() || !doc.isValidCell(track, scene) || isTrackFrozen(track)) return false;
+        const int source = rackPatternForClip(clip);
+        if (source < 0) return false;
+        const auto saved = doc;
+        auto next = doc.channelRack;
+        const int slot = next.patternCount;
+        if (!next.addPattern(source)) return false;
+        next.selectedPattern = doc.channelRack.selectedPattern;
+        if (!doc.setRack(std::move(next)) || !doc.bindRackClip(track, scene, doc.channelRack.clips[static_cast<std::size_t>(slot)])) {
+            doc = saved; return false;
+        }
+        pushRackToEngine(); publishStop(static_cast<std::size_t>(track));
+        commit("Copy rack clip", track, scene);
+        return true;
+    }
     // Copy remembers a cell's clip. Paste puts an independent copy of it in a cell; Paste linked puts a
     // clip that shares its content (an edit of either is an edit of both). Make unique gives a linked
     // cell its own copy again. Each is one undo step; a pasted cell's old content is replaced, not edited.
@@ -849,6 +915,8 @@ public:
     bool canPasteLinked() const { return copiedCell && doc.library.clip(copiedCell) != nullptr; }
     bool pasteCell(int track, int scene, bool linked) {
         if (busy || isRecording() || !doc.isValidCell(track, scene) || isTrackFrozen(track) || !copiedContent) return false;
+        if (copiedContent->rackClip != 0)
+            return linked ? assignRackClip(track, scene, copiedContent->rackClip) : copyRackToCell(track, scene, copiedContent->rackClip);
         if (take.active && track == take.track && scene == take.scene) return false;
         if (linked) {
             if (!canPasteLinked()) return false;
@@ -866,6 +934,7 @@ public:
     }
     bool makeCellUnique(int track, int scene) {
         if (busy || isRecording() || !doc.isValidCell(track, scene) || isTrackFrozen(track)) return false;
+        if (doc.clip(track, scene).rackClip != 0) return copyRackToCell(track, scene, doc.clip(track, scene).rackClip);
         const auto id = doc.cellClip(track, scene);
         if (!id || !doc.library.makeClipUnique(id)) return false;
         commit("Make clip unique", track, scene);
@@ -884,7 +953,8 @@ public:
     // cell or placement clip, or a linked cell.
     bool placementShared(std::uint32_t regionId) const {
         const auto* r = doc.timeline.find(regionId);
-        if (r == nullptr || r->isPattern()) return false;
+        if (r == nullptr) return false;
+        if (r->isPattern()) return doc.channelRack.validPattern(r->source);
         if (r->ownsClip()) {
             int uses = 0;
             for (const auto& other : doc.timeline.regions) uses += other.clip == r->clip ? 1 : 0;
@@ -901,6 +971,18 @@ public:
     bool makePlacementUnique(std::uint32_t regionId) {
         if (busy || isRecording() || !placementShared(regionId)) return false;
         const auto* r = doc.timeline.find(regionId);
+        if (r->isPattern()) {
+            const auto saved = doc;
+            auto next = doc.channelRack;
+            const int slot = next.patternCount;
+            if (!next.addPattern(r->source)) return false;
+            next.selectedPattern = doc.channelRack.selectedPattern;
+            if (!doc.setRack(std::move(next))) return false;
+            auto* own = doc.timeline.find(regionId);
+            own->source = slot; own->rackClip = doc.channelRack.clips[static_cast<std::size_t>(slot)];
+            if (!doc.timeline.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount)) { doc = saved; return false; }
+            pushRackToEngine(); commit("Make placement unique"); return true;
+        }
         const int row = r->row, from = r->source;
         if (isTrackFrozen(row)) return false;
         const auto content = doc.placementContent(*r);
@@ -1016,6 +1098,7 @@ public:
     // Called by the piano roll as notes change. Editing a clip that is not
     // playing queues it to launch, so changes are heard straight away.
     void setClipPattern(int track, int scene, const PianoRollPattern& pattern, bool publishToEngine) {
+        if (doc.isValidCell(track, scene) && doc.clip(track, scene).rackClip != 0) return;
         if (!doc.isValidCell(track, scene) || isTrackFrozen(track)) return;
         if (take.active && track == take.track && scene == take.scene) return; // the take owns this clip until it ends
         auto clip = doc.clip(track, scene);
@@ -1290,7 +1373,14 @@ public:
         next.tempo = doc.bpm;
         if (!edit(next) || !next.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount) || next == doc.timeline)
             return false;
-        for (const auto& r : next.regions) if (r.ownsClip() && doc.library.clip(alien::library::ClipId{r.clip}) == nullptr) return false;
+        for (auto& r : next.regions) {
+            if (r.ownsClip() && doc.library.clip(alien::library::ClipId{r.clip}) == nullptr) return false;
+            if (r.isPattern()) {
+                const auto id = doc.channelRack.clips[static_cast<std::size_t>(r.source)];
+                if (r.rackClip != 0 && r.rackClip != id) return false;
+                r.rackClip = id;
+            }
+        }
         if(next.frozenOriginals!=doc.timeline.frozenOriginals)return false;
         // Send automation only for a return that exists.
         for(const auto& lane:next.automationLanes)
@@ -1327,6 +1417,10 @@ public:
     }
     // Where the song starts and is shown when it is next played.
     bool placeRegion(int row, int source, std::int64_t start, std::uint32_t* idOut = nullptr) {
+        if (!timeline::isPatternRow(row) && doc.isValidCell(row, source) && doc.clip(row, source).rackClip != 0) {
+            source = rackPatternForClip(doc.clip(row, source).rackClip);
+            row = timeline::rackRowBase;
+        }
         const auto length = naturalLength(row, source, start);
         return editTimeline(alien::timeline::isPatternRow(row) ? "Place pattern" : "Place clip", [&](alien::timeline::Timeline& t) {
             alien::timeline::Region r; r.row = row; r.source = source; r.start = start; r.length = length;
@@ -1471,6 +1565,9 @@ public:
         return end;
     }
     juce::String freezeRefusal(int track) const {
+        for (int s = 0; s < doc.sceneCount(); ++s)
+            if (doc.isValidCell(track, s) && doc.clip(track, s).rackClip != 0)
+                return "Clear rack launch assignments before freezing this Session track. Rack channels keep their own routing.";
         if(busy || isRecording())return "Finish the current operation before freezing.";
         if(track<0 || track>=doc.trackCount())return "Choose a Session track.";
         if(isTrackFrozen(track))return "Track is already frozen.";
@@ -1525,7 +1622,7 @@ public:
     bool deleteRackPattern(int index) {
         auto next = doc.channelRack;
         if (!next.deletePattern(index) || !doc.setRack(std::move(next))) return false;
-        doc.timeline.patternDeleted(index);
+        // setRack remaps each remaining Song reference by clip identity; in-use sources are refused.
         pushRackToEngine();
         commit("Delete pattern");
         return true;
@@ -1974,8 +2071,11 @@ private:
         abandonRecording();
         engine.playing.store(false);
         engine.requestedRackClip.store(rack::RackPlayer::noLaunchRequest);
+        engine.sceneRackClip.store(rack::RackPlayer::noLaunchRequest);
         engine.rackPerformMode.store(false);
         engine.resetRackPlayback.store(true);
+        copiedCell = {};
+        if (copiedContent && copiedContent->rackClip != 0) copiedContent.reset();
         engine.synchronizedSceneLaunch.store(false);
         if (beforeDocumentReplaced) beforeDocumentReplaced();
         for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track) publishStop(track);
@@ -2197,9 +2297,33 @@ private:
         // Inserting before existing scenes renumbers them.
         if (index < doc.sceneCount()) stopEverySlot();
         std::vector<library::ClipId> row(static_cast<std::size_t>(doc.trackCount()));
-        if (copyFrom != nullptr)
+        if (copyFrom != nullptr) {
+            const auto saved = doc;
+            auto next = doc.channelRack;
+            std::map<std::uint64_t, int> copies;
+            for (std::size_t t = 0; t < row.size() && t < copyFrom->size(); ++t) {
+                const auto id = (*copyFrom)[t];
+                if (!id) continue;
+                const int p = doc.rackPatternForClip(id.value);
+                if (p < 0) continue;
+                else if (!copies.contains(id.value)) {
+                    const int slot = next.patternCount;
+                    if (!next.addPattern(p)) { doc = saved; return false; }
+                    copies[id.value] = slot;
+                }
+            }
+            if (!copies.empty()) {
+                next.selectedPattern = doc.channelRack.selectedPattern;
+                if (!doc.setRack(std::move(next))) { doc = saved; return false; }
+                for (std::size_t t = 0; t < row.size() && t < copyFrom->size(); ++t)
+                    if (const auto found = copies.find((*copyFrom)[t].value); found != copies.end())
+                        row[t] = library::ClipId{doc.channelRack.clips[static_cast<std::size_t>(found->second)]};
+                pushRackToEngine();
+            }
+            // setRack prunes unused clips: allocate ordinary cell copies only after it finishes.
             for (std::size_t t = 0; t < row.size() && t < copyFrom->size(); ++t)
-                if ((*copyFrom)[t]) row[t] = doc.library.duplicateClip((*copyFrom)[t]);
+                if (!row[t] && (*copyFrom)[t]) row[t] = doc.library.duplicateClip((*copyFrom)[t]);
+        }
         const auto name = copyFrom != nullptr ? doc.scenes[static_cast<std::size_t>(index - 1)].name + " copy"
                                               : doc.nextSceneName();
         doc.timeline.sceneInserted(index);

@@ -1253,7 +1253,9 @@ public:
         menu.addItem(renamePattern, "Rename pattern...");
         menu.addSeparator();
         menu.addItem(clearPattern, "Clear pattern");
-        menu.addItem(deletePattern, "Delete pattern", controller.channelRack().patternCount > 1);
+        const bool used = controller.rackPatternInUse(controller.channelRack().selectedPattern);
+        menu.addItem(deletePattern, used ? "Delete pattern (clear Session/Song uses first)" : "Delete pattern",
+                     controller.channelRack().patternCount > 1 && !used);
         return menu;
     }
     juce::PopupMenu addChannelMenu() const {

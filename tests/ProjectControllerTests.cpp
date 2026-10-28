@@ -539,10 +539,14 @@ static void timelineIntegrationTests() {
         require(c.deleteScene(2) && c.timeline().find(b) == nullptr && sourceOf(a) == 2, "deleting a scene removes its clips and renumbers the rest");
         require(c.deleteTrack(0) && rowOf(a) == 2, "deleting a track renumbers the tracks after it");
         require(c.deleteTrack(2) && c.timeline().find(a) == nullptr, "and removes the clips of the track that went");
-        require(c.deleteRackPattern(1) && c.timeline().find(p1) == nullptr && sourceOf(p2) == 1 && sourceOf(p0) == 0,
-                "deleting a pattern removes its clips and renumbers the patterns after it");
+        require(!c.deleteRackPattern(1) && c.timeline().find(p1) != nullptr,
+                "a bank source with explicit Song uses is protected");
+        require(c.editTimeline("Remove placement", [&](Timeline& t) { return t.remove({p1}); }) && c.deleteRackPattern(1)
+                && sourceOf(p2) == 1 && sourceOf(p0) == 0, "after clearing its uses, deletion remaps other sources by identity");
         require(c.timeline().valid(c.document().trackCount(), c.document().sceneCount(), c.channelRack().patternCount), "the timeline is still valid for the project");
-        require(c.editRack("Remove a pattern", [](alien::rack::Project& p) { return p.deletePattern(1); }), "the rack loses another pattern");
+        require(!c.editRack("Remove a pattern", [](alien::rack::Project& p) { return p.deletePattern(1); }), "generic rack edits also protect used sources");
+        require(c.editTimeline("Remove placement", [&](Timeline& t) { return t.remove({p2}); })
+            && c.editRack("Remove a pattern", [](alien::rack::Project& p) { return p.deletePattern(1); }), "clear the placement before removing its bank source");
         require(c.timeline().find(p2) == nullptr && c.timeline().find(p0) != nullptr
                 && c.timeline().valid(c.document().trackCount(), c.document().sceneCount(), c.channelRack().patternCount),
                 "a clip of a pattern that no longer exists is dropped, not left pointing at nothing");
@@ -941,6 +945,86 @@ static void rackLibraryTests() {
     std::puts("PASS: Channel Rack patterns are library clips");
 }
 
+static void savedRackBindingTests() {
+    ToneEngine engine;
+    alien::ProjectController c(engine);
+    const auto& d = c.document();
+    require(c.editRack("Rack source", [](alien::rack::Project& p) {
+        p.setStepOn(0, 0, 0, true);
+        p.setStepField(0, 0, 100, alien::rack::StepField::ratchet, 3); // dormant, beyond the loop
+        alien::PianoRollPattern chord; chord.loopSteps = 16; chord.add(60, 0.5, 2); chord.add(64, 0.5, 2);
+        p.setChannelNotes(0, 1, chord);
+        return p.addPattern(0);
+    }), "two independent rack sources");
+    auto source = c.channelRack().clips[1];
+    require(c.assignRackClip(0, 0, source) && c.assignRackClip(0, 1, source), "two saved assignments share one rack source");
+    const auto unchanged = d;
+    require(!c.assignRackClip(1, 0, c.channelRack().clips[0]) && alien::sameContent(unchanged, d),
+            "a scene cannot ambiguously launch two different rack clips");
+    engine.patternMode.store(1); c.launchClip(0, 0);
+    require(engine.requestedRackClip.load() == source && engine.playing.load(), "a bound Session cell launches its composite source");
+    c.stopTrack(0); require(engine.requestedRackClip.load() == 0, "the anchor row's stop controls its rack launch");
+    c.launchScene(0); require(engine.sceneRackClip.load() == source, "a scene queues its composite source with the synchronized launch");
+    c.launchClip(1, 2); require(engine.sceneRackClip.load() == source && engine.requestedRackClip.load() == alien::rack::RackPlayer::noLaunchRequest,
+        "ordinary launch on an unrelated row leaves the rack alone");
+    c.launchClip(0, 2); require(engine.requestedRackClip.load() == 0, "ordinary launch on the rack's anchor row stops that instance");
+    c.launchScene(2); require(engine.sceneRackClip.load() == 0, "a scene without a rack assignment queues synchronized rack stop");
+    std::uint32_t region{};
+    require(c.placeRegion(0, 0, 0, &region) && d.timeline.find(region)->isPattern() && d.timeline.find(region)->rackClip == source,
+            "placing a rack cell creates an explicit rack-lane Song reference");
+    require(c.deleteRackPattern(0) && d.timeline.find(region)->source == 0 && d.timeline.find(region)->rackClip == source,
+            "deleting an unused preceding slot remaps the Song cache by identity");
+    require(!c.deleteRackPattern(0), "a source with Session/Song uses cannot be deleted");
+    require(c.editRack("Shared edit", [](alien::rack::Project& p) { return p.setStepOn(0, 0, 1, true); }), "edit shared rack source");
+    require(d.clip(0, 0).rackClip == d.clip(0, 1).rackClip && d.timeline.find(region)->rackClip == source && d.rackMatchesLibrary(),
+            "Create, Session and Song retain one content owner");
+    require(c.copyCell(0, 0) && c.pasteCell(1, 2, false), "independent rack paste");
+    const auto independent = d.clip(1, 2).rackClip;
+    require(independent != source && c.editRack("Independent edit", [](alien::rack::Project& p) { return p.setStepOn(1, 0, 1, false); })
+        && c.channelRack().pattern(0).steps[0][1].on && !c.channelRack().pattern(1).steps[0][1].on,
+        "an independent copy changes only its own content");
+    c.setClipPattern(2, 0, patternWith(66), false); c.commit("Ordinary notes");
+    require(c.duplicateScene(0), "duplicate scene with a composite assignment"); c.commit("Duplicate scene");
+    const auto sceneCopy = d.clip(0, 1).rackClip;
+    require(sceneCopy != source && c.rackPatternForClip(sceneCopy) >= 0 && d.clip(2, 1).notes().count == 1
+        && d.clip(2, 1).notes().notes[0].pitch == 66 && c.undo() && c.redo(),
+            "scene copies get independent rack sources, with undo and redo");
+    require(c.makePlacementUnique(region) && d.timeline.find(region)->rackClip != source && c.undo()
+        && d.timeline.find(region)->rackClip == source, "Song Make unique forks the composite source in one undo step");
+    const auto data = alien::toProjectData(d);
+    const auto json = alien::serializeSessionProject(data);
+    alien::SessionProjectData parsed; juce::String error;
+    require(data.valid() && !json.isEmpty() && alien::parseSessionProject(json, parsed, error), "format 26 rack bindings round trip");
+    require(static_cast<int>(juce::JSON::parse(json).getProperty("version", 0)) == 26, "rack bindings use format 26");
+    const auto reopened = alien::fromProjectData(parsed);
+    const auto reopenedSource = reopened.clip(0, 0).rackClip;
+    require(reopenedSource != 0 && reopened.clip(0, 2).rackClip == reopenedSource
+        && reopened.timeline.regions[0].rackClip == reopenedSource && reopened.clip(1, 3).rackClip != reopenedSource
+        && reopened.rackMatchesLibrary() && alien::toProjectData(reopened).valid(), "saved references rebind together; copies stay independent");
+    require(reopened.channelRack.lanes == data.channelRack.lanes && reopened.channelRack.pattern(0).steps[0][100].ratchet == 3
+        && reopened.channelRack.pattern(0).notes[1]->count == 2, "lane identities, dormant steps and full note rows survive");
+    const auto beforeDamage = alien::serializeSessionProject(parsed);
+    const auto damage = [&](const auto& edit, const char* message) {
+        auto broken = juce::JSON::parse(json); edit(broken);
+        require(!alien::parseSessionProject(juce::JSON::toString(broken), parsed, error)
+            && alien::serializeSessionProject(parsed) == beforeDamage, message);
+    };
+    damage([](juce::var& v) { v.getProperty("scenes", {})[0][0].getDynamicObject()->setProperty("rackClip", "ffffffffffffffff"); }, "missing rack source refused atomically");
+    damage([](juce::var& v) { v.getProperty("channelRack", {}).getProperty("patterns", {})[1].getDynamicObject()->setProperty("clip",
+        v.getProperty("channelRack", {}).getProperty("patterns", {})[0].getProperty("clip", {})); }, "duplicate rack clip ids refused");
+    damage([](juce::var& v) { v.getProperty("channelRack", {}).getProperty("channels", {})[0].getDynamicObject()->setProperty("lane", "0000000000000000"); }, "zero lane ids refused");
+    damage([](juce::var& v) { v.getProperty("timeline", {}).getProperty("regions", {})[0].getDynamicObject()->setProperty("rackClip",
+        v.getProperty("channelRack", {}).getProperty("patterns", {})[1].getProperty("clip", {})); }, "mismatched Song source cache refused");
+    damage([](juce::var& v) { v.getDynamicObject()->setProperty("version", 25); }, "bindings hidden in an older format refused");
+    auto legacy = juce::JSON::parse(json); legacy.getDynamicObject()->setProperty("version", 25);
+    for (auto& scene : *legacy.getProperty("scenes", {}).getArray()) for (auto& cell : *scene.getArray()) cell.getDynamicObject()->removeProperty("rackClip");
+    for (auto& r : *legacy.getProperty("timeline", {}).getProperty("regions", {}).getArray()) r.getDynamicObject()->removeProperty("rackClip");
+    require(alien::parseSessionProject(juce::JSON::toString(legacy), parsed, error)
+        && alien::fromProjectData(parsed).rackMatchesLibrary(), "format 25 migrates independent legacy bank slots and Song placements");
+    c.newProject(); require(!c.canPasteLinked() && !c.hasCopiedCell(), "clipboard ids cannot alias a new document's sources");
+    std::puts("PASS: saved rack bindings, linked/independent uses, migration and strict validation (format 26)");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     automationUndoTests();
@@ -957,6 +1041,7 @@ int main() {
     placementClipTests();
     placementClipFileTests();
     rackLibraryTests();
+    savedRackBindingTests();
     structureTests();
     fileFormatTests();
     undoTests();
