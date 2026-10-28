@@ -491,6 +491,12 @@ private:
             else keyboardState.noteOff(3, note, 0);
         };
         sessionView.onSelectionChanged = [this] { rollTarget = {}; loadSelectedClip(); };
+        // Launching a clip plays it. With Song mode on, Play plays the Song instead, so say so rather than stay silent.
+        sessionView.onLaunched = [this](bool) {
+            if (songPlayback && !engine.playing.load())
+                statusBar.setProjectStatus("Song mode is on, so Play plays the Song, not Session clips.",
+                                           "Turn Song mode off in the top bar to hear Session clips as you launch them.");
+        };
         sessionView.onEditRackClip = [this](std::uint64_t clip) {
             const int pattern = controller.rackPatternForClip(clip);
             if (pattern < 0) return;

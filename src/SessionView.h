@@ -281,6 +281,9 @@ public:
         menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&linkClip), std::move(done));
     }
     std::function<void()> onSelectionChanged;           // selected clip changed
+    // A clip or scene was launched; `started` says whether that started the stopped transport (it does not
+    // while the Song or a count-in is what plays).
+    std::function<void(bool started)> onLaunched;
     std::function<void()> onClearClip;                  // clear the selected clip
     std::function<void()> onRelinkAudio;                // choose a folder to search for missing audio
     std::function<void()> onTitleChanged;               // header subtitle text changed
@@ -303,7 +306,7 @@ public:
             sceneButton->setButtonText(d.scenes[static_cast<std::size_t>(scene)].name);
             sceneButton->setTooltip("Launch every track's clip in " + d.scenes[static_cast<std::size_t>(scene)].name
                                     + ". Right-click to rename, duplicate, move or delete.");
-            sceneButton->onClick = [this, scene] { controller.launchScene(scene); refreshClips(); };
+            sceneButton->onClick = [this, scene] { controller.launchScene(scene); launched(); refreshClips(); };
             sceneButton->onRightClick = [this, scene] { showSceneMenu(scene); };
             sceneStrip.addAndMakeVisible(*sceneButton);
             sceneButtons.push_back(std::move(sceneButton));
@@ -315,6 +318,7 @@ public:
                                    + ": click to launch, right-click to edit");
                 button->onClick = [this, track, scene] {
                     controller.launchClip(track, scene);
+                    launched();
                     selectionChanged();
                 };
                 button->onRightClick = [this, track, scene] {
@@ -700,6 +704,10 @@ private:
     void selectionChanged() {
         refreshSelectedClip();
         if (onSelectionChanged) onSelectionChanged();
+    }
+    void launched() {
+        const bool started = controller.startTransportForLaunch();
+        if (onLaunched) onLaunched(started);
     }
 
     void setLearning(int action) {

@@ -1,5 +1,6 @@
 #pragma once
 #include "ProjectDocument.h"
+#include "ViewModes.h"
 #include "ToneEngine.h"
 #include "AudioClipImport.h"
 #include "AudioRelink.h"
@@ -576,6 +577,16 @@ public:
     void launchClip(int track, int scene) {
         selectClip(track, scene);
         publishClip(doc.selectedTrack, doc.selectedScene);
+    }
+
+    // A clip or scene launched from the Session view should be heard at once: while Session clips are what the
+    // engine plays (not the Song, not the Channel Rack, not a recording's count-in), a stopped transport starts.
+    // Returns whether it started; the launch itself waits for the next Beat/Bar boundary as usual.
+    bool startTransportForLaunch() {
+        if (engine.patternMode.load() != sessionMode || engine.playing.load()
+            || engine.recording.phase.load() == RecordControls::countIn) return false;
+        engine.playing.store(true);
+        return true;
     }
 
     void launchScene(int scene) {

@@ -273,6 +273,39 @@ static void launching() {
     require(edited == 12 && rig.requested(1) == -1, "right-clicking a clip opens it for editing and does not launch it");
 }
 
+// Clicking a clip with the transport stopped makes it heard: the transport starts and the clip plays from the
+// first boundary. With the Song playing instead, or the 16-step sequencer, the transport is left alone.
+static void launchingIsHeard() {
+    ui::StudioLookAndFeel look;
+    juce::LookAndFeel::setDefaultLookAndFeel(&look);
+    Rig rig;
+    auto& e = rig.engine;
+    rig.fillClip(0, 0);
+    e.patternMode.store(1);
+    std::vector<bool> reports;
+    rig.view.onLaunched = [&](bool started) { reports.push_back(started); };
+    require(!e.playing.load(), "the transport starts stopped");
+    clickButton(*rig.view.clipSlot(0, 0));
+    require(e.playing.load() && reports == std::vector<bool>{true}, "clicking a clip starts the stopped transport");
+    std::array<float, 512> left{}, right{};
+    float peak = 0;
+    for (int b = 0; b < 8; ++b) {   // the first 85 ms
+        float* outputs[]{left.data(), right.data()};
+        e.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
+        for (const float v : left) peak = std::max(peak, std::abs(v));
+    }
+    require(peak > 0.01f, "and the clip is heard straight away");
+    clickButton(*rig.view.sceneLauncher(0));
+    require(e.playing.load() && reports.back() == false, "launching while playing leaves the transport running");
+    e.playing.store(false);
+    e.patternMode.store(2);   // Song mode: the Session view plays the Song
+    clickButton(*rig.view.clipSlot(0, 0));
+    require(!e.playing.load() && reports.back() == false && rig.requested(0) == 0, "with the Song playing the clip is queued but the transport stays as it was");
+    e.patternMode.store(0);   // the 16-step sequencer
+    clickButton(*rig.view.sceneLauncher(0));
+    require(!e.playing.load(), "and so it does for the 16-step sequencer");
+}
+
 // The real device callback rendered without a device: two tracks loop a clip, one is stopped from its header, and at the
 // next bar that track is stopped while the other keeps playing.
 static void renderBlocks(ToneEngine& engine, int samples) {
@@ -980,6 +1013,7 @@ int main() {
     layoutChecks();
     wheelEvents();
     launching();
+    launchingIsHeard();
     engineStopsOneTrack();
     headerControls();
     muteSoloCommandHistory();
