@@ -91,6 +91,10 @@ static void whichClips() {
     put(1, 1, notes(16, {{61, 0}}));
     doc.cells[1][2] = doc.library.linkClip(doc.cellClip(1, 1));
     const auto all = [](int, int) { return true; };
+    require(doc.bindRackClip(0, 2, doc.channelRack.clips[0]), "rack assignment fixture");
+    require(multiClipSourcesFor(doc, 0, 2, GhostNoteSource::sameScene, all).empty()
+        && ghostClipsFor(doc, 0, 2, GhostNoteSource::sameTrack).empty(),
+        "composite rack assignments cannot enter the single-channel multi-clip editor or ghost view");
     auto sources = multiClipSourcesFor(doc, 0, 0, GhostNoteSource::sameScene, all);
     require(sources.size() == 3 && sources[0].track == 0 && sources[1].track == 1 && sources[2].track == 3, "the opened clip first, then the scene's clips of its length");
     sources = multiClipSourcesFor(doc, 0, 0, GhostNoteSource::sameScene, [](int track, int) { return track != 1; });
