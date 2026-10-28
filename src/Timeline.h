@@ -193,6 +193,40 @@ struct MeterMap {
     }
 };
 
+// The shape of a fade (T1-08): gain against how far through the fade it is, 0..1, for a fade in. A fade out, and
+// the outgoing side of a crossfade, is the same shape mirrored, so equal-power stays equal-power both ways.
+enum class FadeCurve : std::uint8_t { linear, equalPower, slow, fast, sCurve };
+inline constexpr int fadeCurveCount = 5;
+inline double fadeGain(FadeCurve curve, double x) noexcept {
+    x = std::clamp(x, 0.0, 1.0);
+    switch (curve) {
+    case FadeCurve::linear: return x;
+    case FadeCurve::equalPower: return std::sin(x * 1.5707963267948966);
+    case FadeCurve::slow: return x * x;                       // creeps in, then rises (exponential-like)
+    case FadeCurve::fast: return x * (2.0 - x);               // rises at once, then settles (logarithmic-like)
+    case FadeCurve::sCurve: return x * x * (3.0 - 2.0 * x);   // gentle at both ends
+    }
+    return x;
+}
+inline bool validFadeCurve(FadeCurve curve) noexcept { return static_cast<int>(curve) >= 0 && static_cast<int>(curve) < fadeCurveCount; }
+// Names as saved in a project and shown in menus.
+inline const char* fadeCurveKey(FadeCurve curve) noexcept {
+    switch (curve) {
+    case FadeCurve::linear: return "linear"; case FadeCurve::equalPower: return "equalPower"; case FadeCurve::slow: return "slow";
+    case FadeCurve::fast: return "fast"; case FadeCurve::sCurve: return "sCurve";
+    }
+    return "linear";
+}
+inline const char* fadeCurveLabel(FadeCurve curve) noexcept {
+    switch (curve) {
+    case FadeCurve::linear: return "Linear"; case FadeCurve::equalPower: return "Equal power"; case FadeCurve::slow: return "Slow (exponential)";
+    case FadeCurve::fast: return "Fast (logarithmic)"; case FadeCurve::sCurve: return "S-curve";
+    }
+    return "Linear";
+}
+// Which fade of a region a shape is for.
+enum class FadeEdge { in, out, crossfade };
+
 struct Region {
     std::uint32_t id{};
     std::uint32_t group{};            // 0: not grouped. Regions sharing a group move, copy and select together.
@@ -217,6 +251,8 @@ struct Region {
     // Without such a neighbour it is an equal-power fade in.
     std::int64_t crossfade{};
     bool loopSource{}, reversed{};
+    // The fades' shapes: straight edge fades and an equal-power crossfade unless chosen otherwise (format 27).
+    FadeCurve fadeInCurve{FadeCurve::linear}, fadeOutCurve{FadeCurve::linear}, crossfadeCurve{FadeCurve::equalPower};
     std::int64_t end() const noexcept { return start + length; }
     bool isPattern() const noexcept { return isPatternRow(row); }
     bool ownsClip() const noexcept { return clip != 0; }
@@ -393,7 +429,8 @@ struct Timeline {
             if (r.id == 0 || r.start < 0 || r.length < 1 || r.end() > length() || r.offset < 0
                 || !std::isfinite(r.audioOffset) || r.audioOffset < 0.0 || !std::isfinite(r.gain) || r.gain < 0.0 || r.gain > 64.0
                 || r.fadeIn < 0 || r.fadeOut < 0 || r.fadeIn > r.length || r.fadeOut > r.length
-                || r.crossfade < 0 || r.crossfade > r.length) return false;
+                || r.crossfade < 0 || r.crossfade > r.length
+                || !validFadeCurve(r.fadeInCurve) || !validFadeCurve(r.fadeOutCurve) || !validFadeCurve(r.crossfadeCurve)) return false;
             if (r.isPattern()) { if (r.clip != 0 || r.source < 0 || r.source >= patterns) return false; }
             else if (r.row < 0 || r.row >= tracks) return false;
             else if (r.ownsClip() ? r.source != -1 : r.source < 0 || r.source >= scenes) return false;
@@ -437,7 +474,8 @@ struct Timeline {
             if (a.row != b.row || a.source != b.source || a.clip != b.clip || a.start != b.start || a.length != b.length
                 || a.offset != b.offset || a.audioOffset != b.audioOffset || a.gain != b.gain
                 || a.fadeIn != b.fadeIn || a.fadeOut != b.fadeOut || a.crossfade != b.crossfade || a.loopSource != b.loopSource
-                || a.reversed != b.reversed || a.muted != b.muted) return false;
+                || a.reversed != b.reversed || a.muted != b.muted
+                || a.fadeInCurve != b.fadeInCurve || a.fadeOutCurve != b.fadeOutCurve || a.crossfadeCurve != b.crossfadeCurve) return false;
         }
         return true;
     }
@@ -720,6 +758,15 @@ struct Timeline {
     bool setFades(const Ids& ids, std::int64_t fadeIn, std::int64_t fadeOut) {
         if (fadeIn < 0 || fadeOut < 0) return false;
         return editAudio(ids, [=](Region& r) { const auto in = std::min(fadeIn, r.length), out = std::min(fadeOut, r.length); if (r.fadeIn == in && r.fadeOut == out) return false; r.fadeIn = in; r.fadeOut = out; return true; });
+    }
+    // Gives the chosen fade of every selected audio clip a shape. Clips without that fade keep the choice for when they get one.
+    bool setFadeCurve(const Ids& ids, FadeEdge edge, FadeCurve curve) {
+        if (!validFadeCurve(curve)) return false;
+        return editAudio(ids, [=](Region& r) {
+            auto& field = edge == FadeEdge::in ? r.fadeInCurve : edge == FadeEdge::out ? r.fadeOutCurve : r.crossfadeCurve;
+            if (field == curve) return false;
+            field = curve; return true;
+        });
     }
     bool clearFades(const Ids& ids) {
         return editAudio(ids, [](Region& r) { if (r.fadeIn == 0 && r.fadeOut == 0 && r.crossfade == 0) return false; r.fadeIn = r.fadeOut = r.crossfade = 0; return true; });

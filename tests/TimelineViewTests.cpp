@@ -2324,10 +2324,43 @@ static void placementClipChecks() {
     require(sharing == 2, "the two placements share one clip");
 }
 
+// Fade shapes (T1-08): the audio clip menu offers a shape for each fade, applies it to every selected audio clip as one
+// undo step, and the shape is saved from format 27.
+static void fadeShapeChecks() {
+    Rig rig; rig.song();
+    const auto has = [&](const juce::String& text) {
+        for (const auto& item : rig.menu.items()) if (item.text == text) return true;
+        return false;
+    };
+    rig.rightClick(rig.at(bar / 2, 2));   // the audio clip, au
+    require(rig.menu.shown && has("Equal power") && has("S-curve") && has("Fast (logarithmic)"), "an audio clip's menu offers fade shapes");
+    rig.menu.done(TimelineCanvas::fadeShapeCommand(tl::FadeEdge::in, tl::FadeCurve::sCurve));
+    require(rig.reg(rig.id.au).fadeInCurve == tl::FadeCurve::sCurve && rig.controller.undoLabel() == "Fade shape", "choosing one shapes the fade in, as one undo step");
+    rig.rightClick(rig.at(bar / 2, 2));
+    rig.menu.done(TimelineCanvas::fadeShapeCommand(tl::FadeEdge::crossfade, tl::FadeCurve::linear));
+    require(rig.reg(rig.id.au).crossfadeCurve == tl::FadeCurve::linear && rig.reg(rig.id.au).fadeInCurve == tl::FadeCurve::sCurve, "each fade keeps its own shape");
+    require(rig.controller.undo() && rig.reg(rig.id.au).crossfadeCurve == tl::FadeCurve::equalPower, "undo puts the shape back");
+    rig.rightClick(rig.at(bar / 2, 0));   // a MIDI clip
+    require(!has("S-curve"), "a MIDI clip has no fades to shape");
+    // Saved from format 27; an older file naming a shape, or an unknown shape, is refused.
+    const auto json = alien::serializeSessionProject(alien::toProjectData(rig.controller.document()));
+    alien::SessionProjectData parsed; juce::String error;
+    require(alien::parseSessionProject(json, parsed, error), "the project reads back");
+    bool kept = false;
+    for (const auto& r : parsed.timeline.regions) kept = kept || r.fadeInCurve == tl::FadeCurve::sCurve;
+    require(kept && static_cast<int>(juce::JSON::parse(json).getProperty("version", 0)) >= 27, "the shape is saved (format 27 or later)");
+    auto old = juce::JSON::parse(json); old.getDynamicObject()->setProperty("version", 26);
+    require(!alien::parseSessionProject(juce::JSON::toString(old), parsed, error), "a format 26 file naming a shape is refused");
+    auto odd = json.replace("\"sCurve\"", "\"wobble\"");
+    require(!alien::parseSessionProject(odd, parsed, error), "an unknown shape is refused");
+    std::cout << "PASS: fade shapes" << std::endl;
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     freezeMenuChecks();
     placementClipChecks();
+    fadeShapeChecks();
     sendAutomationEditorChecks();
     takeCompChecks();
     takeLaneChecks();
