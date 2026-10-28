@@ -304,6 +304,7 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Drag the fade handles of an audio clip with a real mouse at 100% and 150% display scaling; check the handles are easy to grab and do not get in the way of trimming.
 - Listen to fade ins/outs and to a one-beat and a one-bar crossfade between two different recordings: no click, dip or level jump at the join. Repeat with a long (streamed) recording as the first clip.
 - Start playback inside a crossfade, loop over one, and export a WAV containing one; compare the export with what was heard.
+- Fade shapes: right-click an audio clip and try each Fade-in shape and Fade-out shape on a sustained sound (Linear, Equal power, Slow, Fast, S-curve): each drawn curve matches what you hear, Slow stays quiet longer and Fast comes up at once. Set a Crossfade shape between two recordings: Equal power keeps the level steady, Linear dips slightly in the middle, S-curve hands over smoothly. Apply a shape to several selected clips at once and undo it in one step. Save, reopen and export: the shapes are kept and the export matches playback; an older build refuses the file.
 
 ## Song tempo changes
 - In the Song view, double-click the ruler at bar 5 and enter 90; add another change at bar 9 (140). Play from bar 1 with the metronome on: the click and every MIDI, drum and Channel Rack part change speed exactly on those bars, with no stuck or doubled notes.

@@ -553,6 +553,20 @@ public:
         return edit("Fade clips", [=](timeline::Timeline& t) { return t.setFades(ids, timeline::ticksPerBeat, timeline::ticksPerBeat); });
     }
     // Crosses two selected touching clips, or one selected clip with the clip that ends where it starts.
+    // The menu id for giving one fade a shape.
+    static int fadeShapeCommand(timeline::FadeEdge edge, timeline::FadeCurve curve) noexcept {
+        return cmdFadeShapeBase + static_cast<int>(edge) * 10 + static_cast<int>(curve);
+    }
+    // Gives the chosen fade of every selected audio clip a shape (one undo step).
+    bool setFadeShapeSelection(timeline::FadeEdge edge, timeline::FadeCurve curve) {
+        timeline::Ids ids;
+        for (const auto id : selected) if (const auto* r = committed().find(id); r != nullptr && isAudioRegion(*r)) ids.push_back(id);
+        if (ids.empty()) { say("Select audio clips to shape their fades."); return false; }
+        const bool done = edit("Fade shape", [=](timeline::Timeline& t) { return t.setFadeCurve(ids, edge, curve); });
+        if (done) say(juce::String(edge == timeline::FadeEdge::in ? "Fade in" : edge == timeline::FadeEdge::out ? "Fade out" : "Crossfade")
+                      + ": " + timeline::fadeCurveLabel(curve) + ".");
+        return done;
+    }
     bool crossfadeSelection() {
         const timeline::Region* a = nullptr; const timeline::Region* b = nullptr;
         if (selected.size() == 1) { b = committed().find(selected[0]); a = committed().crossfadePartner(selected[0]); }
@@ -831,7 +845,7 @@ public:
     // The items of the right-click menus.
     enum Command { cmdSplit = 1, cmdMute, cmdDuplicate, cmdCopy, cmdCut, cmdDelete, cmdGroup, cmdUngroup, cmdOpen, cmdPaste, cmdSelectAll, cmdAddMarker,
                    cmdSlipLeft, cmdSlipRight, cmdSourceLoop, cmdReverse, cmdNormalize, cmdFade, cmdCrossfade,
-                   cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdRemoveFades, cmdTempo, cmdRemoveTempo, cmdMeter, cmdRemoveMeter, cmdMakeUnique, cmdColourBase = 100,
+                   cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdRemoveFades, cmdTempo, cmdRemoveTempo, cmdMeter, cmdRemoveMeter, cmdMakeUnique, cmdColourBase = 100, cmdFadeShapeBase = 500,
                    cmdArm = 200, cmdFreeze = 201, cmdUnfreeze = 202, cmdTakeLanes = 203, cmdPlayTake = 204, cmdPlayTakeLoop = 205, cmdForgetTake = 206,
                    cmdMonitorBase = 210, cmdInputMonoBase = 300, cmdInputStereoBase = 400 };
     juce::PopupMenu placeMenu(int row) const {
@@ -1521,6 +1535,18 @@ private:
                 if (isAudioRegion(*r)) {   // fades act on audio only
                     menu.addItem(cmdFade, "Fade in and out"); menu.addItem(cmdCrossfade, "Crossfade", canCrossfadeSelection());
                     menu.addItem(cmdRemoveFades, "Remove fades", selectionHasFades());
+                    // One submenu per fade: its shape (the first selected clip's is ticked).
+                    const auto shapes = [&](timeline::FadeEdge edge, const char* title, timeline::FadeCurve current) {
+                        juce::PopupMenu sub;
+                        for (int c = 0; c < timeline::fadeCurveCount; ++c) {
+                            const auto curve = static_cast<timeline::FadeCurve>(c);
+                            sub.addItem(fadeShapeCommand(edge, curve), timeline::fadeCurveLabel(curve), true, curve == current);
+                        }
+                        menu.addSubMenu(title, sub);
+                    };
+                    shapes(timeline::FadeEdge::in, "Fade-in shape", r->fadeInCurve);
+                    shapes(timeline::FadeEdge::out, "Fade-out shape", r->fadeOutCurve);
+                    shapes(timeline::FadeEdge::crossfade, "Crossfade shape", r->crossfadeCurve);
                 }
             }
             menu.addSeparator();
@@ -1538,6 +1564,11 @@ private:
                 case cmdSourceLoop: toggleSourceLoopSelection(); break; case cmdReverse: toggleReverseSelection(); break;
                 case cmdNormalize: normalizeSelection(); break; case cmdFade: fadeSelection(); break; case cmdCrossfade: crossfadeSelection(); break;
                 case cmdRemoveFades: removeFadesSelection(); break;
+                case cmdFadeShapeBase + 0: case cmdFadeShapeBase + 1: case cmdFadeShapeBase + 2: case cmdFadeShapeBase + 3: case cmdFadeShapeBase + 4:
+                case cmdFadeShapeBase + 10: case cmdFadeShapeBase + 11: case cmdFadeShapeBase + 12: case cmdFadeShapeBase + 13: case cmdFadeShapeBase + 14:
+                case cmdFadeShapeBase + 20: case cmdFadeShapeBase + 21: case cmdFadeShapeBase + 22: case cmdFadeShapeBase + 23: case cmdFadeShapeBase + 24:
+                    setFadeShapeSelection(static_cast<timeline::FadeEdge>((id - cmdFadeShapeBase) / 10), static_cast<timeline::FadeCurve>((id - cmdFadeShapeBase) % 10));
+                    break;
                 case cmdDuplicate: duplicateSelection(); break; case cmdCopy: copySelection(); break;
                 case cmdCut: cutSelection(); break; case cmdDelete: deleteSelection(); break;
                 case cmdGroup: groupSelection(); break; case cmdUngroup: ungroupSelection(); break;
@@ -1936,20 +1967,20 @@ private:
         const auto out = static_cast<float>(static_cast<double>(r.fadeOut) * ppt);
         return {std::min(box.getX() + in, box.getRight()), std::max(box.getRight() - out, box.getX())};
     }
-    // Shades what each fade takes away and draws its curve: straight edge fades, an equal-power crossfade.
+    // Shades what each fade takes away and draws its curve in the shape it plays (FadeCurve).
     void paintFades(juce::Graphics& g, const timeline::Region& r, juce::Rectangle<float> box) {
         juce::Graphics::ScopedSaveState state(g);
         g.reduceClipRegion(box.toNearestInt());
         const float top = box.getY() + 2.0f, bottom = box.getBottom() - 1.0f;
         const auto [inX, outX] = fadeHandles(r, box);
-        auto shade = [&](float from, float to, bool rising, bool curved) {
+        auto shade = [&](float from, float to, bool rising, timeline::FadeCurve shape) {
             if (to - from < 1.0f) return;
             juce::Path curve, area;
-            const int steps = curved ? 24 : 1;
+            const int steps = shape == timeline::FadeCurve::linear ? 1 : 24;
             for (int i = 0; i <= steps; ++i) {
                 const float x = static_cast<float>(i) / static_cast<float>(steps);
-                const float level = curved ? std::sin(x * 1.5707964f) : x;
-                const float y = bottom - (bottom - top) * (rising ? level : 1.0f - level);
+                const auto level = static_cast<float>(timeline::fadeGain(shape, rising ? x : 1.0f - x));
+                const float y = bottom - (bottom - top) * level;
                 const float px = from + (to - from) * x;
                 if (i == 0) curve.startNewSubPath(px, y); else curve.lineTo(px, y);
             }
@@ -1959,17 +1990,18 @@ private:
             g.setColour(juce::Colours::white.withAlpha(r.muted ? 0.35f : 0.8f)); g.strokePath(curve, juce::PathStrokeType(1.2f));
         };
         if (r.crossfade > 0) {
-            shade(box.getX(), inX, true, true);
+            shade(box.getX(), inX, true, r.crossfadeCurve);
             // The outgoing clip's falling curve, mirrored across the same span.
             juce::Path falling;
             for (int i = 0; i <= 24; ++i) {
                 const float x = static_cast<float>(i) / 24.0f;
-                const float px = box.getX() + (inX - box.getX()) * x, y = bottom - (bottom - top) * std::cos(x * 1.5707964f);
+                const float px = box.getX() + (inX - box.getX()) * x;
+                const float y = bottom - (bottom - top) * static_cast<float>(timeline::fadeGain(r.crossfadeCurve, 1.0f - x));
                 if (i == 0) falling.startNewSubPath(px, y); else falling.lineTo(px, y);
             }
             g.setColour(juce::Colours::white.withAlpha(0.45f)); g.strokePath(falling, juce::PathStrokeType(1.0f));
-        } else shade(box.getX(), inX, true, false);
-        shade(outX, box.getRight(), false, false);
+        } else shade(box.getX(), inX, true, r.fadeInCurve);
+        shade(outX, box.getRight(), false, r.fadeOutCurve);
         if (box.getWidth() >= edgeGrab * 4.0f) {
             g.setColour(juce::Colours::white.withAlpha(r.muted ? 0.4f : 0.9f));
             for (const float x : {inX, outX})

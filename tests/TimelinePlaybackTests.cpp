@@ -1456,6 +1456,55 @@ static void fadeTests() {
     }
 }
 
+// Fade shapes (T1-08): every shape plays exactly the gain curve it names, on edge fades and on both sides of a crossfade.
+static void fadeShapeTests() {
+    using alien::timeline::FadeCurve;
+    const auto first = makeSine(4, 441.0), second = makeSine(4, 662.0);
+    constexpr long beat = barFrames / 4;
+    auto plain = [&](const alien::SessionAudioClip& clip, std::int64_t start, std::int64_t length, long frames) {
+        Rig rig; auto song = newSong(4); song->clips[0][0].audio = &clip;
+        place(*song, regionOf(0, 0, start, length));
+        rig.publish(song); rig.seek(0); rig.play(); rig.render(frames);
+        return rig.out;
+    };
+    const auto reference = plain(first, 0, ticksPerBar, barFrames);
+    for (int c = 0; c < alien::timeline::fadeCurveCount; ++c) {
+        const auto shape = static_cast<FadeCurve>(c);
+        Rig rig; auto song = newSong(2); song->clips[0][0].audio = &first;
+        auto r = regionOf(0, 0, 0, ticksPerBar); r.fadeIn = ticksPerBeat; r.fadeOut = ticksPerBeat;
+        r.fadeInCurve = shape; r.fadeOutCurve = shape;
+        place(*song, r);
+        rig.publish(song); rig.seek(0); rig.play(); rig.render(barFrames);
+        double worst = 0;
+        for (long i = 0; i < barFrames; ++i) {
+            const double gain = alien::timeline::fadeGain(shape, static_cast<double>(i) / beat)
+                              * alien::timeline::fadeGain(shape, static_cast<double>(barFrames - i) / beat);
+            worst = std::max(worst, std::abs(rig.out[static_cast<std::size_t>(i)] - reference[static_cast<std::size_t>(i)] * gain));
+        }
+        require(worst < 1.0e-4, "each fade shape plays the gain curve it names, in and out");
+    }
+    // Shapes differ where it matters: half way through a fade in, slow is quieter than linear and fast is louder.
+    require(alien::timeline::fadeGain(FadeCurve::slow, 0.5) < 0.5 && alien::timeline::fadeGain(FadeCurve::fast, 0.5) > 0.5
+            && std::abs(alien::timeline::fadeGain(FadeCurve::sCurve, 0.5) - 0.5) < 1.0e-12 && alien::timeline::fadeGain(FadeCurve::equalPower, 0.5) > 0.7,
+            "the shapes are the curves their names promise");
+    // An S-curve crossfade: the outgoing clip falls on the mirrored S while the incoming one rises on it.
+    const auto outgoing = plain(first, ticksPerBar, 2 * ticksPerBar, 3 * barFrames);
+    const auto incoming = plain(second, 2 * ticksPerBar, ticksPerBar, 3 * barFrames);
+    Rig rig; auto song = newSong(4); song->clips[0][0].audio = &first; song->clips[1][0].audio = &second;
+    place(*song, regionOf(0, 0, ticksPerBar, ticksPerBar));
+    auto r = regionOf(0, 1, 2 * ticksPerBar, ticksPerBar); r.crossfade = ticksPerBeat; r.crossfadeCurve = FadeCurve::sCurve;
+    place(*song, r);
+    rig.publish(song); rig.seek(0); rig.play(); rig.render(3 * barFrames);
+    double worst = 0;
+    for (long i = 2 * barFrames; i < 2 * barFrames + beat; ++i) {
+        const double x = static_cast<double>(i - 2 * barFrames) / beat;
+        const double expected = outgoing[static_cast<std::size_t>(i)] * alien::timeline::fadeGain(FadeCurve::sCurve, 1.0 - x)
+                              + incoming[static_cast<std::size_t>(i)] * alien::timeline::fadeGain(FadeCurve::sCurve, x);
+        worst = std::max(worst, std::abs(rig.out[static_cast<std::size_t>(i)] - expected));
+    }
+    require(worst < 1.0e-4, "an S-curve crossfade follows the S on both sides");
+}
+
 static void takeCompPlaybackTests() {
     const auto first = makeSine(2, 220), second = makeSine(2, 660);
     auto song = newSong(2);
@@ -1541,6 +1590,7 @@ int main() {
     timed("streamed Session rack scene", streamedSessionRackScene);
     timed("take comp", takeCompPlaybackTests);
     timed("fades", fadeTests);
+    timed("fade shapes", fadeShapeTests);
     timed("automation", automationPlaybackTests);
     timed("send automation", sendAutomationPlaybackTests);
     timed("tempo changes", tempoMapPlaybackTests);

@@ -791,6 +791,39 @@ static void freezeModelChecks() {
     if(t.regions.size()!=before.regions.size())std::abort();
 }
 
+// Fade shapes (T1-08): set per fade, kept by edits that copy a region, part of how the song plays, and validated.
+static void fadeShapeTests() {
+    Timeline t;
+    const auto a = put(t, 0, 0, 0, 2 * bar), b = put(t, 0, 1, 2 * bar, 2 * bar);
+    check(get(t, a).fadeInCurve == FadeCurve::linear && get(t, a).fadeOutCurve == FadeCurve::linear && get(t, a).crossfadeCurve == FadeCurve::equalPower,
+          "a new region has straight fades and an equal-power crossfade");
+    const auto before = t;
+    check(t.setFadeCurve({a, b}, FadeEdge::in, FadeCurve::sCurve) && get(t, a).fadeInCurve == FadeCurve::sCurve && get(t, b).fadeInCurve == FadeCurve::sCurve,
+          "every selected clip's fade in gets the shape");
+    check(!t.setFadeCurve({a, b}, FadeEdge::in, FadeCurve::sCurve), "choosing the same shape again changes nothing");
+    check(t.setFadeCurve({b}, FadeEdge::crossfade, FadeCurve::fast) && get(t, b).crossfadeCurve == FadeCurve::fast && get(t, a).crossfadeCurve == FadeCurve::equalPower,
+          "a crossfade's shape is set on the clip it starts");
+    check(t.setFadeCurve({a}, FadeEdge::out, FadeCurve::slow) && get(t, a).fadeOutCurve == FadeCurve::slow, "and a fade out's");
+    check(!t.playbackEquals(before) && !(t == before) && t.valid(), "a shape is part of how the song plays");
+    check(!t.setFadeCurve({a}, FadeEdge::in, static_cast<FadeCurve>(fadeCurveCount)), "a shape that does not exist is refused");
+    // Splitting keeps both pieces' shapes, as it keeps their fades.
+    Ids made;
+    check(t.split({a}, bar, &made) && made.size() == 1, "split the first clip");
+    const auto& right = get(t, made[0]);
+    check(right.fadeOutCurve == FadeCurve::slow && get(t, a).fadeInCurve == FadeCurve::sCurve, "the pieces keep the clip's shapes");
+    auto broken = t; broken.regions[0].fadeInCurve = static_cast<FadeCurve>(7);
+    check(!broken.valid(), "a timeline holding an unknown shape is invalid");
+    for (int c = 0; c < fadeCurveCount; ++c) {
+        const auto shape = static_cast<FadeCurve>(c);
+        check(fadeGain(shape, 0.0) == 0.0 && std::abs(fadeGain(shape, 1.0) - 1.0) < 1.0e-12 && fadeGain(shape, -1.0) == 0.0 && fadeGain(shape, 2.0) == fadeGain(shape, 1.0),
+              "every shape runs from silence to full and clamps outside the fade");
+        double previous = -1.0;
+        bool rising = true;
+        for (int i = 0; i <= 100; ++i) { const auto g = fadeGain(shape, i / 100.0); rising = rising && g >= previous; previous = g; }
+        check(rising, "every shape only rises");
+    }
+}
+
 int main() {
     freezeModelChecks();
     constantsAndDefaults();
@@ -809,6 +842,7 @@ int main() {
     tempoMapTests();
     meterTests();
     loopPassTakeTests();
+    fadeShapeTests();
     if (failures == 0) std::puts("TimelineTests passed");
     return failures == 0 ? 0 : 1;
 }

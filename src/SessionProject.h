@@ -24,7 +24,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 26;   // 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings
+inline constexpr int sessionProjectFormatVersion = 27;   // 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings; 27: fade shapes
 
 // A group bus slot. Slots keep their index while other buses come and go, so a track's output
 // (TrackSettings::output) and the bus's FX rack never need renumbering.
@@ -426,6 +426,10 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
             object->setProperty("reversed", r.reversed); object->setProperty("crossfade", static_cast<int>(r.crossfade));
             object->setProperty("muted", r.muted); object->setProperty("group", group);
             if (r.clip != 0) object->setProperty("clip", instanceIdString(r.clip));
+            // Fade shapes other than the default (straight fades, an equal-power crossfade), from format 27.
+            if (r.fadeInCurve != timeline::FadeCurve::linear) object->setProperty("fadeInCurve", timeline::fadeCurveKey(r.fadeInCurve));
+            if (r.fadeOutCurve != timeline::FadeCurve::linear) object->setProperty("fadeOutCurve", timeline::fadeCurveKey(r.fadeOutCurve));
+            if (r.crossfadeCurve != timeline::FadeCurve::equalPower) object->setProperty("crossfadeCurve", timeline::fadeCurveKey(r.crossfadeCurve));
             if (r.isPattern()) object->setProperty("rackClip", instanceIdString(r.rackClip != 0 ? r.rackClip : rack::savedClipId(project.channelRack, r.source)));
             if (savedIndex >= project.timeline.regions.size()+project.timeline.takes.size()) object->setProperty("frozenOriginal",true);
             else if (savedIndex >= project.timeline.regions.size()) object->setProperty("take", true);
@@ -631,6 +635,18 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
             region.crossfade = static_cast<int>(crossfade);
         }
         region.muted = static_cast<bool>(muted);
+        // Absent before version 27: straight fades and an equal-power crossfade.
+        const auto curve = [&](const char* key, timeline::FadeCurve& out) {
+            const auto value = r->getProperty(key);
+            if (value.isVoid()) return true;
+            if (!value.isString()) return false;
+            for (int c = 0; c < timeline::fadeCurveCount; ++c)
+                if (value.toString() == timeline::fadeCurveKey(static_cast<timeline::FadeCurve>(c))) { out = static_cast<timeline::FadeCurve>(c); return true; }
+            return false;
+        };
+        if (!curve("fadeInCurve", region.fadeInCurve) || !curve("fadeOutCurve", region.fadeOutCurve) || !curve("crossfadeCurve", region.crossfadeCurve)) {
+            error = "A timeline region has an unknown fade shape."; return false;
+        }
         if (r->hasProperty("rackClip") && (!parseInstanceId(r->getProperty("rackClip"), region.rackClip) || region.rackClip == 0)) {
             error = "Invalid Song rack source."; return false;
         }
@@ -974,6 +990,11 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         for (const auto* list : {&parsed.timeline.regions, &parsed.timeline.frozenOriginals, &parsed.timeline.takes})
             for (const auto& region : *list)
                 if (region.clip != 0 && (formatVersion < 24 || list == &parsed.timeline.takes)) { error = "A timeline region names an invalid clip."; return false; }
+        if (formatVersion < 27)
+            for (const auto* list : {&parsed.timeline.regions, &parsed.timeline.frozenOriginals, &parsed.timeline.takes})
+                for (const auto& region : *list)
+                    if (region.fadeInCurve != timeline::FadeCurve::linear || region.fadeOutCurve != timeline::FadeCurve::linear
+                        || region.crossfadeCurve != timeline::FadeCurve::equalPower) { error = "A timeline region has a fade shape this project's format does not allow."; return false; }
     } else if (rootObject->hasProperty("arrangement")) {
         // Before version 8 the song was whole bars of Session clips. Each becomes a region at the same place.
         const auto songValue = rootObject->getProperty("arrangement");

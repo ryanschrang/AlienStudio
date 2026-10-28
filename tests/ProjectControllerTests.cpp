@@ -995,7 +995,7 @@ static void savedRackBindingTests() {
     const auto json = alien::serializeSessionProject(data);
     alien::SessionProjectData parsed; juce::String error;
     require(data.valid() && !json.isEmpty() && alien::parseSessionProject(json, parsed, error), "format 26 rack bindings round trip");
-    require(static_cast<int>(juce::JSON::parse(json).getProperty("version", 0)) == 26, "rack bindings use format 26");
+    require(static_cast<int>(juce::JSON::parse(json).getProperty("version", 0)) >= 26, "rack bindings use format 26 or later");
     const auto reopened = alien::fromProjectData(parsed);
     const auto reopenedSource = reopened.clip(0, 0).rackClip;
     require(reopenedSource != 0 && reopened.clip(0, 2).rackClip == reopenedSource

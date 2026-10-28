@@ -488,15 +488,15 @@ private:
                     const double into = std::max(0.0, timelineTick - static_cast<double>(lane.start));
                     const double remaining = std::max(0.0, static_cast<double>(lane.end) - timelineTick);
                     double editGain = lane.gain;
-                    if (lane.fadeIn > 0) editGain *= std::clamp(into / static_cast<double>(lane.fadeIn), 0.0, 1.0);
-                    if (lane.fadeOut > 0) editGain *= std::clamp(remaining / static_cast<double>(lane.fadeOut), 0.0, 1.0);
-                    if (lane.crossfade > 0) editGain *= equalPowerIn(into / static_cast<double>(lane.crossfade));
+                    if (lane.fadeIn > 0) editGain *= alien::timeline::fadeGain(lane.fadeInCurve, into / static_cast<double>(lane.fadeIn));
+                    if (lane.fadeOut > 0) editGain *= alien::timeline::fadeGain(lane.fadeOutCurve, remaining / static_cast<double>(lane.fadeOut));
+                    if (lane.crossfade > 0) editGain *= alien::timeline::fadeGain(lane.crossfadeCurve, into / static_cast<double>(lane.crossfade));
                     const float level = static_cast<float>(editGain) * audioClipLevel;
                     float clipLeft = sample[0] * level, clipRight = sample[1] * level;
                     if (const auto& tail = tails[track]; tail.active) {
                         const auto out = tailPlayers[track].nextSample();
                         const float tailLevel = static_cast<float>(tail.gain
-                            * equalPowerOut((timelineTick - tail.start) / (tail.end - tail.start))) * audioClipLevel;
+                            * fadeOutGain(tail.curve, (timelineTick - tail.start) / (tail.end - tail.start))) * audioClipLevel;
                         clipLeft += out[0] * tailLevel; clipRight += out[1] * tailLevel;
                     }
                     clipBuffers[track].setSample(0,i,clipLeft);
@@ -780,6 +780,7 @@ private:
         std::int64_t start{}, end{}, offset{};
         double audioOffset{}, gain{1.0};
         std::int64_t fadeIn{}, fadeOut{}, crossfade{};
+        alien::timeline::FadeCurve fadeInCurve{}, fadeOutCurve{}, crossfadeCurve{alien::timeline::FadeCurve::equalPower};
         bool loopSource{}, reversed{};
         const alien::SessionAudioClip* audio{};
         double boundary{-1.0};         // sync when the playhead reaches this tick
@@ -800,9 +801,13 @@ private:
         const alien::SessionAudioClip* audio{};
         std::int64_t origin{};         // tick at which the clip's audioOffset plays
         double audioOffset{};
+        alien::timeline::FadeCurve curve{alien::timeline::FadeCurve::equalPower};   // the crossfade's shape (the incoming region's)
     };
-    static double equalPowerIn(double x) noexcept { return std::sin(std::clamp(x, 0.0, 1.0) * 1.5707963267948966); }
     static double equalPowerOut(double x) noexcept { return std::cos(std::clamp(x, 0.0, 1.0) * 1.5707963267948966); }
+    // The outgoing side of a crossfade `x` of the way through it: the incoming shape mirrored.
+    static double fadeOutGain(alien::timeline::FadeCurve curve, double x) noexcept {
+        return curve == alien::timeline::FadeCurve::equalPower ? equalPowerOut(x) : alien::timeline::fadeGain(curve, 1.0 - x);
+    }
     void stopClipPlayers() noexcept {
         for (auto& player : audioPlayers) player.stop();
         for (auto& player : tailPlayers) player.stop();
@@ -829,7 +834,7 @@ private:
         if (audio->streamed() && (left->reversed || left->loopSource)) return;   // as startTrackRegion: no reverse/loop streaming
         auto& tail = tails[track];
         tail = {}; tail.active = true; tail.start = static_cast<double>(region.start);
-        tail.end = static_cast<double>(region.start + region.crossfade); tail.gain = left->gain;
+        tail.end = static_cast<double>(region.start + region.crossfade); tail.gain = left->gain; tail.curve = region.crossfadeCurve;
         tail.audio = audio; tail.origin = left->start; tail.audioOffset = left->audioOffset;
         const double frame = tailFrame(tail, left->reversed);
         if (frame < 0.0 || frame >= static_cast<double>(audio->frames)) { tail = {}; return; }
@@ -902,6 +907,7 @@ private:
         lane.active = true; lane.source = region.source; lane.clip = region.clip; lane.start = region.start; lane.end = region.end();
         lane.offset = region.offset; lane.audioOffset = region.audioOffset; lane.gain = region.gain;
         lane.fadeIn = region.fadeIn; lane.fadeOut = region.fadeOut; lane.loopSource = region.loopSource; lane.reversed = region.reversed; lane.audio = clip.audio;
+        lane.fadeInCurve = region.fadeInCurve; lane.fadeOutCurve = region.fadeOutCurve; lane.crossfadeCurve = region.crossfadeCurve;
         lane.crossfade = clip.audio != nullptr ? region.crossfade : 0;
         if (clip.audio != nullptr && region.crossfade > 0 && !tails[track].active && into < static_cast<double>(region.crossfade))
             startTail(track, region);
@@ -996,6 +1002,8 @@ private:
         if (same) {
             lane.start = region->start; lane.end = region->end(); lane.offset = region->offset; lane.audioOffset = region->audioOffset;
             lane.gain = region->gain; lane.fadeIn = region->fadeIn; lane.fadeOut = region->fadeOut;
+            lane.fadeInCurve = region->fadeInCurve; lane.fadeOutCurve = region->fadeOutCurve; lane.crossfadeCurve = region->crossfadeCurve;
+            if (tails[track].active) tails[track].curve = region->crossfadeCurve;
             lane.loopSource = region->loopSource; lane.reversed = region->reversed;
             lane.crossfade = clip.audio != nullptr ? region->crossfade : 0;
             if (tails[track].active) {
@@ -1018,7 +1026,7 @@ private:
         if (crossing && audioPlayers[track].handOffActive(tailPlayers[track])) {
             auto& tail = tails[track];
             tail.active = true; tail.start = static_cast<double>(region->start);
-            tail.end = static_cast<double>(region->start + region->crossfade); tail.gain = lane.gain;
+            tail.end = static_cast<double>(region->start + region->crossfade); tail.gain = lane.gain; tail.curve = region->crossfadeCurve;
             tail.audio = lane.audio; tail.origin = lane.start; tail.audioOffset = lane.audioOffset;
         }
         if (lane.active || audioPlayers[track].isPlaying()) {
