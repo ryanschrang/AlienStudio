@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "PianoRollSequence.h"
 #include "PianoRollProcessing.h"
@@ -32,7 +33,8 @@ public:
                     "The Edit menu transposes by semitone or octave. Ctrl A selects all, Ctrl Z undoes, "
                     "and Ctrl Y redoes. Ctrl C copies, Ctrl V pastes at the amber cursor, and Ctrl D duplicates. "
                     "Click the ruler to place the amber edit cursor; Edit > Split selected notes at cursor cuts crossing notes there. "
-                    "Edit > Ghost notes shows other clips' notes, dimmed and read-only, behind this clip. "
+                    "Edit > Ghost notes shows other clips' notes, dimmed and read-only, behind this clip; "
+                    "Edit them with this clip lets you edit those clips' notes too. "
                     "Alt C opens chord stamps; Alt L opens scale guides; Alt I inverts, Alt V reverses, and Alt A arpeggiates. Tab moves between controls.");
         setWantsKeyboardFocus(true);
         setMouseClickGrabsKeyboardFocus(true);
@@ -287,6 +289,21 @@ public:
         ghostClips = ghostSource == GhostNoteSource::off ? std::vector<PianoRollGhostClip> {} : std::move(clips);
         repaint();
     }
+    // Multi-clip editing: the owner merges the shown clips into the pattern it gives setPattern and splits each
+    // edit back into them (PianoRollMultiClip.h). The editor only keeps the switch, colours notes by clip and says
+    // how many clips it is editing.
+    std::function<void(bool)> onMultiClipChanged;
+    bool isMultiClipEditing() const noexcept { return multiClip; }
+    void setMultiClipEditing(bool on) {
+        if (multiClip == on) return;
+        multiClip = on;
+        if (onMultiClipChanged) onMultiClipChanged(on);
+        repaint();
+    }
+    // The colour of a note that belongs to another clip (nullopt: the opened clip's own colour).
+    std::function<std::optional<juce::Colour>(std::uint32_t)> noteTint;
+    void setEditingClipCount(int clips) { if (editingClips != clips) { editingClips = clips; updateSelection(); } }
+    int editingClipCount() const noexcept { return editingClips; }
     std::size_t ghostNoteCount() const {
         return forEachGhostNote(ghostClips, pattern.loopSteps, [](const PianoRollGhostNote&) {});
     }
@@ -610,6 +627,7 @@ public:
             + juce::String(static_cast<int>(pattern.count)) + "/" + juce::String(static_cast<int>(PianoRollPattern::maxNotes)) + " notes";
         status += "  |  " + juce::String(static_cast<int>(selection.count)) + " selected";
         status += "  |  Edit cursor: step " + juce::String(insertionStep + 1.0, 3);
+        if (editingClips > 1) status += "  |  editing " + juce::String(editingClips) + " clips";
         if (ghostSource != GhostNoteSource::off) {
             const auto ghosts = static_cast<int>(ghostNoteCount());
             status += "  |  " + juce::String(ghosts) + (ghosts == 1 ? " ghost note" : " ghost notes");
@@ -908,7 +926,8 @@ private:
         if (note.pitch < lowestVisiblePitch || note.pitch > topPitch()) return;
         const auto bounds = noteBounds(note, a);
         const auto opacity = 0.25f + 0.75f * note.probability;
-        g.setColour((isSelected ? juce::Colour(0xffb8f7e4) : juce::Colour(0xff3fc9a2)).withMultipliedAlpha(opacity));
+        const auto tint = noteTint ? noteTint(note.id) : std::nullopt;   // a note of another clip being edited
+        g.setColour((isSelected ? juce::Colour(0xffb8f7e4) : tint.value_or(juce::Colour(0xff3fc9a2))).withMultipliedAlpha(opacity));
         g.fillRoundedRectangle(bounds, 2.0f);
         g.setColour(isSelected ? juce::Colour(0xffffffff) : juce::Colour(0xff7af0cf));
         g.drawRoundedRectangle(bounds.reduced(0.5f), 1.5f, 1.0f);
@@ -1149,6 +1168,8 @@ private:
         ghosts.addItem(20, "Off", true, ghostSource == GhostNoteSource::off);
         ghosts.addItem(21, "Other clips in this scene", true, ghostSource == GhostNoteSource::sameScene);
         ghosts.addItem(22, "This track's clips in other scenes", true, ghostSource == GhostNoteSource::sameTrack);
+        ghosts.addSeparator();
+        ghosts.addItem(23, "Edit them with this clip", ghostSource != GhostNoteSource::off, multiClip);
         menu.addSubMenu("Ghost notes", ghosts);
         juce::Component::SafePointer<PianoRollEditor> safe(this);
         menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(editActionsButton).withMinimumWidth(200),
@@ -1167,6 +1188,7 @@ private:
                 else if (action >= 20 && action <= 22)
                     safe->setGhostSource(action == 20 ? GhostNoteSource::off
                                          : action == 21 ? GhostNoteSource::sameScene : GhostNoteSource::sameTrack);
+                else if (action == 23) safe->setMultiClipEditing(!safe->multiClip);
                 if (action != 0) safe->grabKeyboardFocus();
             });
     }
@@ -1545,6 +1567,8 @@ private:
     PianoRollSelection selection, marqueeBase;
     PianoRollClipboard clipboard;
     GhostNoteSource ghostSource { GhostNoteSource::off };
+    bool multiClip{false};
+    int editingClips{1};
     std::vector<PianoRollGhostClip> ghostClips;
     std::uint32_t activeId {};
     PianoRollPattern dragPattern;
