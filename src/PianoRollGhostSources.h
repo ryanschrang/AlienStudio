@@ -15,7 +15,7 @@ namespace alien {
 inline std::vector<PianoRollGhostClip> ghostClipsFor(const ProjectDocument& doc, int track, int scene,
                                                      GhostNoteSource source) {
     std::vector<PianoRollGhostClip> clips;
-    if (source == GhostNoteSource::off || !doc.isValidCell(track, scene)) return clips;
+    if (source == GhostNoteSource::off || !doc.isValidCell(track, scene) || doc.clip(track, scene).rackClip != 0) return clips;
     const auto link = doc.linkOf(track, scene);
     const auto consider = [&](int t, int s) {
         if (t == track && s == scene) return;
@@ -39,7 +39,7 @@ inline std::vector<MultiClipSource> multiClipSourcesFor(const ProjectDocument& d
     std::vector<MultiClipSource> sources;
     if (!doc.isValidCell(track, scene)) return sources;
     const auto opened = doc.clip(track, scene);
-    if (opened.isAudioClip()) return sources;
+    if (opened.isAudioClip() || opened.rackClip != 0) return sources;
     sources.push_back({track, scene, opened.pattern});
     std::vector<std::uint64_t> links{doc.linkOf(track, scene)};
     for (const auto& ghost : ghostClipsFor(doc, track, scene, source)) {

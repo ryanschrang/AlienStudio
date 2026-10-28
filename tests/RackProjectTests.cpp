@@ -695,6 +695,45 @@ static void synthExport() {
     reader.reset(); first.deleteFile(); second.deleteFile(); root.deleteFile();
 }
 
+static void savedBindingPlayback() {
+    const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("AlienRackBindings", "", false);
+    require(root.createDirectory().wasOk(), "binding test folder");
+    const auto file = root.getChildFile("Bindings.alienstudio");
+    {
+        auto engine = std::make_unique<ToneEngine>(); alien::ProjectController c(*engine);
+        require(c.editRack("Notes", [](Project& p) { return p.setStepOn(0, 0, 0, true); }), "audible rack source");
+        require(c.assignRackClip(0, 0, c.channelRack().clips[0]) && c.placeRegion(0, 0, 0), "saved Session and Song references");
+        bool done = false, ok = false;
+        c.writeProject(file, false, [&](bool result) { ok = result; done = true; });
+        for (int i = 0; i < 400 && !done; ++i) pump(10);
+        require(done && ok, "save bound sources to disk");
+    }
+    const auto render = [&](bool song) {
+        auto engine = std::make_unique<ToneEngine>(); engine->prepare(48000);
+        alien::ProjectController c(*engine); c.openProject(file); waitIdle(c);
+        require(c.document().clip(0, 0).rackClip != 0 && c.document().timeline.regions[0].rackClip == c.document().clip(0, 0).rackClip,
+                "opening a file keeps Session and Song on the same source");
+        if (song) { engine->patternMode.store(2); engine->playing.store(true); }
+        else { engine->patternMode.store(1); c.launchClip(0, 0); }
+        std::vector<float> result;
+        std::array<float, 256> l{}, r{};
+        for (int i = 0; i < 16; ++i) {
+            float* out[]{l.data(), r.data()};
+            engine->audioDeviceIOCallbackWithContext(nullptr, 0, out, 2, 256, {});
+            result.insert(result.end(), l.begin(), l.end());
+        }
+        return result;
+    };
+    const auto session = render(false), song = render(true);
+    float peak = 0;
+    for (std::size_t i = 0; i < session.size(); ++i) {
+        require(std::abs(session[i] - song[i]) < 1.0e-6f, "reopened Session and Song rack playback match sample for sample");
+        peak = std::max(peak, std::abs(session[i]));
+    }
+    require(peak > 0.01f, "the reopened source sounds rather than silently losing its binding");
+    require(file.deleteFile() && root.deleteFile(), "remove binding test files");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     synthExport();
@@ -707,5 +746,6 @@ int main() {
     saveOpenAndRelink();
     reloadAndRelinkEdgeCases();
     exportHandOff();
+    savedBindingPlayback();
     return 0;
 }

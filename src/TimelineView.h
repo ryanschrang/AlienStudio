@@ -899,7 +899,14 @@ public:
         timeline::Clipboard clip;
         for (auto r : clipboard().regions) {
             if (r.isPattern()) {
-                if (origin.patterns != controller.channelRack().patternCount || r.source < 0 || r.source >= origin.patterns) continue;   // patterns were added or removed: their numbers mean something else now
+                if (r.rackClip != 0) {
+                    const bool sameDocument = std::any_of(d.tracks.begin(), d.tracks.end(), [&](const auto& t) {
+                        return std::find(origin.tracks.begin(), origin.tracks.end(), t.id) != origin.tracks.end();
+                    });
+                    const int source = controller.rackPatternForClip(r.rackClip);
+                    if (!sameDocument || source < 0) continue;
+                    r.source = source;
+                } else if (origin.patterns != controller.channelRack().patternCount || r.source < 0 || r.source >= origin.patterns) continue;
             } else if (r.ownsClip()) {
                 if (r.row < 0 || r.row >= static_cast<int>(origin.tracks.size()) || origin.placements.count(r.clip) == 0) continue;
                 const auto track = std::find_if(d.tracks.begin(), d.tracks.end(), [&](const auto& t) { return t.id == origin.tracks[static_cast<std::size_t>(r.row)]; });

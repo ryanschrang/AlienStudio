@@ -23,6 +23,9 @@ struct Rig {
     std::shared_ptr<SessionAudioClip> sample = std::make_shared<SessionAudioClip>();
     RackPlayer::SampleTable samples{};
     std::vector<float> output;
+    bool externalClock{};
+    std::uint64_t sceneRequest{none};
+    int sceneFrame{-1};
     Rig() {
         player->prepare(8000);
         sample->sampleRate = 8000; sample->channels = 1; sample->frames = 8; sample->left.assign(8, 1);
@@ -40,8 +43,15 @@ struct Rig {
         for (int done = 0; done < frames;) {
             const auto n = std::min({block, 256, frames - done});
             for (auto& x : l) x.fill(0); for (auto& x : r) x.fill(0);
+            std::array<RackPlayer::LaunchTick, 256> ticks{};
+            int tickCount = 0;
+            const int frame = static_cast<int>(output.size());
+            if (externalClock) for (int i = 0; i < n; ++i)
+                if ((frame + i) % 1000 == 0) ticks[static_cast<std::size_t>(tickCount++)] = {i, (frame + i) / 1000};
             const auto before = allocations;
-            player->processLaunched(*snap, samples, running, 120, 4, n, pl.data(), pr.data(), request, quantum, startSelected);
+            player->processLaunched(*snap, samples, running, 120, 4, n, pl.data(), pr.data(), request, quantum, startSelected,
+                externalClock ? ticks.data() : nullptr, tickCount, sceneRequest,
+                sceneFrame >= frame && sceneFrame < frame + n ? sceneFrame - frame : -1);
             const auto after = allocations;
             require(before == after, "launch, switch, stop and rendering allocate no memory");
             request = none;
@@ -128,6 +138,15 @@ static void noteOwnership() {
 }
 
 int main() {
+    {
+        Rig r; r.externalClock = true; r.project.setSwing(1); r.publish(); r.render(2000);
+        require(r.output[1000] == 0 && r.output[1500] > 0.5f, "external Session clock retains rack swing");
+        r.sceneRequest = 102; r.sceneFrame = 4000; r.render(2000);
+        require(r.player->playingClip() == 101, "scene source waits for its precise shared readiness sample");
+        r.render(1);
+        require(r.player->playingClip() == 102 && r.output[4000] > 0.1f && r.output[4000] < 0.2f,
+                "scene starts step zero on the exact Session-clock boundary");
+    }
     selectionAndTiming(); boundariesAndLifecycle(); deletionAndEdits(); noteOwnership();
     std::puts("PASS: identity-based rack launch (quantization, selection, revisions, deletion, lifecycle, allocation safety)");
 }

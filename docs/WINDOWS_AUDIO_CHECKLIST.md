@@ -377,6 +377,13 @@ Nothing should sound or look different: this moves where the rack's patterns are
 - Delete a bank slot preceding the active one: it keeps playing. Delete the active source: notes release without a stuck voice. Delete a queued source: it does not launch whichever source takes that slot.
 - Save/reopen: the rack's musical content and independent copies remain intact; live launch requests are not saved. Use Song placements and export as before; compare against playback. Check the menu and caption at 960x650 and 150/200% display scale.
 
+## Saved rack assignments (T1-03 D2, format 26)
+- In Session, select an empty cell and use Copy / link > Assign rack clip (linked). Assign the same source in another scene. Launch each tile and its scene; Beat/Bar timing applies, the source's existing channel routing stays intact, and a scene without a rack assignment stops the launched rack.
+- Open the assigned source for editing and change steps, notes and expression: linked assignments and Song placements follow. Paste a copy into another scene and edit it: the original stays unchanged. Duplicate a scene containing both ordinary MIDI/audio and a rack assignment; neither type loses content. Undo/redo these operations.
+- Use Place rack clip at Song playhead, move/trim the placement in Song, then Make this placement unique and edit that bank source: the original placement/Session source stays unchanged. Delete an unused preceding bank slot: every remaining placement still plays the same source. Deleting a used source is disabled until its Session/Song uses are cleared.
+- Save, close and reopen; repeat the launch/edit checks. Save portable with external rack samples, move the folder and reopen; verify missing samples remain relinkable. Open older projects (including format 25 sidechains, takes and frozen tracks), save a copy, and compare playback/export. Test malformed references without losing the currently open project.
+- Verify rack tile labels, playing/queued state and the menus at 960x650 and 150/200% scaling. One distinct rack source per scene and one active composite rack clip remain the D2 limits; overlapping instances are D3.
+
 ## Launching Session clips
 - With the transport stopped and Song mode off, click a MIDI clip in the Session view: the transport starts and the clip is heard at once; the top bar's Play button lights. Click a scene's launch button while stopped: the whole scene plays.
 - While playing, clicking another clip keeps the transport running and switches at the next Beat/Bar boundary.

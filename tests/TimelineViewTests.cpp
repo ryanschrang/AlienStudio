@@ -1879,7 +1879,7 @@ static void robustnessChecks() {
     const auto count = rig.t().regions.size();
     c.paste();
     require(rig.valid() && rig.t().regions.size() == count + 1, "pasting what was copied skips clips whose track is gone");
-    // Pattern numbers mean something else once patterns are added or removed: a copied pattern is not pasted after that.
+    // Explicit rack identities survive bank growth; the cached pattern number is resolved again.
     c.setSelection({rig.id.p});
     require(c.copySelection(), "copy the pattern clip");
     require(rig.controller.editRack("Add pattern", [](rack::Project& project) { return project.addPattern(); }), "add a pattern to the rack");
@@ -1887,10 +1887,13 @@ static void robustnessChecks() {
     const auto regionsNow = rig.t().regions.size();
     rig.messages.clear();
     c.setCursor(14 * bar, false);
-    require(!c.paste() && rig.t().regions.size() == regionsNow && !rig.messages.empty(), "a copied pattern is not pasted once the rack's patterns have changed");
+    const auto sourceClip = rig.t().find(rig.id.p)->rackClip;
+    require(c.paste() && rig.t().regions.size() == regionsNow + 1 && sourceClip != 0
+        && std::any_of(rig.t().regions.begin(), rig.t().regions.end(), [&](const auto& r) { return r.start == 14 * bar && r.rackClip == sourceClip; }),
+        "a copied rack placement keeps its source identity after the bank changes");
     c.setSelection({rig.id.p});
-    require(c.copySelection() && c.paste() && rig.t().regions.size() == regionsNow + 1 && rig.valid(), "copied again, it pastes");
-    rig.controller.deleteRackPattern(0);
+    require(c.copySelection() && c.paste() && rig.t().regions.size() == regionsNow + 1 && rig.valid(), "copied again, it overwrites the same destination");
+    require(!rig.controller.deleteRackPattern(0), "used rack source cannot be deleted out from under placements");
     rig.controller.addScene();
     rig.view.refresh();
     require(rig.valid(), "after deleting a pattern the view is consistent");

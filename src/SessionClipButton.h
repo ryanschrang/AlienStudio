@@ -11,7 +11,7 @@ namespace alien {
 // still maintained for accessibility but the slot draws its own clip tile.
 class SessionClipButton final : public juce::TextButton {
 public:
-    enum class Kind { empty, midi, audio, offline };
+    enum class Kind { empty, midi, audio, offline, rack };
     struct Visual {
         Kind kind{Kind::empty};
         juce::Colour colour{0xff4fe0b6};

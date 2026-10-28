@@ -38,6 +38,8 @@ struct SessionClip {
     // lifetime of the engine, so the engine may hold raw pointers to it.
     std::shared_ptr<const SessionAudioClip> audio;
     juce::String audioFileName, audioFilePath;
+    std::uint64_t rackClip{};
+    juce::String rackName;
 
     SessionClip() = default;
     SessionClip(const SessionClip&) = default;
@@ -54,7 +56,7 @@ struct SessionClip {
     bool audioOffline() const noexcept { return audio == nullptr && audioFilePath.isNotEmpty(); }
     // An audio clip, loaded or offline, as opposed to a MIDI clip.
     bool isAudioClip() const noexcept { return audio != nullptr || audioFilePath.isNotEmpty(); }
-    bool isEmpty() const noexcept { return audio == nullptr && audioFilePath.isEmpty() && pattern->count == 0; }
+    bool isEmpty() const noexcept { return rackClip == 0 && audio == nullptr && audioFilePath.isEmpty() && pattern->count == 0; }
 };
 
 // An audio file a clip plays: the decoded audio (null when the file is offline) and where it is.
@@ -165,9 +167,32 @@ struct ProjectDocument {
     }
     // What a cell plays, resolved from the library: an empty clip for an empty cell.
     SessionClip clip(int track, int scene) const { return contentOf(cellClip(track, scene)); }
+    int rackPatternForClip(std::uint64_t id) const noexcept {
+        if (id != 0) for (int p = 0; p < channelRack.patternCount; ++p)
+            if (channelRack.clips[static_cast<std::size_t>(p)] == id) return p;
+        return -1;
+    }
+    bool bindRackClip(int track, int scene, std::uint64_t id) {
+        if (!isValidCell(track, scene) || rackPatternForClip(id) < 0) return false;
+        for (const auto* list : {&timeline.regions, &timeline.frozenOriginals, &timeline.takes})
+            for (const auto& r : *list)
+                if (r.playsCell() && r.row == track && r.source == scene) return false;
+        for (int t = 0; t < trackCount(); ++t) {
+            const auto other = clip(t, scene).rackClip;
+            if (t != track && other != 0 && other != id) return false; // one composite source per scene (D1)
+        }
+        if (cellClip(track, scene).value == id) return false;
+        cells[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)] = library::ClipId{id};
+        prune();
+        return true;
+    }
     // What a library clip plays (an empty clip for an unknown id).
     SessionClip contentOf(library::ClipId id) const {
         SessionClip view;
+        if (const int p = rackPatternForClip(id.value); p >= 0) {
+            view.rackClip = id.value; view.rackName = juce::String::fromUTF8(channelRack.patternNames[static_cast<std::size_t>(p)].c_str());
+            return view;
+        }
         const auto content = library.content(id);
         if (content == nullptr) return view;
         for (const auto& lane : content->lanes) {
@@ -235,6 +260,9 @@ struct ProjectDocument {
     // clip hears it), or as a new clip for an empty cell. Content that is just a new, empty clip (no
     // audio, no notes, the default loop) empties the cell; an empty clip with its own loop is kept.
     void setClip(int track, int scene, const SessionClip& content) {
+        if (content.rackClip != 0) { bindRackClip(track, scene, content.rackClip); return; }
+        // Replacing a rack assignment creates ordinary content; it never rewrites the shared rack source.
+        if (clip(track, scene).rackClip != 0) cells[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)] = {};
         const auto& blank = *emptyPattern();
         const bool nothing = !content.isAudioClip() && (content.pattern == nullptr
             || (content.pattern->count == 0 && content.pattern->loopSteps == blank.loopSteps));
@@ -314,8 +342,22 @@ struct ProjectDocument {
             const auto rebuilt = rack::fromPatternData(*lib.content(library::ClipId{key}), next, next.patterns[i].get());
             if (rebuilt == nullptr || !(*rebuilt == next.pattern(p))) return false;   // never lose a step or a note
         }
+        // Sources with saved uses must remain in the bank. Refuse deletion atomically until their uses are cleared.
+        const auto kept = [&](std::uint64_t id) {
+            return std::find(next.clips.begin(), next.clips.begin() + next.patternCount, id) != next.clips.begin() + next.patternCount;
+        };
+        for (const auto& scene : cells) for (auto id : scene)
+            if (rackPatternForClip(id.value) >= 0 && !kept(id.value)) return false;
+        auto rebound = timeline;
+        for (auto& r : rebound.regions) if (r.isPattern()) {
+            const auto id = r.rackClip != 0 ? r.rackClip : channelRack.validPattern(r.source) ? channelRack.clips[static_cast<std::size_t>(r.source)] : 0;
+            if (id == 0 || !kept(id)) return false;
+            r.rackClip = id;
+            r.source = static_cast<int>(std::find(next.clips.begin(), next.clips.begin() + next.patternCount, id) - next.clips.begin());
+        }
         library = std::move(lib);
         channelRack = std::move(next);
+        timeline = std::move(rebound);
         prune();
         return true;
     }
@@ -499,7 +541,8 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
             auto& destination = data.clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
             destination.pattern = doc.clip(t, s).pattern;   // shared, not copied
             destination.audioFilePath = doc.clip(t, s).audioFilePath;
-            if (const auto link = doc.linkOf(t, s); link != 0 && uses[link] > 1) destination.link = link;   // saved only where content is shared
+            destination.rackClip = doc.clip(t, s).rackClip;
+            if (const auto link = doc.linkOf(t, s); destination.rackClip == 0 && link != 0 && uses[link] > 1) destination.link = link;
         }
     for (const auto id : doc.placementClips()) {
         auto& destination = data.placementClips[id];
@@ -511,7 +554,8 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
 
 inline ProjectDocument fromProjectData(const SessionProjectData& data) {
     auto doc = ProjectDocument::createDefault(data.trackCount(), data.sceneCount());
-    doc.timeline = data.timeline;
+    // Rack ids belong to the saved document's namespace. Rebind all uses together after importing its bank.
+    doc.timeline = {};
     doc.timeline.tempo = data.bpm;
     doc.masterPlugins = data.masterPlugins;
     for (std::size_t r = 0; r < doc.returns.size(); ++r)
@@ -521,6 +565,13 @@ inline ProjectDocument fromProjectData(const SessionProjectData& data) {
 
     // Each saved pattern becomes a clip of its own (copies made with addPattern stay independent).
     if (!doc.setRack(data.channelRack)) doc.channelRack = data.channelRack;   // only for data that failed validation
+    std::map<std::uint64_t, std::uint64_t> rackIds;
+    for (int p = 0; p < data.channelRack.patternCount; ++p)
+        rackIds[data.channelRack.clips[static_cast<std::size_t>(p)]] = doc.channelRack.clips[static_cast<std::size_t>(p)];
+    doc.timeline = data.timeline;
+    doc.timeline.tempo = data.bpm;
+    for (auto& r : doc.timeline.regions) if (r.isPattern())
+        r.rackClip = r.rackClip != 0 ? rackIds.at(r.rackClip) : doc.channelRack.clips[static_cast<std::size_t>(r.source)];
     doc.launchQuantizationSteps = data.launchQuantizationSteps;
     doc.masterGain = data.masterGain;
     doc.recording = data.recording;
@@ -547,6 +598,10 @@ inline ProjectDocument fromProjectData(const SessionProjectData& data) {
         for (int t = 0; t < data.trackCount(); ++t) {
             const auto& source = data.clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
             // A linked cell after the first of its link shares that cell's content; every other cell is its own.
+            if (source.rackClip != 0) {
+                doc.bindRackClip(t, s, rackIds.at(source.rackClip));
+                continue;
+            }
             if (source.link != 0) {
                 const auto first = links.find(source.link);
                 if (first != links.end() && doc.library.clip(first->second) != nullptr) {

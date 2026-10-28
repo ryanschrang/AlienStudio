@@ -24,7 +24,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 25;   // 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: sidechain keys from faders, buses and returns
+inline constexpr int sessionProjectFormatVersion = 26;   // 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings
 
 // A group bus slot. Slots keep their index while other buses come and go, so a track's output
 // (TrackSettings::output) and the bus's FX rack never need renumbering.
@@ -62,6 +62,7 @@ struct SessionProjectClip {
     // Cells with the same nonzero link play one shared clip content: an edit of one is an edit of
     // all. 0: the cell's content is its own. Saved from format 22 (absent before: every cell its own).
     std::uint64_t link{};
+    std::uint64_t rackClip{}; // reference to a composite rack source, never inline MIDI/audio
     juce::String name;   // placement clips only: the name the Song view shows
 };
 
@@ -221,13 +222,33 @@ struct SessionProjectData {
         }
         for(const auto& region:timeline.frozenOriginals) if(!trackSettings[static_cast<std::size_t>(region.row)].frozen())return false;
         for (const int colour : trackColours) if (colour < 0 || colour > 255) return false;
+        const auto rackIndex = [&](std::uint64_t id) {
+            if (id != 0) for (int p = 0; p < channelRack.patternCount; ++p)
+                if (channelRack.clips[static_cast<std::size_t>(p)] == id) return p;
+            return -1;
+        };
         for (const auto& scene : clips) {
             if (static_cast<int>(scene.size()) != tracks) return false;
-            for (const auto& clip : scene)
+            std::uint64_t sceneRack = 0;
+            for (const auto& clip : scene) {
                 if (!clip.pattern->valid()) return false;
+                if (clip.rackClip != 0) {
+                    if (rackIndex(clip.rackClip) < 0 || clip.pattern->count != 0 || clip.pattern->loopSteps != PianoRollPattern::defaultLoopSteps
+                        || clip.audioFilePath.isNotEmpty() || clip.link != 0
+                        || (sceneRack != 0 && sceneRack != clip.rackClip)) return false;
+                    sceneRack = clip.rackClip;
+                }
+            }
         }
+        for (const auto& r : timeline.regions)
+            if (r.rackClip != 0 && (!r.isPattern() || rackIndex(r.rackClip) != r.source)) return false;
+        for (const auto* list : {&timeline.regions, &timeline.frozenOriginals, &timeline.takes})
+            for (const auto& r : *list)
+                if (r.playsCell() && clips[static_cast<std::size_t>(r.source)][static_cast<std::size_t>(r.row)].rackClip != 0) return false;
+        for (const auto* list : {&timeline.frozenOriginals, &timeline.takes})
+            for (const auto& r : *list) if (r.rackClip != 0) return false;
         for (const auto& [id, clip] : placementClips)
-            if (id == 0 || clip.audioFilePath.isNotEmpty() || clip.link != 0 || !clip.pattern->valid()) return false;
+            if (id == 0 || clip.audioFilePath.isNotEmpty() || clip.link != 0 || clip.rackClip != 0 || !clip.pattern->valid()) return false;
         for (const auto* list : {&timeline.regions, &timeline.frozenOriginals})
             for (const auto& region : *list) if (region.clip != 0 && placementClips.count(region.clip) == 0) return false;
         for (std::size_t i = 0; i < stepPitches.size(); ++i)
@@ -241,6 +262,7 @@ struct SessionProjectData {
 inline juce::var projectClipToVar(const SessionProjectClip& clip) {
     auto clipValue = juce::var(new juce::DynamicObject());
     auto* clipObject = clipValue.getDynamicObject();
+    if (clip.rackClip != 0) clipObject->setProperty("rackClip", instanceIdString(clip.rackClip));
     const PianoRollPattern& pattern = clip.pattern;
     clipObject->setProperty("loopSteps", pattern.loopSteps);
     clipObject->setProperty("audioFilePath", clip.audioFilePath);
@@ -287,7 +309,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
         recordingObject->setProperty("punch", project.recording.punch);
         rootObject->setProperty("recording", recordingVar);
     }
-    rootObject->setProperty("channelRack", rack::rackToVar(project.channelRack));
+    rootObject->setProperty("channelRack", rack::rackToVar(project.channelRack, true));
     juce::Array<juce::var> pluginRacks;
     for (const auto& pluginRack : project.plugins) pluginRacks.add(rackToVar(pluginRack));
     rootObject->setProperty("plugins", juce::var(pluginRacks));
@@ -404,6 +426,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
             object->setProperty("reversed", r.reversed); object->setProperty("crossfade", static_cast<int>(r.crossfade));
             object->setProperty("muted", r.muted); object->setProperty("group", group);
             if (r.clip != 0) object->setProperty("clip", instanceIdString(r.clip));
+            if (r.isPattern()) object->setProperty("rackClip", instanceIdString(r.rackClip != 0 ? r.rackClip : rack::savedClipId(project.channelRack, r.source)));
             if (savedIndex >= project.timeline.regions.size()+project.timeline.takes.size()) object->setProperty("frozenOriginal",true);
             else if (savedIndex >= project.timeline.regions.size()) object->setProperty("take", true);
             regions.add(value);
@@ -495,6 +518,9 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
 // Reads one saved clip (a Session cell's, or a placement clip's): its loop, audio path, link and notes.
 inline bool parseProjectClip(const juce::DynamicObject* clipObject, SessionProjectClip& clip, juce::String& error) {
     if (clipObject == nullptr) { error = "A project clip is invalid."; return false; }
+    if (clipObject->hasProperty("rackClip") && (!parseInstanceId(clipObject->getProperty("rackClip"), clip.rackClip) || clip.rackClip == 0)) {
+        error = "Invalid rack clip reference."; return false;
+    }
     const auto loopSteps = clipObject->getProperty("loopSteps");
     const auto path = clipObject->getProperty("audioFilePath");
     const auto notesValue = clipObject->getProperty("notes");
@@ -605,6 +631,9 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
             region.crossfade = static_cast<int>(crossfade);
         }
         region.muted = static_cast<bool>(muted);
+        if (r->hasProperty("rackClip") && (!parseInstanceId(r->getProperty("rackClip"), region.rackClip) || region.rackClip == 0)) {
+            error = "Invalid Song rack source."; return false;
+        }
         // Absent before version 24: every track region plays a Session cell.
         if (r->hasProperty("clip") && (!parseInstanceId(r->getProperty("clip"), region.clip) || region.clip == 0)) {
             error = "A timeline region names an invalid clip."; return false;
@@ -977,7 +1006,13 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         if (!racks || racks->size() != trackCount || !rackFromVar(rootObject->getProperty("masterPlugins"), parsed.masterPlugins)) { error="Invalid plugin racks"; return false; }
         for (int t=0;t<trackCount;++t) if (!rackFromVar((*racks)[t],parsed.plugins[t])) { error="Invalid plugin state"; return false; }
     }
-    if (formatVersion >= 7 && !rack::rackFromVar(rootObject->getProperty("channelRack"), parsed.channelRack, error)) return false;
+    if (formatVersion >= 7 && !rack::rackFromVar(rootObject->getProperty("channelRack"), parsed.channelRack, error, formatVersion >= 26)) return false;
+    for (const auto& scene : parsed.clips) for (const auto& clip : scene)
+        if (clip.rackClip != 0 && formatVersion < 26) { error = "Rack bindings require format 26."; return false; }
+    for (const auto* list : {&parsed.timeline.regions, &parsed.timeline.frozenOriginals, &parsed.timeline.takes})
+        for (const auto& r : *list)
+            if ((r.rackClip != 0 && (formatVersion < 26 || !r.isPattern() || list != &parsed.timeline.regions))
+                || (formatVersion >= 26 && r.isPattern() && r.rackClip == 0)) { error = "Invalid Song rack binding."; return false; }
     if (rootObject->hasProperty("returns")) {
         const auto returnsValue = rootObject->getProperty("returns");
         const auto* returns = returnsValue.getArray();

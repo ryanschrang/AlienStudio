@@ -201,6 +201,7 @@ struct Region {
     // A placement clip: the id (library::ClipId) of the clip this region plays instead of a Session cell.
     // 0 for every other region. Regions with the same id share it, so an edit of one is heard in all.
     std::uint64_t clip{};
+    std::uint64_t rackClip{};          // explicit rack source; source caches its bank index (format 26)
     std::int64_t start{}, length{ticksPerBar};
     // Where in the source the region begins (nonzero after trimming its left edge).
     // MIDI and rack patterns count ticks, audio counts seconds; both are kept
@@ -360,7 +361,7 @@ struct Timeline {
                 || r.offset < 0 || r.offset > maxLength || !std::isfinite(r.audioOffset) || r.audioOffset < 0
                 || !std::isfinite(r.gain) || r.gain < 0 || r.gain > 64
                 || r.fadeIn < 0 || r.fadeOut < 0 || r.crossfade < 0 || r.fadeIn > r.length
-                || r.fadeOut > r.length || r.crossfade > r.length || r.group != 0 || r.clip != 0) return false;
+                || r.fadeOut > r.length || r.crossfade > r.length || r.group != 0 || r.clip != 0 || r.rackClip != 0) return false;
             for (std::size_t j = 0; j < i; ++j) if (takes[j].id == r.id) return false;
         }
         if (meterChanges.size() > maxMeterChanges || length() > maxLength) return false;
@@ -394,6 +395,7 @@ struct Timeline {
                 || !std::isfinite(r.audioOffset) || r.audioOffset < 0.0 || !std::isfinite(r.gain) || r.gain < 0.0 || r.gain > 64.0
                 || r.fadeIn < 0 || r.fadeOut < 0 || r.fadeIn > r.length || r.fadeOut > r.length
                 || r.crossfade < 0 || r.crossfade > r.length) return false;
+            if (!r.isPattern() && r.rackClip != 0) return false;
             if (r.isPattern()) { if (r.clip != 0 || r.source < 0 || r.source >= patterns) return false; }
             else if (r.row < 0 || r.row >= tracks) return false;
             else if (r.ownsClip() ? r.source != -1 : r.source < 0 || r.source >= scenes) return false;
@@ -434,7 +436,7 @@ struct Timeline {
             || tempoChanges != o.tempoChanges || meterChanges != o.meterChanges) return false;
         for (std::size_t i = 0; i < regions.size(); ++i) {
             const auto& a = regions[i]; const auto& b = o.regions[i];
-            if (a.row != b.row || a.source != b.source || a.clip != b.clip || a.start != b.start || a.length != b.length
+            if (a.row != b.row || a.source != b.source || a.clip != b.clip || a.rackClip != b.rackClip || a.start != b.start || a.length != b.length
                 || a.offset != b.offset || a.audioOffset != b.audioOffset || a.gain != b.gain
                 || a.fadeIn != b.fadeIn || a.fadeOut != b.fadeOut || a.crossfade != b.crossfade || a.loopSource != b.loopSource
                 || a.reversed != b.reversed || a.muted != b.muted) return false;
