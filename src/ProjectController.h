@@ -712,7 +712,8 @@ public:
         if(isTrackFrozen(track))return {false,"Unfreeze the track before recording."};
         if (!doc.isValidCell(track, scene)) return {false, "Select a clip to record into."};
         const auto& clip = doc.clip(track, scene);
-        if (clip.isAudioClip() || clip.rackClip != 0) return {false, "Choose an empty or MIDI cell to record into."};
+        if (clip.isAudioClip()) return {false, "This clip holds audio. Choose an empty or MIDI clip to record into."};
+        if (clip.rackClip != 0) return {false, "This cell launches a Channel Rack clip. Choose an empty or MIDI clip to record into."};
 
         take = {};
         take.active = true;
