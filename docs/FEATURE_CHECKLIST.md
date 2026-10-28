@@ -78,6 +78,34 @@ The current project format is 25 (18: song tempo changes, #104; 19: group buses,
 | INST-02 | Built-in synth channels in the Channel Rack (12 presets, 64 shared voices) | Implemented (#82, format 14) | See "Channel Rack built-in synth channels" below |
 | FINISH-01 | Freeze, stems and reliable effect tails | Implemented: stem export (#89), track freeze/unfreeze (#93, integrated in #98) | Aligned stems, pre-fader float caches, preserved original clips and processing. Hardware/listening remains pending. |
 
+## Piano-roll keyboard and pitch visibility upgrade (PROD-06)
+
+Status: Planned. Added to the completion checklist on 2026-10-27.
+Build on PROD-02 / PROD-05 and coordinate scale behavior with MIDI-06.
+Existing auditioning and scale guides are foundations, not evidence that this
+complete upgrade has passed acceptance.
+
+- [ ] Note-name labels with octave numbers (C3, C#3, D3, etc.), with All labels
+  and C notes only display options.
+- [ ] Pitch visibility toolbar modes: All notes, Used notes and Scale notes;
+  keyboard keys and grid rows stay aligned in every mode.
+- [ ] Scale notes mode keeps existing out-of-scale notes visible; changing
+  visibility never changes or deletes MIDI data.
+- [ ] Selected MIDI notes highlight the corresponding piano keys in matching
+  colors; sounding notes also light up their keys. Preserve multi-clip colors.
+- [ ] Click-and-hold keyboard auditioning uses the active track/channel's
+  instrument; release, focus loss and destination changes stop preview notes.
+- [ ] Root-note emphasis and scale-note shading use the selected key/scale
+  consistently with MIDI-06.
+- [ ] Drawing, selecting, moving, resizing and auditioning target the correct
+  MIDI pitches with hidden rows, zoom and scrolling; undo/redo preserves edits.
+- [ ] Verify empty clips, chords, out-of-scale notes and multi-clip editing;
+  record automated results plus Windows visual/listening checks under the
+  existing completion rule before marking the upgrade complete.
+
+Suggested delivery: labels, highlights and auditioning first; pitch filtering
+and integrated scale guidance next.
+
 ## Completion rule
 
 A capability is verified only for the tested configuration. Record the build
