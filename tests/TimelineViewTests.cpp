@@ -1900,6 +1900,11 @@ static void robustnessChecks() {
     require(c.place(0, 0, static_cast<std::int64_t>(tl::maxBars - 100) * bar) && rig.valid(), "a clip targetColour the end of an 18-hour song");
     rig.controller.editTimeline("big", [](tl::Timeline& tlm) { tl::Region r; r.row = 1; r.source = 1; r.start = 0; r.length = 500 * bar; return tlm.place(r); });
     rig.view.refresh();
+    // How long nine ordinary paints of this view take on this machine right now: the yardstick, so a busy machine
+    // (other builds, other test runs) slows both sides of the comparison instead of failing it.
+    const auto baselineBegin = std::chrono::steady_clock::now();
+    for (int i = 0; i < 9; ++i) { c.setScrollTicks(i % 3 == 0 ? 0.0 : 4.0 * bar); (void)c.createComponentSnapshot(c.getLocalBounds(), true, 1.0f); }
+    const auto baseline = std::chrono::duration<double>(std::chrono::steady_clock::now() - baselineBegin).count();
     const auto begin = std::chrono::steady_clock::now();
     for (const double scale : {0.0001, 1.0, 100000.0}) {
         c.zoomBy(scale > 1.0 ? 1000.0 : scale < 1.0 ? 0.0001 : 1.0);
@@ -1909,7 +1914,9 @@ static void robustnessChecks() {
         }
     }
     const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
-    require(seconds < 20.0, "painting a huge song at every zoom is quick");
+    // Idle, both take about a second. Painting whose cost grew with the song's length or the zoom would take many
+    // times the yardstick; a busy machine slows both alike. 300 s catches a hang whatever the yardstick says.
+    require(seconds < 300.0 && (seconds < 20.0 || seconds < 8.0 * baseline), "painting a huge song at every zoom is quick");
     std::cout << "PASS: robustness\n";
 }
 
