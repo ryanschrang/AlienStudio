@@ -280,6 +280,12 @@ selection. Check the browser and pad buttons at the minimum window size.
 - Edit another clip (Session paste/clear, record a take into it, undo) while a clip is open; confirm the ghosts update. Link a cell to the open clip and confirm its notes are not ghosted twice.
 - Save and reopen: ghost notes start Off (the setting is not saved). Open a Channel Rack note row; it shows no ghosts. Listen during playback to confirm ghosts are silent and nothing else changes. These real-menu and listening checks remain manual.
 
+## Piano-roll multi-clip editing (T1-06)
+- Put one-bar MIDI clips on three tracks in one scene, and a two-bar clip on a fourth. Open the first, choose Edit > Ghost notes > Other clips in this scene, then Edit them with this clip: the three one-bar clips' notes are all editable, each other clip's notes in its track's colour; the two-bar clip stays a dim ghost. The footer says "editing 3 clips".
+- Move, resize, delete and change the velocity of notes from each clip while the scene plays: each change is heard in its own track at once, with no stuck or doubled notes. Draw and paste notes: they go to the open clip. Undo once: the whole gesture is undone in every clip it touched; redo brings it back.
+- Switch to This track's clips in other scenes: this track's one-bar clips are edited together, coloured by scene. Freeze one track, or record into a clip: that clip is left as a ghost. Link two cells in the scene: their notes appear once.
+- Session > Clear clip clears only the open clip. Turn Edit them with this clip off: only the open clip is editable again. Save and reopen: the setting starts off and every clip has the notes you left it with.
+
 ## Piano-roll note split (T1-06)
 - In Session and a Channel Rack note row, select a chord with different note lengths, click its middle on the ruler and choose Edit > Split selected notes at cursor. Both halves stay selected, adjoining at the cursor with pitch, velocity and probability preserved. Unselected notes stay unchanged.
 - Undo/redo once restores the whole chord and selection. Repeat at a note start/end, at loop boundaries, with no selection and near the note-capacity limit; confirm no partial split or extra undo step on refusal.
