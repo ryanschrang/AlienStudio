@@ -103,6 +103,10 @@ public:
     std::atomic<bool> resetRackPlayback{false}; // a new/opened document has its own identity namespace
     alien::rack::RackPlayer::SampleTable rackSamples{};
     NoteQueue rackAuditions;
+    // Piano-roll key previews (PROD-06): a note played on one Session track's own instrument (its plugin, drum
+    // sampler or synth), whatever the transport is doing and never recorded. Message thread pushes; see trackAuditionEvent.
+    NoteQueue trackAuditions;
+    static constexpr int trackAuditionEvent(int track, int note) noexcept { return (note & 0x7f) | (track << 8); }
     // Rack preview pitch is relative to C4 (-60..67); retain the original packing for drum-range previews.
     static constexpr int rackPreviewHeld = 1 << 25;
     static constexpr int rackAuditionEvent(int channel, int pitch = 0, bool held = false) noexcept {
@@ -313,6 +317,16 @@ private:
         // Bound work per callback even if the producer keeps publishing.
         for (int n = 0; n < 256 && notes.pop(event); ++n) {
             if (!panic) keyboardNote(event.note, event.velocity);
+        }
+        {   // Piano-roll key previews, on the edited track's instrument.
+            NoteQueue::Event preview{};
+            for (int n = 0; n < 64 && trackAuditions.pop(preview); ++n) {
+                const int track = preview.note >> 8, note = preview.note & 0x7f;
+                if (!panic && track >= 0 && track < static_cast<int>(sessionTracks))
+                    routeToTrack(static_cast<std::size_t>(track), note, preview.velocity, auditionSource);
+            }
+            if (trackAuditions.panic.exchange(false))
+                for (std::size_t track = 0; track < sessionTracks; ++track) releaseAuditions(track);
         }
         {   // Previews from the Channel Rack screen (sound whatever the transport is doing).
             NoteQueue::Event preview{};
@@ -1318,9 +1332,16 @@ private:
         for (int source = 64; source <= 80; ++source)
             for (int note = 0; note < 128; ++note) trackSynths[track].noteOff(note, source);
     }
+    // The note source piano-roll previews play as, apart from the keyboard (64) and MIDI input (65-80), so letting
+    // go of a preview never releases a note someone is holding on a keyboard.
+    static constexpr int auditionSource = 81;
+    void releaseAuditions(std::size_t track) noexcept {
+        if (plugins->hasInstrument(track)) { plugins->silence(track, 1); return; }   // a plugin hears previews on channel 1
+        for (int note = 0; note < 128; ++note) trackSynths[track].noteOff(note, auditionSource);
+    }
     void routeToTrack(std::size_t track, int note, float velocity, int source) noexcept {
         if(plugins->racks[track].frozen)return;
-        if (plugins->hasInstrument(track)) { plugins->note(track, note, velocity, velocity > 0, source == 64 ? 1 : source - 64); return; }
+        if (plugins->hasInstrument(track)) { plugins->note(track, note, velocity, velocity > 0, source == 64 || source == auditionSource ? 1 : source - 64); return; }
         if (instrumentModes[track] == 1) { if (velocity > 0) drumSamplers[track].noteOn(note, velocity, source - 56); return; }
         if (velocity > 0) trackSynths[track].noteOn(note, velocity, source);
         else trackSynths[track].noteOff(note, source);

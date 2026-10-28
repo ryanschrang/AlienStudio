@@ -266,6 +266,12 @@ if(BUILD_TESTING)
     target_link_libraries(SidechainTests PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_audio_devices
         juce::juce_audio_formats juce::juce_audio_basics)
     add_test(NAME SidechainTests COMMAND SidechainTests)
+    add_executable(PianoRollKeyboardTests tests/PianoRollKeyboardTests.cpp)
+    target_include_directories(PianoRollKeyboardTests PRIVATE src)
+    target_compile_definitions(PianoRollKeyboardTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(PianoRollKeyboardTests PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_audio_devices
+        juce::juce_audio_formats juce::juce_audio_basics)
+    add_test(NAME PianoRollKeyboardTests COMMAND PianoRollKeyboardTests)
 
     # Group buses (MIX-03): track output routing, bus strips and FX, solo, delay compensation, format, undo, stems.
     add_executable(GroupBusTests tests/GroupBusTests.cpp)

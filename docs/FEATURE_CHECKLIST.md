@@ -80,21 +80,26 @@ The current project format is 27 (18: song tempo changes, #104; 19: group buses,
 
 ## Piano-roll keyboard and pitch visibility upgrade (PROD-06)
 
-Status: Planned. Added to the completion checklist on 2026-10-27.
+Status: Part 1 implemented (labels, key highlights, auditioning; PianoRollKeyboardTests); part 2 (pitch filtering
+and integrated scale guidance) planned. Added to the completion checklist on 2026-10-27.
 Build on PROD-02 / PROD-05 and coordinate scale behavior with MIDI-06.
 Existing auditioning and scale guides are foundations, not evidence that this
 complete upgrade has passed acceptance.
 
-- [ ] Note-name labels with octave numbers (C3, C#3, D3, etc.), with All labels
-  and C notes only display options.
+- [x] Note-name labels with octave numbers (C3, C#3, D3, etc.), with All labels
+  and C notes only display options. (Edit > Keyboard labels; C4 is MIDI 60, as the piano roll already
+  named notes; all names show when rows are tall enough to read them.)
 - [ ] Pitch visibility toolbar modes: All notes, Used notes and Scale notes;
   keyboard keys and grid rows stay aligned in every mode.
 - [ ] Scale notes mode keeps existing out-of-scale notes visible; changing
   visibility never changes or deletes MIDI data.
-- [ ] Selected MIDI notes highlight the corresponding piano keys in matching
+- [x] Selected MIDI notes highlight the corresponding piano keys in matching
   colors; sounding notes also light up their keys. Preserve multi-clip colors.
-- [ ] Click-and-hold keyboard auditioning uses the active track/channel's
+  (A note under the playhead lights its key brighter; another clip's notes keep that clip's colour.)
+- [x] Click-and-hold keyboard auditioning uses the active track/channel's
   instrument; release, focus loss and destination changes stop preview notes.
+  (Previews play on the edited clip's track instrument, or the rack channel, never on the live synth and never
+  into a take; a note-off always reaches the instrument its note-on went to, PianoRollAuditionRouter.)
 - [ ] Root-note emphasis and scale-note shading use the selected key/scale
   consistently with MIDI-06.
 - [ ] Drawing, selecting, moving, resizing and auditioning target the correct
