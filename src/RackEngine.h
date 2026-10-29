@@ -53,6 +53,12 @@ class RackPlayer {
 public:
     static constexpr int voiceCount = 64;
     static constexpr std::uint64_t noLaunchRequest = std::numeric_limits<std::uint64_t>::max();
+    // One transport slot for the Rack menu, one per Session track, and four Song lanes.
+    // Voices (64) and pending hits remain a single, fixed-capacity shared pool.
+    static constexpr int launchSlots = maxSessionTracks + 1;
+    static constexpr int timelineSlots = 4;
+    using LaunchSources = std::array<std::uint64_t, launchSlots>;
+    static LaunchSources noRequests() noexcept { LaunchSources r; r.fill(noLaunchRequest); return r; }
     struct LaunchTick { int sample{}; std::int64_t grid{}; };
     // Hits waiting for their nudge or ratchet time: at most every channel's ratchets of two
     // overlapping steps (a step nudged a whole step late meets the next one's hits).
@@ -69,42 +75,45 @@ public:
         for (auto& synth : *synthStorage) synth.prepare(sampleRate);
         gain.fill(1.0f); pan.fill(0.0f); wasAudible.fill(true);
         clock.reset(); wasRunning = false; lastStep = -1; controlCountdown = 0; pendingCount = 0; now = 0;
-        launchRunning = launchQueued = false; activeClip = queuedClip = 0; launchGrid = 0;
+        launchRunning = false; launches = {}; instanceRandom.fill(seed);
         performSwingPending = false;
     }
     // Fades every sound out over a few milliseconds, drops hits not yet played and rewinds the clock.
     void stop() noexcept {
         releaseAll(); clock.reset(); wasRunning = false; lastStep = -1; pendingCount = 0;
-        launchRunning = false; activeClip = queuedClip = 0; launchQueued = false;
+        launchRunning = false; launches = {}; instanceRandom.fill(seed);
         performSwingPending = false;
     }
 
-    std::uint64_t playingClip() const noexcept { return activeClip; }
-    std::uint64_t waitingClip() const noexcept { return launchQueued ? queuedClip : noLaunchRequest; }
+    std::uint64_t playingClip(int slot = 0) const noexcept { return validSlot(slot) ? launches[static_cast<std::size_t>(slot)].clip : 0; }
+    std::uint64_t waitingClip(int slot = 0) const noexcept { return validSlot(slot) && launches[static_cast<std::size_t>(slot)].queued ? launches[static_cast<std::size_t>(slot)].request : noLaunchRequest; }
 
-    // Perform: one composite rack clip at a time, addressed by library id. Selection only seeds
-    // ordinary Rack playback at transport start; subsequent editor changes cannot switch it.
-    // A request of 0 stops the rack on the same boundary as a launch. Latest request wins.
+    // Each Session row owns a launch slot; the Rack menu keeps slot zero. Selection
+    // seeds only slot zero at transport start. Requests replace only their slot.
+    // A global stop (request == 0) also clears all Session slots on the boundary.
     void processLaunched(const Snapshot& snap, const SampleTable& clips, bool running, double bpm, int activeTracks,
                          int samples, float* const* left, float* const* right, std::uint64_t request,
                          int quantization, bool startSelected, const LaunchTick* ticks = nullptr, int tickCount = 0,
-                         std::uint64_t sceneRequest = noLaunchRequest, int sceneSample = -1) noexcept {
+                         std::uint64_t sceneRequest = noLaunchRequest, int sceneSample = -1,
+                         const LaunchSources* requests = nullptr, const LaunchSources* sceneSources = nullptr) noexcept {
         if (!running) {
-            launchRunning = false; activeClip = queuedClip = 0; launchQueued = false;
-            performSwingPending = false;
+            launchRunning = false; launches = {}; performSwingPending = false;
         } else {
             if (!launchRunning) {
-                activeClip = startSelected && snap.pattern(snap.selectedPattern) != nullptr
+                launches = {};
+                launches[0].clip = startSelected && snap.pattern(snap.selectedPattern) != nullptr
                     ? snap.clips[static_cast<std::size_t>(snap.selectedPattern)] : 0;
-                launchGrid = 0; launchQueued = false;
             }
-            if (request != noLaunchRequest && (request == 0 || snap.indexOfClip(request) >= 0)) {
-                queuedClip = request; launchQueued = true;
+            for (int slot = 0; slot < launchSlots; ++slot) {
+                auto& state = launches[static_cast<std::size_t>(slot)];
+                const auto incoming = slot == 0 ? request : requests ? (*requests)[static_cast<std::size_t>(slot)] : noLaunchRequest;
+                if (incoming != noLaunchRequest && (incoming == 0 || snap.indexOfClip(incoming) >= 0)) {
+                    state.request = incoming; state.queued = true;
+                }
+                if (state.clip != 0 && snap.indexOfClip(state.clip) < 0) { releaseInstance(slot); state.clip = 0; }
+                if (state.queued && state.request != 0 && snap.indexOfClip(state.request) < 0) state.queued = false;
             }
-            if (activeClip != 0 && snap.indexOfClip(activeClip) < 0) {
-                releasePlayback(); activeClip = 0;
-            }
-            if (launchQueued && queuedClip != 0 && snap.indexOfClip(queuedClip) < 0) launchQueued = false;
+            if (request == 0) for (auto& state : launches) { state.request = 0; state.queued = true; }
         }
         launchRunning = running;
         stepSamples = stepLength(bpm);
@@ -121,16 +130,21 @@ public:
                 if (performSwingPending && now >= performSwingDue) { grid = performSwingGrid; performSwingPending = false; }
             } else grid = clock.next(sampleRate, bpm, snap.swing);
             if (grid < 0) return;
-            if (sample == sceneSample && sceneRequest != noLaunchRequest && (sceneRequest == 0 || snap.indexOfClip(sceneRequest) >= 0)) {
-                releasePlayback(); activeClip = sceneRequest; launchQueued = false; launchGrid = grid;
+            lastStep = -1;
+            for (int slot = 0; slot < launchSlots; ++slot) {
+                auto& state = launches[static_cast<std::size_t>(slot)];
+                const auto scene = sceneSources ? (*sceneSources)[static_cast<std::size_t>(slot)] : slot == 0 ? sceneRequest : noLaunchRequest;
+                if (sample == sceneSample && scene != noLaunchRequest && (scene == 0 || snap.indexOfClip(scene) >= 0)) {
+                    releaseInstance(slot); state.clip = scene; state.queued = false; state.grid = grid;
+                }
+                if (state.queued && grid % quantum == 0) {
+                    releaseInstance(slot); state.clip = state.request; state.queued = false; state.grid = grid;
+                }
+                const int index = snap.indexOfClip(state.clip);
+                if (const auto* p = snap.pattern(index))
+                    triggerStep(snap, clips, *p, static_cast<int>((grid - state.grid) % p->length), index,
+                                std::numeric_limits<std::int64_t>::max(), 0, slot);
             }
-            if (launchQueued && grid % quantum == 0) {
-                releasePlayback(); activeClip = queuedClip; launchQueued = false; launchGrid = grid;
-            }
-            const int index = snap.indexOfClip(activeClip);
-            if (const auto* p = snap.pattern(index))
-                triggerStep(snap, clips, *p, static_cast<int>((grid - launchGrid) % p->length), index);
-            else lastStep = -1;
         });
     }
 
@@ -165,7 +179,9 @@ public:
     // One step of one pattern, due on a given sample of the block. The arrangement
     // timeline decides when each step is due (it knows where every pattern region
     // begins, ends and loops), so no clock runs here.
-    struct TimelineHit { int sample{}, pattern{}, step{}; std::int64_t remainingSamples{std::numeric_limits<std::int64_t>::max()}; std::int64_t elapsedSamples{}; };
+    struct TimelineHit { int sample{}, pattern{}, step{}; std::int64_t remainingSamples{std::numeric_limits<std::int64_t>::max()}; std::int64_t elapsedSamples{};
+        int instance{-1}; bool reset{}; double samplesPerStep{};
+    };
     // `hits` must be in ascending order of sample. `bpm` sets how far nudges and ratchets reach.
     void processTimeline(const Snapshot& snap, const SampleTable& clips, bool running, const TimelineHit* hits, int hitCount,
                          double bpm, int activeTracks, int samples, float* const* left, float* const* right) noexcept {
@@ -173,8 +189,11 @@ public:
         stepSamples = stepLength(bpm);
         render(snap, clips, running, activeTracks, samples, left, right, [&](int i) {
             for (; next < hitCount && hits[next].sample <= i; ++next) {
-                const Pattern* p = snap.pattern(hits[next].pattern);
-                if (p != nullptr) triggerStep(snap, clips, *p, std::clamp(hits[next].step, 0, p->length - 1), hits[next].pattern, hits[next].remainingSamples, hits[next].elapsedSamples);
+                const auto& hit = hits[next];
+                if (hit.reset && hit.instance >= 0) releaseInstance(hit.instance);
+                if (hit.samplesPerStep > 0) stepSamples = hit.samplesPerStep;
+                const Pattern* p = snap.pattern(hit.pattern);
+                if (p != nullptr) triggerStep(snap, clips, *p, std::clamp(hit.step, 0, p->length - 1), hit.pattern, hit.remainingSamples, hit.elapsedSamples, hit.instance);
             }
         });
     }
@@ -193,14 +212,20 @@ public:
     }
 
 private:
-    bool launchRunning{}, launchQueued{};
-    std::uint64_t activeClip{}, queuedClip{};
-    std::int64_t launchGrid{};
+    struct LaunchState { std::uint64_t clip{}, request{}; std::int64_t grid{}; bool queued{}; };
+    std::array<LaunchState, launchSlots> launches{};
+    bool launchRunning{};
+    static bool validSlot(int slot) noexcept { return slot >= 0 && slot < launchSlots; }
     bool performSwingPending{};
     std::int64_t performSwingGrid{}, performSwingDue{};
-    void releasePlayback() noexcept {
-        for (auto& v : voices) if (!v.preview) releaseVoice(v);
-        pendingCount = 0; nextDue = std::numeric_limits<std::int64_t>::max(); lastStep = -1;
+    void releaseInstance(int instance) noexcept {
+        for (auto& v : voices) if (!v.preview && v.instance == instance) releaseVoice(v);
+        int kept = 0;
+        for (int i = 0; i < pendingCount; ++i)
+            if (pending[static_cast<std::size_t>(i)].instance != instance) pending[static_cast<std::size_t>(kept++)] = pending[static_cast<std::size_t>(i)];
+        pendingCount = kept;
+        std::make_heap(pending.begin(), pending.begin() + pendingCount, later);
+        nextDue = pendingCount > 0 ? pending[0].due : std::numeric_limits<std::int64_t>::max();
     }
     // Shared block loop. `onSample(i)` runs before sample i while `running` and
     // starts whatever is due then.
@@ -208,7 +233,7 @@ private:
     void render(const Snapshot& snap, const SampleTable& clips, bool running, int activeTracks, int samples,
                 float* const* left, float* const* right, OnSample&& onSample) noexcept {
         tracksInUse = std::clamp(activeTracks, 1, maxSessionTracks);
-        if (running && !wasRunning) { clock.reset(); random = seed; lastStep = -1; pendingCount = 0; }
+        if (running && !wasRunning) { clock.reset(); random = seed; instanceRandom.fill(seed); lastStep = -1; pendingCount = 0; }
         if (!running && wasRunning) { releaseAll(); lastStep = -1; pendingCount = 0; }
         wasRunning = running;
         syncChannels(snap);
@@ -247,6 +272,7 @@ private:
         int channel{-1}, bus{masterBus}, pattern{-1}, synthPreset{-1}, note{60};
         std::uint64_t sequence{};
         std::uint64_t patternClip{};
+        int instance{-1};
         std::uint8_t choke{};
         bool active{false}, releasing{false}, preview{false};
     };
@@ -312,11 +338,15 @@ private:
         int channel{}, pitch{};
         int pattern{-1}; std::uint64_t sequence{};
         std::uint64_t patternClip{};
+        int instance{-1};
+        std::uint64_t order{};
     };
-    static bool later(const Pending& a, const Pending& b) noexcept { return a.due > b.due; }
+    static bool later(const Pending& a, const Pending& b) noexcept {
+        return a.due == b.due ? a.order > b.order : a.due > b.due;
+    }
 
     void triggerStep(const Snapshot& snap, const SampleTable& clips, const Pattern& pattern, int step, int patternIndex,
-                     std::int64_t remainingSamples = std::numeric_limits<std::int64_t>::max(), std::int64_t elapsedSamples = 0) noexcept {
+                     std::int64_t remainingSamples = std::numeric_limits<std::int64_t>::max(), std::int64_t elapsedSamples = 0, int instance = -1) noexcept {
         const Pattern* p = &pattern;
         lastStep = step;
         for (int c = 0; c < snap.channelCount; ++c) {
@@ -327,14 +357,14 @@ private:
                 for (std::size_t n = 0; n < sequence->count; ++n) {
                     const auto& note = sequence->notes[n];
                     if (note.startStep < step || note.startStep >= step + 1) continue;
-                    if (note.probability < 1.0f && static_cast<double>(nextRandom()) / 4294967296.0 >= note.probability) continue;
+                    if (note.probability < 1.0f && static_cast<double>(nextRandom(instance)) / 4294967296.0 >= note.probability) continue;
                     const auto delay = std::llround((note.startStep - step) * stepSamples) - elapsedSamples;
                     if (delay < 0) continue; // No chase: only note-ons still ahead of the seek/trim point.
                     if (delay >= remainingSamples) continue;
                     const auto gate = std::min(std::max<std::int64_t>(1, std::llround(note.lengthSteps * stepSamples)), remainingSamples - delay) + 1;
-                    if (delay == 0) play(snap, clips, c, note.velocity, 0, note.pitch - 60, gate, patternIndex, token);
+                    if (delay == 0) play(snap, clips, c, note.velocity, 0, note.pitch - 60, gate, patternIndex, token, instance);
                     else schedule({now + delay, gate, note.velocity, 0, c, note.pitch - 60, patternIndex, token,
-                                   snap.clips[static_cast<std::size_t>(patternIndex)]});
+                                   snap.clips[static_cast<std::size_t>(patternIndex)], instance});
                 }
                 continue;
             }
@@ -343,7 +373,7 @@ private:
             // The generator only advances for steps that can miss, so a pattern of
             // certain hits plays identically however the probabilities are edited elsewhere.
             // One draw decides the whole step, ratchets included.
-            if (s.probability < 100 && nextRandom() % 100u >= s.probability) continue;
+            if (s.probability < 100 && nextRandom(instance) % 100u >= s.probability) continue;
             if (clips[static_cast<std::size_t>(c)].load(std::memory_order_relaxed) == nullptr
                 && !snap.channels[static_cast<std::size_t>(c)].isSynth()) continue;
             // Ratchets split the step evenly; the gate is a share of the time between them.
@@ -355,8 +385,12 @@ private:
             const float velocity = static_cast<float>(s.velocity) / 127.0f, pan = static_cast<float>(s.pan) / 63.0f;
             for (int k = 0; k < hits; ++k) {
                 const auto delay = static_cast<std::int64_t>(std::llround(offset + spacing * k));
-                if (delay <= 0) play(snap, clips, c, velocity, pan, s.pitch, gate);
-                else schedule({now + delay, gate, velocity, pan, c, s.pitch});
+                if (delay >= remainingSamples) continue;
+                const auto boundedGate = gate < 0 && remainingSamples == std::numeric_limits<std::int64_t>::max()
+                    ? gate : std::min(gate < 0 ? remainingSamples - delay : gate, remainingSamples - delay);
+                if (delay <= 0) play(snap, clips, c, velocity, pan, s.pitch, boundedGate, patternIndex, 0, instance);
+                else schedule({now + delay, boundedGate, velocity, pan, c, s.pitch, patternIndex, 0,
+                               snap.clips[static_cast<std::size_t>(patternIndex)], instance});
             }
         }
     }
@@ -364,7 +398,8 @@ private:
     // A fixed-capacity min heap bounds both memory and scheduling work. No allocation.
     void schedule(const Pending& hit) noexcept {
         if (pendingCount >= maxPending) return;
-        pending[static_cast<std::size_t>(pendingCount++)] = hit;
+        auto& entry = pending[static_cast<std::size_t>(pendingCount++)];
+        entry = hit; entry.order = ++pendingOrder;
         std::push_heap(pending.begin(), pending.begin() + pendingCount, later);
         nextDue = pending[0].due;
     }
@@ -372,29 +407,29 @@ private:
         while (pendingCount > 0 && pending[0].due <= now) {
             std::pop_heap(pending.begin(), pending.begin() + pendingCount, later);
             const auto due = pending[static_cast<std::size_t>(--pendingCount)];
-            bool current = true;
+            bool current = due.patternClip == 0 || snap.indexOfClip(due.patternClip) >= 0;
             if (due.sequence != 0) {
                 const auto* p = snap.pattern(due.patternClip != 0 ? snap.indexOfClip(due.patternClip) : due.pattern);
                 current = p && p->noteRevisions[static_cast<std::size_t>(due.channel)] == due.sequence;
             }
             if (current && snap.audible(due.channel))
                 play(snap, clips, due.channel, due.velocity, due.pan, due.pitch, due.gate,
-                     due.patternClip != 0 ? snap.indexOfClip(due.patternClip) : due.pattern, due.sequence);
+                     due.patternClip != 0 ? snap.indexOfClip(due.patternClip) : due.pattern, due.sequence, due.instance);
         }
         nextDue = pendingCount > 0 ? pending[0].due : std::numeric_limits<std::int64_t>::max();
     }
-    void play(const Snapshot& snap, const SampleTable& clips, int c, float velocity, float stepPan, int pitch, std::int64_t gate, int pattern = -1, std::uint64_t sequence = 0) noexcept {
+    void play(const Snapshot& snap, const SampleTable& clips, int c, float velocity, float stepPan, int pitch, std::int64_t gate, int pattern = -1, std::uint64_t sequence = 0, int instance = -1) noexcept {
         const SessionAudioClip* clip = clips[static_cast<std::size_t>(c)].load(std::memory_order_relaxed);
         if (clip == nullptr && !snap.channels[static_cast<std::size_t>(c)].isSynth()) return;
-        Voice& v = start(snap.channels[static_cast<std::size_t>(c)], c, clip, velocity, stepPan, pitch);
-        v.gateLeft = v.synthPreset >= 0 && gate < 0 ? static_cast<std::int64_t>(stepSamples) + 1 : gate; v.pattern = pattern; v.sequence = sequence;
+        Voice& v = start(snap.channels[static_cast<std::size_t>(c)], c, clip, velocity, stepPan, pitch, false, instance);
+        v.gateLeft = v.synthPreset >= 0 && gate < 0 ? static_cast<std::int64_t>(stepSamples) + 1 : gate; v.pattern = pattern; v.sequence = sequence; v.instance = instance;
         v.patternClip = pattern >= 0 && pattern < maxPatterns ? snap.clips[static_cast<std::size_t>(pattern)] : 0;
     }
 
     Voice& start(const Channel& channel, int index, const SessionAudioClip* clip, float velocity, float stepPan, int semitones,
-                 bool preview = false) noexcept {
+                 bool preview = false, int instance = -1) noexcept {
         if (channel.chokeGroup != 0)
-            for (auto& v : voices) if (v.active && v.choke == channel.chokeGroup) releaseVoice(v);
+            for (auto& v : voices) if (v.active && v.choke == channel.chokeGroup && v.instance == instance && v.preview == preview) releaseVoice(v);
         Voice* chosen = nullptr;
         for (auto& v : voices) if (!v.active) { chosen = &v; break; }
         if (chosen == nullptr) {  // steal the oldest
@@ -415,6 +450,7 @@ private:
         chosen->velocity = velocity; chosen->stepPan = stepPan;
         chosen->channel = index; chosen->choke = channel.chokeGroup;
         chosen->bus = busFor(channel.output, tracksInUse);
+        chosen->instance = instance;
         chosen->age = ++ageCounter; chosen->active = true; chosen->preview = preview;
         const float position = std::clamp(pan[c] + stepPan, -1.0f, 1.0f);
         const float angle = (position + 1.0f) * 0.78539816339744830962f;
@@ -467,9 +503,11 @@ private:
         }
     }
 
-    std::uint32_t nextRandom() noexcept {
-        random ^= random << 13; random ^= random >> 17; random ^= random << 5;
-        return random;
+    std::uint32_t nextRandom(int instance) noexcept {
+        auto& state = instance >= 0 && instance < launchSlots + timelineSlots
+            ? instanceRandom[static_cast<std::size_t>(instance)] : random;
+        state ^= state << 13; state ^= state >> 17; state ^= state << 5;
+        return state;
     }
 
     RackClock clock;
@@ -483,6 +521,7 @@ private:
     std::array<Voice, voiceCount>& voices = *voiceStorage;
     std::array<Pending, maxPending>& pending = *pendingStorage;
     int pendingCount{};
+    std::uint64_t pendingOrder{};
     std::int64_t now{}, nextDue{};   // samples rendered so far, and when the soonest pending hit is due
     double stepSamples{5512.5};
     std::array<float, maxChannels> gain = [] { std::array<float, maxChannels> g{}; g.fill(1.0f); return g; }();
@@ -492,6 +531,9 @@ private:
     float smoothing{0.1f}, releaseCoefficient{0.99f};
     std::uint64_t ageCounter{};
     std::uint32_t random{seed};
+    std::array<std::uint32_t, launchSlots + timelineSlots> instanceRandom = [] {
+        std::array<std::uint32_t, launchSlots + timelineSlots> states{}; states.fill(seed); return states;
+    }();
     int controlCountdown{};
     int tracksInUse{4};
     int lastStep{-1};

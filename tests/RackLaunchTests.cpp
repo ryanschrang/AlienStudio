@@ -23,7 +23,8 @@ struct Rig {
     std::shared_ptr<SessionAudioClip> sample = std::make_shared<SessionAudioClip>();
     RackPlayer::SampleTable samples{};
     std::vector<float> output;
-    bool externalClock{};
+    bool externalClock{}, multi{};
+    RackPlayer::LaunchSources requests = RackPlayer::noRequests(), sceneSources = RackPlayer::noRequests();
     std::uint64_t sceneRequest{none};
     int sceneFrame{-1};
     Rig() {
@@ -51,7 +52,9 @@ struct Rig {
             const auto before = allocations;
             player->processLaunched(*snap, samples, running, 120, 4, n, pl.data(), pr.data(), request, quantum, startSelected,
                 externalClock ? ticks.data() : nullptr, tickCount, sceneRequest,
-                sceneFrame >= frame && sceneFrame < frame + n ? sceneFrame - frame : -1);
+                sceneFrame >= frame && sceneFrame < frame + n ? sceneFrame - frame : -1,
+                multi ? &requests : nullptr, multi ? &sceneSources : nullptr);
+            requests = RackPlayer::noRequests();
             const auto after = allocations;
             require(before == after, "launch, switch, stop and rendering allocate no memory");
             request = none;
@@ -137,6 +140,116 @@ static void noteOwnership() {
             "a stop drops delayed hits belonging to the previous playback instance");
 }
 
+static void overlappingLaunches() {
+    Rig r, reference;
+    const auto setup = [](Rig& x) {
+        x.multi = true;
+        x.sample->frames = 50000; x.sample->left.assign(50000, 1);
+        require(x.project.setPatternLength(0, 64), "long overlap pattern");
+        PianoRollPattern notes; notes.loopSteps = 64; notes.add(60, 0, 32);
+        require(x.project.setChannelNotes(0, 0, notes), "overlap held source"); x.publish();
+    };
+    setup(r); setup(reference);
+    r.requests[1] = r.requests[2] = reference.requests[2] = 101;
+    r.render(1500, none, 4, false); reference.render(1500, none, 4, false);
+    require(r.player->playingClip(1) == 101 && r.player->playingClip(2) == 101
+        && r.player->activeVoices() == 2 && r.output[100] == 2 * reference.output[100],
+        "two occurrences of the same source retain separate held-note voices");
+    r.project.selectPattern(1); r.publish();
+    r.requests[1] = 0;
+    r.render(4500, none, 4, false); reference.render(4500, none, 4, false);
+    require(r.player->playingClip(1) == 0 && r.player->playingClip(2) == 101
+        && r.player->activeVoices() == 1 && r.output[5500] == reference.output[5500],
+        "stopping one row releases only that occurrence, without selecting another source");
+    // A scene is a complete slot assignment, and can launch different sources together.
+    r.externalClock = true; r.sceneSources.fill(0); r.sceneSources[1] = 101; r.sceneSources[2] = 102;
+    r.sceneFrame = 8000; r.render(2001, none, 4, false);
+    require(r.player->playingClip(1) == 101 && r.player->playingClip(2) == 102, "a scene starts distinct sources on the same boundary");
+    r.render(4000, 0, 4, false);
+    require(r.player->playingClip(1) == 0 && r.player->playingClip(2) == 0 && r.player->pendingHits() == 0,
+        "menu Stop rack stops all slots on the next boundary");
+    r.render(2000, none, 4, false, false); r.render(1, none, 4, false);
+    require(!r.player->busy() && r.player->playingClip(1) == 0, "transport restart cannot resurrect a Session occurrence");
+}
+
+static void overlappingDelayedHits() {
+    Rig a, b;
+    const auto setup = [](Rig& r) {
+        r.multi = true;
+        r.project.setStepOn(0, 0, 1, false);
+        r.project.setStepField(0, 0, 0, StepField::nudge, 100);
+        r.project.setStepField(0, 0, 0, StepField::ratchet, 4);
+        r.requests[1] = 101; r.requests[2] = 102;
+        r.publish();
+    };
+    setup(a); setup(b);
+    a.render(500, none, 4, false); b.render(500, none, 4, false, true, 17);
+    a.requests[1] = b.requests[1] = 0;
+    a.render(5501, none, 4, false); b.render(5501, none, 4, false, true, 17);
+    require(a.output == b.output && a.player->playingClip(2) == 102, "overlapping launch and per-row stop are callback-size independent");
+    // Queue hits on both occurrences just before the boundary, then stop only one.
+    Rig r; r.multi = true;
+    r.project.setStepOn(0, 0, 3, true); r.project.setStepField(0, 0, 3, StepField::nudge, 100);
+    r.project.setStepField(0, 0, 3, StepField::ratchet, 4);
+    r.project.setStepOn(1, 0, 3, true); r.project.setStepField(1, 0, 3, StepField::nudge, 100);
+    r.project.setStepField(1, 0, 3, StepField::ratchet, 4); r.publish();
+    r.requests[1] = 101; r.requests[2] = 102; r.render(3500, none, 4, false);
+    require(r.player->pendingHits() == 8, "both instances own delayed ratchets");
+    r.requests[1] = 0; r.render(501, none, 4, false);
+    require(r.player->pendingHits() == 3 && r.output[4000] > 0.5f && r.output[4000] < 0.6f,
+        "the boundary cancels only the stopped instance's delayed hits");
+    r.project.deletePattern(0); r.publish(); r.render(751, none, 4, false);
+    require(r.output[4250] > 0.5f && r.player->playingClip(2) == 102,
+        "pending step hits follow stable source identity after bank reorder");
+}
+
+static void timelineInstanceOwnership() {
+    Rig r;
+    r.project.setStepOn(0, 0, 1, false);
+    r.project.setStepField(0, 0, 0, StepField::nudge, 100);
+    r.project.setStepField(0, 0, 0, StepField::ratchet, 4); r.publish();
+    std::array<std::array<float, 2000>, RackPlayer::busCount> l{}, rr{};
+    std::array<float*, RackPlayer::busCount> pl{}, pr{};
+    for (std::size_t b = 0; b < pl.size(); ++b) { pl[b] = l[b].data(); pr[b] = rr[b].data(); }
+    constexpr auto forever = std::numeric_limits<std::int64_t>::max();
+    const RackPlayer::TimelineHit hits[] = {
+        {0, 0, 0, forever, 0, RackPlayer::launchSlots, true},
+        {0, 0, 0, forever, 0, RackPlayer::launchSlots + 1, true},
+        {500, -1, 0, 0, 0, RackPlayer::launchSlots, true}
+    };
+    const auto before = allocations;
+    r.player->processTimeline(*r.snap, r.samples, true, hits, 3, 120, 4, 2000, pl.data(), pr.data());
+    require(allocations == before && l[RackPlayer::masterBus][1000] > 0.5f && l[RackPlayer::masterBus][1000] < 0.6f
+        && l[RackPlayer::masterBus][1250] > 0.5f && r.player->pendingHits() == 0,
+        "ending one Song occurrence drops only its ratchets, with no callback allocation");
+    // Fill every launch slot while retaining the existing global voice bound.
+    Rig capacity; capacity.multi = true;
+    capacity.sample->frames = 50000; capacity.sample->left.assign(50000, 1);
+    capacity.requests.fill(101); capacity.render(1, 101, 4, false);
+    require(capacity.player->activeVoices() == RackPlayer::launchSlots, "all fixed Session slots fit in the shared voice pool");
+}
+
+static void independentChanceAndChoke() {
+    Rig overlap, reference;
+    const auto setup = [](Rig& r) {
+        r.multi = true;
+        r.project.setStepOn(0, 0, 1, false);
+        r.project.setStepField(0, 0, 0, StepField::probability, 50);
+        auto channel = r.project.channels[0]; channel.chokeGroup = 1; r.project.setChannel(0, channel);
+        r.project.clearPattern(1); r.project.setStepOn(1, 1, 0, true);
+        r.project.setStepField(1, 1, 0, StepField::probability, 50);
+        channel = r.project.channels[1]; channel.chokeGroup = 1; channel.output = 0; r.project.setChannel(1, channel);
+        r.samples[1].store(r.sample.get()); r.requests[1] = 101; r.publish();
+    };
+    setup(overlap); setup(reference); overlap.requests[2] = 102;
+    overlap.render(320000, none, 4, false); reference.render(320000, none, 4, false, true, 17);
+    require(overlap.output == reference.output,
+        "another occurrence cannot consume this one's chance draws or choke its voices");
+    int hits = 0;
+    for (int loop = 0; loop < 20; ++loop) hits += overlap.output[static_cast<std::size_t>(loop * 16000)] > 0;
+    require(hits > 0 && hits < 20, "chance advances across loops rather than repeating a reset seed");
+}
+
 int main() {
     {
         Rig r; r.externalClock = true; r.project.setSwing(1); r.publish(); r.render(2000);
@@ -148,5 +261,6 @@ int main() {
                 "scene starts step zero on the exact Session-clock boundary");
     }
     selectionAndTiming(); boundariesAndLifecycle(); deletionAndEdits(); noteOwnership();
+    overlappingLaunches(); overlappingDelayedHits(); timelineInstanceOwnership(); independentChanceAndChoke();
     std::puts("PASS: identity-based rack launch (quantization, selection, revisions, deletion, lifecycle, allocation safety)");
 }

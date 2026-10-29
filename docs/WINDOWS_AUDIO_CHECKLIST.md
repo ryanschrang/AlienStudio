@@ -383,7 +383,7 @@ Nothing should sound or look different: this moves where the rack's patterns are
 - Open the assigned source for editing and change steps, notes and expression: linked assignments and Song placements follow. Paste a copy into another scene and edit it: the original stays unchanged. Duplicate a scene containing both ordinary MIDI/audio and a rack assignment; neither type loses content. Undo/redo these operations.
 - Use Place rack clip at Song playhead, move/trim the placement in Song, then Make this placement unique and edit that bank source: the original placement/Session source stays unchanged. Delete an unused preceding bank slot: every remaining placement still plays the same source. Deleting a used source is disabled until its Session/Song uses are cleared.
 - Save, close and reopen; repeat the launch/edit checks. Save portable with external rack samples, move the folder and reopen; verify missing samples remain relinkable. Open older projects (including format 25 sidechains, takes and frozen tracks), save a copy, and compare playback/export. Test malformed references without losing the currently open project.
-- Verify rack tile labels, playing/queued state and the menus at 960x650 and 150/200% scaling. One distinct rack source per scene and one active composite rack clip remain the D2 limits; overlapping instances are D3.
+- Verify rack tile labels, playing/queued state and the menus at 960x650 and 150/200% scaling. D2 originally limited scenes to one distinct rack source and playback to one composite rack clip; the D3 checks below cover the new overlapping instances.
 
 ## Launching Session clips
 - With the transport stopped and Song mode off, click a MIDI clip in the Session view: the transport starts and the clip is heard at once; the top bar's Play button lights. Click a scene's launch button while stopped: the whole scene plays.
@@ -395,3 +395,26 @@ Nothing should sound or look different: this moves where the rack's patterns are
 - Select notes: their keys light in the note colour. With multi-clip editing on, another clip's notes light their keys in that clip's colour. Play the clip: each key lights while its note sounds and goes out after it.
 - Give two tracks different instruments (a plugin, a drum kit, the built-in synth). Open a clip on each and click-and-hold piano keys: you hear that track's instrument, with the transport stopped and while playing. Open a Channel Rack row and do the same: you hear that channel.
 - Hold a key, then switch the piano roll to another clip, track or rack channel (or Alt-Tab away) before letting go: nothing is left sounding. Record into a clip while clicking keys in another: the clicks are not recorded.
+
+
+## Overlapping rack instances (T1-03 D3, format 28)
+
+Not yet run on hardware. Record commit, device/driver, sample rate and buffer size.
+
+- In a new project, assign two different rack sources to two rows of one scene and
+  launch it on Beat and Bar. Both tiles should show their own queued/playing state.
+- Assign the same source to two rows, sustain the same synth pitch on both, then stop
+  one row or launch an ordinary MIDI/audio cell on that row. Only its occurrence stops.
+- Repeat with nudges, ratchets, fractional notes, choke groups and sample channels.
+  Replacement/stop cancels only that occurrence's future hits; no stuck notes remain.
+- Open the playing source from Create, Perform and Song, edit notes and undo/redo.
+  Linked uses update together; Paste a copy and Make unique isolate subsequent edits.
+  Changing editor selection must not switch the sound being played.
+- Overlap the same source on two Song rack lanes. Trim, move, mute, remove and replace
+  one region while the other sounds. Seek and loop through their ends; export the same
+  range and compare its timing with live playback.
+- Save/reopen and confirm identities and independent copies. Open a format 26/27 project
+  with duplicate assignments in one scene, then re-save/reopen: its scene still launches
+  one occurrence of that source. New projects launch one occurrence per assigned row.
+- Test stop/panic, transport restart, document replacement and device changes with held
+  notes. Check row indicators at 960x650 and 150/200% scaling.

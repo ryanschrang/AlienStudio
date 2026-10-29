@@ -3,8 +3,8 @@
 Status: design proposal. Increment A (the identity and library model) is implemented in
 [ClipLibrary.h](../src/ClipLibrary.h) with ClipLibraryTests (#111). Increment B is split in two:
 B1 (Session cells owned by the library), B2a (linked cells, saved links, make unique), B2b
-(placement clips) and C (Channel Rack patterns in the library) are implemented; increments D and E
-remain; D1 explicit rack launch and D2 saved rack bindings are implemented (see below).
+(placement clips) and C (Channel Rack patterns in the library) are implemented; increment E remains; D1 explicit rack launch, D2 saved rack bindings and D3 playback
+instances are implemented (see below); Windows listening/visual acceptance remains pending.
 Baseline: main `1587c17` (project format 17). Roadmap source: T1-03 in
 [PR #100](https://github.com/ryanschrang/AlienStudio/pull/100), workstream
 ARCH-01 / LIVE-03. The numbered priority plan is not yet on this baseline's
@@ -285,7 +285,7 @@ D1 acceptance evidence: RackLaunchTests covers exact beat/bar timing, callback-b
 
 ## D2: saved rack assignments (format 26)
 
-Session > Copy / link > Assign rack clip (linked) gives the selected cell a reference to a bank source. Clicking that tile uses D1's quantized rack launcher; editing opens its source in Create. Scene launches choose the scene's rack source and stop the rack when no assignment exists. One distinct composite rack source can launch per scene, using its channels' existing routing; assigning a second different source is refused. This retains D1's one active composite clip until D3 adds overlapping instances.
+Session > Copy / link > Assign rack clip (linked) gives the selected cell a reference to a bank source. Clicking that tile uses D1's quantized rack launcher; editing opens its source in Create. Scene launches choose the scene's rack source and stop the rack when no assignment exists. At the D2 boundary, one distinct composite rack source could launch per scene, using its channels' existing routing; a second different source was refused. D3 below replaces that single-occurrence restriction.
 
 Paste linked refers to the same source. Paste a copy, Make unique and scene duplication create independent bank patterns, retaining full-note rows, dormant steps and expression. Copies use the existing 64-pattern capacity and refuse atomically when full. A bank source used by Session or Song cannot be deleted until those uses are cleared. Changing a MIDI/audio cell already used by ordinary Song placements into a rack assignment is refused; clear those placements first. Rack launch assignments cannot be recorded into as single-channel MIDI or frozen as anchor-track audio.
 
@@ -294,3 +294,55 @@ Place rack clip at Song playhead creates a rack-lane placement, sharing that sou
 Format 26 adds a hex clip id per saved rack pattern, a hex lane id per channel, `rackClip` per assigned Session cell and per rack Song region. Session assignments contain no inline notes/audio or Session link field; the bank stores their composite content once. Opening rebuilds the document library and remaps all saved rack references together, preserving associations and independent copies; channel lane identifiers are retained. Formats through 25 import every legacy bank slot independently and map Song pattern indices onto those new sources. Invalid, duplicate, missing, wrong-kind or mismatched identifiers refuse the whole file without changing the destination. Format 25 sidechain keys, older audio/portable/offline references, takes and frozen originals keep their existing readers. Live launch state is not saved.
 
 D2 regression evidence is in ProjectControllerTests (sharing, independent copies, scene copies with ordinary content, protected deletion, index remapping, undo/redo, format 26 and damaged/legacy files), RackProjectTests (actual disk reopen and sample-identical Session/Song playback, plus existing sample/portable/export coverage), SessionViewTests (assignment, tile launch, copying and Song placement through real controls) and TimelineViewTests (stable rack clipboard identity).
+
+
+## D3: independent playback occurrences (format 28)
+
+Session tiles launch into their track's own slot. Replacing or stopping a row affects
+only that occurrence. Up to 16 Session rack occurrences can play, plus the Rack menu's
+standalone slot. A scene assigns the Session slots together at the existing shared
+Beat/Bar readiness boundary and stops the standalone slot. Stop rack in the menu stops
+all rack slots; ordinary Session MIDI/audio tracks keep playing. Editor selection never
+changes a playing source. On new projects, assigning the same source to two rows makes
+two occurrences, while editing that source still changes both.
+
+Song keeps its existing four rack lanes, each with separate occurrence ownership. A
+region change, mute/removal, move, seek or loop wrap emits a sample-timed reset for that
+lane before any new hits. A trim retaining the region and content origin does not restart
+it. The source's stable clip ID survives bank reordering. Step hits, nudges, ratchets and
+fractional note onsets carry the owner through the shared scheduler; pending hits on a
+stopped/replaced occurrence are removed without discarding another occurrence's events.
+Equal-time events retain insertion order even after heap rebuilding. Held synth notes
+use the existing independent per-voice synth engines. Choke groups and probability state
+are local to an occurrence; the same channel's mixer controls and output remain shared.
+A Song end inside a callback emits a stop at that sample and retains earlier hits in
+the block, preserving callback-size independence.
+
+This is a bounded adapter extension, not another content owner. There are 17 launch
+slots and four mutually exclusive Song slots. Voices remain a shared pool of 64 with the
+existing oldest-voice stealing rule; the existing `maxPending` bound drops excess hits
+when full. Neither bound is multiplied by the occurrence count. Song's event buffer is
+allocated at construction and sized for each sample's four lanes, each with at most
+one reset plus four catch-up hits. No allocation, locking, I/O, logging or final shared
+content destruction is introduced in the callback. Transient slots/requests/playheads
+are never saved. Increment E still owns removal of source-index adapters and the
+capacity handoff; track/scene/note limits are unchanged here.
+
+Format 28 makes per-row scene playback explicit. Formats through 27 retain their original
+one-occurrence behavior when several cells in a scene name the same rack source: import
+sets `legacyRackSceneLaunch`, which is kept on subsequent saves. No assignments or musical
+content are deleted. New projects default to per-row occurrences. A multi-source scene
+mislabeled as format 27 is rejected, as is a non-boolean compatibility policy. Existing
+rack clip/lane identifiers, bindings, independent-copy rules and format 1-27 readers are
+retained. Older binaries refuse format 28 rather than reinterpret its scene semantics.
+
+Automated evidence is in RackLaunchTests (quantization, same-source overlap, scoped
+ratchet cancellation, stable identities, slot bounds and allocation checks),
+RackIntegrationTests (real-callback same-pitch synth ownership, stop/reset, loop and
+mid-block end timing and rack-before-Song snapshot ordering), RackProjectTests (disk reopen of overlapping distinct sources,
+legacy policy, live versus WAV overlap parity and byte-identical exports at different
+callback sizes), ProjectControllerTests (linked edits, unique copies, undo/redo and
+bindings), and SessionViewTests (actual tile routing and independent row indicators).
+The feature PR records tested commits/configurations. Windows device/listening and
+visual checks below remain a separate gate; automated offline rendering does not
+verify hardware behavior.

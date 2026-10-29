@@ -124,6 +124,7 @@ struct ProjectDocument {
     std::map<std::uint64_t, SessionMedia> media;   // by MediaId
     std::uint64_t nextMedia{1};
     int bpm{120};
+    bool legacyRackSceneLaunch{};
     int launchQuantizationSteps{16};
     float masterGain{1.0f}; // whole-mix level, 0..maxMasterGain
     RecordSettings recording; // metronome, count-in and recording options
@@ -177,10 +178,6 @@ struct ProjectDocument {
         for (const auto* list : {&timeline.regions, &timeline.frozenOriginals, &timeline.takes})
             for (const auto& r : *list)
                 if (r.playsCell() && r.row == track && r.source == scene) return false;
-        for (int t = 0; t < trackCount(); ++t) {
-            const auto other = clip(t, scene).rackClip;
-            if (t != track && other != 0 && other != id) return false; // one composite source per scene (D1)
-        }
         if (cellClip(track, scene).value == id) return false;
         cells[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)] = library::ClipId{id};
         prune();
@@ -469,7 +466,7 @@ inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
 
     if (!a.channelRack.sameContent(b.channelRack)) return false; // which pattern is selected is not an edit
     if (!(a.timeline == b.timeline)) return false;
-    if (a.bpm != b.bpm || a.launchQuantizationSteps != b.launchQuantizationSteps || a.livePreset != b.livePreset
+    if (a.legacyRackSceneLaunch != b.legacyRackSceneLaunch || a.bpm != b.bpm || a.launchQuantizationSteps != b.launchQuantizationSteps || a.livePreset != b.livePreset
         || a.steps.on != b.steps.on || a.steps.pitch != b.steps.pitch || a.steps.velocity != b.steps.velocity
         || a.tracks.size() != b.tracks.size() || a.scenes.size() != b.scenes.size())
         return false;
@@ -513,6 +510,7 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
     }
 
     data.channelRack = doc.rackFromLibrary();
+    data.legacyRackSceneLaunch = doc.legacyRackSceneLaunch;
     data.launchQuantizationSteps = doc.launchQuantizationSteps;
     data.masterGain = doc.masterGain;
     data.recording = doc.recording;
@@ -572,6 +570,7 @@ inline ProjectDocument fromProjectData(const SessionProjectData& data) {
     doc.timeline.tempo = data.bpm;
     for (auto& r : doc.timeline.regions) if (r.isPattern())
         r.rackClip = r.rackClip != 0 ? rackIds.at(r.rackClip) : doc.channelRack.clips[static_cast<std::size_t>(r.source)];
+    doc.legacyRackSceneLaunch = data.legacyRackSceneLaunch;
     doc.launchQuantizationSteps = data.launchQuantizationSteps;
     doc.masterGain = data.masterGain;
     doc.recording = data.recording;

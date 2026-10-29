@@ -71,10 +71,10 @@ struct Rig {
         return clip;
     }
     // What the device receives on its left output, sample by sample.
-    std::vector<float> capture(int samples) {
+    std::vector<float> capture(int samples, int block = 256) {
         std::vector<float> out;
         while (samples > 0) {
-            const int count = std::min(samples, static_cast<int>(left.size()));
+            const int count = std::min({samples, block, static_cast<int>(left.size())});
             float* outputs[]{left.data(), nullptr, right.data()};
             engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 3, count, {});
             out.insert(out.end(), left.begin(), left.begin() + count);
@@ -505,8 +505,96 @@ static void performLaunches() {
             "a document reset cannot carry a live clip into a different document's identity namespace");
 }
 
+static void overlappingPerformCallback() {
+    Rig overlap(8000), reference(8000);
+    const auto setup = [](Rig& rig) {
+        rig.project.clips[0] = 101;
+        rig.project.setInstrumentPreset(0, 9);
+        alien::PianoRollPattern notes; notes.loopSteps = 16; notes.add(60, 0, 12);
+        require(rig.project.setChannelNotes(0, 0, notes) && rig.project.addPattern(0), "two overlapping synth sources");
+        rig.project.clips[1] = 102; rig.publish();
+        rig.engine.patternMode.store(1); rig.engine.launchQuantizationSteps.store(4);
+        rig.engine.requestedTrackRackClip[1].store(101); rig.engine.playing.store(true);
+    };
+    setup(overlap); setup(reference);
+    overlap.engine.requestedTrackRackClip[0].store(101);
+    const auto two = overlap.render(1500), one = reference.render(1500);
+    require(two.energy > 1.8 * one.energy && overlap.engine.activeTrackRackClip[0].load() == 101
+        && overlap.engine.activeTrackRackClip[1].load() == 101, "same-pitch synth occurrences play together in the real callback");
+    overlap.project.selectPattern(1); overlap.publish();
+    overlap.engine.requestedTrackRackClip[0].store(0);
+    const auto before = allocationCount; overlap.render(4000); const auto after = allocationCount;
+    reference.render(4000);
+    require(before == after && overlap.engine.activeTrackRackClip[0].load() == 0
+        && overlap.engine.activeTrackRackClip[1].load() == 101, "real callback stops only one row without allocating");
+    const auto remaining = overlap.capture(1000), expected = reference.capture(1000);
+    for (std::size_t n = 0; n < expected.size(); ++n)
+        require(std::abs(remaining[n] - expected[n]) < 1.0e-6f, "one occurrence's note-off does not cut or retrigger the other's synth voice");
+    overlap.engine.resetRackPlayback.store(true); overlap.render(2000);
+    require(overlap.engine.activeTrackRackClip[1].load() == 0 && overlap.render(1000).peak < 0.001f,
+        "document reset clears every overlapping occurrence");
+    overlap.engine.requestedTrackRackClip[0].store(101); overlap.engine.requestedTrackRackClip[1].store(102);
+    overlap.engine.notes.panic.store(true); overlap.render(1000);
+    require(overlap.engine.activeTrackRackClip[0].load() == 0 && overlap.engine.activeTrackRackClip[1].load() == 0
+        && overlap.engine.queuedTrackRackClip[0].load() == RackPlayer::noLaunchRequest,
+        "panic discards unconsumed per-row launch requests");
+    overlap.engine.sceneTrackRackClip[0].store(101); overlap.engine.sceneTrackRackClip[1].store(102);
+    overlap.engine.synchronizedSceneLaunch.store(true); overlap.engine.requestedRackClip.store(0);
+    for (std::size_t t = 0; t < ToneEngine::sessionTracks; ++t) {
+        alien::SessionClipLaunch stop; stop.clipIndex = -1; overlap.engine.pianoRollLaunches[t].publish(stop);
+    }
+    overlap.render(8000);
+    require(overlap.engine.activeTrackRackClip[0].load() == 0 && overlap.engine.activeTrackRackClip[1].load() == 0,
+        "Stop rack cancels every rack source in a pending scene");
+}
+
+static void timelineOverlapLifecycle() {
+    using namespace alien::timeline;
+    const auto capture = [](int block, bool loop) {
+        Rig rig(8000); rig.project.clips[0] = 101;
+        alien::PianoRollPattern notes; notes.loopSteps = 16; notes.add(60, 1.05, 8);
+        require(rig.project.setChannelNotes(0, 0, notes), "fractional Song note"); rig.publish();
+        rig.setClip(0, Rig::dc(20000, 8000, 0.2f));
+        auto song = std::make_shared<alien::ArrangementPlayback>();
+        Region r; r.row = rackRowBase; r.source = 0; r.length = 16 * ticksPerStep;
+        require(song->timeline.place(r), "first Song instance");
+        r.id = 0; r.row += 1; require(song->timeline.place(r), "second Song instance");
+        if (loop) { song->timeline.setLoop(0, 2 * ticksPerStep); song->timeline.setLoopEnabled(true); }
+        else rig.engine.timelineEnd.store(ticksPerStep + 13);
+        rig.engine.arrangementMailbox.publish(song); rig.engine.patternMode.store(2); rig.engine.playing.store(true);
+        return rig.capture(6000, block);
+    };
+    const auto endWide = capture(256, false), endNarrow = capture(17, false);
+    require(endWide == endNarrow && endWide[1050] > 0.01f && endWide[2000] == 0,
+        "Song stop inside a block retains earlier fractional onsets and releases both instances on the exact sample");
+    require(capture(256, true) == capture(17, true),
+        "Song loop wraps reset instance-owned delayed notes identically across callback sizes");
+}
+
+static void stableSongBindingAcrossBankReorder() {
+    Rig moved(8000), reference(8000);
+    const auto setup = [](Rig& rig) {
+        rig.project.clips[0] = 101; rig.project.setStepOn(0, 0, 0, true);
+        require(rig.project.addPattern(0), "second Song source"); rig.project.clips[1] = 102;
+        rig.project.setStepField(1, 0, 0, StepField::velocity, 40); rig.publish();
+        auto song = std::make_shared<alien::ArrangementPlayback>();
+        alien::timeline::Region region; region.row = alien::timeline::rackRowBase; region.source = 1; region.rackClip = 102;
+        region.length = 32 * alien::timeline::ticksPerStep; require(song->timeline.place(region), "stable Song source placement");
+        rig.engine.arrangementMailbox.publish(song); rig.engine.patternMode.store(2); rig.engine.playing.store(true);
+    };
+    setup(moved); setup(reference);
+    require(moved.capture(1500) == reference.capture(1500), "same starting rack placement");
+    require(moved.project.deletePattern(0), "remove unused preceding bank slot"); moved.publish();
+    // Deliberately do not republish the arrangement: its index cache is stale.
+    require(moved.capture(15001) == reference.capture(15001),
+        "stable clip identity preserves Song playback when the rack snapshot arrives before remapped Song indices");
+}
+
 int main() {
     performLaunches();
+    overlappingPerformCallback();
+    timelineOverlapLifecycle();
+    stableSongBindingAcrossBankReorder();
     synthCallback();
     melodicCallback();
     silentInEveryOtherMode();

@@ -24,7 +24,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 27;   // 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings; 27: fade shapes
+inline constexpr int sessionProjectFormatVersion = 28;   // 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings; 27: fade shapes; 28: independent rack launch slots per Session row
 
 // A group bus slot. Slots keep their index while other buses come and go, so a track's output
 // (TrackSettings::output) and the bus's FX rack never need renumbering.
@@ -87,6 +87,9 @@ struct SessionProjectData {
     SessionBuses buses{};
     BusRacks busPlugins{};
     rack::Project channelRack = rack::Project::createDefault(); // Absent before version 7: the starting rack.
+    // Imported scenes used one occurrence when several cells named the same rack source.
+    // Retain that audible behavior on re-save; new projects launch one occurrence per row.
+    bool legacyRackSceneLaunch{};
     int launchQuantizationSteps{16};
     float masterGain{1.0f}; // Absent in older files: unity.
     RecordSettings recording; // Absent in older files: defaults.
@@ -229,14 +232,11 @@ struct SessionProjectData {
         };
         for (const auto& scene : clips) {
             if (static_cast<int>(scene.size()) != tracks) return false;
-            std::uint64_t sceneRack = 0;
             for (const auto& clip : scene) {
                 if (!clip.pattern->valid()) return false;
                 if (clip.rackClip != 0) {
                     if (rackIndex(clip.rackClip) < 0 || clip.pattern->count != 0 || clip.pattern->loopSteps != PianoRollPattern::defaultLoopSteps
-                        || clip.audioFilePath.isNotEmpty() || clip.link != 0
-                        || (sceneRack != 0 && sceneRack != clip.rackClip)) return false;
-                    sceneRack = clip.rackClip;
+                        || clip.audioFilePath.isNotEmpty() || clip.link != 0) return false;
                 }
             }
         }
@@ -292,6 +292,7 @@ inline juce::String serializeSessionProject(const SessionProjectData& project) {
     rootObject->setProperty("format", "AlienStudioSession");
     rootObject->setProperty("version", sessionProjectFormatVersion);
     rootObject->setProperty("launchQuantizationSteps", project.launchQuantizationSteps);
+    rootObject->setProperty("legacyRackSceneLaunch", project.legacyRackSceneLaunch);
     rootObject->setProperty("selectedTrack", project.selectedTrack);
     rootObject->setProperty("selectedScene", project.selectedScene);
     rootObject->setProperty("bpm", project.bpm);
@@ -810,6 +811,9 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         error = "Project launch settings are missing or invalid."; return false;
     }
     parsed.launchQuantizationSteps = static_cast<int>(quantization);
+    const auto legacyRackScene = rootObject->getProperty("legacyRackSceneLaunch");
+    if (formatVersion >= 28 && !legacyRackScene.isVoid() && !legacyRackScene.isBool()) { error = "Invalid rack scene launch policy."; return false; }
+    parsed.legacyRackSceneLaunch = formatVersion < 28 || (!legacyRackScene.isVoid() && static_cast<bool>(legacyRackScene));
     parsed.selectedTrack = static_cast<int>(selectedTrack);
     parsed.selectedScene = static_cast<int>(selectedScene);
     parsed.bpm = static_cast<int>(bpm);
@@ -1030,6 +1034,15 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
     if (formatVersion >= 7 && !rack::rackFromVar(rootObject->getProperty("channelRack"), parsed.channelRack, error, formatVersion >= 26)) return false;
     for (const auto& scene : parsed.clips) for (const auto& clip : scene)
         if (clip.rackClip != 0 && formatVersion < 26) { error = "Rack bindings require format 26."; return false; }
+    // Older files promised at most one distinct rack source per scene. Format 28
+    // makes the per-row transport semantics explicit; older binaries refuse it.
+    if (formatVersion < 28) for (const auto& scene : parsed.clips) {
+        std::uint64_t source = 0;
+        for (const auto& clip : scene) if (clip.rackClip != 0) {
+            if (source != 0 && source != clip.rackClip) { error = "Multiple rack sources per scene require format 28."; return false; }
+            source = clip.rackClip;
+        }
+    }
     for (const auto* list : {&parsed.timeline.regions, &parsed.timeline.frozenOriginals, &parsed.timeline.takes})
         for (const auto& r : *list)
             if ((r.rackClip != 0 && (formatVersion < 26 || !r.isPattern() || list != &parsed.timeline.regions))

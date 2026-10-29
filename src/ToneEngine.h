@@ -35,6 +35,7 @@ public:
     T& operator[](std::size_t i) noexcept { return (*data)[i]; }
     const T& operator[](std::size_t i) const noexcept { return (*data)[i]; }
     static constexpr std::size_t size() noexcept { return N; }
+    T* raw() noexcept { return data->data(); }
     auto begin() noexcept { return data->begin(); }
     auto end() noexcept { return data->end(); }
     auto begin() const noexcept { return data->cbegin(); }
@@ -90,6 +91,10 @@ public:
     std::atomic<int> activeTracks{alien::sessionProjectTrackCount};
     std::atomic<bool> synchronizedSceneLaunch{false};
     std::atomic<std::uint64_t> sceneRackClip{alien::rack::RackPlayer::noLaunchRequest};
+    // Slot zero is the Rack menu; slots 1..16 belong to Session tracks.
+    using RackSources = alien::rack::RackPlayer::LaunchSources;
+    static_assert(alien::rack::RackPlayer::timelineSlots == alien::timeline::rackLanes);
+    std::array<std::atomic<std::uint64_t>, sessionTracks> requestedTrackRackClip{}, sceneTrackRackClip{}, activeTrackRackClip{}, queuedTrackRackClip{};
     std::atomic<int> launchQuantizationSteps{16}; // One bar by default (16 sixteenth-note steps).
     // Channel Rack. The project is published as an immutable snapshot; each
     // channel's decoded sample is an immutable clip retained by the session
@@ -124,6 +129,9 @@ public:
         for (auto& pitch : stepPitches) pitch.store(57, std::memory_order_relaxed);
         for (auto& velocity : stepVelocities) velocity.store(102, std::memory_order_relaxed);
         for (std::size_t t = 0; t < sessionTracks; ++t) {
+            requestedTrackRackClip[t].store(alien::rack::RackPlayer::noLaunchRequest);
+            sceneTrackRackClip[t].store(alien::rack::RackPlayer::noLaunchRequest);
+            queuedTrackRackClip[t].store(alien::rack::RackPlayer::noLaunchRequest);
             sessionTrackPositions[t].store(-1000, std::memory_order_relaxed);
             requestedPianoRollClip[t].store(-1, std::memory_order_relaxed);
             activePianoRollClip[t].store(-1, std::memory_order_relaxed);
@@ -239,12 +247,18 @@ private:
             midi.requestReset();
         }
         if (const auto* fresh = rackMailbox.consume()) rackSnapshot = fresh;
-        if (resetRackPlayback.exchange(false)) rackPlayer.stop();
+        if (resetRackPlayback.exchange(false)) {
+            rackPlayer.stop();
+            synchronizedTrackRackSources = alien::rack::RackPlayer::noRequests();
+            synchronizedRackSource = alien::rack::RackPlayer::noLaunchRequest;
+        }
         if (synchronizedSceneLaunch.exchange(false)) {
             synchronizedScenePending = true;
             synchronizedSceneTracksQueued = 0;
             synchronizedSceneQuantizationSteps = launchQuantizationSteps.load();
             synchronizedRackSource = sceneRackClip.exchange(alien::rack::RackPlayer::noLaunchRequest);
+            for (std::size_t t = 0; t < sessionTracks; ++t)
+                synchronizedTrackRackSources[t + 1] = sceneTrackRackClip[t].exchange(alien::rack::RackPlayer::noLaunchRequest);
         }
         if (modeNow == 2) {
             // A requested position is where the song starts when it next plays, or
@@ -337,7 +351,7 @@ private:
                     rackPlayer.audition(*rackSnapshot, channel, preview.velocity,
                                         rackSamples[static_cast<std::size_t>(channel)].load(std::memory_order_relaxed), pitch, (preview.note & rackPreviewHeld) != 0);
             }
-            if (rackAuditions.panic.exchange(false)) rackPlayer.stop();
+            if (rackAuditions.panic.exchange(false)) { rackPlayer.stop(); cancelRackRequests(); }
         }
         if (panic) {
             for (std::size_t track = 0; track < sessionTracks; ++track)
@@ -348,7 +362,7 @@ private:
             synchronizedSceneTracksQueued = 0;
             synchronizedSceneLaunch.store(false);
             activeStepPitch = -1;
-            allSoundOff(); midi.requestReset();
+            allSoundOff(); cancelRackRequests(); midi.requestReset();
             if (modeNow == 2) resetTransport();
         }
         for (std::size_t t = 0; t < sessionTracks; ++t) {
@@ -394,16 +408,28 @@ private:
         const double beatsPerSample = clockTempo(modeNow) / (sampleRate * 60.0);
         rackHitCount = 0;
         rackLaunchTickCount = 0; rackSceneDue = alien::rack::RackPlayer::noLaunchRequest; rackSceneSample = -1;
+        rackTrackSceneDue = alien::rack::RackPlayer::noRequests();
+        for (std::size_t t = 0; t < sessionTracks; ++t) {
+            rackTrackRequests[t + 1] = requestedTrackRackClip[t].exchange(alien::rack::RackPlayer::noLaunchRequest);
+            if (rackTrackRequests[t + 1] != alien::rack::RackPlayer::noLaunchRequest)
+                synchronizedTrackRackSources[t + 1] = alien::rack::RackPlayer::noLaunchRequest;
+        }
         rackRequestInBlock = requestedRackClip.exchange(alien::rack::RackPlayer::noLaunchRequest);
         if (rackRequestInBlock != alien::rack::RackPlayer::noLaunchRequest) synchronizedRackSource = alien::rack::RackPlayer::noLaunchRequest;
+        if (rackRequestInBlock == 0) synchronizedTrackRackSources = alien::rack::RackPlayer::noRequests();
         if (timelineRate != songRate(timelineTick)) setTimelineTick(timelineTick);   // the project tempo or the tempo map changed: a new segment
+        const bool rackTimelineBlock = playNow && modeNow == 2;
         const double beatBase = countingIn ? countInBeats : transportBeat;
         if (!clockRunning) lastClickBeat = -1;
         for (int i = 0; i < samples; ++i) {
             plugins->sampleOffset = i;
             automationTicks[static_cast<std::size_t>(i)] = -1.0;
             if (playNow && modeNow == 2 && !timelineSample(i)) {
-                allSoundOff(); playing.store(false); playNow = false;   // the song reached its end
+                // Rack rendering consumes the collected events after this sample loop.
+                // End its instances at this exact sample, retaining earlier hits in the block.
+                for (int lane = 0; lane < alien::timeline::rackLanes; ++lane)
+                    rackHits[static_cast<std::size_t>(rackHitCount++)] = {i, -1, 0, 0, 0, alien::rack::RackPlayer::launchSlots + lane, true};
+                allSoundOff(false); playing.store(false); playNow = false;   // the song reached its end
             }
             if (clockRunning) {
                 // A playing song clicks on its own beats, so the click follows tempo and time signature
@@ -463,6 +489,8 @@ private:
                     && (synchronizedSceneTracksQueued & allSessionTracks) == allSessionTracks
                     && rolls[0].launchBoundaryDue(synchronizedSceneQuantizationSteps)) {
                     rackSceneDue = synchronizedRackSource; rackSceneSample = i;
+                    rackTrackSceneDue = synchronizedTrackRackSources; rackTrackSceneDue[0] = rackSceneDue;
+                    synchronizedTrackRackSources = alien::rack::RackPlayer::noRequests();
                     synchronizedRackSource = alien::rack::RackPlayer::noLaunchRequest;
                     for (std::size_t track = 0; track < sessionTracks; ++track)
                         rolls[track].launchPendingNow([this, track](int n, float v, bool on) {
@@ -523,7 +551,7 @@ private:
             for (int c = 0; c < 2; ++c) plugins->tracks[t].addFrom(c,0,clipBuffers[t],c,0,samples);
         addTrackInputs(samples, outputOffset);
         if (modeNow == 2) captureSongTake(samples, outputOffset);
-        renderRack(samples, playNow && (modeNow == 3 || modeNow == 1), playNow && modeNow == 2, modeNow == 3);
+        renderRack(samples, playNow && (modeNow == 3 || modeNow == 1), rackTimelineBlock, modeNow == 3);
         plugins->effectsAndAlign(samples);
         for (std::size_t r = 0; r < static_cast<std::size_t>(alien::maxReturns); ++r)
             returnMixers[r].setTarget(returns[r].snapshot().asTrack(), false);
@@ -660,6 +688,16 @@ private:
             buses[index].peak.store(peak, std::memory_order_relaxed);
         }
     }
+    void cancelRackRequests() noexcept {
+        requestedRackClip.store(alien::rack::RackPlayer::noLaunchRequest);
+        sceneRackClip.store(alien::rack::RackPlayer::noLaunchRequest);
+        synchronizedRackSource = alien::rack::RackPlayer::noLaunchRequest;
+        synchronizedTrackRackSources = alien::rack::RackPlayer::noRequests();
+        for (std::size_t t = 0; t < sessionTracks; ++t) {
+            requestedTrackRackClip[t].store(alien::rack::RackPlayer::noLaunchRequest);
+            sceneTrackRackClip[t].store(alien::rack::RackPlayer::noLaunchRequest);
+        }
+    }
     // Renders the Channel Rack and adds each output bus after the track
     // instruments, so a plug-in instrument on a track cannot replace it: buses
     // for Session tracks join that track (and so pass through its effects and
@@ -673,16 +711,22 @@ private:
             left[b] = buses.left[b].data(); right[b] = buses.right[b].data();
         }
         if (timelineRunning)
-            rackPlayer.processTimeline(*rackSnapshot, rackSamples, true, rackHits.data(), rackHitCount, songTempo().tempoAt(timelineTick), activeTracks.load(),
+            rackPlayer.processTimeline(*rackSnapshot, rackSamples, true, rackHits.raw(), rackHitCount, songTempo().tempoAt(timelineTick), activeTracks.load(),
                                        samples, left.data(), right.data());
         else
             rackPlayer.processLaunched(*rackSnapshot, rackSamples, running, bpm.load(), activeTracks.load(), samples, left.data(), right.data(),
                                       rackRequestInBlock, launchQuantizationSteps.load(), startSelected,
-                                      startSelected ? nullptr : rackLaunchTicks.data(), rackLaunchTickCount, rackSceneDue, rackSceneSample);
+                                      startSelected ? nullptr : rackLaunchTicks.data(), rackLaunchTickCount, rackSceneDue, rackSceneSample, &rackTrackRequests, &rackTrackSceneDue);
         activeRackClip.store(timelineRunning ? 0 : rackPlayer.playingClip(), std::memory_order_relaxed);
         queuedRackClip.store(timelineRunning ? alien::rack::RackPlayer::noLaunchRequest : rackPlayer.waitingClip(), std::memory_order_relaxed);
         if (!timelineRunning && synchronizedScenePending && synchronizedRackSource != alien::rack::RackPlayer::noLaunchRequest)
             queuedRackClip.store(synchronizedRackSource, std::memory_order_relaxed);
+        for (std::size_t t = 0; t < sessionTracks; ++t) {
+            activeTrackRackClip[t].store(timelineRunning ? 0 : rackPlayer.playingClip(static_cast<int>(t + 1)), std::memory_order_relaxed);
+            const auto queued = synchronizedScenePending && synchronizedTrackRackSources[t + 1] != alien::rack::RackPlayer::noLaunchRequest
+                ? synchronizedTrackRackSources[t + 1] : rackPlayer.waitingClip(static_cast<int>(t + 1));
+            queuedTrackRackClip[t].store(timelineRunning ? alien::rack::RackPlayer::noLaunchRequest : queued, std::memory_order_relaxed);
+        }
         rackStep.store(running ? rackPlayer.currentStep() : -1, std::memory_order_relaxed);
         for (std::size_t t = 0; t < sessionTracks; ++t) {
             if(plugins->racks[t].frozen)continue;
@@ -790,7 +834,8 @@ private:
     struct TimelineLane {
         bool active{}, midi{};
         int source{-1};
-        std::uint64_t clip{};          // the region's placement clip, or 0
+        std::uint64_t clip{};          // placement clip on a track; region identity on a rack lane
+        std::uint64_t rackClip{};      // stable rack source; source is only its resolved index cache
         std::int64_t start{}, end{}, offset{};
         double audioOffset{}, gain{1.0};
         std::int64_t fadeIn{}, fadeOut{}, crossfade{};
@@ -1075,14 +1120,17 @@ private:
         const auto* region = regionNow(alien::timeline::rackRowBase + index, lane.boundary);
         if (region != nullptr && region->muted) region = nullptr;
         if (region == nullptr) { const double boundary = lane.boundary; lane = {}; lane.boundary = boundary; return; }
-        if (lane.active && lane.source == region->source && region->start - region->offset == lane.start - lane.offset) {
+        const int source = region->rackClip != 0 ? rackSnapshot->indexOfClip(region->rackClip) : region->source;
+        if (lane.active && lane.clip == region->id && lane.rackClip == region->rackClip
+            && (region->rackClip != 0 || lane.source == source) && region->start - region->offset == lane.start - lane.offset) {
+            lane.source = source;
             lane.start = region->start; lane.end = region->end(); lane.offset = region->offset;   // trimmed or stretched, not moved
             return;
         }
         const double boundary = lane.boundary;
         lane = {}; lane.boundary = boundary;
-        lane.active = true; lane.source = region->source; lane.start = region->start; lane.end = region->end();
-        lane.offset = region->offset;
+        lane.active = true; lane.source = source; lane.rackClip = region->rackClip; lane.start = region->start; lane.end = region->end();
+        lane.offset = region->offset; lane.clip = region->id;
         // The first step whose hit has not happened yet.
         const double content = std::max(0.0, timelineTick - static_cast<double>(region->start)) + static_cast<double>(region->offset);
         lane.nextStep = std::max<std::int64_t>(0, static_cast<std::int64_t>(std::floor(content / alien::timeline::ticksPerStep)) - 1);
@@ -1094,7 +1142,19 @@ private:
         else while (rackStepTick(lane.nextStep) < content - 1.0e-6) ++lane.nextStep;
     }
     void fireRackSteps(int sample) noexcept {
-        for (auto& lane : rackLaneState) {
+        for (std::size_t index = 0; index < rackLaneState.size(); ++index) {
+            auto& lane = rackLaneState[index];
+            // Rack and Song mailboxes can arrive in adjacent blocks. A stale bank index
+            // must never redirect a placement to another source (or silence a moved one).
+            if (lane.active && lane.rackClip != 0) lane.source = rackSnapshot->indexOfClip(lane.rackClip);
+            const auto id = lane.active ? lane.clip : 0;
+            const auto source = lane.active && rackSnapshot->pattern(lane.source) ? rackSnapshot->clips[static_cast<std::size_t>(lane.source)] : 0;
+            const auto origin = lane.start - lane.offset;
+            const int instance = alien::rack::RackPlayer::launchSlots + static_cast<int>(index);
+            if (rackLaneReset[index] || rackInstanceRegion[index] != id || rackInstanceSource[index] != source || rackInstanceOrigin[index] != origin) {
+                rackHits[static_cast<std::size_t>(rackHitCount++)] = {sample, -1, 0, 0, 0, instance, true};
+                rackLaneReset[index] = false; rackInstanceRegion[index] = id; rackInstanceSource[index] = source; rackInstanceOrigin[index] = origin;
+            }
             if (!lane.active) continue;
             const double content = timelineTick - static_cast<double>(lane.start) + static_cast<double>(lane.offset);
             const auto noteEnd = song->timeline.loopEnabled && loopArmed ? std::min(lane.end, song->timeline.loopEnd) : lane.end;
@@ -1106,7 +1166,8 @@ private:
                     rackHits[static_cast<std::size_t>(rackHitCount++)] = {sample, lane.source, static_cast<int>(lane.nextStep % pattern->length),
                         std::max<std::int64_t>(1, static_cast<std::int64_t>(std::ceil((static_cast<double>(noteEnd) - timelineTick) / timelineRate))),
                         timelineTick - hitTick > timelineRate + 1.0e-8
-                            ? std::max<std::int64_t>(0, std::llround((timelineTick - hitTick) / timelineRate)) : 0};
+                            ? std::max<std::int64_t>(0, std::llround((timelineTick - hitTick) / timelineRate)) : 0,
+                        instance, false, alien::timeline::ticksPerStep / timelineRate};
                 ++lane.nextStep;
             }
         }
@@ -1119,6 +1180,7 @@ private:
         loopArmed = timelineTick < static_cast<double>(song->timeline.loopEnd);
         for (std::size_t t = 0; t < sessionTracks; ++t) { clearTrack(t, hard); trackLanes[t].boundary = -1.0; }   // look again at the new place
         for (auto& lane : rackLaneState) lane = {};
+        rackLaneReset.fill(true);
         if (hard) rackPlayer.stop();
     }
     // The timeline changed while the song plays: every lane looks again.
@@ -1420,9 +1482,9 @@ private:
         if (on) trackSynths[track].noteOn(note, velocity, source);
         else trackSynths[track].noteOff(note, source);
     }
-    void allSoundOff() noexcept {
+    void allSoundOff(bool stopRack = true) noexcept {
         synth.allSoundOff();
-        rackPlayer.stop();
+        if (stopRack) rackPlayer.stop();
 
         for (std::size_t t=0;t<sessionTracks;++t) if (plugins->hasInstrument(t))
             plugins->silence(t);
@@ -1451,6 +1513,8 @@ private:
         synchronizedScenePending = false;
         synchronizedSceneTracksQueued = 0;
         synchronizedRackSource = alien::rack::RackPlayer::noLaunchRequest; sessionRackGrid = 0;
+        synchronizedTrackRackSources = alien::rack::RackPlayer::noRequests();
+        rackLaneReset.fill(true);
         for (std::size_t track = 0; track < sessionTracks; ++track) {
             activePianoRollClip[track].store(-1);
             sessionTrackPositions[track].store(-1000);
@@ -1467,11 +1531,17 @@ private:
     bool loopArmed{};   // the playhead is before the loop's end, so reaching it wraps (starting past it plays on)
     std::array<TimelineLane, sessionTracks> trackLanes{};
     std::array<TimelineLane, alien::timeline::rackLanes> rackLaneState{};
-    std::array<alien::rack::RackPlayer::TimelineHit, 128> rackHits{};
+    // At most a reset and four catch-up hits per lane per sample (fireRackSteps' guard).
+    FixedHeapArray<alien::rack::RackPlayer::TimelineHit, alien::PluginRuntime::blockSize * alien::timeline::rackLanes * 5> rackHits;
+    std::array<std::uint64_t, alien::timeline::rackLanes> rackInstanceRegion{}, rackInstanceSource{};
+    std::array<std::int64_t, alien::timeline::rackLanes> rackInstanceOrigin{};
+    std::array<bool, alien::timeline::rackLanes> rackLaneReset{};
     int rackHitCount{};
     std::array<alien::rack::RackPlayer::LaunchTick, alien::PluginRuntime::blockSize> rackLaunchTicks{};
     int rackLaunchTickCount{}, rackSceneSample{-1};
     std::int64_t sessionRackGrid{};
+    RackSources rackTrackRequests = alien::rack::RackPlayer::noRequests(), rackTrackSceneDue = alien::rack::RackPlayer::noRequests();
+    RackSources synchronizedTrackRackSources = alien::rack::RackPlayer::noRequests();
     std::uint64_t synchronizedRackSource{alien::rack::RackPlayer::noLaunchRequest};
     std::uint64_t rackSceneDue{alien::rack::RackPlayer::noLaunchRequest}, rackRequestInBlock{alien::rack::RackPlayer::noLaunchRequest};
     std::array<juce::AudioBuffer<float>, sessionTracks> clipBuffers;
