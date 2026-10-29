@@ -140,7 +140,8 @@ struct SessionProjectData {
         return owners;
     }
     bool validTrackRegistry() const {
-        if (!trackRegistry.valid()) return false;
+        if (trackCount() < 1 || trackCount() > maxSessionTracks || channelRack.channelCount < 0
+            || channelRack.channelCount > rack::maxChannels || !trackRegistry.valid()) return false;
         const auto owners = trackOwners();
         if (owners.size() != trackRegistry.entries().size()) return false;
         for (auto owner : owners) if (!trackRegistry.idFor(owner)) return false;
@@ -397,10 +398,9 @@ inline juce::var trackReferencesToVar(const SessionProjectData& p) {
 }
 
 inline juce::String serializeSessionProject(const SessionProjectData& source) {
+    if (!source.valid()) return {};
     auto project = source;
     if (project.trackRegistry.entries().empty() && !project.trackRegistry.synchronize(project.trackOwners())) return {};
-
-    if (!project.valid()) return {};
 
     auto root = juce::var(new juce::DynamicObject());
     auto* rootObject = root.getDynamicObject();

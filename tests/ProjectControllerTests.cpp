@@ -1122,6 +1122,9 @@ static void universalTrackIdentityTests() {
         "a reused return slot has a fresh identity");
     require(c.deleteBus(bus) && c.addBus() == bus && d.trackId(TrackRole::bus, bus) != busId,
         "a reused bus slot has a fresh identity");
+    auto invalid = parsed;
+    invalid.channelRack.channelCount = std::numeric_limits<int>::max();
+    require(alien::serializeSessionProject(invalid).isEmpty(), "invalid in-memory capacity is refused before building owner adapters");
     alien::TrackRegistry registry;
     require(!registry.synchronize({{TrackRole::master, 1}, {TrackRole::master, 1}}) && registry.entries().empty(),
         "duplicate owner adapter fails without partial mutation");
