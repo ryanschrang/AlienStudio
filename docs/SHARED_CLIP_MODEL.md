@@ -285,7 +285,7 @@ D1 acceptance evidence: RackLaunchTests covers exact beat/bar timing, callback-b
 
 ## D2: saved rack assignments (format 26)
 
-Session > Copy / link > Assign rack clip (linked) gives the selected cell a reference to a bank source. Clicking that tile uses D1's quantized rack launcher; editing opens its source in Create. Scene launches choose the scene's rack source and stop the rack when no assignment exists. One distinct composite rack source can launch per scene, using its channels' existing routing; assigning a second different source is refused. This retains D1's one active composite clip until D3 adds overlapping instances.
+Session > Copy / link > Assign rack clip (linked) gives the selected cell a reference to a bank source. Clicking that tile uses D1's quantized rack launcher; editing opens its source in Create. Scene launches choose the scene's rack source and stop the rack when no assignment exists. At the D2 boundary, one distinct composite rack source could launch per scene, using its channels' existing routing; a second different source was refused. D3 below replaces that single-occurrence restriction.
 
 Paste linked refers to the same source. Paste a copy, Make unique and scene duplication create independent bank patterns, retaining full-note rows, dormant steps and expression. Copies use the existing 64-pattern capacity and refuse atomically when full. A bank source used by Session or Song cannot be deleted until those uses are cleared. Changing a MIDI/audio cell already used by ordinary Song placements into a rack assignment is refused; clear those placements first. Rack launch assignments cannot be recorded into as single-channel MIDI or frozen as anchor-track audio.
 

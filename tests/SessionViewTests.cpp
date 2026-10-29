@@ -1036,6 +1036,10 @@ static void savedRackAssignmentMenu() {
     rig.engine.activeTrackRackClip[0].store(0); rig.view.refreshClips();
     require(!rig.view.clipSlot(0, 0)->getButtonText().contains("Playing") && rig.view.clipSlot(1, 0)->getButtonText().contains("Playing"),
         "stopping one row leaves the other tile's playing state visible");
+    juce::Button* rackButton = nullptr;
+    for (auto* child : rig.view.getChildren())
+        if (child->getName() == "Launch or edit a Channel Rack clip") rackButton = dynamic_cast<juce::Button*>(child);
+    require(rackButton && rackButton->getButtonText() == "Rack playing...", "rack summary includes Session-owned occurrences");
     std::cout << "PASS: saved rack assignment, tile launch, independent paste and Song placement menu\n";
 }
 

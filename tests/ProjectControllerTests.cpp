@@ -961,7 +961,10 @@ static void savedRackBindingTests() {
     const auto unchanged = d;
     require(c.assignRackClip(1, 0, c.channelRack().clips[0]) && c.undo() && alien::sameContent(unchanged, d),
             "a scene can bind different sources on independent rows, with one-step undo");
-    engine.patternMode.store(1); c.launchClip(0, 0);
+    engine.patternMode.store(1); c.launchClip(3, 2);
+    require(engine.requestedTrackRackClip[3].load() == alien::rack::RackPlayer::noLaunchRequest,
+        "an ordinary row with no rack occurrence does not queue a spurious rack stop");
+    c.launchClip(0, 0);
     require(engine.requestedTrackRackClip[0].load() == source && engine.playing.load(), "a bound Session cell launches its composite source");
     c.stopTrack(0); require(engine.requestedTrackRackClip[0].load() == 0, "the anchor row's stop controls its rack launch");
     c.launchScene(0); require(engine.sceneTrackRackClip[0].load() == source, "a scene queues its composite source with the synchronized launch");

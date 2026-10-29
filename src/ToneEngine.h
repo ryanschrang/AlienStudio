@@ -688,10 +688,6 @@ private:
             buses[index].peak.store(peak, std::memory_order_relaxed);
         }
     }
-    // Renders the Channel Rack and adds each output bus after the track
-    // instruments, so a plug-in instrument on a track cannot replace it: buses
-    // for Session tracks join that track (and so pass through its effects and
-    // mixer strip), the master bus joins the live bus, aligned like the tracks.
     void cancelRackRequests() noexcept {
         requestedRackClip.store(alien::rack::RackPlayer::noLaunchRequest);
         sceneRackClip.store(alien::rack::RackPlayer::noLaunchRequest);
@@ -702,6 +698,10 @@ private:
             sceneTrackRackClip[t].store(alien::rack::RackPlayer::noLaunchRequest);
         }
     }
+    // Renders the Channel Rack and adds each output bus after the track
+    // instruments, so a plug-in instrument on a track cannot replace it: buses
+    // for Session tracks join that track (and so pass through its effects and
+    // mixer strip), the master bus joins the live bus, aligned like the tracks.
     void renderRack(int samples, bool running, bool timelineRunning, bool startSelected) noexcept {
         auto& buses = *rackBuses;
         std::array<float*, alien::rack::RackPlayer::busCount> left{}, right{};

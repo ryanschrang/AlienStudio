@@ -226,7 +226,9 @@ public:
         for (int p = 0; p < rack.patternCount; ++p) {
             const auto id = rack.clips[static_cast<std::size_t>(p)]; ids.push_back(id);
             const auto name = juce::String::fromUTF8(rack.patternNames[static_cast<std::size_t>(p)].c_str());
-            launch.addItem(p + 1, name + (queued == id ? " (queued)" : active == id ? " (playing)" : ""), true, active == id);
+            const bool playing = active == id || std::any_of(engine.activeTrackRackClip.begin(), engine.activeTrackRackClip.end(), [id](const auto& source) { return source.load() == id; });
+            const bool waiting = queued == id || std::any_of(engine.queuedTrackRackClip.begin(), engine.queuedTrackRackClip.end(), [id](const auto& source) { return source.load() == id; });
+            launch.addItem(p + 1, name + (waiting ? " (queued)" : playing ? " (playing)" : ""), true, playing);
             edit.addItem(1001 + p, name);
         }
         menu.addSubMenu("Launch rack clip", launch);
@@ -546,9 +548,11 @@ public:
     void refreshClips() {
         namespace col = ui::colours;
         const auto& d = controller.document();
-        const auto rackQueued = engine.queuedRackClip.load();
-        rackClipsButton.setButtonText(rackQueued != rack::RackPlayer::noLaunchRequest ? "Rack queued..."
-            : engine.activeRackClip.load() != 0 ? "Rack playing..." : "Rack clips...");
+        const bool rackQueued = engine.queuedRackClip.load() != rack::RackPlayer::noLaunchRequest
+            || std::any_of(engine.queuedTrackRackClip.begin(), engine.queuedTrackRackClip.end(), [](const auto& source) { return source.load() != rack::RackPlayer::noLaunchRequest; });
+        const bool rackPlaying = engine.activeRackClip.load() != 0
+            || std::any_of(engine.activeTrackRackClip.begin(), engine.activeTrackRackClip.end(), [](const auto& source) { return source.load() != 0; });
+        rackClipsButton.setButtonText(rackQueued ? "Rack queued..." : rackPlaying ? "Rack playing..." : "Rack clips...");
         std::vector<bool> scenePlaying(static_cast<std::size_t>(d.sceneCount()), false);
         for (int track = 0; track < d.trackCount(); ++track) {
             const int active = engine.activePianoRollClip[static_cast<std::size_t>(track)].load();

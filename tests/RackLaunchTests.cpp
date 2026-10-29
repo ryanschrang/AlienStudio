@@ -229,6 +229,27 @@ static void timelineInstanceOwnership() {
     require(capacity.player->activeVoices() == RackPlayer::launchSlots, "all fixed Session slots fit in the shared voice pool");
 }
 
+static void independentChanceAndChoke() {
+    Rig overlap, reference;
+    const auto setup = [](Rig& r) {
+        r.multi = true;
+        r.project.setStepOn(0, 0, 1, false);
+        r.project.setStepField(0, 0, 0, StepField::probability, 50);
+        auto channel = r.project.channels[0]; channel.chokeGroup = 1; r.project.setChannel(0, channel);
+        r.project.clearPattern(1); r.project.setStepOn(1, 1, 0, true);
+        r.project.setStepField(1, 1, 0, StepField::probability, 50);
+        channel = r.project.channels[1]; channel.chokeGroup = 1; channel.output = 0; r.project.setChannel(1, channel);
+        r.samples[1].store(r.sample.get()); r.requests[1] = 101; r.publish();
+    };
+    setup(overlap); setup(reference); overlap.requests[2] = 102;
+    overlap.render(320000, none, 4, false); reference.render(320000, none, 4, false, true, 17);
+    require(overlap.output == reference.output,
+        "another occurrence cannot consume this one's chance draws or choke its voices");
+    int hits = 0;
+    for (int loop = 0; loop < 20; ++loop) hits += overlap.output[static_cast<std::size_t>(loop * 16000)] > 0;
+    require(hits > 0 && hits < 20, "chance advances across loops rather than repeating a reset seed");
+}
+
 int main() {
     {
         Rig r; r.externalClock = true; r.project.setSwing(1); r.publish(); r.render(2000);
@@ -240,6 +261,6 @@ int main() {
                 "scene starts step zero on the exact Session-clock boundary");
     }
     selectionAndTiming(); boundariesAndLifecycle(); deletionAndEdits(); noteOwnership();
-    overlappingLaunches(); overlappingDelayedHits(); timelineInstanceOwnership();
+    overlappingLaunches(); overlappingDelayedHits(); timelineInstanceOwnership(); independentChanceAndChoke();
     std::puts("PASS: identity-based rack launch (quantization, selection, revisions, deletion, lifecycle, allocation safety)");
 }

@@ -680,7 +680,19 @@ public:
     }
     void stopRackOnTrack(int track) {
         if (track < 0 || track >= doc.trackCount()) return;
-        engine.requestedTrackRackClip[static_cast<std::size_t>(track)].store(0);
+        const auto index = static_cast<std::size_t>(track);
+        const auto hasSource = [](std::uint64_t id) { return id != 0 && id != rack::RackPlayer::noLaunchRequest; };
+        if (hasSource(engine.activeTrackRackClip[index].load()) || hasSource(engine.queuedTrackRackClip[index].load())
+            || hasSource(engine.requestedTrackRackClip[index].load()) || hasSource(engine.sceneTrackRackClip[index].load()))
+            engine.requestedTrackRackClip[index].store(0);
+        else if (doc.legacyRackSceneLaunch) {
+            // Before D3, duplicate assignments in a scene controlled one occurrence.
+            for (int scene = 0; scene < doc.sceneCount(); ++scene) if (const auto source = doc.clip(track, scene).rackClip; source != 0)
+                for (std::size_t other = 0; other < ToneEngine::sessionTracks; ++other)
+                    if (engine.activeTrackRackClip[other].load() == source || engine.queuedTrackRackClip[other].load() == source
+                        || engine.requestedTrackRackClip[other].load() == source || engine.sceneTrackRackClip[other].load() == source)
+                        engine.requestedTrackRackClip[other].store(0);
+        }
     }
 
     void publishClip(int track, int scene) {
