@@ -1420,8 +1420,30 @@ static void synthChannelChecks() {
     grid.onOpenPianoRoll = {};
 }
 
+static void deferredTrackIdentityRename() {
+    auto rig = std::make_unique<Rig>();
+    std::function<void(const juce::String&)> finish;
+    rig->grid.nameRequester = [&](const auto&, const auto&, auto done) { finish = std::move(done); };
+    const auto id = rig->controller.document().trackId(TrackRole::rack, 0);
+    rig->grid.runChannelCommand(0, ChannelRackGrid::cmdRename);
+    require(static_cast<bool>(finish), "rename callback captured");
+    require(rig->controller.editRack("Move", [](auto& p) { return p.moveChannel(0, 1); }), "move channel while rename waits");
+    finish("Moved identity");
+    require(rig->controller.document().trackId(TrackRole::rack, 1) == id && rig->rack().info[1].name == "Moved identity"
+        && rig->rack().info[0].name != "Moved identity", "deferred rename follows identity across row reorder");
+    rig->grid.runChannelCommand(1, ChannelRackGrid::cmdRename);
+    require(rig->controller.editRack("Delete", [](auto& p) { return p.removeChannel(1); }), "delete rename target");
+    finish("Deleted target");
+    require(rig->rack().info[1].name != "Deleted target", "deferred rename cannot edit replacement row");
+    rig->grid.runChannelCommand(0, ChannelRackGrid::cmdRename);
+    rig->controller.newProject(); finish("Other project");
+    require(rig->rack().info[0].name != "Other project", "project-scoped ids cannot alias a new document");
+    std::cout << "PASS: deferred rack rename resolves persistent identity and document scope\n";
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    deferredTrackIdentityRename();
     synthChannelChecks();
     nameColumnChecks();
     channelPianoRollChecks();

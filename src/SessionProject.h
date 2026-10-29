@@ -7,6 +7,7 @@
 #include "DrumSampler.h"
 #include "Arrangement.h"
 #include "SessionCapacity.h"
+#include "TrackRegistry.h"
 #include "PluginState.h"
 #include "RackProject.h"
 #include <juce_core/juce_core.h>
@@ -24,7 +25,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 28;   // 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings; 27: fade shapes; 28: independent rack launch slots per Session row
+inline constexpr int sessionProjectFormatVersion = 29;   // 29: persistent universal track registry and checked document bindings; 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings; 27: fade shapes; 28: independent rack launch slots per Session row
 
 // A group bus slot. Slots keep their index while other buses come and go, so a track's output
 // (TrackSettings::output) and the bus's FX rack never need renumbering.
@@ -68,6 +69,7 @@ struct SessionProjectClip {
 
 // On-disk representation of a session. clips is [scene][track].
 struct SessionProjectData {
+    TrackRegistry trackRegistry; // Empty only for a newly constructed legacy-style data fixture.
     std::vector<std::vector<SessionProjectClip>> clips;
     // MIDI clips that only Song regions play (Region::clip names them), by saved id. Absent before version 24.
     std::map<std::uint64_t, SessionProjectClip> placementClips;
@@ -128,7 +130,24 @@ struct SessionProjectData {
     int trackCount() const noexcept { return static_cast<int>(trackSettings.size()); }
     int sceneCount() const noexcept { return static_cast<int>(clips.size()); }
 
+    std::vector<TrackBinding> trackOwners() const {
+        std::vector<TrackBinding> owners;
+        for (int t = 0; t < trackCount(); ++t) owners.push_back({TrackRole::session, static_cast<std::uint64_t>(t + 1)});
+        for (int c = 0; c < channelRack.channelCount; ++c) owners.push_back({TrackRole::rack, static_cast<std::uint64_t>(c + 1)});
+        owners.push_back({TrackRole::master, 1});
+        for (std::size_t r = 0; r < returns.size(); ++r) if (returns[r].used) owners.push_back({TrackRole::returnTrack, r + 1});
+        for (std::size_t b = 0; b < buses.size(); ++b) if (buses[b].used) owners.push_back({TrackRole::bus, b + 1});
+        return owners;
+    }
+    bool validTrackRegistry() const {
+        if (!trackRegistry.valid()) return false;
+        const auto owners = trackOwners();
+        if (owners.size() != trackRegistry.entries().size()) return false;
+        for (auto owner : owners) if (!trackRegistry.idFor(owner)) return false;
+        return true;
+    }
     bool valid() const noexcept {
+        if (!trackRegistry.entries().empty() && !validTrackRegistry()) return false;
         const int tracks = trackCount(), scenes = sceneCount();
         if (tracks < 1 || tracks > maxSessionTracks || scenes < 1 || scenes > maxSessionScenes
             || static_cast<int>(trackNames.size()) != tracks || static_cast<int>(trackColours.size()) != tracks
@@ -284,13 +303,111 @@ inline juce::var projectClipToVar(const SessionProjectClip& clip) {
     return clipValue;
 }
 
-inline juce::String serializeSessionProject(const SessionProjectData& project) {
+// Format 29 adapters. These are document references checked against the current
+// slot caches. Playback still consumes bounded slots; C will retire those caches.
+inline juce::String trackIdText(TrackId id) { return juce::String(library::toHex(id.value)); }
+inline juce::var trackRegistryToVar(const TrackRegistry& registry) {
+    auto result = juce::var(new juce::DynamicObject());
+    result.getDynamicObject()->setProperty("next", juce::String(library::toHex(registry.nextId())));
+    juce::Array<juce::var> entries;
+    for (const auto& entry : registry.entries()) {
+        auto v = juce::var(new juce::DynamicObject()); auto* o = v.getDynamicObject();
+        o->setProperty("id", trackIdText(entry.id)); o->setProperty("role", static_cast<int>(entry.binding.role));
+        o->setProperty("slot", static_cast<int>(entry.binding.key - 1)); entries.add(v);
+    }
+    result.getDynamicObject()->setProperty("entries", juce::var(entries));
+    return result;
+}
+inline bool trackRegistryFromVar(const juce::var& value, TrackRegistry& registry) {
+    const auto* object = value.getDynamicObject();
+    if (!object) return false;
+    const auto nextValue = object->getProperty("next");
+    if (!nextValue.isString()) return false;
+    const auto next = library::parseId<TrackKind>(nextValue.toString().toStdString());
+    const auto itemsValue = object->getProperty("entries"); const auto* items = itemsValue.getArray();
+    if (!next || !items || items->size() > maxSessionTracks + rack::maxChannels + maxReturns + maxBuses + 1) return false;
+    std::vector<TrackEntry> entries;
+    for (const auto& item : *items) {
+        const auto* o = item.getDynamicObject(); if (!o) return false;
+        const auto idValue = o->getProperty("id"), role = o->getProperty("role"), slot = o->getProperty("slot");
+        if (!idValue.isString() || !role.isInt() || !slot.isInt() || static_cast<int>(role) < 0
+            || static_cast<int>(role) > static_cast<int>(TrackRole::bus) || static_cast<int>(slot) < 0
+            || static_cast<int>(slot) >= rack::maxChannels) return false;
+        const auto id = library::parseId<TrackKind>(idValue.toString().toStdString());
+        if (!id) return false;
+        entries.push_back({TrackId{id->value}, {static_cast<TrackRole>(static_cast<int>(role)), static_cast<std::uint64_t>(static_cast<int>(slot) + 1)}});
+    }
+    return registry.restore(std::move(entries), next->value);
+}
+inline bool sameTrackReferences(const juce::var& a, const juce::var& b) {
+    if (const auto* object = a.getDynamicObject()) {
+        const auto* other = b.getDynamicObject();
+        if (!other || object->getProperties().size() != other->getProperties().size()) return false;
+        for (const auto& property : object->getProperties())
+            if (!other->hasProperty(property.name) || !sameTrackReferences(property.value, other->getProperty(property.name))) return false;
+        return true;
+    }
+    if (const auto* array = a.getArray()) {
+        const auto* other = b.getArray(); if (!other || array->size() != other->size()) return false;
+        for (int i = 0; i < array->size(); ++i) if (!sameTrackReferences((*array)[i], (*other)[i])) return false;
+        return true;
+    }
+    return a.equalsWithSameType(b);
+}
+inline juce::var trackReferencesToVar(const SessionProjectData& p) {
+    auto result = juce::var(new juce::DynamicObject()); auto* o = result.getDynamicObject();
+    const auto target = [&](TrackRole role, int slot) { return trackIdText(p.trackRegistry.idFor({role, static_cast<std::uint64_t>(slot + 1)})); };
+    const auto master = target(TrackRole::master, 0);
+    juce::Array<juce::var> outputs, rackOutputs;
+    for (const auto& track : p.trackSettings) outputs.add(track.output < 0 ? master : target(TrackRole::bus, track.output));
+    for (int c = 0; c < p.channelRack.channelCount; ++c) {
+        const int output = p.channelRack.channels[static_cast<std::size_t>(c)].output;
+        rackOutputs.add(output < 0 ? master : target(TrackRole::session, output));
+    }
+    o->setProperty("outputs", juce::var(outputs)); o->setProperty("rackOutputs", juce::var(rackOutputs));
+    const auto regions = [&](const auto& list) {
+        juce::Array<juce::var> refs;
+        for (const auto& r : list) refs.add(r.isPattern() ? juce::String{} : target(TrackRole::session, r.row));
+        return juce::var(refs);
+    };
+    o->setProperty("regions", regions(p.timeline.regions)); o->setProperty("originals", regions(p.timeline.frozenOriginals)); o->setProperty("takes", regions(p.timeline.takes));
+    juce::Array<juce::var> automation;
+    for (const auto& lane : p.timeline.automationLanes) {
+        juce::Array<juce::var> refs; refs.add(target(TrackRole::session, lane.track));
+        const int send = automation::sendIndex(lane.parameter); refs.add(send < 0 ? juce::String{} : target(TrackRole::returnTrack, send));
+        automation.add(juce::var(refs));
+    }
+    o->setProperty("automation", juce::var(automation));
+    juce::Array<juce::var> keys;
+    const auto addKeys = [&](const PluginRackState& rack) {
+        juce::Array<juce::var> refs;
+        for (const auto& effect : rack.effects) {
+            const auto role = effect.sidechainFrom == KeySource::bus ? TrackRole::bus
+                : effect.sidechainFrom == KeySource::returnTrack ? TrackRole::returnTrack : TrackRole::session;
+            refs.add(effect.sidechain < 0 ? juce::String{} : target(role, effect.sidechain));
+        }
+        keys.add(juce::var(refs));
+    };
+    for (const auto& rack : p.plugins) addKeys(rack);
+    addKeys(p.masterPlugins);
+    for (const auto& rack : p.returnPlugins) addKeys(rack);
+    for (const auto& rack : p.busPlugins) addKeys(rack);
+    o->setProperty("sidechains", juce::var(keys));
+    return result;
+}
+
+inline juce::String serializeSessionProject(const SessionProjectData& source) {
+    auto project = source;
+    if (project.trackRegistry.entries().empty() && !project.trackRegistry.synchronize(project.trackOwners())) return {};
+
     if (!project.valid()) return {};
 
     auto root = juce::var(new juce::DynamicObject());
     auto* rootObject = root.getDynamicObject();
     rootObject->setProperty("format", "AlienStudioSession");
     rootObject->setProperty("version", sessionProjectFormatVersion);
+    rootObject->setProperty("trackRegistry", trackRegistryToVar(project.trackRegistry));
+    rootObject->setProperty("trackReferences", trackReferencesToVar(project));
     rootObject->setProperty("launchQuantizationSteps", project.launchQuantizationSteps);
     rootObject->setProperty("legacyRackSceneLaunch", project.legacyRackSceneLaunch);
     rootObject->setProperty("selectedTrack", project.selectedTrack);
@@ -1149,6 +1266,19 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         for (const auto& rack : parsed.returnPlugins) ok = ok && older(rack);
         for (const auto& rack : parsed.busPlugins) ok = ok && older(rack);
         if (!ok) { error = "An effect is keyed in a way this project's format does not allow."; return false; }
+    }
+    if (formatVersion >= 29) {
+        if (!trackRegistryFromVar(rootObject->getProperty("trackRegistry"), parsed.trackRegistry) || !parsed.validTrackRegistry()) {
+            error = "Invalid or duplicate universal track identity."; return false;
+        }
+        // Compare canonical references only after structural validation has made
+        // all existing indices safe to resolve. Never redirect a damaged reference.
+        if (!parsed.valid()) { error = "Project settings are outside the supported range."; return false; }
+        if (!sameTrackReferences(rootObject->getProperty("trackReferences"), trackReferencesToVar(parsed))) {
+            error = "A saved track reference does not match its owner."; return false;
+        }
+    } else if (!parsed.trackRegistry.synchronize(parsed.trackOwners())) {
+        error = "Could not migrate track identities."; return false;
     }
     if (!parsed.valid()) { error = "Project settings are outside the supported range."; return false; }
     destination = std::move(parsed);

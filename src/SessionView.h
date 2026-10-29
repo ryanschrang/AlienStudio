@@ -681,9 +681,14 @@ private:
 
     void renameTrackAt(int track) {
         if (track < 0 || track >= controller.document().trackCount()) return;
+        const auto id = controller.document().trackId(TrackRole::session, track);
+        const auto scope = controller.document().identityScope;
         askForName("Rename track", controller.document().tracks[static_cast<std::size_t>(track)].name,
-            [this, track](const juce::String& name) {
-                executeTrackCommand(command::RenameTrack{track, name});
+            [this, id, scope](const juce::String& name) {
+                const auto& d = controller.document();
+                if (d.identityScope != scope) return;
+                const int slot = d.trackSlot(id, TrackRole::session);
+                if (slot >= 0) executeTrackCommand(command::RenameTrack{slot, name});
             });
     }
 

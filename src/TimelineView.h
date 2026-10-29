@@ -176,8 +176,9 @@ public:
     }
     bool takeLanesShown(int track) const noexcept {
         const auto& d = controller.document();
+        if (laneScope != d.identityScope) return false;
         if (track < 0 || track >= d.trackCount()) return false;
-        return std::find(laneTracks.begin(), laneTracks.end(), d.tracks[static_cast<std::size_t>(track)].id) != laneTracks.end();
+        return std::find(laneTracks.begin(), laneTracks.end(), d.trackId(TrackRole::session, track)) != laneTracks.end();
     }
     // How many take lanes are open under a row: none unless its track shows them and has takes.
     int takeLaneCount(int row) const noexcept {
@@ -196,7 +197,8 @@ public:
     bool setTakeLanesShown(int track, bool show) {
         const auto& d = controller.document();
         if (track < 0 || track >= d.trackCount() || takeLanesShown(track) == show) return false;
-        const auto id = d.tracks[static_cast<std::size_t>(track)].id;
+        if (laneScope != d.identityScope) { laneTracks.clear(); laneScope = d.identityScope; }
+        const auto id = d.trackId(TrackRole::session, track);
         if (show) laneTracks.push_back(id); else std::erase(laneTracks, id);
         scrollYpx = std::clamp(scrollYpx, 0, maxScrollY());
         repaint(); notifyView();
@@ -416,10 +418,8 @@ public:
         const bool markerThere = std::any_of(t.markers.begin(), t.markers.end(), [&](const auto& m) { return m.id == selectedMarker; });
         if (!markerThere) selectedMarker = 0;
         if (takeById(selectedTake) == nullptr) selectedTake = 0;
-        std::erase_if(laneTracks, [&](std::uint32_t id) {
-            const auto& tracks = controller.document().tracks;
-            return std::none_of(tracks.begin(), tracks.end(), [=](const auto& track) { return track.id == id; });
-        });
+        if (laneScope != controller.document().identityScope) { laneTracks.clear(); laneScope = controller.document().identityScope; }
+        std::erase_if(laneTracks, [&](TrackId id) { return controller.document().trackSlot(id, TrackRole::session) < 0; });
         cursor = std::clamp<std::int64_t>(cursor, 0, t.length());
         const int d = displayRowOf(focus);
         if (d < 0 || d >= displayRowCount()) focus = timelineRow(0);
@@ -891,7 +891,9 @@ public:
     // lands on the right ones and skips the clips whose track or scene is gone.
     static timeline::Clipboard& clipboard() { static timeline::Clipboard shared; return shared; }
     struct ClipboardOrigin {
-        std::vector<std::uint32_t> tracks, scenes;
+        std::uint32_t scope{};
+        std::vector<TrackId> tracks;
+        std::vector<std::uint32_t> scenes;
         // Placement clips as they were copied, so a paste can bring back one that was cut (and so is gone).
         std::map<std::uint64_t, std::pair<std::shared_ptr<const PianoRollPattern>, juce::String>> placements;
     };
@@ -900,7 +902,8 @@ public:
         clipboard() = std::move(clip);
         auto& origin = clipboardOrigin();
         origin = {};
-        for (const auto& track : controller.document().tracks) origin.tracks.push_back(track.id);
+        origin.scope = controller.document().identityScope;
+        for (int t = 0; t < controller.document().trackCount(); ++t) origin.tracks.push_back(controller.document().trackId(TrackRole::session, t));
         for (const auto& scene : controller.document().scenes) origin.scenes.push_back(scene.id);
         const auto& d = controller.document();
         for (const auto& r : clipboard().regions)
@@ -910,26 +913,25 @@ public:
         const auto& origin = clipboardOrigin();
         const auto& d = controller.document();
         timeline::Clipboard clip;
+        if (origin.scope != d.identityScope) return clip;
         for (auto r : clipboard().regions) {
             if (r.isPattern()) {
                 if (r.rackClip == 0) continue; // Clipboard content always comes from an identity-bound document.
-                const bool sameDocument = std::any_of(d.tracks.begin(), d.tracks.end(), [&](const auto& t) {
-                    return std::find(origin.tracks.begin(), origin.tracks.end(), t.id) != origin.tracks.end();
-                });
+                const bool sameDocument = origin.scope == d.identityScope;
                 const int source = controller.rackPatternForClip(r.rackClip);
                 if (!sameDocument || source < 0) continue;
                 r.source = source;
             } else if (r.ownsClip()) {
                 if (r.row < 0 || r.row >= static_cast<int>(origin.tracks.size()) || origin.placements.count(r.clip) == 0) continue;
-                const auto track = std::find_if(d.tracks.begin(), d.tracks.end(), [&](const auto& t) { return t.id == origin.tracks[static_cast<std::size_t>(r.row)]; });
-                if (track == d.tracks.end()) continue;
-                r.row = static_cast<int>(track - d.tracks.begin());
+                const int track = d.trackSlot(origin.tracks[static_cast<std::size_t>(r.row)], TrackRole::session);
+                if (track < 0) continue;
+                r.row = track;
             } else {
                 if (r.row < 0 || r.row >= static_cast<int>(origin.tracks.size()) || r.source < 0 || r.source >= static_cast<int>(origin.scenes.size())) continue;
-                const auto track = std::find_if(d.tracks.begin(), d.tracks.end(), [&](const auto& t) { return t.id == origin.tracks[static_cast<std::size_t>(r.row)]; });
+                const int track = d.trackSlot(origin.tracks[static_cast<std::size_t>(r.row)], TrackRole::session);
                 const auto scene = std::find_if(d.scenes.begin(), d.scenes.end(), [&](const auto& s) { return s.id == origin.scenes[static_cast<std::size_t>(r.source)]; });
-                if (track == d.tracks.end() || scene == d.scenes.end()) continue;
-                r.row = static_cast<int>(track - d.tracks.begin());
+                if (track < 0 || scene == d.scenes.end()) continue;
+                r.row = track;
                 r.source = static_cast<int>(scene - d.scenes.begin());
             }
             clip.regions.push_back(r);
@@ -2291,7 +2293,8 @@ private:
     int focus{0};
     bool follow{true};
     std::optional<timeline::Timeline> preview;
-    std::vector<std::uint32_t> laneTracks;   // ids of the tracks showing their take lanes (view only, not saved)
+    std::uint32_t laneScope{};
+    std::vector<TrackId> laneTracks;   // ids of the tracks showing their take lanes (view only, not saved)
     std::uint32_t selectedTake{0};
     DropPlan dropGhost;   // where a row dragged from the clip list would land, while it is over the lanes
     Drag drag;

@@ -1,7 +1,8 @@
 # T1-04: universal tracks and capacity foundation
 
-Status: first increment; track architecture proposal and reproducible capacity
-report. Universal track migration and higher supported limits are not implemented.
+Status: design/baseline (A) and identity/document adapters (B) implemented.
+Playback/routing adapter retirement (C), resource budgets (D), and higher
+supported limits (E) remain pending. B uses project format 29.
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
 Dependency: [T1-03 shared clip/pattern design, PR #102](https://github.com/ryanschrang/AlienStudio/pull/102).
@@ -177,3 +178,47 @@ SessionViewTests, TimelineViewTests, ToneEngineTests, TimelinePlaybackTests,
 SongRecordingTests, MixerRoutingTests and DeterministicStreamedExportTests.
 Future registry/adaptor behavior needs focused tests; this diagnostic alone is
 not evidence that universal tracks or higher limits already work.
+
+## Increment B: persistent identity and document adapters (format 29)
+
+`TrackRegistry` is the one project-scoped authority for typed `TrackId`s.
+It owns identities and bindings, not a second copy of names, controls, media or
+devices. Existing Session tracks, rack channel device stages, master, active
+returns and active group buses keep their current document data. Registry owner
+adapters resolve those same objects from every view. Session runtime tokens and
+rack lane IDs are adapter keys; they are never serialized as track identities.
+The saved adapters use stage/slot pairs to bind each owner to its persistent ID.
+A rack stage remains distinct from its Session output stage, preserving both
+volume laws, pan, choke, instruments and processing order.
+
+Reorder retains IDs; rack duplication gets a fresh ID; deletion retires it.
+Undo restores the exact registry and routes. The issuance high-water mark survives
+undo/redo so branching edits cannot reissue IDs. Removing and recreating a return
+or bus in the same slot creates a new owner. Registry changes are message-thread
+work; the callback continues to consume existing bounded slots.
+
+Format 29 requires one nonzero, unique ID per existing owner, a strict hex
+allocator watermark, and checked identity references for rack/Session outputs,
+Song regions (including take/freeze archives), mixer automation and sidechain
+keys. Unknown, duplicate, wrong-stage or mismatched references reject the load
+before replacing the open document. Saved slot caches must agree with the
+identity references. Plugin automation keeps its existing plugin-instance IDs.
+Formats 1-28 obtain a registry on import and retain it on the next save. Earlier
+readers refuse format 29. No track, scene, note or audio resource limit changes.
+
+Session/rack deferred rename callbacks resolve the original identity after a
+reorder and ignore a deleted owner. Song take-lane state and clipboard track
+bindings use TrackIds. A separate unsaved document-scope fence prevents a
+project-scoped ID from aliasing an owner after creating/opening another project.
+
+This is the B adapter boundary, not the C playback migration: existing engine
+slots and index-shaped document caches are still present and validated. C must
+compile routing/playback from the shared identities and retire those caches with
+live/export, freeze, recording and resource-safety evidence. No new capabilities
+or higher limits are claimed here.
+
+Validation is recorded in the implementation PR. Focused controller tests cover
+identity persistence, legacy import, routing, reorder/duplicate/delete, undo/redo,
+ID issuance after undo and malformed-file atomicity; rack UI tests cover deferred
+rename across reorder, deletion and document replacement. Windows physical-device
+listening, commercial plugins and multi-monitor/DPI checks remain separate.

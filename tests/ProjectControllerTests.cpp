@@ -1047,8 +1047,93 @@ static void savedRackBindingTests() {
     std::puts("PASS: saved rack bindings, linked/independent uses, migration and strict validation (format 26)");
 }
 
+static void universalTrackIdentityTests() {
+    using alien::TrackRole;
+    ToneEngine engine;
+    alien::ProjectController c(engine);
+    const auto& d = c.document();
+    const auto session = d.trackId(TrackRole::session, 1), rack = d.trackId(TrackRole::rack, 0);
+    const auto master = d.trackId(TrackRole::master), ret = d.trackId(TrackRole::returnTrack, 0);
+    require(session && rack && master && ret && session != rack && rack != master && master != ret,
+            "one registry supplies distinct typed identities for every document stage");
+    auto channel = d.channelRack.channels[0]; channel.output = 1;
+    require(c.editRack("Route", [=](auto& p) { return p.setChannel(0, channel); }), "route rack stage through existing Session fader");
+    c.commit("Initial routes");
+    require(c.moveTrack(1, 1), "reorder Session track"); c.commit("Move identity");
+    require(d.trackId(TrackRole::session, 2) == session && d.trackSlot(session, TrackRole::session) == 2
+            && d.channelRack.channels[0].output == 2, "track identity and rack output follow Session reorder");
+    require(c.editRack("Move rack", [](auto& p) { return p.moveChannel(0, 1); }), "reorder rack row");
+    require(d.trackId(TrackRole::rack, 1) == rack, "rack device identity follows its stable lane");
+    require(c.editRack("Duplicate rack", [](auto& p) { return p.duplicateChannel(1); }), "duplicate rack channel");
+    const auto copy = d.trackId(TrackRole::rack, 2);
+    require(copy && copy != rack, "duplicate rack stage gets its own identity without copying ownership");
+    const int bus = c.addBus("Group"); require(bus >= 0, "add universal bus stage");
+    const auto busId = d.trackId(TrackRole::bus, bus);
+    require(c.setTrackOutput(2, bus), "route Session stage through group"); c.commit("Route group");
+    c.setClipPattern(2, 0, patternWith(64), false);
+    require(c.placeRegion(2, 0, 0), "Song region retains its universal track owner");
+    c.commit("Prepare identity fixture");
+    const auto json = alien::serializeSessionProject(alien::toProjectData(d));
+    alien::SessionProjectData parsed; juce::String error;
+    require(json.isNotEmpty() && alien::parseSessionProject(json, parsed, error), "format 29 saves and parses shared track registry");
+    const auto reopened = alien::fromProjectData(parsed);
+    require(reopened.trackId(TrackRole::session, 2) == session && reopened.trackId(TrackRole::rack, 1) == rack
+        && reopened.trackId(TrackRole::rack, 2) == copy && reopened.trackId(TrackRole::bus, bus) == busId
+        && reopened.trackId(TrackRole::master) == master && reopened.trackId(TrackRole::returnTrack, 0) == ret,
+        "save/reopen preserves identities for all stage roles");
+    require(reopened.channelRack.channels[1] == d.channelRack.channels[1] && reopened.tracks[2].settings.output == bus
+        && reopened.rackMatchesLibrary(), "identity adapters preserve devices, both faders, routes and rack content");
+    const auto before = alien::serializeSessionProject(parsed);
+    const auto damage = [&](auto mutate, const char* message) {
+        auto value = juce::JSON::parse(json); mutate(value);
+        const bool accepted = alien::parseSessionProject(juce::JSON::toString(value), parsed, error);
+        if (accepted) std::cerr << "Unexpected accepted fixture " << message << ": "
+            << juce::JSON::toString(value.getProperty("trackReferences", {}), true) << '\n';
+        require(!accepted && alien::serializeSessionProject(parsed) == before, message);
+    };
+    damage([](auto& v) { auto& entries = *v.getProperty("trackRegistry", {}).getProperty("entries", {}).getArray();
+        entries[1].getDynamicObject()->setProperty("id", entries[0].getProperty("id", {})); }, "duplicate TrackIds fail atomically");
+    damage([](auto& v) { v.getDynamicObject()->removeProperty("trackRegistry"); }, "format 29 requires registry");
+    damage([](auto& v) { v.getProperty("trackRegistry", {}).getDynamicObject()->setProperty("next", "0000000000000001"); }, "allocator cannot alias existing identities");
+    damage([](auto& v) { v.getProperty("trackRegistry", {}).getProperty("entries", {})[0].getDynamicObject()->setProperty("id", "0000000000000000"); }, "zero identity refused");
+    damage([](auto& v) { auto refs = v.getProperty("trackReferences", {}); auto outputs = refs.getProperty("rackOutputs", {});
+        outputs.getArray()->set(1, juce::var("000000000000dead")); refs.getDynamicObject()->setProperty("rackOutputs", outputs); }, "unknown saved route identity refused");
+    damage([](auto& v) { v.getProperty("channelRack", {}).getProperty("channels", {})[1].getDynamicObject()->setProperty("output", 0); }, "route cache cannot redirect a persistent reference");
+    damage([](auto& v) { v.getProperty("trackRegistry", {}).getProperty("entries", {})[0].getDynamicObject()->setProperty("role", 4); }, "wrong role or missing owner refused");
+    auto legacy = juce::JSON::parse(json); legacy.getDynamicObject()->setProperty("version", 28);
+    legacy.getDynamicObject()->removeProperty("trackRegistry"); legacy.getDynamicObject()->removeProperty("trackReferences");
+    require(alien::parseSessionProject(juce::JSON::toString(legacy), parsed, error), "format 28 migrates to one registry");
+    const auto migrated = alien::fromProjectData(parsed);
+    const auto migratedJson = alien::serializeSessionProject(alien::toProjectData(migrated));
+    require(alien::parseSessionProject(migratedJson, parsed, error)
+        && alien::fromProjectData(parsed).trackId(TrackRole::rack, 1) == migrated.trackId(TrackRole::rack, 1),
+        "legacy identities are allocated once and retained on next save");
+    require(c.deleteTrack(2), "delete routed identity"); c.commit("Delete identity");
+    require(d.trackSlot(session, TrackRole::session) == -1 && d.channelRack.channels[1].output == -1,
+        "deleted track is retired and legacy rack route falls back to master");
+    require(c.undo() && d.trackId(TrackRole::session, 2) == session && d.channelRack.channels[1].output == 2,
+        "undo restores exact identity and output binding");
+    require(c.redo() && d.trackSlot(session, TrackRole::session) == -1, "redo retires identity");
+    require(c.addTrack() && d.trackId(TrackRole::session, d.trackCount() - 1) != session, "new track cannot inherit deleted identity");
+    c.commit("Add new identity"); const auto issued = d.trackId(TrackRole::session, d.trackCount() - 1);
+    require(c.undo() && c.addTrack() && d.trackId(TrackRole::session, d.trackCount() - 1) != issued,
+        "branching after undo never reissues an identity");
+    require(c.deleteReturn(0) && c.addReturn() == 0 && d.trackId(TrackRole::returnTrack, 0) != ret,
+        "a reused return slot has a fresh identity");
+    require(c.deleteBus(bus) && c.addBus() == bus && d.trackId(TrackRole::bus, bus) != busId,
+        "a reused bus slot has a fresh identity");
+    alien::TrackRegistry registry;
+    require(!registry.synchronize({{TrackRole::master, 1}, {TrackRole::master, 1}}) && registry.entries().empty(),
+        "duplicate owner adapter fails without partial mutation");
+    require(registry.restore({{alien::TrackId{1}, {TrackRole::master, 1}}}, std::numeric_limits<std::uint64_t>::max()), "exhausted allocator fixture");
+    require(!registry.synchronize({{TrackRole::master, 1}, {TrackRole::session, 1}}) && registry.entries().size() == 1,
+        "identity exhaustion refuses a new owner atomically");
+    std::puts("PASS: persistent universal track identities, migration, references and undo lifecycle");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    universalTrackIdentityTests();
     automationUndoTests();
     parameterAutomationUndoTests();
     masterVolumeTests();
