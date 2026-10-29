@@ -232,6 +232,8 @@ struct SessionProjectData {
         for (const auto& rack : returnPlugins) if (!uniqueRack(rack)) return false;
         for (const auto& rack : busPlugins) if (!uniqueRack(rack)) return false;
         if (!channelRack.valid()) return false;
+        for (int c = 0; c < channelRack.channelCount; ++c)
+            if (channelRack.channels[static_cast<std::size_t>(c)].output >= tracks) return false;
         for (const auto& scene : clips) if (static_cast<int>(scene.size()) != tracks) return false;
         for (std::size_t t=0;t<trackSettings.size();++t) {
             const auto& track=trackSettings[t]; if (!track.valid()) return false;

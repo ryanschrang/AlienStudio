@@ -1123,6 +1123,9 @@ static void universalTrackIdentityTests() {
     require(c.deleteBus(bus) && c.addBus() == bus && d.trackId(TrackRole::bus, bus) != busId,
         "a reused bus slot has a fresh identity");
     auto invalid = parsed;
+    invalid.channelRack.channels[0].output = alien::maxSessionTracks - 1;
+    require(alien::serializeSessionProject(invalid).isEmpty(), "a rack output cannot name an absent Session owner");
+    invalid = parsed;
     invalid.channelRack.channelCount = std::numeric_limits<int>::max();
     require(alien::serializeSessionProject(invalid).isEmpty(), "invalid in-memory capacity is refused before building owner adapters");
     alien::TrackRegistry registry;
