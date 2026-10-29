@@ -891,7 +891,7 @@ public:
     // lands on the right ones and skips the clips whose track or scene is gone.
     static timeline::Clipboard& clipboard() { static timeline::Clipboard shared; return shared; }
     struct ClipboardOrigin {
-        std::vector<std::uint32_t> tracks, scenes; int patterns{0};
+        std::vector<std::uint32_t> tracks, scenes;
         // Placement clips as they were copied, so a paste can bring back one that was cut (and so is gone).
         std::map<std::uint64_t, std::pair<std::shared_ptr<const PianoRollPattern>, juce::String>> placements;
     };
@@ -902,7 +902,6 @@ public:
         origin = {};
         for (const auto& track : controller.document().tracks) origin.tracks.push_back(track.id);
         for (const auto& scene : controller.document().scenes) origin.scenes.push_back(scene.id);
-        origin.patterns = controller.channelRack().patternCount;
         const auto& d = controller.document();
         for (const auto& r : clipboard().regions)
             if (r.ownsClip()) origin.placements[r.clip] = {d.contentOf(library::ClipId{r.clip}).pattern, d.placementName(r.clip)};
@@ -913,14 +912,13 @@ public:
         timeline::Clipboard clip;
         for (auto r : clipboard().regions) {
             if (r.isPattern()) {
-                if (r.rackClip != 0) {
-                    const bool sameDocument = std::any_of(d.tracks.begin(), d.tracks.end(), [&](const auto& t) {
-                        return std::find(origin.tracks.begin(), origin.tracks.end(), t.id) != origin.tracks.end();
-                    });
-                    const int source = controller.rackPatternForClip(r.rackClip);
-                    if (!sameDocument || source < 0) continue;
-                    r.source = source;
-                } else if (origin.patterns != controller.channelRack().patternCount || r.source < 0 || r.source >= origin.patterns) continue;
+                if (r.rackClip == 0) continue; // Clipboard content always comes from an identity-bound document.
+                const bool sameDocument = std::any_of(d.tracks.begin(), d.tracks.end(), [&](const auto& t) {
+                    return std::find(origin.tracks.begin(), origin.tracks.end(), t.id) != origin.tracks.end();
+                });
+                const int source = controller.rackPatternForClip(r.rackClip);
+                if (!sameDocument || source < 0) continue;
+                r.source = source;
             } else if (r.ownsClip()) {
                 if (r.row < 0 || r.row >= static_cast<int>(origin.tracks.size()) || origin.placements.count(r.clip) == 0) continue;
                 const auto track = std::find_if(d.tracks.begin(), d.tracks.end(), [&](const auto& t) { return t.id == origin.tracks[static_cast<std::size_t>(r.row)]; });

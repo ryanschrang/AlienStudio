@@ -346,3 +346,49 @@ bindings), and SessionViewTests (actual tile routing and independent row indicat
 The feature PR records tested commits/configurations. Windows device/listening and
 visual checks below remain a separate gate; automated offline rendering does not
 verify hardware behavior.
+
+## E: identity cleanup and capacity handoff
+
+Rack clip IDs own document references. `setRack` protects/remaps Song uses by ID
+and refuses a missing ID instead of inferring ownership from a slot. The
+controller's `rackPatternInUse` and Make unique resolve IDs through the
+document. Rack clipboard validation no longer accepts a source index plus a
+matching bank count as proof of content identity. Timeline edits resolve existing IDs into generated bank indices before
+validation; an unknown ID refuses the whole edit even if its cached index names
+a valid source. Newly placed index-only regions acquire an ID at that UI boundary.
+Save-file validation still refuses contradictory saved IDs/indices. Older formats
+acquire IDs together in `fromProjectData`; format 28 is unchanged.
+
+The bounded audio adapter keeps bank indices for scheduling, but resolves active
+Song lane IDs once per new rack snapshot, rather than per sample. New/changed
+regions resolve at the lane boundary. Rack-before-Song publication ordering still
+cannot redirect a source after bank reordering. Low-level index-only Song fixtures
+and legacy import/export adapters remain supported: their indices are binding
+inputs, never a second document content owner. Session cell coordinates, take and
+freeze references likewise remain view/routing bindings; replacing them with
+universal track IDs belongs to T1-04 B/C, not a second clip-content migration.
+
+`ProjectControllerTests` covers stale/out-of-range cache repair, unknown identity
+refusal, missing document ownership refusal, atomic failure and undo/redo, in
+addition to existing linked/unique, deletion and persistence checks.
+`RackIntegrationTests` retains rack-before-Song publication, overlap, stop, seek,
+loop, fractional timing and callback-allocation regressions.
+
+The opt-in `RackIntegrationTests --capacity-report` runs the real device callback
+offline at 48 kHz with 64/256/1024-frame blocks. It reports p50/p95/max for empty
+transport, one and sixteen Session rack occurrences, four Song rack occurrences
+and sixteen Session MIDI tracks. Fixtures are constructed/warmed outside timing;
+measured callbacks must allocate nothing and active cases must produce finite,
+audible output. No device is opened. Timing has no machine-dependent test
+threshold. `TrackCapacityReport` additionally measures the rack's shared fixed
+heap pools without constructing an engine. See [the recorded E evidence and
+T1-04 handoff](SHARED_PLAYBACK_CAPACITY.md).
+
+T1-04 must retain one immutable library, stable identities and producer-owned
+snapshot reclamation. Compile track/device bindings to bounded runtime slots;
+replace the fixed per-track note mailboxes/scheduler storage before proposing
+large profiles. Measure real prepared engine and peak load/undo/export memory,
+dense notes, media, FX/plugin loads and physical devices before raising a limit.
+These offline workloads establish a current baseline, not a supported larger
+configuration. Windows listening, commercial-plugin and DPI acceptance remains
+separate in WINDOWS_AUDIO_CHECKLIST.md.

@@ -198,6 +198,13 @@ public:
         });
     }
 
+    // Diagnostics only: fixed heap pools allocated at construction, excluding
+    // the shallow RackPlayer object and externally owned content/samples.
+    static constexpr std::size_t fixedStorageBytes() noexcept {
+        return sizeof(std::array<Voice, voiceCount>) + sizeof(std::array<Pending, maxPending>)
+            + sizeof(std::array<SynthEngine, voiceCount>);
+    }
+
     // The step (within the pattern) that started most recently, or -1 when stopped.
     int currentStep() const noexcept { return lastStep; }
     int activeVoices() const noexcept {

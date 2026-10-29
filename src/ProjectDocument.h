@@ -347,7 +347,7 @@ struct ProjectDocument {
             if (rackPatternForClip(id.value) >= 0 && !kept(id.value)) return false;
         auto rebound = timeline;
         for (auto& r : rebound.regions) if (r.isPattern()) {
-            const auto id = r.rackClip != 0 ? r.rackClip : channelRack.validPattern(r.source) ? channelRack.clips[static_cast<std::size_t>(r.source)] : 0;
+            const auto id = r.rackClip; // Document ownership is always by clip ID; indices are generated caches.
             if (id == 0 || !kept(id)) return false;
             r.rackClip = id;
             r.source = static_cast<int>(std::find(next.clips.begin(), next.clips.begin() + next.patternCount, id) - next.clips.begin());

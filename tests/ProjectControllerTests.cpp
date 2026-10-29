@@ -975,6 +975,25 @@ static void savedRackBindingTests() {
     std::uint32_t region{};
     require(c.placeRegion(0, 0, 0, &region) && d.timeline.find(region)->isPattern() && d.timeline.find(region)->rackClip == source,
             "placing a rack cell creates an explicit rack-lane Song reference");
+    require(c.editTimeline("Edit with stale rack cache", [&](auto& song) {
+        auto* r = song.find(region); r->source = -1; r->gain = 0.7f; return true;
+    }) && d.timeline.find(region)->source == 1 && d.timeline.find(region)->rackClip == source,
+        "timeline edits derive the source cache from identity, even when the cache is out of range");
+    const auto beforeInvalidReference = d;
+    require(!c.editTimeline("Unknown rack identity", [&](auto& song) {
+        song.find(region)->rackClip = 0xffffffffffffffffULL; return true;
+    }) && alien::sameContent(beforeInvalidReference, d), "unknown rack identity refuses the whole edit without index fallback");
+    require(!c.editTimeline("Missing rack identity", [&](auto& song) {
+        song.find(region)->rackClip = 0; return true;
+    }) && alien::sameContent(beforeInvalidReference, d), "existing placements cannot discard ownership and rebind by cache");
+    require(c.undo() && c.redo(), "identity-normalized timeline edits support undo and redo");
+    {
+        auto malformed = d;
+        malformed.timeline.find(region)->rackClip = 0;
+        const auto before = malformed;
+        require(!malformed.setRack(malformed.channelRack) && alien::sameContent(before, malformed),
+            "document rack edits cannot recover missing ownership from an index cache");
+    }
     require(c.deleteRackPattern(0) && d.timeline.find(region)->source == 0 && d.timeline.find(region)->rackClip == source,
             "deleting an unused preceding slot remaps the Song cache by identity");
     require(!c.deleteRackPattern(0), "a source with Session/Song uses cannot be deleted");

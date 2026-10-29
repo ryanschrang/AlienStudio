@@ -103,6 +103,10 @@ and buffers, voice pools, document/history data, UI and allocator overhead.
 pointees. Reference-table estimates exclude snapshot headers and shared payloads.
 Do not add these figures to overlapping measurements or treat them as RSS.
 
+T1-03 E also records the fixed rack pools and real offline callback workloads in
+[the shared playback baseline](SHARED_PLAYBACK_CAPACITY.md). Those measurements
+cover current supported limits, not hypothetical larger profiles.
+
 See [the recorded Windows baseline](TRACK_CAPACITY_BASELINE.md). Rebuild the tool
 when data layouts or capacities change. A note-limit change needs a new build
 and scheduler/event measurements; do not assume a track-only projection also

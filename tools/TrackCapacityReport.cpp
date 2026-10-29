@@ -3,6 +3,7 @@
 #include "Arrangement.h"
 #include "PianoRollSequence.h"
 #include "RackModel.h"
+#include "RackEngine.h"
 #include "SessionAudioClip.h"
 #include "SessionCapacity.h"
 #include <array>
@@ -38,6 +39,9 @@ int main() {
         << alien::maxSessionScenes << " scenes, " << alien::PianoRollPattern::maxNotes
         << " notes per sequence; " << alien::rack::maxChannels << " rack channels and "
         << alien::rack::maxPatterns << " rack patterns.\n\n"
+        << "Rack occurrence slots: " << alien::rack::RackPlayer::launchSlots << " launch, "
+        << alien::rack::RackPlayer::timelineSlots << " Song; shared voice bound "
+        << alien::rack::RackPlayer::voiceCount << ", shared pending-hit bound " << alien::rack::RackPlayer::maxPending << ".\n\n"
         << "| Compiled object | Bytes |\n| --- | ---: |\n";
     object("PianoRollPattern", sizeof(alien::PianoRollPattern));
     object("PianoRollMailbox (three note buffers)", noteMailbox);
@@ -46,6 +50,8 @@ int main() {
     object("Selected note state per configured Session track", noteStatePerTrack);
     object("ArrangementClip (source references)", clipReference);
     object("ArrangementPlayback (shallow object; not its pointees)", sizeof(alien::ArrangementPlayback));
+    object("rack::RackPlayer (shallow)", sizeof(alien::rack::RackPlayer));
+    object("rack::RackPlayer fixed heap pools", alien::rack::RackPlayer::fixedStorageBytes());
     object("rack::Pattern (shallow object; not pointed-to note rows)", sizeof(alien::rack::Pattern));
     object("rack::Snapshot (shallow object; not its pattern/note pointees)", sizeof(alien::rack::Snapshot));
     std::cout << "\n| Profile | Tracks | Scenes | Selected preallocated note state (bytes) | Three Song reference tables (bytes) | Note state (MiB) |\n"
@@ -60,8 +66,10 @@ int main() {
         << "Note-state bytes = tracks * (sizeof(PianoRollMailbox) + sizeof(SessionClipMailbox) + sizeof(PianoRollScheduler)).\n"
         << "Table bytes = 3 * tracks * scenes * sizeof(ArrangementClip); snapshot headers and pointees are excluded.\n"
         << "Hypothetical rows keep the compiled note limit and current object layout. They do not raise any limits.\n"
-        << "Excluded: plugin instances/state, delay-line sample allocations, decoded audio, stream buffers, synth/drum voices,\n"
+        << "Excluded from the track projections: plugin instances/state, delay-line sample allocations, decoded audio, stream buffers, synth/drum voices,\n"
         << "rack note pointees, document/history metadata, UI, allocator overhead and live/export performance.\n"
         << "The engine preallocates these note objects by configured capacity, even for inactive tracks.\n"
+        << "The separately listed RackPlayer pool is fixed at construction; it includes rack voices, pending hits and per-voice synths.\n"
+        << "Do not add its shallow object twice or multiply its shared pools by the occurrence count.\n"
         << "No engine or hypothetical large project was constructed by this report.\n";
 }

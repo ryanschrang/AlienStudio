@@ -7,6 +7,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
+#include <iomanip>
+#include <string_view>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -590,7 +593,71 @@ static void stableSongBindingAcrossBankReorder() {
         "stable clip identity preserves Song playback when the rack snapshot arrives before remapped Song indices");
 }
 
-int main() {
+// Opt-in diagnostic: fixed workloads, warm-up, then individual real callback
+// durations. Timing has no pass threshold; allocation and finite-output checks do.
+static void capacityReport() {
+    std::cout << "# Shared playback callback baseline\n\n"
+        << "48 kHz, 120 BPM; stock synth preset 9; no plugins, device or disk I/O.\n"
+        << "All 16 mixer tracks active; default four returns; warm-up 32 blocks, measured 256 blocks.\n"
+        << "Session rack cases use three held notes per occurrence (loop 16 steps).\n"
+        << "Song case uses four overlapping lanes of that same source.\n"
+        << "Times include the whole callback; p95/max are observations, not real-time guarantees.\n\n"
+        << "| Workload | Block frames | p50 us | p95 us | max us | p95 / block budget % | Callback allocations |\n"
+        << "| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n" << std::fixed << std::setprecision(2);
+    for (int workload = 0; workload < 5; ++workload) for (int frames : {64, 256, 1024}) {
+        auto rig = std::make_unique<Rig>();
+        rig->engine.activeTracks.store(alien::maxSessionTracks);
+        rig->project.clips[0] = 101;
+        rig->project.setInstrumentPreset(0, 9);
+        alien::PianoRollPattern chord; chord.loopSteps = 16;
+        for (int pitch : {60, 64, 67}) chord.add(pitch, 0, 16);
+        require(rig->project.setChannelNotes(0, 0, chord), "capacity source notes");
+        rig->publish(); rig->engine.patternMode.store(alien::sessionMode);
+        const int instances = workload == 1 ? 1 : workload == 2 ? 16 : 0;
+        for (int t = 0; t < instances; ++t) rig->engine.requestedTrackRackClip[static_cast<std::size_t>(t)].store(101);
+        if (workload == 3) {
+            auto song = std::make_shared<alien::ArrangementPlayback>(); song->timeline.setLengthBars(64);
+            for (int lane = 0; lane < alien::timeline::rackLanes; ++lane) {
+                alien::timeline::Region r; r.row = alien::timeline::rackRowBase + lane;
+                r.source = 0; r.rackClip = 101; r.length = 64 * alien::timeline::ticksPerBar;
+                require(song->timeline.place(r), "capacity Song placement");
+            }
+            require(rig->engine.arrangementMailbox.publish(song), "capacity Song publication");
+            rig->engine.patternMode.store(alien::songMode);
+        }
+        if (workload == 4) for (int t = 0; t < alien::maxSessionTracks; ++t) {
+            alien::SessionClipLaunch launch; launch.pattern = chord; launch.clipIndex = 0;
+            require(rig->engine.pianoRollLaunches[static_cast<std::size_t>(t)].publish(launch), "capacity Session launch");
+        }
+        rig->engine.playing.store(true);
+        std::array<float, 1024> left{}, right{}; float* outputs[]{left.data(), right.data()};
+        const auto callback = [&] { rig->engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, frames, {}); };
+        for (int n = 0; n < 32; ++n) callback();
+        std::array<double, 256> times{}; const auto before = allocationCount;
+        double energy = 0;
+        for (auto& elapsed : times) {
+            const auto start = std::chrono::steady_clock::now(); callback();
+            elapsed = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
+            for (int n = 0; n < frames; ++n) {
+                require(std::isfinite(left[n]) && std::isfinite(right[n]), "capacity finite output");
+                energy += left[n] * left[n] + right[n] * right[n];
+            }
+        }
+        const auto allocations = allocationCount - before;
+        require(allocations == 0, "capacity callbacks allocate nothing");
+        require(workload == 0 || energy > 0, "capacity workload is audible");
+        if (instances != 0) for (int t = 0; t < instances; ++t)
+            require(rig->engine.activeTrackRackClip[t].load() == 101, "capacity occurrences remain active");
+        std::sort(times.begin(), times.end());
+        const char* names[]{"Transport, no clips", "1 Session rack occurrence", "16 Session rack occurrences", "4 Song rack occurrences", "16 Session MIDI tracks"};
+        std::cout << "| " << names[workload] << " | " << frames << " | " << times[128] << " | " << times[243]
+            << " | " << times.back() << " | " << times[243] / (frames * 1.0e6 / 48000.0) * 100.0 << " | " << allocations << " |\n";
+    }
+}
+
+int main(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--capacity-report") { capacityReport(); return 0; }
+
     performLaunches();
     overlappingPerformCallback();
     timelineOverlapLifecycle();
