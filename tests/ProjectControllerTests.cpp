@@ -959,16 +959,16 @@ static void savedRackBindingTests() {
     auto source = c.channelRack().clips[1];
     require(c.assignRackClip(0, 0, source) && c.assignRackClip(0, 1, source), "two saved assignments share one rack source");
     const auto unchanged = d;
-    require(!c.assignRackClip(1, 0, c.channelRack().clips[0]) && alien::sameContent(unchanged, d),
-            "a scene cannot ambiguously launch two different rack clips");
+    require(c.assignRackClip(1, 0, c.channelRack().clips[0]) && c.undo() && alien::sameContent(unchanged, d),
+            "a scene can bind different sources on independent rows, with one-step undo");
     engine.patternMode.store(1); c.launchClip(0, 0);
-    require(engine.requestedRackClip.load() == source && engine.playing.load(), "a bound Session cell launches its composite source");
-    c.stopTrack(0); require(engine.requestedRackClip.load() == 0, "the anchor row's stop controls its rack launch");
-    c.launchScene(0); require(engine.sceneRackClip.load() == source, "a scene queues its composite source with the synchronized launch");
-    c.launchClip(1, 2); require(engine.sceneRackClip.load() == source && engine.requestedRackClip.load() == alien::rack::RackPlayer::noLaunchRequest,
+    require(engine.requestedTrackRackClip[0].load() == source && engine.playing.load(), "a bound Session cell launches its composite source");
+    c.stopTrack(0); require(engine.requestedTrackRackClip[0].load() == 0, "the anchor row's stop controls its rack launch");
+    c.launchScene(0); require(engine.sceneTrackRackClip[0].load() == source, "a scene queues its composite source with the synchronized launch");
+    c.launchClip(1, 2); require(engine.sceneTrackRackClip[0].load() == source && engine.requestedRackClip.load() == alien::rack::RackPlayer::noLaunchRequest,
         "ordinary launch on an unrelated row leaves the rack alone");
-    c.launchClip(0, 2); require(engine.requestedRackClip.load() == 0, "ordinary launch on the rack's anchor row stops that instance");
-    c.launchScene(2); require(engine.sceneRackClip.load() == 0, "a scene without a rack assignment queues synchronized rack stop");
+    c.launchClip(0, 2); require(engine.requestedTrackRackClip[0].load() == 0, "ordinary launch on the rack's anchor row stops that instance");
+    c.launchScene(2); require(engine.sceneTrackRackClip[0].load() == 0, "a scene without a rack assignment queues synchronized rack stop");
     std::uint32_t region{};
     require(c.placeRegion(0, 0, 0, &region) && d.timeline.find(region)->isPattern() && d.timeline.find(region)->rackClip == source,
             "placing a rack cell creates an explicit rack-lane Song reference");

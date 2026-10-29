@@ -1018,7 +1018,7 @@ static void savedRackAssignmentMenu() {
     require(c.document().clip(0, 0).rackClip == source && rig.view.clipSlot(0, 0)->getButtonText().contains("Rack"),
             "the assignment submenu creates a labelled saved rack cell");
     clickButton(*rig.view.clipSlot(0, 0));
-    require(rig.engine.requestedRackClip.load() == source, "the actual tile launches the composite source");
+    require(rig.engine.requestedTrackRackClip[0].load() == source, "the actual tile launches the composite source");
     rig.view.showLinkMenu(); choose(5);
     require(c.timeline().regions.size() == 1 && c.timeline().regions[0].isPattern() && c.timeline().regions[0].rackClip == source,
             "the placement menu places that same shared rack source in Song");
@@ -1027,6 +1027,15 @@ static void savedRackAssignmentMenu() {
     require(c.document().clip(1, 1).rackClip != 0 && c.document().clip(1, 1).rackClip != source,
             "Paste a copy creates an independent composite source");
     require(c.undo() && c.document().clip(1, 1).isEmpty() && c.redo(), "assignment copies have one-step undo and redo");
+    const auto other = c.document().clip(1, 1).rackClip;
+    require(c.assignRackClip(1, 0, other), "a scene accepts a different source on another row");
+    rig.engine.activeTrackRackClip[0].store(source); rig.engine.activeTrackRackClip[1].store(other);
+    rig.view.refreshClips();
+    require(rig.view.clipSlot(0, 0)->getButtonText().contains("Playing") && rig.view.clipSlot(1, 0)->getButtonText().contains("Playing"),
+        "overlapping rack tiles report their own row's playing state");
+    rig.engine.activeTrackRackClip[0].store(0); rig.view.refreshClips();
+    require(!rig.view.clipSlot(0, 0)->getButtonText().contains("Playing") && rig.view.clipSlot(1, 0)->getButtonText().contains("Playing"),
+        "stopping one row leaves the other tile's playing state visible");
     std::cout << "PASS: saved rack assignment, tile launch, independent paste and Song placement menu\n";
 }
 

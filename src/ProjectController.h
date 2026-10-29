@@ -144,6 +144,8 @@ public:
         engine.playing.store(false);
         engine.requestedRackClip.store(rack::RackPlayer::noLaunchRequest);
         engine.sceneRackClip.store(rack::RackPlayer::noLaunchRequest);
+        for (auto& request : engine.requestedTrackRackClip) request.store(rack::RackPlayer::noLaunchRequest);
+        for (auto& request : engine.sceneTrackRackClip) request.store(rack::RackPlayer::noLaunchRequest);
         engine.rackPerformMode.store(false);
         engine.resetRackPlayback.store(true);
         copiedCell = {};
@@ -580,7 +582,7 @@ public:
     void launchClip(int track, int scene) {
         selectClip(track, scene);
         if (doc.isValidCell(track, scene) && doc.clip(track, scene).rackClip != 0) {
-            if (launchRackClip(doc.clip(track, scene).rackClip)) publishStop(static_cast<std::size_t>(track));
+            if (launchRackClip(doc.clip(track, scene).rackClip, track)) publishStop(static_cast<std::size_t>(track));
             return;
         }
         if (doc.isValidCell(track, scene)) stopRackOnTrack(track);
@@ -599,15 +601,25 @@ public:
 
     void launchScene(int scene) {
         scene = juce::jlimit(0, doc.sceneCount() - 1, scene);
-        std::uint64_t rackSource = 0;
+        bool hasRack = false;
         for (int track = 0; track < doc.trackCount(); ++track)
-            if (const auto rack = doc.clip(track, scene).rackClip) rackSource = rack;
-        if (rackSource != 0) {
-            if (!canLaunchRackClip(rackSource)) return;
+            if (const auto source = doc.clip(track, scene).rackClip) {
+                if (!canLaunchRackClip(source)) return;
+                hasRack = true;
+            }
+        if (hasRack) {
             pushRackToEngine(); engine.rackPerformMode.store(true); engine.patternMode.store(1); engine.playing.store(true);
         }
         engine.requestedRackClip.store(rack::RackPlayer::noLaunchRequest);
-        engine.sceneRackClip.store(rackSource);
+        engine.sceneRackClip.store(0); // A scene owns every Session slot and stops the menu's standalone launch.
+        for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track) {
+            engine.requestedTrackRackClip[track].store(rack::RackPlayer::noLaunchRequest);
+            auto source = static_cast<int>(track) < doc.trackCount() ? doc.clip(static_cast<int>(track), scene).rackClip : 0;
+            if (doc.legacyRackSceneLaunch && source != 0)
+                for (int earlier = 0; earlier < static_cast<int>(track); ++earlier)
+                    if (doc.clip(earlier, scene).rackClip == source) { source = 0; break; }
+            engine.sceneTrackRackClip[track].store(source);
+        }
         engine.synchronizedSceneLaunch.store(true);
         for (int track = 0; track < doc.trackCount(); ++track) {
             const auto rack = doc.clip(track, scene).rackClip;
@@ -617,6 +629,8 @@ public:
     }
 
     void stopAllTracks() {
+        engine.sceneRackClip.store(0);
+        for (auto& source : engine.sceneTrackRackClip) source.store(0);
         engine.synchronizedSceneLaunch.store(true);
         for (int track = 0; track < doc.trackCount(); ++track) publishStop(static_cast<std::size_t>(track));
         stopRackClip();
@@ -641,12 +655,14 @@ public:
             if (isTrackFrozen(doc.channelRack.channels[static_cast<std::size_t>(c)].output)) return false;
         return true;
     }
-    bool launchRackClip(std::uint64_t clip) {
+    bool launchRackClip(std::uint64_t clip, int track = -1) {
+        if (track < -1 || track >= doc.trackCount()) return false;
         if (!canLaunchRackClip(clip)) return false;
         pushRackToEngine();
         engine.rackPerformMode.store(true);
         engine.patternMode.store(1);
-        engine.requestedRackClip.store(clip);
+        if (track >= 0) engine.requestedTrackRackClip[static_cast<std::size_t>(track)].store(clip);
+        else engine.requestedRackClip.store(clip);
         engine.playing.store(true);
         return true;
     }
@@ -663,12 +679,8 @@ public:
         stopRackOnTrack(track);
     }
     void stopRackOnTrack(int track) {
-        for (int scene = 0; scene < doc.sceneCount(); ++scene)
-            if (const auto id = doc.clip(track, scene).rackClip; id != 0
-                && (id == engine.activeRackClip.load() || id == engine.queuedRackClip.load() || id == engine.requestedRackClip.load()
-                    || id == engine.sceneRackClip.load())) {
-                stopRackClip(); break;
-            }
+        if (track < 0 || track >= doc.trackCount()) return;
+        engine.requestedTrackRackClip[static_cast<std::size_t>(track)].store(0);
     }
 
     void publishClip(int track, int scene) {
@@ -2084,6 +2096,8 @@ private:
         engine.playing.store(false);
         engine.requestedRackClip.store(rack::RackPlayer::noLaunchRequest);
         engine.sceneRackClip.store(rack::RackPlayer::noLaunchRequest);
+        for (auto& request : engine.requestedTrackRackClip) request.store(rack::RackPlayer::noLaunchRequest);
+        for (auto& request : engine.sceneTrackRackClip) request.store(rack::RackPlayer::noLaunchRequest);
         engine.rackPerformMode.store(false);
         engine.resetRackPlayback.store(true);
         copiedCell = {};
@@ -2349,7 +2363,11 @@ private:
     void stopEverySlot() {
         abandonRecording(); // tracks or scenes are being renumbered, so the target is no longer valid
         engine.synchronizedSceneLaunch.store(false);
-        for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track) publishStop(track);
+        for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track) {
+            publishStop(track);
+            engine.requestedTrackRackClip[track].store(0);
+            engine.sceneTrackRackClip[track].store(rack::RackPlayer::noLaunchRequest);
+        }
     }
 
     void setBusy(bool b) { busy = b; if (onBusyChanged) onBusyChanged(b); }

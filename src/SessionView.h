@@ -554,7 +554,7 @@ public:
             const int active = engine.activePianoRollClip[static_cast<std::size_t>(track)].load();
             if (active >= 0 && active < d.sceneCount()) scenePlaying[static_cast<std::size_t>(active)] = true;
             for (int s = 0; s < d.sceneCount(); ++s)
-                if (const auto id = d.clip(track, s).rackClip; id != 0 && id == engine.activeRackClip.load()) scenePlaying[static_cast<std::size_t>(s)] = true;
+                if (const auto id = d.clip(track, s).rackClip; id != 0 && id == engine.activeTrackRackClip[static_cast<std::size_t>(track)].load()) scenePlaying[static_cast<std::size_t>(s)] = true;
         }
         for (int scene = 0; scene < static_cast<int>(sceneButtons.size()) && scene < d.sceneCount(); ++scene) {
             auto& sceneButton = *sceneButtons[static_cast<std::size_t>(scene)];
@@ -579,8 +579,8 @@ public:
                     : clip.audioOffline()
                     ? "Track " + juce::String(track + 1) + " | AUDIO OFFLINE\n" + clip.audioFileName.substring(0, 20)
                     : "Track " + juce::String(track + 1) + "\nScene " + juce::String(scene + 1);
-                const bool playing = clip.rackClip != 0 ? engine.activeRackClip.load() == clip.rackClip : scene == active;
-                const bool queued = clip.rackClip != 0 ? !playing && engine.queuedRackClip.load() == clip.rackClip : scene != active && scene == requested;
+                const bool playing = clip.rackClip != 0 ? engine.activeTrackRackClip[static_cast<std::size_t>(track)].load() == clip.rackClip : scene == active;
+                const bool queued = clip.rackClip != 0 ? !playing && engine.queuedTrackRackClip[static_cast<std::size_t>(track)].load() == clip.rackClip : scene != active && scene == requested;
                 if (playing) text += " | Playing";
                 else if (queued) text += " | Queued";
                 if (track == d.selectedTrack && scene == d.selectedScene) text += " | Edit";

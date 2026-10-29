@@ -675,7 +675,10 @@ static void synthExport() {
     project->channelRack.setChannelNotes(0, 0, notes);
     auto song = std::make_unique<alien::ArrangementPlayback>(); song->timeline.setLengthBars(1);
     alien::timeline::Region region; region.row = alien::timeline::rackRowBase; region.source = 0; region.start = 0; region.length = alien::timeline::ticksPerBar;
-    require(song->timeline.place(region), "place a synth chord for export"); project->timeline = song->timeline;
+    require(song->timeline.place(region), "place a synth chord for export");
+    region.id = 0; region.row += 1; region.length = 4 * alien::timeline::ticksPerStep;
+    require(song->timeline.place(region), "overlap the same synth source on another lane with an earlier end");
+    project->timeline = song->timeline;
     const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("AlienRackSynthExport", "", false);
     require(root.createDirectory().wasOk(), "create synth export fixture directory");
     const auto first = root.getChildFile("chord-512.wav"), second = root.getChildFile("chord-257.wav");
@@ -692,6 +695,22 @@ static void synthExport() {
     juce::AudioBuffer<float> audio(2, 96000); reader->read(&audio, 0, 96000, 0, true, true);
     require(audio.getMagnitude(0, 0, 1500) == 0 && audio.getMagnitude(0, 3000, 40000) > 0.001f
             && audio.getMagnitude(0, 60000, 36000) == 0, "export retains fractional onset, sustained chord and note release");
+    // Compare the decoded 24-bit WAV with live DSP, using a third callback size.
+    auto live = std::make_unique<ToneEngine>(); live->prepare(48000);
+    live->bpm.store(project->bpm); live->masterControls.gain.store(project->masterGain);
+    live->activeTracks.store(project->trackCount());
+    for (int t = 0; t < project->trackCount(); ++t) live->tracks[static_cast<std::size_t>(t)].set(project->trackSettings[static_cast<std::size_t>(t)]);
+    live->rackMailbox.publish(project->channelRack.snapshot()); live->arrangementMailbox.publish(song);
+    live->patternMode.store(2); live->playing.store(true);
+    std::array<float, 113> left{}, right{};
+    for (int done = 0; done < 96000;) {
+        const int count = std::min(113, 96000 - done); float* out[]{left.data(), right.data()};
+        live->audioDeviceIOCallbackWithContext(nullptr, 0, out, 2, count, {});
+        for (int i = 0; i < count; ++i)
+            require(std::abs(left[static_cast<std::size_t>(i)] - audio.getSample(0, done + i)) < 2.0e-6f,
+                "overlapping same-pitch Song instances match live playback and WAV export");
+        done += count;
+    }
     reader.reset(); first.deleteFile(); second.deleteFile(); root.deleteFile();
 }
 
@@ -701,8 +720,34 @@ static void savedBindingPlayback() {
     const auto file = root.getChildFile("Bindings.alienstudio");
     {
         auto engine = std::make_unique<ToneEngine>(); alien::ProjectController c(*engine);
-        require(c.editRack("Notes", [](Project& p) { return p.setStepOn(0, 0, 0, true); }), "audible rack source");
-        require(c.assignRackClip(0, 0, c.channelRack().clips[0]) && c.placeRegion(0, 0, 0), "saved Session and Song references");
+        require(c.editRack("Notes", [](Project& p) {
+            p.setStepOn(0, 0, 0, true); p.setStepOn(0, 0, 1, true);
+            return p.addPattern(0) && p.setStepField(1, 0, 0, StepField::velocity, 40);
+        }), "two audible independent rack sources");
+        require(c.assignRackClip(0, 0, c.channelRack().clips[0]) && c.assignRackClip(1, 0, c.channelRack().clips[1])
+            && c.placeRegion(0, 0, 0) && c.placeRegion(alien::timeline::rackRowBase + 1, 1, 0),
+            "save overlapping distinct Session and Song references");
+        const auto json = alien::serializeSessionProject(alien::toProjectData(c.document()));
+        auto legacy = juce::JSON::parse(json); legacy.getDynamicObject()->setProperty("version", 27);
+        alien::SessionProjectData refused; juce::String failure;
+        require(!alien::parseSessionProject(juce::JSON::toString(legacy), refused, failure),
+            "multiple rack sources cannot be disguised as an older file format");
+        auto sameSource = juce::JSON::parse(json); sameSource.getDynamicObject()->setProperty("version", 27);
+        auto scenes = sameSource.getProperty("scenes", {});
+        scenes[0][1].getDynamicObject()->setProperty("rackClip", scenes[0][0].getProperty("rackClip", {}));
+        require(alien::parseSessionProject(juce::JSON::toString(sameSource), refused, failure) && refused.legacyRackSceneLaunch,
+            "older scenes with duplicate source assignments retain one-occurrence launch semantics");
+        const auto migrated = alien::serializeSessionProject(refused);
+        alien::SessionProjectData again;
+        require(alien::parseSessionProject(migrated, again, failure) && again.legacyRackSceneLaunch,
+            "legacy launch policy survives a format 28 save and reopen");
+        auto oldEngine = std::make_unique<ToneEngine>(); alien::ProjectController oldController(*oldEngine);
+        oldController.revertTo(alien::fromProjectData(again)); oldEngine->patternMode.store(1); oldController.launchScene(0);
+        require(oldEngine->sceneTrackRackClip[0].load() != 0 && oldEngine->sceneTrackRackClip[1].load() == 0,
+            "imported duplicate assignments do not double the original scene's sound");
+        auto invalidPolicy = juce::JSON::parse(json); invalidPolicy.getDynamicObject()->setProperty("legacyRackSceneLaunch", "true");
+        require(!alien::parseSessionProject(juce::JSON::toString(invalidPolicy), refused, failure),
+            "rack launch policy must be a boolean");
         bool done = false, ok = false;
         c.writeProject(file, false, [&](bool result) { ok = result; done = true; });
         for (int i = 0; i < 400 && !done; ++i) pump(10);
@@ -714,10 +759,10 @@ static void savedBindingPlayback() {
         require(c.document().clip(0, 0).rackClip != 0 && c.document().timeline.regions[0].rackClip == c.document().clip(0, 0).rackClip,
                 "opening a file keeps Session and Song on the same source");
         if (song) { engine->patternMode.store(2); engine->playing.store(true); }
-        else { engine->patternMode.store(1); c.launchClip(0, 0); }
+        else { engine->patternMode.store(1); c.launchScene(0); }
         std::vector<float> result;
         std::array<float, 256> l{}, r{};
-        for (int i = 0; i < 16; ++i) {
+        for (int i = 0; i < 64; ++i) {
             float* out[]{l.data(), r.data()};
             engine->audioDeviceIOCallbackWithContext(nullptr, 0, out, 2, 256, {});
             result.insert(result.end(), l.begin(), l.end());
