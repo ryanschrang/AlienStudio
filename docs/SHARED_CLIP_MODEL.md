@@ -339,7 +339,7 @@ retained. Older binaries refuse format 28 rather than reinterpret its scene sema
 Automated evidence is in RackLaunchTests (quantization, same-source overlap, scoped
 ratchet cancellation, stable identities, slot bounds and allocation checks),
 RackIntegrationTests (real-callback same-pitch synth ownership, stop/reset, loop and
-mid-block end timing), RackProjectTests (disk reopen of overlapping distinct sources,
+mid-block end timing and rack-before-Song snapshot ordering), RackProjectTests (disk reopen of overlapping distinct sources,
 legacy policy, live versus WAV overlap parity and byte-identical exports at different
 callback sizes), ProjectControllerTests (linked edits, unique copies, undo/redo and
 bindings), and SessionViewTests (actual tile routing and independent row indicators).

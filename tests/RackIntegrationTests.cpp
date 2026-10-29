@@ -571,10 +571,30 @@ static void timelineOverlapLifecycle() {
         "Song loop wraps reset instance-owned delayed notes identically across callback sizes");
 }
 
+static void stableSongBindingAcrossBankReorder() {
+    Rig moved(8000), reference(8000);
+    const auto setup = [](Rig& rig) {
+        rig.project.clips[0] = 101; rig.project.setStepOn(0, 0, 0, true);
+        require(rig.project.addPattern(0), "second Song source"); rig.project.clips[1] = 102;
+        rig.project.setStepField(1, 0, 0, StepField::velocity, 40); rig.publish();
+        auto song = std::make_shared<alien::ArrangementPlayback>();
+        alien::timeline::Region region; region.row = alien::timeline::rackRowBase; region.source = 1; region.rackClip = 102;
+        region.length = 32 * alien::timeline::ticksPerStep; require(song->timeline.place(region), "stable Song source placement");
+        rig.engine.arrangementMailbox.publish(song); rig.engine.patternMode.store(2); rig.engine.playing.store(true);
+    };
+    setup(moved); setup(reference);
+    require(moved.capture(1500) == reference.capture(1500), "same starting rack placement");
+    require(moved.project.deletePattern(0), "remove unused preceding bank slot"); moved.publish();
+    // Deliberately do not republish the arrangement: its index cache is stale.
+    require(moved.capture(15001) == reference.capture(15001),
+        "stable clip identity preserves Song playback when the rack snapshot arrives before remapped Song indices");
+}
+
 int main() {
     performLaunches();
     overlappingPerformCallback();
     timelineOverlapLifecycle();
+    stableSongBindingAcrossBankReorder();
     synthCallback();
     melodicCallback();
     silentInEveryOtherMode();

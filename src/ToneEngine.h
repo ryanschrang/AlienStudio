@@ -834,7 +834,8 @@ private:
     struct TimelineLane {
         bool active{}, midi{};
         int source{-1};
-        std::uint64_t clip{};          // the region's placement clip, or 0
+        std::uint64_t clip{};          // placement clip on a track; region identity on a rack lane
+        std::uint64_t rackClip{};      // stable rack source; source is only its resolved index cache
         std::int64_t start{}, end{}, offset{};
         double audioOffset{}, gain{1.0};
         std::int64_t fadeIn{}, fadeOut{}, crossfade{};
@@ -1119,13 +1120,16 @@ private:
         const auto* region = regionNow(alien::timeline::rackRowBase + index, lane.boundary);
         if (region != nullptr && region->muted) region = nullptr;
         if (region == nullptr) { const double boundary = lane.boundary; lane = {}; lane.boundary = boundary; return; }
-        if (lane.active && lane.clip == region->id && lane.source == region->source && region->start - region->offset == lane.start - lane.offset) {
+        const int source = region->rackClip != 0 ? rackSnapshot->indexOfClip(region->rackClip) : region->source;
+        if (lane.active && lane.clip == region->id && lane.rackClip == region->rackClip
+            && (region->rackClip != 0 || lane.source == source) && region->start - region->offset == lane.start - lane.offset) {
+            lane.source = source;
             lane.start = region->start; lane.end = region->end(); lane.offset = region->offset;   // trimmed or stretched, not moved
             return;
         }
         const double boundary = lane.boundary;
         lane = {}; lane.boundary = boundary;
-        lane.active = true; lane.source = region->source; lane.start = region->start; lane.end = region->end();
+        lane.active = true; lane.source = source; lane.rackClip = region->rackClip; lane.start = region->start; lane.end = region->end();
         lane.offset = region->offset; lane.clip = region->id;
         // The first step whose hit has not happened yet.
         const double content = std::max(0.0, timelineTick - static_cast<double>(region->start)) + static_cast<double>(region->offset);
@@ -1140,6 +1144,9 @@ private:
     void fireRackSteps(int sample) noexcept {
         for (std::size_t index = 0; index < rackLaneState.size(); ++index) {
             auto& lane = rackLaneState[index];
+            // Rack and Song mailboxes can arrive in adjacent blocks. A stale bank index
+            // must never redirect a placement to another source (or silence a moved one).
+            if (lane.active && lane.rackClip != 0) lane.source = rackSnapshot->indexOfClip(lane.rackClip);
             const auto id = lane.active ? lane.clip : 0;
             const auto source = lane.active && rackSnapshot->pattern(lane.source) ? rackSnapshot->clips[static_cast<std::size_t>(lane.source)] : 0;
             const auto origin = lane.start - lane.offset;
