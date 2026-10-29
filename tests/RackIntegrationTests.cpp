@@ -533,6 +533,19 @@ static void overlappingPerformCallback() {
     overlap.engine.resetRackPlayback.store(true); overlap.render(2000);
     require(overlap.engine.activeTrackRackClip[1].load() == 0 && overlap.render(1000).peak < 0.001f,
         "document reset clears every overlapping occurrence");
+    overlap.engine.requestedTrackRackClip[0].store(101); overlap.engine.requestedTrackRackClip[1].store(102);
+    overlap.engine.notes.panic.store(true); overlap.render(1000);
+    require(overlap.engine.activeTrackRackClip[0].load() == 0 && overlap.engine.activeTrackRackClip[1].load() == 0
+        && overlap.engine.queuedTrackRackClip[0].load() == RackPlayer::noLaunchRequest,
+        "panic discards unconsumed per-row launch requests");
+    overlap.engine.sceneTrackRackClip[0].store(101); overlap.engine.sceneTrackRackClip[1].store(102);
+    overlap.engine.synchronizedSceneLaunch.store(true); overlap.engine.requestedRackClip.store(0);
+    for (std::size_t t = 0; t < ToneEngine::sessionTracks; ++t) {
+        alien::SessionClipLaunch stop; stop.clipIndex = -1; overlap.engine.pianoRollLaunches[t].publish(stop);
+    }
+    overlap.render(8000);
+    require(overlap.engine.activeTrackRackClip[0].load() == 0 && overlap.engine.activeTrackRackClip[1].load() == 0,
+        "Stop rack cancels every rack source in a pending scene");
 }
 
 static void timelineOverlapLifecycle() {

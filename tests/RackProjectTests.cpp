@@ -700,7 +700,7 @@ static void synthExport() {
     live->bpm.store(project->bpm); live->masterControls.gain.store(project->masterGain);
     live->activeTracks.store(project->trackCount());
     for (int t = 0; t < project->trackCount(); ++t) live->tracks[static_cast<std::size_t>(t)].set(project->trackSettings[static_cast<std::size_t>(t)]);
-    live->rackMailbox.publish(project->channelRack.snapshot()); live->arrangementMailbox.publish(song);
+    live->rackMailbox.publish(project->channelRack.snapshot()); live->arrangementMailbox.publish(*song);
     live->patternMode.store(2); live->playing.store(true);
     std::array<float, 113> left{}, right{};
     for (int done = 0; done < 96000;) {

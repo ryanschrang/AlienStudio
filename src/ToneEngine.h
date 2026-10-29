@@ -351,7 +351,7 @@ private:
                     rackPlayer.audition(*rackSnapshot, channel, preview.velocity,
                                         rackSamples[static_cast<std::size_t>(channel)].load(std::memory_order_relaxed), pitch, (preview.note & rackPreviewHeld) != 0);
             }
-            if (rackAuditions.panic.exchange(false)) rackPlayer.stop();
+            if (rackAuditions.panic.exchange(false)) { rackPlayer.stop(); cancelRackRequests(); }
         }
         if (panic) {
             for (std::size_t track = 0; track < sessionTracks; ++track)
@@ -362,7 +362,7 @@ private:
             synchronizedSceneTracksQueued = 0;
             synchronizedSceneLaunch.store(false);
             activeStepPitch = -1;
-            allSoundOff(); midi.requestReset();
+            allSoundOff(); cancelRackRequests(); midi.requestReset();
             if (modeNow == 2) resetTransport();
         }
         for (std::size_t t = 0; t < sessionTracks; ++t) {
@@ -416,6 +416,7 @@ private:
         }
         rackRequestInBlock = requestedRackClip.exchange(alien::rack::RackPlayer::noLaunchRequest);
         if (rackRequestInBlock != alien::rack::RackPlayer::noLaunchRequest) synchronizedRackSource = alien::rack::RackPlayer::noLaunchRequest;
+        if (rackRequestInBlock == 0) synchronizedTrackRackSources = alien::rack::RackPlayer::noRequests();
         if (timelineRate != songRate(timelineTick)) setTimelineTick(timelineTick);   // the project tempo or the tempo map changed: a new segment
         const bool rackTimelineBlock = playNow && modeNow == 2;
         const double beatBase = countingIn ? countInBeats : transportBeat;
@@ -691,6 +692,16 @@ private:
     // instruments, so a plug-in instrument on a track cannot replace it: buses
     // for Session tracks join that track (and so pass through its effects and
     // mixer strip), the master bus joins the live bus, aligned like the tracks.
+    void cancelRackRequests() noexcept {
+        requestedRackClip.store(alien::rack::RackPlayer::noLaunchRequest);
+        sceneRackClip.store(alien::rack::RackPlayer::noLaunchRequest);
+        synchronizedRackSource = alien::rack::RackPlayer::noLaunchRequest;
+        synchronizedTrackRackSources = alien::rack::RackPlayer::noRequests();
+        for (std::size_t t = 0; t < sessionTracks; ++t) {
+            requestedTrackRackClip[t].store(alien::rack::RackPlayer::noLaunchRequest);
+            sceneTrackRackClip[t].store(alien::rack::RackPlayer::noLaunchRequest);
+        }
+    }
     void renderRack(int samples, bool running, bool timelineRunning, bool startSelected) noexcept {
         auto& buses = *rackBuses;
         std::array<float*, alien::rack::RackPlayer::busCount> left{}, right{};
