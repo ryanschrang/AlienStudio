@@ -13,7 +13,7 @@ namespace alien {
 
 // The track column of the Session view, laid out like a row of FL Studio's channel rack: a light (mute), pan and
 // volume knobs, the track's name button, solo, and a stop button. One row per Session track, lined up with that
-// track's row of clips. Knobs write the engine's lock-free controls and ask the owner to commit.
+// track's row of clips. Knobs execute named mixer commands; each drag owns one undo step.
 // Mute/solo use named commands, which own their undo step, and notify the owner only to refresh.
 class SessionTrackStrip final : public juce::Component, public juce::TooltipClient {
 public:
@@ -23,7 +23,7 @@ public:
     SessionTrackStrip(ProjectController& projectController, ToneEngine& toneEngine)
         : controller(projectController), engine(toneEngine) {}
 
-    // A mixer value changed from here (committed is false while a knob is being dragged and true when it is final).
+    // Legacy host hook retained for compatibility; controls now emit only onMixCommandExecuted.
     std::function<void(int, bool)> onMixEdited;
     std::function<void(int)> onMixCommandExecuted; // already committed; refresh only
     std::function<void(int)> onSelect;   // the track's header was clicked
@@ -144,8 +144,8 @@ public:
     void mouseUp(const juce::MouseEvent&) override {
         if (drag != Drag::knob) return;
         drag = Drag::none;
+        knobCoalesceKey.clear();
         repaint(rowBounds(knobTrack).expanded(0, 30));
-        if (onMixEdited) onMixEdited(knobTrack, true);
     }
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override {
         const auto point = e.getPosition();
@@ -153,7 +153,9 @@ public:
         if (track >= 0 && (panRect(track).contains(point) || volumeRect(track).contains(point))) {
             const bool pan = panRect(track).contains(point);
             const auto mix = engine.tracks[static_cast<std::size_t>(track)].snapshot();
-            setKnob(track, pan, (pan ? mix.pan : mix.gain) + wheel.deltaY * (pan ? 0.4f : 0.5f), true, true);
+            const auto owner = controller.document().tracks[static_cast<std::size_t>(track)].id;
+            setKnob(track, pan, (pan ? mix.pan : mix.gain) + wheel.deltaY * (pan ? 0.4f : 0.5f), true, true,
+                    "session-wheel-" + juce::String(owner) + (pan ? "-pan" : "-volume"));
             return;
         }
         juce::Component::mouseWheelMove(e, wheel);   // the rows scroll with the clips
@@ -191,28 +193,39 @@ private:
     }
 
     void beginKnob(int track, bool pan, int y) {
+        if (controller.isBusy()) return;
         drag = Drag::knob; knobTrack = track; knobPan = pan; knobStartY = y;
+        knobOwner = controller.document().tracks[static_cast<std::size_t>(track)].id;
+        knobCoalesceKey = "session-drag-" + juce::String(++nextKnobGesture);
         const auto mix = engine.tracks[static_cast<std::size_t>(track)].snapshot();
         knobStart = pan ? mix.pan : mix.gain;
     }
     void dragKnob(int y, bool fine) {
+        const auto& d = controller.document();
+        // A row can be replaced by undo, opening a project, deletion or reorder
+        // while a deferred mouse event is queued. Never apply it to a new owner.
+        if (knobTrack < 0 || knobTrack >= d.trackCount() || d.tracks[static_cast<std::size_t>(knobTrack)].id != knobOwner
+            || controller.isBusy()) { drag = Drag::none; knobCoalesceKey.clear(); repaint(); return; }
         setKnob(knobTrack, knobPan, knobStart + static_cast<float>(knobStartY - y) * (fine ? 0.003f : 0.012f), false, fine);
     }
     // Pan runs -1..1 and snaps to the centre; volume runs 0..2 (+6 dB) and snaps to unity. Both are stored in whole percent,
     // as the Mixer's own controls do.
-    void setKnob(int track, bool pan, float value, bool committed, bool fine) {
-        auto& controls = engine.tracks[static_cast<std::size_t>(track)];
+    void setKnob(int track, bool pan, float value, bool committed, bool fine, const juce::String& wheelKey = {}) {
+        if (track < 0 || track >= controller.document().trackCount()) return;
         if (pan) {
             value = juce::jlimit(-1.0f, 1.0f, value);
             if (!fine && std::abs(value) < 0.04f) value = 0.0f;
-            controls.pan.store(std::round(value * 100.0f) / 100.0f);
         } else {
             value = juce::jlimit(0.0f, 2.0f, value);
             if (!fine && std::abs(value - 1.0f) < 0.02f) value = 1.0f;
-            controls.gain.store(std::round(value * 100.0f) / 100.0f);
         }
+        value = std::round(value * 100.0f) / 100.0f;
+        const command::Command edit = pan ? command::Command{command::SetTrackPan{track, value}}
+                                          : command::Command{command::SetTrackVolume{track, value}};
+        const auto result = command::CommandEngine(controller).execute(edit, committed ? wheelKey : knobCoalesceKey, !committed);
+        if (!result.ok || !result.changed) return;
         repaint(rowBounds(track).expanded(0, 30));
-        if (onMixEdited) onMixEdited(track, committed);
+        if (onMixCommandExecuted) onMixCommandExecuted(track);
     }
 
     void paintKnobReadout(juce::Graphics& g) const {
@@ -234,6 +247,9 @@ private:
     int knobTrack{-1}, knobStartY{};
     bool knobPan{};
     float knobStart{};
+    std::uint32_t knobOwner{};
+    juce::String knobCoalesceKey;
+    inline static juce::uint64 nextKnobGesture{}; // message thread; unique across Session windows
     juce::Point<int> hover{-1, -1};
 };
 

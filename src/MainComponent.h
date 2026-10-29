@@ -588,11 +588,7 @@ private:
                 controller.commit("Change " + controller.document().tracks[static_cast<std::size_t>(track)].name + " mix",
                                   -1, -1, "mixer-" + juce::String(track));
         };
-        // Session knob gestures share the Mixer's commit path. Mute/solo commands already own their undo step.
-        sessionView.onTrackMixEdited = [this](int track, bool committed) {
-            mixerPanel.refreshSettings();
-            if (mixerPanel.onTrackEdited) mixerPanel.onTrackEdited(track, committed);
-        };
+        // Session mixer commands own their history; the host only refreshes the Mixer.
         sessionView.onTrackMixCommandExecuted = [this](int) {
             mixerPanel.refreshSettings();
             sessionView.repaint();

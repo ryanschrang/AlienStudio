@@ -68,10 +68,10 @@ public:
     // edit changed (shown again when it is undone). Edits with the same
     // coalesceKey made in quick succession become one undo step.
     void commit(const juce::String& label, int focusTrack = -1, int focusScene = -1,
-                const juce::String& coalesceKey = {}) {
+                const juce::String& coalesceKey = {}, bool continuous = false) {
         for(int t=0;t<doc.trackCount();++t)engine.tracks[static_cast<std::size_t>(t)].freezeScene.store(doc.tracks[static_cast<std::size_t>(t)].settings.freezeScene);
         const auto previous = history.currentId();
-        history.record(doc, label, focusTrack, focusScene, coalesceKey);
+        history.record(doc, label, focusTrack, focusScene, coalesceKey, continuous);
         if (history.currentId() != previous) publishArrangement();
         historyChanged();
     }
