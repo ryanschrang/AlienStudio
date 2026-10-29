@@ -356,7 +356,9 @@ static void realProcessTests(const juce::File& tmp) {
     { auto [r, v] = run("ok_synth"); check(v.status == Status::ok && r.stage == "done" && r.xml.isNotEmpty(), "a well-behaved child scans fine: " + v.detail); }
     { auto [r, v] = run("crash_now"); check(v.status == Status::crashed && v.detail.contains("loading"), "a child that really crashes is reported as crashed, not as an empty scan: " + v.detail); }
     { auto [r, v] = run("abort_now"); check(v.status == Status::crashed, "so is one that aborts: " + v.detail); }
-    { auto [r, v] = run("hang_now", 2000); check(v.status == Status::timedOut && r.milliseconds < 20000, "a child that hangs is stopped at the time limit: " + v.detail + " (" + juce::String(r.milliseconds) + " ms)");
+    // The limit leaves the child time to start (a busy CI runner can take seconds just to load it) before it hangs,
+    // so the heartbeat below shows it really ran; 2 s was sometimes over before its first beat.
+    { auto [r, v] = run("hang_now", 8000); check(v.status == Status::timedOut && r.milliseconds < 20000, "a child that hangs is stopped at the time limit: " + v.detail + " (" + juce::String(r.milliseconds) + " ms)");
       // "Stopped" means the process is gone, not merely that the parent stopped waiting: its heartbeat must have ended.
       const auto beat = lastOutput.getSiblingFile(lastOutput.getFileName() + ".beat");
       const auto before = beat.loadFileAsString();

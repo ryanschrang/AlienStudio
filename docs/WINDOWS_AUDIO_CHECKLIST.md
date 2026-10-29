@@ -389,3 +389,9 @@ Nothing should sound or look different: this moves where the rack's patterns are
 - With the transport stopped and Song mode off, click a MIDI clip in the Session view: the transport starts and the clip is heard at once; the top bar's Play button lights. Click a scene's launch button while stopped: the whole scene plays.
 - While playing, clicking another clip keeps the transport running and switches at the next Beat/Bar boundary.
 - Turn Song mode on, stop, and click a clip: the transport stays stopped and the status bar says Song mode is on. Turn Song mode off and click again: it plays.
+
+## Piano-roll keyboard (PROD-06 part 1)
+- Edit > Keyboard labels > All notes: every key shows its name with its octave (C4 is middle C); C notes only shows just the Cs. Check the names stay readable at 100% and 150% display scaling.
+- Select notes: their keys light in the note colour. With multi-clip editing on, another clip's notes light their keys in that clip's colour. Play the clip: each key lights while its note sounds and goes out after it.
+- Give two tracks different instruments (a plugin, a drum kit, the built-in synth). Open a clip on each and click-and-hold piano keys: you hear that track's instrument, with the transport stopped and while playing. Open a Channel Rack row and do the same: you hear that channel.
+- Hold a key, then switch the piano roll to another clip, track or rack channel (or Alt-Tab away) before letting go: nothing is left sounding. Record into a clip while clicking keys in another: the clicks are not recorded.

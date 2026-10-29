@@ -302,6 +302,30 @@ public:
     }
     // The colour of a note that belongs to another clip (nullopt: the opened clip's own colour).
     std::function<std::optional<juce::Colour>(std::uint32_t)> noteTint;
+
+    // The piano keyboard (PROD-06). Keys are named with their octave (C4 is MIDI 60): every key, or only the Cs.
+    enum class KeyLabels { cNotes, all };
+    KeyLabels getKeyLabels() const noexcept { return keyLabels; }
+    void setKeyLabels(KeyLabels labels) { if (keyLabels != labels) { keyLabels = labels; repaint(); } }
+    // What a key shows: the note being auditioned, a note sounding under the playhead, or a selected note, each in
+    // its note's colour (another clip's colour when editing several), or nothing.
+    enum class KeyState { none, selected, sounding, auditioned };
+    struct KeyLight { KeyState state{KeyState::none}; juce::Colour colour; };
+    KeyLight keyLight(int pitch) const {
+        if (pitch < 0 || pitch > 127) return {};
+        if (pitch == auditionPitch) return {KeyState::auditioned, juce::Colour(0xff4fe0b6)};
+        KeyLight light;
+        const bool playing = std::isfinite(playhead) && playhead >= 0 && playhead < pattern.loopSteps;
+        for (std::size_t i = 0; i < pattern.count; ++i) {
+            const auto& note = pattern.notes[i];
+            if (note.pitch != pitch) continue;
+            const auto colour = noteColour(note.id);
+            if (playing && playhead >= note.startStep && playhead < note.startStep + note.lengthSteps)
+                return {KeyState::sounding, colour.brighter(0.45f)};
+            if (light.state == KeyState::none && selection.contains(note.id)) light = {KeyState::selected, colour};
+        }
+        return light;
+    }
     void setEditingClipCount(int clips) { if (editingClips != clips) { editingClips = clips; updateSelection(); } }
     int editingClipCount() const noexcept { return editingClips; }
     std::size_t ghostNoteCount() const {
@@ -539,18 +563,22 @@ public:
 
             const juce::Rectangle<float> key(static_cast<float>(a.piano.getX()), y,
                                              static_cast<float>(a.piano.getWidth()), rowHeight);
-            g.setColour(pitch == auditionPitch ? juce::Colour(0xff4fe0b6)
-                                              : juce::Colour(0xffe2e4e7));
+            const auto light = keyLight(pitch);
+            const bool lit = light.state != KeyState::none;
+            g.setColour(lit && !isBlack(pitch) ? light.colour : juce::Colour(0xffe2e4e7));
             g.fillRect(key);
             if (isBlack(pitch)) {
-                g.setColour(pitch == auditionPitch ? juce::Colour(0xff2a9d8f) : juce::Colour(0xff1a1b1f));
+                g.setColour(lit ? light.colour.darker(0.35f) : juce::Colour(0xff1a1b1f));
                 g.fillRect(key.withWidth(key.getWidth() * 0.72f));
             }
             g.setColour(juce::Colour(0xffa6abb2));
             g.drawHorizontalLine(juce::roundToInt(y + rowHeight), key.getX(), key.getRight());
-            if (pitch % 12 == 0) {
-                g.setColour(juce::Colour(0xff4a4f57));
+            // Every key's name when there is room for it, or only the Cs.
+            if (pitch % 12 == 0 || (keyLabels == KeyLabels::all && rowHeight >= 8.0f)) {
+                g.setColour(isBlack(pitch) && !lit ? juce::Colour(0xffc4c8ce) : juce::Colour(0xff4a4f57));
+                g.setFont(juce::FontOptions(juce::jmin(10.5f, rowHeight - 1.0f)));
                 g.drawText(noteName(pitch), key.reduced(3.0f, 0.0f), juce::Justification::centredRight);
+                g.setFont(juce::FontOptions(10.5f));
             }
         }
 
@@ -922,6 +950,11 @@ private:
         }
         return found;
     }
+    // A note's colour: another clip's when editing several, otherwise the piano roll's own.
+    juce::Colour noteColour(std::uint32_t id) const {
+        const auto tint = noteTint ? noteTint(id) : std::nullopt;
+        return tint.value_or(juce::Colour(0xff3fc9a2));
+    }
     void paintNote(juce::Graphics& g, const PianoRollNote& note, const Areas& a, bool isSelected) const {
         if (note.pitch < lowestVisiblePitch || note.pitch > topPitch()) return;
         const auto bounds = noteBounds(note, a);
@@ -1164,6 +1197,10 @@ private:
         menu.addSeparator();
         add(9, "Split selected notes at cursor", "", selection.count != 0);
         menu.addSeparator();
+        juce::PopupMenu labels;
+        labels.addItem(30, "C notes only", true, keyLabels == KeyLabels::cNotes);
+        labels.addItem(31, "All notes", true, keyLabels == KeyLabels::all);
+        menu.addSubMenu("Keyboard labels", labels);
         juce::PopupMenu ghosts;
         ghosts.addItem(20, "Off", true, ghostSource == GhostNoteSource::off);
         ghosts.addItem(21, "Other clips in this scene", true, ghostSource == GhostNoteSource::sameScene);
@@ -1189,6 +1226,7 @@ private:
                     safe->setGhostSource(action == 20 ? GhostNoteSource::off
                                          : action == 21 ? GhostNoteSource::sameScene : GhostNoteSource::sameTrack);
                 else if (action == 23) safe->setMultiClipEditing(!safe->multiClip);
+                else if (action == 30 || action == 31) safe->setKeyLabels(action == 30 ? KeyLabels::cNotes : KeyLabels::all);
                 if (action != 0) safe->grabKeyboardFocus();
             });
     }
@@ -1568,6 +1606,7 @@ private:
     PianoRollClipboard clipboard;
     GhostNoteSource ghostSource { GhostNoteSource::off };
     bool multiClip{false};
+    KeyLabels keyLabels{KeyLabels::cNotes};
     int editingClips{1};
     std::vector<PianoRollGhostClip> ghostClips;
     std::uint32_t activeId {};

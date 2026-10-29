@@ -3,6 +3,7 @@
 #include "ToneEngine.h"
 #include "TypingPianoRouter.h"
 #include "PianoRollEditor.h"
+#include "PianoRollAudition.h"
 #include "PianoRollGhostSources.h"
 #include "CompactWorkspace.h"
 #include "TrackMixerPanel.h"
@@ -507,14 +508,7 @@ private:
                 ? tracks[static_cast<std::size_t>(source.track)].colour : source.scene + 1;
             return alien::ui::trackColour(colour).withSaturation(0.55f).brighter(0.15f);
         };
-        pianoRoll.onAudition = [this](int note, float velocity) {
-            if (rollTarget.rack) {
-                controller.previewRackChannel(rollTarget.channel, velocity, note - alien::rack::channelRootPitch, true);
-                return;
-            }
-            if (velocity > 0) keyboardState.noteOn(3, note, velocity);
-            else keyboardState.noteOff(3, note, 0);
-        };
+        pianoRoll.onAudition = [this](int note, float velocity) { auditionPianoRoll(note, velocity); };
         sessionView.onSelectionChanged = [this] { rollTarget = {}; loadSelectedClip(); };
         // Launching a clip plays it. With Song mode on, Play plays the Song instead, so say so rather than stay silent.
         sessionView.onLaunched = [this](bool) {
@@ -648,6 +642,20 @@ private:
         updateEditorTitle();
     }
 
+    // Piano-roll key previews (PROD-06) play on what the piano roll edits: its Channel Rack channel, or the Session
+    // track of its clip (a Song clip's track), on that track's own instrument. A note-off goes where its note-on went,
+    // so a preview still held when the editor changes target cannot be left sounding.
+    void auditionPianoRoll(int note, float velocity) {
+        const auto& d = controller.document();
+        alien::PianoRollAuditionRouter::Target current;
+        if (rollTarget.rack) current = {true, rollTarget.channel};
+        else if (const int track = rollTarget.placement != 0 ? controller.placementTrack(rollTarget.placement) : d.selectedTrack;
+                 track >= 0 && track < d.trackCount()) current = {false, track};
+        auditions.play(note, velocity, current, [this](alien::PianoRollAuditionRouter::Target target, int pitch, float level) {
+            if (target.rack) controller.previewRackChannel(target.index, level, pitch - alien::rack::channelRootPitch, true);
+            else engine.trackAuditions.push(ToneEngine::trackAuditionEvent(target.index, pitch), level);
+        });
+    }
     // Other clips' notes, shown dimmed behind a Session clip (none for a Channel Rack channel or a Song clip).
     // Clips being edited with it are not ghosts.
     void refreshGhostNotes() {
@@ -1695,7 +1703,8 @@ private:
     // What the piano roll edits: the selected Session clip (the default), a Channel Rack channel,
     // or a Song placement clip (placement: its library id).
     struct RollTarget { bool rack{}; int channel{}; std::uint64_t placement{}; };
-    alien::MultiClipEdit multiClip;   // the Session clips the piano roll edits together, while that is on
+    alien::MultiClipEdit multiClip;
+    alien::PianoRollAuditionRouter auditions;   // where each held piano-roll preview note plays   // the Session clips the piano roll edits together, while that is on
     RollTarget rollTarget;
     int rollGesture{};                  // one undo step per piano-roll gesture on a rack channel
     alien::rack::ChannelNotesFit rollFit;
