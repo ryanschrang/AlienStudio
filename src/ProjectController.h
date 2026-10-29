@@ -638,15 +638,13 @@ public:
 
     // A launch is transport state, not an edit or a change of the pattern being edited.
     int rackPatternForClip(std::uint64_t clip) const noexcept {
-        if (clip != 0) for (int p = 0; p < doc.channelRack.patternCount; ++p)
-            if (doc.channelRack.clips[static_cast<std::size_t>(p)] == clip) return p;
-        return -1;
+        return doc.rackPatternForClip(clip);
     }
     bool rackPatternInUse(int pattern) const {
         if (!doc.channelRack.validPattern(pattern)) return false;
         const auto id = doc.channelRack.clips[static_cast<std::size_t>(pattern)];
         for (const auto& scene : doc.cells) for (auto cell : scene) if (cell.value == id) return true;
-        for (const auto& r : doc.timeline.regions) if (r.isPattern() && (r.rackClip == id || r.source == pattern)) return true;
+        for (const auto& r : doc.timeline.regions) if (r.isPattern() && r.rackClip == id) return true;
         return false;
     }
     bool canLaunchRackClip(std::uint64_t clip) const {
@@ -990,7 +988,7 @@ public:
     bool placementShared(std::uint32_t regionId) const {
         const auto* r = doc.timeline.find(regionId);
         if (r == nullptr) return false;
-        if (r->isPattern()) return doc.channelRack.validPattern(r->source);
+        if (r->isPattern()) return doc.rackPatternForClip(r->rackClip) >= 0;
         if (r->ownsClip()) {
             int uses = 0;
             for (const auto& other : doc.timeline.regions) uses += other.clip == r->clip ? 1 : 0;
@@ -1011,7 +1009,8 @@ public:
             const auto saved = doc;
             auto next = doc.channelRack;
             const int slot = next.patternCount;
-            if (!next.addPattern(r->source)) return false;
+            const int source = doc.rackPatternForClip(r->rackClip);
+            if (source < 0 || !next.addPattern(source)) return false;
             next.selectedPattern = doc.channelRack.selectedPattern;
             if (!doc.setRack(std::move(next))) return false;
             auto* own = doc.timeline.find(regionId);
@@ -1407,16 +1406,23 @@ public:
         if (busy) return false;
         auto next = doc.timeline;
         next.tempo = doc.bpm;
-        if (!edit(next) || !next.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount) || next == doc.timeline)
-            return false;
+        if (!edit(next)) return false;
         for (auto& r : next.regions) {
             if (r.ownsClip() && doc.library.clip(alien::library::ClipId{r.clip}) == nullptr) return false;
             if (r.isPattern()) {
-                const auto id = doc.channelRack.clips[static_cast<std::size_t>(r.source)];
-                if (r.rackClip != 0 && r.rackClip != id) return false;
-                r.rackClip = id;
+                // Existing references own an ID. Only a newly placed, index-only
+                // region crosses the UI compatibility boundary here.
+                if (r.rackClip != 0) {
+                    r.source = doc.rackPatternForClip(r.rackClip);
+                    if (r.source < 0) return false;
+                } else {
+                    if (const auto* existing = doc.timeline.find(r.id); existing != nullptr && existing->isPattern()) return false;
+                    if (!doc.channelRack.validPattern(r.source)) return false;
+                    r.rackClip = doc.channelRack.clips[static_cast<std::size_t>(r.source)];
+                }
             }
         }
+        if (!next.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount) || next == doc.timeline) return false;
         if(next.frozenOriginals!=doc.timeline.frozenOriginals)return false;
         // Send automation only for a return that exists.
         for(const auto& lane:next.automationLanes)

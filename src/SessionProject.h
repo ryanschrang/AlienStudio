@@ -19,8 +19,8 @@
 
 namespace alien {
 
-// Capacity of a session. The audio engine pre-allocates this many tracks so it
-// never allocates while playing; raising either value is a one-line change.
+// Initial grid size, distinct from the engine capacities in SessionCapacity.h.
+// Raising supported limits requires the measured T1-04 storage/scheduler gates.
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;

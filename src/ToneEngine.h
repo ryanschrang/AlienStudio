@@ -246,7 +246,13 @@ private:
             allSoundOff(); resetTransport();
             midi.requestReset();
         }
-        if (const auto* fresh = rackMailbox.consume()) rackSnapshot = fresh;
+        if (const auto* fresh = rackMailbox.consume()) {
+            rackSnapshot = fresh;
+            // Indices are compiled bindings for this immutable bank revision.
+            // Resolve once on publication, rather than searching the bank per sample.
+            for (auto& lane : rackLaneState)
+                if (lane.active && lane.rackClip != 0) lane.source = rackSnapshot->indexOfClip(lane.rackClip);
+        }
         if (resetRackPlayback.exchange(false)) {
             rackPlayer.stop();
             synchronizedTrackRackSources = alien::rack::RackPlayer::noRequests();
@@ -1144,9 +1150,6 @@ private:
     void fireRackSteps(int sample) noexcept {
         for (std::size_t index = 0; index < rackLaneState.size(); ++index) {
             auto& lane = rackLaneState[index];
-            // Rack and Song mailboxes can arrive in adjacent blocks. A stale bank index
-            // must never redirect a placement to another source (or silence a moved one).
-            if (lane.active && lane.rackClip != 0) lane.source = rackSnapshot->indexOfClip(lane.rackClip);
             const auto id = lane.active ? lane.clip : 0;
             const auto source = lane.active && rackSnapshot->pattern(lane.source) ? rackSnapshot->clips[static_cast<std::size_t>(lane.source)] : 0;
             const auto origin = lane.start - lane.offset;
