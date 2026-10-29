@@ -65,8 +65,10 @@ inline juce::String refusal(const ProjectDocument& d, const Command& command) {
         return t >= 0 && t < d.trackCount() ? juce::String{}
             : "There is no track " + juce::String(t + 1) + " (the project has " + juce::String(d.trackCount()) + ").";
     };
-    if (std::holds_alternative<CreateTrack>(command))
+    if (std::holds_alternative<CreateTrack>(command)) {
+        if (!d.trackRegistry.canAllocate()) return "The project cannot allocate another track identity.";
         return d.canAddTrack() ? juce::String{} : "The project already has the most tracks allowed (" + juce::String(maxSessionTracks) + ").";
+    }
     if (const auto* c = std::get_if<DeleteTrack>(&command)) {
         if (const auto why = track(c->track); why.isNotEmpty()) return why;
         return d.trackCount() > 1 ? juce::String{} : "The last track cannot be deleted.";
@@ -145,6 +147,7 @@ inline juce::String applyTo(ProjectDocument& d, const Command& command) {
         const auto& colour = std::get<ColorTrack>(command);
         d.tracks[static_cast<std::size_t>(colour.track)].colour = colour.colour;
     }
+    if (!d.synchronizeTrackRegistry()) return "The project cannot resolve its track identities.";
     return {};
 }
 
@@ -262,7 +265,10 @@ public:
                 return p;
             }
             p.changes.add(describe(p.after, commands[i]));
-            applyTo(p.after, commands[i]);
+            if (const auto why = applyTo(p.after, commands[i]); why.isNotEmpty()) {
+                p.error = why; p.failedCommand = static_cast<int>(i); p.changes.clear();
+                p.after = controller.document(); return p;
+            }
         }
         p.ok = true;
         p.changed = !sameContent(p.after, controller.document());

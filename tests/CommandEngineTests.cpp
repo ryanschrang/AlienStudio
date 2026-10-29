@@ -173,6 +173,9 @@ static void previewTests() {
     require(commands.execute(cmd::CreateTrack{}).ok && created.after.trackCount() == d.trackCount()
             && created.after.tracks.back().name == d.tracks.back().name && created.after.tracks.back().colour == d.tracks.back().colour,
             "preview predicts the created track");
+    require(created.after.trackId(alien::TrackRole::session, created.after.trackCount() - 1)
+            == d.trackId(alien::TrackRole::session, d.trackCount() - 1)
+        && alien::toProjectData(created.after).valid(), "preview allocates the same persistent identity and a valid owner registry");
 }
 
 static void invalidArgumentTests() {
