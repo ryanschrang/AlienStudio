@@ -144,3 +144,13 @@ Exact build/test results belong in the PR; listening remains a manual check.
 | SetTempo | `setBpm` (whole BPM, unfreezes frozen tracks) | Tempo map (T1-01, TEMPO-01) |
 | SetChord | Piano roll chord stamping on clip notes only | Chord track |
 | SetArrangementSection | Timeline markers (`addMarker`, `moveMarker`, `removeMarker`) | Arrangement sections |
+
+### Mixer track controls
+
+Mixer track volume, pan, mute and solo execute the same named commands as Session.
+Each slider drag uses a unique continuous history key, so even a paused drag is
+one Undo step; a later drag or discrete edit starts another step. The command
+updates document and engine together. The host notification only refreshes the
+other view. Busy projects refuse these edits, and queued events from a strip
+whose track identity no longer matches its row are ignored. Instrument, send,
+master, return and bus controls retain their existing edit paths.

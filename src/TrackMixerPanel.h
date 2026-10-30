@@ -2,6 +2,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "TrackMixer.h"
 #include "ProjectController.h"
+#include "CommandEngine.h"
 #include "StudioWidgets.h"
 #include "SynthEngine.h"
 #include <array>
@@ -31,12 +32,13 @@ inline juce::String returnLetter(int r) { return juce::String::charToString(stat
 } // namespace mixer_text
 
 // One console channel strip: instrument, pan knob, mute/solo, fader with dB
-// scale, peak meter and coloured name plate. Writes the engine's lock-free
-// TrackControls directly while a control moves.
+// scale, peak meter and coloured name plate. Track mix commands own their
+// history; legacy instrument/send edits still notify the host.
 class MixerChannelStrip final : public juce::Component {
 public:
-    MixerChannelStrip(TrackControls& trackControls, std::function<void(bool)> editedCallback)
-        : controls(trackControls), edited(std::move(editedCallback)) {
+    MixerChannelStrip(ProjectController& projectController, int trackIndex, TrackControls& trackControls, std::function<void(bool)> editedCallback)
+        : controller(projectController), track(trackIndex), owner(controller.document().tracks[static_cast<std::size_t>(track)].id),
+          controls(trackControls), edited(std::move(editedCallback)) {
         for (auto* c : std::array<juce::Component*, 9>{&title, &preset, &gainLabel, &gain, &panLabel, &pan,
                                                        &mute, &solo, &meter})
             addAndMakeVisible(c);
@@ -61,8 +63,9 @@ public:
         gain.setDoubleClickReturnValue(true, 100.0);
         gain.textFromValueFunction = [](double v) { return mixer_text::gainToText(v); };
         gain.valueFromTextFunction = [](const juce::String& t) { return mixer_text::textToGain(t, 200.0); };
-        gain.onValueChange = [this] { controls.gain.store(static_cast<float>(gain.getValue() / 100)); edited(!gain.isMouseButtonDown()); };
-        gain.onDragEnd = [this] { edited(true); };
+        gain.onDragStart = [this] { beginMixGesture(false); };
+        gain.onValueChange = [this] { mixValue(false); };
+        gain.onDragEnd = [this] { gainGesture.clear(); };
         gain.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 64, 20);
 
         panLabel.setText("PAN", juce::dontSendNotification);
@@ -80,8 +83,9 @@ public:
             if (s.startsWith("R")) return std::abs(s.substring(1).getDoubleValue());
             return s == "C" ? 0.0 : s.getDoubleValue();
         };
-        pan.onValueChange = [this] { controls.pan.store(static_cast<float>(pan.getValue() / 100)); edited(!pan.isMouseButtonDown()); };
-        pan.onDragEnd = [this] { edited(true); };
+        pan.onDragStart = [this] { beginMixGesture(true); };
+        pan.onValueChange = [this] { mixValue(true); };
+        pan.onDragEnd = [this] { panGesture.clear(); };
         pan.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 48, 18);
 
         for (auto* label : {&gainLabel, &panLabel}) {
@@ -96,8 +100,8 @@ public:
         mute.setColour(juce::TextButton::textColourOnId, ui::colours::accentInk);
         solo.setColour(juce::TextButton::textColourOnId, juce::Colour(0xff06162a));
         mute.setClickingTogglesState(true); solo.setClickingTogglesState(true);
-        mute.onClick = [this] { controls.mute.store(mute.getToggleState()); edited(true); };
-        solo.onClick = [this] { controls.solo.store(solo.getToggleState()); edited(true); };
+        mute.onClick = [this] { executeMix(command::SetTrackMute{track, mute.getToggleState()}); };
+        solo.onClick = [this] { executeMix(command::SetTrackSolo{track, solo.getToggleState()}); };
 
         // One knob per return track (off to 0 dB) and, under it, its pre/post switch.
         sendsLabel.setText("SENDS", juce::dontSendNotification);
@@ -146,6 +150,8 @@ public:
         output.setTooltip("Where this track goes after its fader: the master, or a group bus");
         output.onChange = [this] { if (onOutputChosen && output.getSelectedId() > 0) onOutputChosen(output.getSelectedId() - 2); };
     }
+
+    std::function<void()> onMixCommandExecuted;
 
     // Called with -1 (the master) or a bus slot when the user picks an output.
     std::function<void(int)> onOutputChosen;
@@ -276,6 +282,30 @@ public:
 
 
 private:
+    bool ownsTrack() const {
+        const auto& d = controller.document();
+        return track >= 0 && track < d.trackCount() && d.tracks[static_cast<std::size_t>(track)].id == owner;
+    }
+    void beginMixGesture(bool isPan) {
+        (isPan ? panGesture : gainGesture) = "mixer-drag-" + juce::String(++nextMixGesture);
+    }
+    void mixValue(bool isPan) {
+        const auto& key = isPan ? panGesture : gainGesture;
+        const command::Command edit = isPan ? command::Command{command::SetTrackPan{track, pan.getValue() / 100.0}}
+                                            : command::Command{command::SetTrackVolume{track, gain.getValue() / 100.0}};
+        executeMix(edit, key);
+    }
+    void executeMix(const command::Command& edit, const juce::String& key = {}) {
+        if (!ownsTrack()) { gainGesture.clear(); panGesture.clear(); return; }
+        const auto result = command::CommandEngine(controller).execute(edit, key, key.isNotEmpty());
+        refreshSettings();
+        if (result.ok && result.changed && onMixCommandExecuted) onMixCommandExecuted();
+    }
+    ProjectController& controller;
+    int track;
+    std::uint32_t owner;
+    juce::String gainGesture, panGesture;
+    inline static juce::uint64 nextMixGesture{}; // message thread, unique across rebuilt strips
     void updateSendTooltip(int r) {
         const auto i = static_cast<std::size_t>(r);
         const auto letter = mixer_text::returnLetter(r);
@@ -629,7 +659,8 @@ public:
 
     // Called whenever a strip control changes the engine. "committed" is true
     // for discrete changes and at the end of a fader/knob drag.
-    std::function<void(int, bool)> onTrackEdited;
+    std::function<void(int, bool)> onTrackEdited; // legacy instrument/send edits only
+    std::function<void(int)> onTrackMixCommandExecuted;
     // Same contract for the master fader, and for a return strip (its index).
     std::function<void(bool)> onMasterEdited;
     std::function<void(int, bool)> onReturnEdited;
@@ -645,8 +676,9 @@ public:
         strips.clear();
         const auto& d = controller.document();
         for (int t = 0; t < d.trackCount() && t < static_cast<int>(controls.size()); ++t) {
-            auto strip = std::make_unique<MixerChannelStrip>(controls[static_cast<std::size_t>(t)],
+            auto strip = std::make_unique<MixerChannelStrip>(controller, t, controls[static_cast<std::size_t>(t)],
                 [this, t](bool committed) { if (onTrackEdited) onTrackEdited(t, committed); });
+            strip->onMixCommandExecuted = [this, t] { if (onTrackMixCommandExecuted) onTrackMixCommandExecuted(t); };
             strip->onOutputChosen = [this, t](int output) { chooseOutput(t, output); };
             content.addAndMakeVisible(*strip);
             strips.push_back(std::move(strip));

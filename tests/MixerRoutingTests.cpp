@@ -8,6 +8,7 @@
 #include "PluginPanel.h"
 #include "ProjectController.h"
 #include "TrackMixerPanel.h"
+#include "SessionTrackStrip.h"
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -412,8 +413,70 @@ static void freezeAudioAndSuspension() {
     imported.clip.reset();file.deleteFile();
 }
 
+static void mixerCommandHistory() {
+    auto engine = std::make_unique<ToneEngine>();
+    alien::ProjectController c(*engine);
+    alien::TrackMixerPanel panel(c, engine->tracks, engine->returns, engine->masterControls, engine->buses);
+    panel.setSize(1400, 640);
+    int legacy = 0, commands = 0;
+    panel.onTrackEdited = [&](int, bool) { ++legacy; };
+    panel.onTrackMixCommandExecuted = [&](int track) { require(track == 0, "command notification identifies its track"); ++commands; };
+    auto* strip = panel.trackStrip(0);
+    juce::Slider *gain = nullptr, *pan = nullptr; juce::Button *mute = nullptr, *solo = nullptr;
+    const auto name = c.document().tracks[0].name;
+    for (auto* child : strip->getChildren()) {
+        if (child->getName() == name + " volume") gain = dynamic_cast<juce::Slider*>(child);
+        if (child->getName() == name + " balance") pan = dynamic_cast<juce::Slider*>(child);
+        if (child->getName() == name + " mute") mute = dynamic_cast<juce::Button*>(child);
+        if (child->getName() == name + " solo") solo = dynamic_cast<juce::Button*>(child);
+    }
+    require(gain && pan && mute && solo, "mixer exposes all four track mix controls");
+    c.selectClip(2, 1); c.markAsNewBaseline(); const auto baseline = c.document();
+    engine->requestedPianoRollClip[0].store(1);
+    gain->onDragStart(); gain->setValue(75, juce::sendNotificationSync);
+    require(c.undoLabel() == "Set track volume" && c.document().tracks[0].settings.gain == .75f && engine->tracks[0].gain.load() == .75f,
+        "mixer volume command immediately updates document, engine and named history");
+    juce::Thread::sleep(alien::DocumentHistory::coalesceMilliseconds + 20);
+    gain->setValue(50, juce::sendNotificationSync); gain->onDragEnd();
+    require(c.undo() && !c.canUndo() && alien::sameContent(c.document(), baseline), "one long mixer drag is one undo step");
+    panel.refreshSettings(); require(approx(static_cast<float>(gain->getValue()/100), baseline.tracks[0].settings.gain), "undo refresh restores the visible Mixer value");
+    require(c.redo() && engine->tracks[0].gain.load() == .5f, "redo restores final drag value"); panel.refreshSettings();
+    gain->onDragStart(); gain->setValue(60, juce::sendNotificationSync); gain->onDragEnd();
+    require(c.undo() && engine->tracks[0].gain.load() == .5f && c.canUndo(), "a second drag is a separate undo step"); panel.refreshSettings();
+    const auto count = commands;
+    gain->onDragStart(); gain->onValueChange(); gain->onDragEnd();
+    require(c.canRedo() && commands == count, "no-op drag preserves redo without notifications");
+    pan->onDragStart(); pan->setValue(-25, juce::sendNotificationSync); pan->setValue(-50, juce::sendNotificationSync); pan->onDragEnd();
+    require(c.undoLabel() == "Set track pan" && c.document().tracks[0].settings.pan == -.5f && c.undo() && engine->tracks[0].pan.load() == baseline.tracks[0].settings.pan,
+        "pan command has independent one-gesture undo"); panel.refreshSettings();
+    c.setExternalBusy(true); gain->setValue(20, juce::sendNotificationSync); pan->setValue(90, juce::sendNotificationSync);
+    mute->setToggleState(true, juce::dontSendNotification); mute->onClick();
+    require(engine->tracks[0].gain.load() == .5f && engine->tracks[0].pan.load() == baseline.tracks[0].settings.pan && !engine->tracks[0].mute.load() && c.canRedo(),
+        "busy controls refuse without engine writes or redo loss"); c.setExternalBusy(false);
+    mute->setToggleState(true, juce::dontSendNotification); mute->onClick();
+    require(c.undoLabel() == "Set track mute" && c.document().tracks[0].settings.mute && c.undo() && !engine->tracks[0].mute.load() && c.redo(), "mute command supports undo and redo");
+    c.setTrackSolo(1, true); c.commit("Other solo");
+    solo->setToggleState(true, juce::dontSendNotification); solo->onClick();
+    require(c.undoLabel() == "Set track solo" && engine->tracks[0].solo.load() && engine->tracks[1].solo.load() && c.undo() && !engine->tracks[0].solo.load() && engine->tracks[1].solo.load(),
+        "solo is additive and undo preserves other tracks");
+    alien::SessionTrackStrip session(c, *engine); session.setSize(alien::SessionTrackStrip::width, 400);
+    session.onMixCommandExecuted = [&](int) { panel.refreshSettings(); };
+    const auto point = session.ledRect(0).getCentre().toFloat(); const auto now = juce::Time::getCurrentTime();
+    session.mouseDown(juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(), point, juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier),
+        1, 0, 0, 0, 0, &session, &session, now, point, now, 1, false));
+    require(!c.document().tracks[0].settings.mute && !mute->getToggleState(), "Session mute command refreshes the same Mixer state");
+    require(legacy == 0 && c.document().selectedTrack == 2 && c.document().selectedScene == 1 && engine->requestedPianoRollClip[0].load() == 1,
+        "mix commands avoid legacy commits and preserve selection and queued playback");
+    gain->onDragStart(); require(c.moveTrack(0, 1), "reorder track during queued drag"); c.commit("Move row");
+    const auto moved = c.document(); const int notified = commands;
+    gain->setValue(10, juce::sendNotificationSync); gain->onDragEnd();
+    require(alien::sameContent(c.document(), moved) && commands == notified, "stale Mixer events cannot edit a replacement track");
+    std::cout << "PASS: Mixer command history, long/separate/no-op gestures, busy rejection, stable identity and Session synchronization\n";
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    mixerCommandHistory();
     freezeWorkflow();
     freezeAudioAndSuspension();
     stemPluginFailure();

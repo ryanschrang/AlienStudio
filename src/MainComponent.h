@@ -632,6 +632,7 @@ private:
                 controller.commit("Change " + controller.document().tracks[static_cast<std::size_t>(track)].name + " mix",
                                   -1, -1, "mixer-" + juce::String(track));
         };
+        mixerPanel.onTrackMixCommandExecuted = [this](int) { sessionView.repaint(); };
         // Session mixer commands own their history; the host only refreshes the Mixer.
         sessionView.onTrackMixCommandExecuted = [this](int) {
             mixerPanel.refreshSettings();
