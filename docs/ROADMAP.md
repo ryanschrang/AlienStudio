@@ -51,7 +51,7 @@ Ordered by importance. Rows without dependencies can run in parallel.
 | T1-08 | Audio editing completion | EDIT-01, WARP-03 | Partial: trim, split, menu/Alt-drag slip, gain, fades, crossfades, selectable fade shapes (format 27); missing warp markers | Warp markers need T1-01 | `Timeline.h`, `TimelineView.h`, `TempoWarp.h` |
 | T1-09 | Plugin reliability and coverage | PLUG-01, PLUG-02, INST-10, AUTO-03 | Partial: VST3 hosting and crash containment; missing scans, rack VST3 instruments, plugin automation playback, commercial plugin checks | - | `Plugin*.h`, `RackEngine.h` |
 | T1-10 | Browser for samples, presets and plugins | BROWSE-01, INST-08 | Not started | - | new browser view; `ClipBin.h` |
-| T1-11 | UI and workspace | UI-01 | Mostly done: detachable windows, menus, theme; missing saved layouts, multi-monitor/DPI checks | - | `DetachableView.h`, `MainComponent.h` |
+| T1-11 | UI and workspace | UI-01 | Mostly done: detachable windows, menus, theme and saved local layouts with monitor-aware restoration; physical multi-monitor/DPI checks pending | - | `DetachableView.h`, `MainComponent.h` |
 | T1-12 | Windows hardware verification | QA-03 | Ongoing; needs people with audio interfaces, MIDI controllers and plugins | - | `docs/WINDOWS_AUDIO_CHECKLIST.md` |
 
 **Good first parallel set:** T1-01, T1-02, T1-05, T1-06, T1-07, T1-09, T1-10 and T1-12 touch mostly
