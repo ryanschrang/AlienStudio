@@ -79,8 +79,8 @@ Preview, batch refusal, no-op detection and undo/redo follow the volume/pan cont
 Only the addressed document field and live engine control change. Session's left-click
 mute light, right-click solo light and S button now execute these named commands. A
 successful command sends a refresh-only notification to the mixer, without a second
-legacy commit; busy refusal sends no edit notification. Session volume/pan gestures
-and the Mixer's own controls retain their existing direct editing paths.
+legacy commit; busy refusal sends no edit notification. Session volume/pan gestures also use named commands (see below).
+The Mixer's own controls retain their existing direct editing paths.
 
 CommandEngineTests covers true/false JSON round trips, strict types, side-effect-free
 preview, live controls, preserved mix/other solo states, busy/invalid-target refusal,
@@ -88,11 +88,38 @@ redo preservation and sequential create/reorder batches. Manual listening remain
 SessionViewTests drives the actual controls and checks one-step undo/redo, dirty state,
 additive solo, busy refusal, refresh notifications and unchanged selection/queued launches.
 
+### Session volume and pan gestures
+
+The Session strip's volume/pan drag, Shift fine adjustment, mouse wheel and
+double-click reset execute `SetTrackVolume` / `SetTrackPan`. Each accepted change
+updates the document, the addressed live atomic, dirty state and history through
+the same command path. The host receives only a refresh notification; Session
+controls no longer invoke the Mixer's legacy edit/commit callback. Other mix
+controls, selection and queued clip launches retain their values.
+
+`execute` and `batch` accept an optional history grouping key. Ordinary keys use
+the existing 1.5-second window, used for repeated wheel edits on the same control.
+A drag supplies a unique key with `continuous=true`; adjacent updates merge even
+after a pause. Releasing and starting another drag creates a new key. A reset
+has no grouping key, so it is a separate command. Unrelated intervening edits
+and undo break adjacency: grouping never absorbs someone else's command.
+
+Busy commands and unchanged values write nothing and preserve redo. A drag that
+becomes busy or whose row is replaced/reordered stops accepting queued events;
+changes already accepted remain undoable. Gestures preserve the existing ranges,
+whole-percent rounding, centre/unity snapping and fine movement. No saved format
+or engine-capacity change. Mixer controls outside Session remain a later slice.
+
+CommandEngineTests covers grouping, refusal and interleaved commands.
+SessionViewTests drives real handlers, including a pause beyond the timed window,
+separate drags, wheel/reset, undo/redo, no-ops, busy transitions and stale rows.
+Exact build/test results belong in the PR; listening remains a manual check.
+
 ### Known limits of these slices
 
 - The Session track menu, rename box and add-track button use named commands. Commands own
   the undo commit; the view refreshes structure/title without invoking the legacy edit-commit callback.
-  Scene edits and mixer gestures retain their existing controller paths. SessionViewTests covers
+  Scene edits and the Mixer's own gestures retain their existing controller paths. SessionViewTests covers
   menu add/move/delete, one-step undo/redo, busy refusal and host refresh notifications.
 - `applyTo()` repeats the document half of the controller's track operations so a preview can run
   without an engine. The preview-equals-execute tests guard against drift. A later slice could

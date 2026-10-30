@@ -416,8 +416,29 @@ static void muteSoloParseTests() {
     }
 }
 
+static void continuousCommandTests() {
+    ToneEngine engine; alien::ProjectController c(engine); cmd::CommandEngine commands(c);
+    c.pushDocumentToEngine(); const auto baseline = c.document();
+    require(commands.execute(cmd::SetTrackVolume{0, .8}, "drag-1", true).ok
+        && commands.execute(cmd::SetTrackVolume{0, .6}, "drag-1", true).ok, "continuous commands accept live updates");
+    require(c.undo() && !c.canUndo() && alien::sameContent(c.document(), baseline) && c.redo() && engine.tracks[0].gain.load() == .6f,
+        "continuous command updates are one undo step with final-value redo");
+    require(commands.execute(cmd::SetTrackVolume{0, .4}, "drag-2", true).ok && c.undo() && engine.tracks[0].gain.load() == .6f,
+        "a new gesture key creates a separate undo step");
+    const auto history = historyOf(c);
+    require(commands.execute(cmd::SetTrackVolume{0, .6}, "drag-3", true).ok && historyOf(c) == history,
+        "no-op gestures preserve redo and history");
+    require(!commands.execute(cmd::SetTrackPan{0, 2}, "invalid", true).ok && historyOf(c) == history,
+        "continuous editing retains strict command validation");
+    require(commands.execute(cmd::SetTrackVolume{0, .5}, "interrupted", true).ok
+        && commands.execute(cmd::SetTrackMute{1, true}).ok
+        && commands.execute(cmd::SetTrackVolume{0, .3}, "interrupted", true).ok, "prepare an interleaved edit");
+    require(c.undo() && engine.tracks[0].gain.load() == .5f && engine.tracks[1].mute.load(), "grouping never absorbs an unrelated intervening command");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    continuousCommandTests();
     nameTests();
     singleCommandTests();
     batchTests();

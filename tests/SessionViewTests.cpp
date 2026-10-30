@@ -388,9 +388,7 @@ static void headerControls() {
     require(std::abs(rig.gain(0) - 1.0f) < 1e-6f, "tracks start at unity gain");
     rig.drag(knob, {knob + juce::Point<int>(0, -10), knob + juce::Point<int>(0, -25)});
     require(rig.gain(0) > 1.25f && rig.gain(0) < 1.35f, "dragging the volume knob up raises the gain");
-    int live = 0, finals = 0;
-    for (const auto& edit : rig.mixEdits) { require(edit.first == 0, "only the dragged track is reported"); (edit.second ? finals : live)++; }
-    require(live >= 2 && finals == 1 && rig.mixEdits.back().second, "a drag reports its live values and then one final value");
+    require(rig.mixCommands.size() >= 2 && rig.mixEdits.empty(), "drag updates execute named commands and emit refresh-only notifications");
     rig.drag(knob, {knob + juce::Point<int>(0, 37)});
     require(rig.gain(0) > 0.84f && rig.gain(0) < 0.88f, "dragging down lowers it");
     const float stored = rig.gain(0);
@@ -401,7 +399,7 @@ static void headerControls() {
     rig.drag(knob, {knob + juce::Point<int>(0, 400)});
     require(rig.gain(0) == 0.0f, "and at silence");
     // Near unity it snaps there; Shift drags finely; double-click resets.
-    rig.engine.tracks[0].gain.store(1.0f);
+    rig.controller.setTrackVolume(0, 1.0);
     rig.drag(knob, {knob + juce::Point<int>(0, -1)});
     require(rig.gain(0) == 1.0f, "a nudge near unity snaps to unity");
     rig.drag(knob, {knob + juce::Point<int>(0, -10)}, shiftLeft);
@@ -409,7 +407,7 @@ static void headerControls() {
     rig.mixEdits.clear();
     rig.click(knob, leftButton, 2);
     require(rig.gain(0) == 1.0f, "double-clicking the volume knob resets it to unity");
-    require(!rig.mixEdits.empty() && rig.mixEdits.back() == std::pair<int, bool>{0, true}, "and reports it as a final value");
+    require(rig.mixEdits.empty() && rig.mixCommands.back() == 0, "reset reports a committed command without the legacy callback");
 
     // Pan: left of centre is negative, snaps to the centre, double-click centres it.
     const auto panKnob = centre(strip.panRect(0));
@@ -418,10 +416,10 @@ static void headerControls() {
     require(std::abs(rig.pan(0) * 100.0f - std::round(rig.pan(0) * 100.0f)) < 1e-3f, "and pan is stored in whole percent too");
     rig.drag(panKnob, {panKnob + juce::Point<int>(0, -300)});
     require(rig.pan(0) == 1.0f, "and up pans right, up to the limit");
-    rig.engine.tracks[0].pan.store(0.0f);
+    rig.controller.setTrackPan(0, 0.0);
     rig.drag(panKnob, {panKnob + juce::Point<int>(0, -2)});
     require(rig.pan(0) == 0.0f, "a nudge near the centre snaps to the centre");
-    rig.engine.tracks[0].pan.store(0.6f);
+    rig.controller.setTrackPan(0, 0.6);
     rig.click(panKnob, leftButton, 2);
     require(rig.pan(0) == 0.0f, "double-clicking the pan knob centres it");
     // The mouse wheel over a knob turns it.
@@ -618,6 +616,67 @@ static void muteSoloCommandHistory() {
     require(c.document().selectedTrack == 3 && c.document().selectedScene == 2 && rig.requested(0) == 1
         && rig.gain(0) == .5f && rig.pan(0) == -.25f && legacyCommits == 0,
         "mute/solo preserve selection, queued launch and unrelated mix settings");
+}
+
+static void volumePanCommandHistory() {
+    Rig rig;
+    auto& c = rig.controller; auto& strip = rig.strip();
+    c.selectClip(3, 2); c.setTrackSolo(2, true); c.markAsNewBaseline();
+    const auto baseline = c.document();
+    rig.engine.requestedPianoRollClip[0].store(1);
+    int legacy = 0;
+    rig.view.onTrackMixEdited = [&](int track, bool committed) { ++legacy; c.trackSettingsEdited(track); if (committed) c.commit("Legacy"); };
+    const auto volume = centre(strip.volumeRect(0)), pan = centre(strip.panRect(0));
+    strip.mouseDown(mouse(strip, volume));
+    strip.mouseDrag(mouse(strip, {volume.x, volume.y - 10}, leftButton, 1, true));
+    require(c.isDirty() && c.undoLabel() == "Set track volume" && c.document().tracks[0].settings.gain == rig.gain(0),
+        "drag updates named document/live gain and history immediately");
+    juce::Thread::sleep(alien::DocumentHistory::coalesceMilliseconds + 20);
+    strip.mouseDrag(mouse(strip, {volume.x, volume.y - 30}, leftButton, 1, true));
+    strip.mouseUp(mouse(strip, volume));
+    const float gained = rig.gain(0);
+    require(gained == 1.36f && c.undo() && !c.canUndo() && !c.isDirty() && sameContent(c.document(), baseline),
+        "a drag stays one undo step across a pause longer than the wheel grouping window");
+    require(c.redo() && rig.gain(0) == gained, "redo restores the final drag value");
+    rig.drag(volume, {volume + juce::Point<int>(0, 10)});
+    const auto second = rig.gain(0);
+    require(second != gained && c.undo() && rig.gain(0) == gained, "a separate drag on the same control is a separate undo step");
+    require(c.redo() && rig.gain(0) == second, "separate gesture redo");
+    rig.drag(pan, {pan + juce::Point<int>(0, 20)});
+    require(rig.pan(0) == -.24f && c.undoLabel() == "Set track pan", "pan gesture uses its named command");
+    require(c.undo() && rig.pan(0) == 0 && rig.gain(0) == second, "pan undo leaves volume alone");
+    const auto notifications = rig.mixCommands.size(); const auto redo = c.redoLabel();
+    rig.click(pan); rig.click(pan, leftButton, 2); // already centred: both are no-ops
+    require(c.canRedo() && c.redoLabel() == redo && rig.mixCommands.size() == notifications, "unchanged click/reset preserve redo and emit no edit");
+    c.setExternalBusy(true);
+    rig.drag(volume, {volume + juce::Point<int>(0, -30)});
+    rig.click(volume, leftButton, 2);
+    strip.mouseWheelMove(mouse(strip, pan), juce::MouseWheelDetails{0, .2f, false, false, false});
+    c.setExternalBusy(false);
+    require(rig.gain(0) == second && rig.pan(0) == 0 && c.canRedo() && rig.mixCommands.size() == notifications,
+        "busy drag, reset and wheel refuse without document/live writes, history loss or notifications");
+    c.markAsNewBaseline();
+    const auto beforeWheel = c.document();
+    for (int i = 0; i < 2; ++i) strip.mouseWheelMove(mouse(strip, pan), juce::MouseWheelDetails{0, .2f, false, false, false});
+    require(rig.pan(0) == .16f && c.undo() && !c.canUndo() && sameContent(c.document(), beforeWheel), "rapid wheel changes group in one named undo step");
+    require(c.redo() && rig.pan(0) == .16f, "wheel redo");
+    rig.click(pan, leftButton, 2);
+    require(rig.pan(0) == 0 && c.undo() && rig.pan(0) == .16f, "double-click reset is a separate named undo step");
+    require(legacy == 0 && c.document().selectedTrack == 3 && c.document().selectedScene == 2
+        && rig.requested(0) == 1 && rig.soloed(2), "knob commands preserve unrelated mix, selection and queued playback without legacy commits");
+    c.markAsNewBaseline();
+    strip.mouseDown(mouse(strip, volume));
+    strip.mouseDrag(mouse(strip, {volume.x, volume.y - 10}, leftButton, 1, true));
+    const float accepted = rig.gain(0);
+    c.setExternalBusy(true);
+    strip.mouseDrag(mouse(strip, {volume.x, volume.y - 20}, leftButton, 1, true));
+    strip.mouseUp(mouse(strip, volume)); c.setExternalBusy(false);
+    require(rig.gain(0) == accepted && c.undo() && !c.canUndo(), "becoming busy cancels further events while preserving the accepted prefix as one undo step");
+    strip.mouseDown(mouse(strip, volume));
+    require(c.moveTrack(0, 1), "move the gesture's row before its next queued event"); c.commit("Move row");
+    const auto moved = c.document(); const auto count = rig.mixCommands.size();
+    strip.mouseDrag(mouse(strip, {volume.x, volume.y - 20}, leftButton, 1, true)); strip.mouseUp(mouse(strip, volume));
+    require(sameContent(c.document(), moved) && rig.mixCommands.size() == count && strip.knobReadout().isEmpty(), "a stale drag cannot edit a replacement row");
 }
 
 // The light is small, so its click zone reaches a few pixels past the drawn circle; further out is something else.
@@ -1052,6 +1111,7 @@ int main() {
     engineStopsOneTrack();
     headerControls();
     muteSoloCommandHistory();
+    volumePanCommandHistory();
     lightHitArea();
     knobReadouts();
     selectionAndStructure();

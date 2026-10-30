@@ -57,9 +57,17 @@ Use **Dock into main window**, the detached window's close button, or
 **View > Dock current view** to return it. **View > Dock all views** gathers all
 editors. Global project shortcuts and typing-piano input work in detached views;
 text fields retain text entry. All detached windows close with the application.
-Window placement is temporary and is not saved in project files. Physical
-multi-monitor movement, mixed-DPI layouts and audio-device listening remain
-manual checks before release.
+The layout is remembered locally across normal restarts: main and detached window
+positions/sizes, maximized state, selected workspace, device view and keyboard
+visibility. **View > Save window layout** saves it immediately; normal shutdown
+also saves it. **View > Reset window layout** docks every editor and restores the
+default workspace. Docking remembers a window's last floating position.
+
+Layouts are user preferences, separate from project files and undo. If a monitor
+is missing or its usable area changes, restored windows fit an available screen;
+corrupt settings fall back to the default layout. See [saved window layouts](docs/WINDOW_LAYOUTS.md).
+Physical multi-monitor movement, mixed-DPI layouts and audio-device listening
+remain manual checks before release.
 
 ### Factory preset browser
 

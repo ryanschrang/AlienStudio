@@ -205,6 +205,47 @@ public:
         });
     }
 
+    // Supplied by the native main window, whose tracker retains normal bounds
+    // while maximized. Layout persistence never touches the song or its history.
+    std::function<alien::layout::WindowState()> captureMainWindow;
+    std::function<void(const alien::layout::WindowState&)> restoreMainWindow;
+    alien::layout::State windowLayoutState() const {
+        alien::layout::State state;
+        if (captureMainWindow) state.mainWindow = captureMainWindow();
+        state.selectedView = juce::jlimit(0, alien::layout::viewCount - 1, tabs.getCurrentTabIndex());
+        state.devices = workspace.isDeviceView(); state.keyboard = keyboardVisible;
+        for (std::size_t i = 0; i < detachableViews.size(); ++i)
+            if (detachableViews[i]) state.panels[i] = detachableViews[i]->layoutState();
+        return state;
+    }
+    void restoreWindowLayout(const alien::layout::State& state) {
+        if (!alien::layout::valid(state)) return;
+        releaseNotes();
+        dockingAll = true;
+        for (std::size_t i = 0; i < detachableViews.size(); ++i)
+            if (detachableViews[i]) detachableViews[i]->restoreLayout(state.panels[i]);
+        dockingAll = false;
+        tabs.setCurrentTabIndex(state.selectedView, false);
+        changeListenerCallback(nullptr); // the restored editor uses the ordinary view/playback routing
+        workspace.showDevices(state.devices); keyboardVisible = state.keyboard;
+        resized(); syncViewButtons(); applicationToolbar.refreshState();
+        if (auto* current = currentWorkspace(); !state.devices && current && current->isDetached()) current->bringToFront();
+        else if (auto* root = getTopLevelComponent(); root != this) root->toFront(true);
+    }
+    bool saveWindowLayout(bool report = true) {
+        if (!captureMainWindow) return false;
+        const bool saved = alien::layout::save(alien::layout::defaultFile(), windowLayoutState());
+        if (report) statusBar.setProjectStatus(saved ? "Window layout saved" : "Could not save window layout",
+                                              alien::layout::defaultFile().getFullPathName());
+        return saved;
+    }
+    void resetWindowLayout() {
+        const auto state = alien::layout::defaultState();
+        if (restoreMainWindow) restoreMainWindow(state.mainWindow);
+        restoreWindowLayout(state);
+        saveWindowLayout();
+    }
+
     void releaseNotes() {
         engine.factoryPresetPreview.stop();
         pianoRoll.releaseAudition();
@@ -224,6 +265,7 @@ public:
 
 private:
     void addWorkspace(const juce::String& title,juce::Component& view) {
+        static_assert(alien::ApplicationToolbar::viewCount == alien::layout::viewCount);
         const int index=tabs.getNumTabs();
         jassert(index<static_cast<int>(detachableViews.size()));
         auto panel=std::make_unique<alien::DetachableView>(title,view);
@@ -292,6 +334,8 @@ private:
                 case Menu::dockView:if(auto* view=currentWorkspace())view->dock();break;
                 case Menu::dockAllViews:
                     dockingAll=true;for(auto& view:detachableViews)if(view)view->dock();dockingAll=false;break;
+                case Menu::saveWindowLayout:saveWindowLayout();break;
+                case Menu::resetWindowLayout:resetWindowLayout();break;
                 case Menu::recoverTakes:showView(6);chooseTakeRecovery();break;
                 case Menu::shortcuts:
                     juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,"Keyboard shortcuts",
@@ -590,11 +634,7 @@ private:
                 controller.commit("Change " + controller.document().tracks[static_cast<std::size_t>(track)].name + " mix",
                                   -1, -1, "mixer-" + juce::String(track));
         };
-        // Session knob gestures share the Mixer's commit path. Mute/solo commands already own their undo step.
-        sessionView.onTrackMixEdited = [this](int track, bool committed) {
-            mixerPanel.refreshSettings();
-            if (mixerPanel.onTrackEdited) mixerPanel.onTrackEdited(track, committed);
-        };
+        // Session mixer commands own their history; the host only refreshes the Mixer.
         sessionView.onTrackMixCommandExecuted = [this](int) {
             mixerPanel.refreshSettings();
             sessionView.repaint();

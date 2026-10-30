@@ -18,6 +18,7 @@ static void applicationToolbarChecks() {
     require(!entry(0,Menu::exportSong).isEnabled,"empty song cannot be exported from menu");
     require(!entry(1,Menu::undo).isEnabled,"empty undo disabled");
     require(entry(2,Menu::detachView).isEnabled&&!entry(2,Menu::dockView).isEnabled&&!entry(2,Menu::dockAllViews).isEnabled,"only Detach is available for docked view");
+    require(entry(2,Menu::saveWindowLayout).isEnabled && entry(2,Menu::resetWindowLayout).isEnabled, "layout save/reset available in View menu");
     state.undoLabel="Move clip";state.redoLabel="Delete marker";
     require(entry(1,Menu::undo).text=="Undo Move clip"&&entry(1,Menu::undo).isEnabled,"undo shows current project operation");
     require(entry(1,Menu::redo).text=="Redo Delete marker","redo shows current project operation");
@@ -32,12 +33,14 @@ static void applicationToolbarChecks() {
     state.playing=true;state.recording=true;
     require(entry(3,Menu::playStop).text=="Stop playback"&&entry(3,Menu::record).text=="Stop recording","transport command labels match playback and recording");
     require(!entry(4,Menu::audioSettings).isEnabled&&!entry(0,Menu::newProject).isEnabled,"recording blocks device changes and project replacement");
+    require(!entry(2,Menu::saveWindowLayout).isEnabled && !entry(2,Menu::resetWindowLayout).isEnabled, "layout commands refuse while recording");
     state.busy=true;
     require(entry(3,Menu::record).isEnabled,"stopping an active take remains available while busy");
     toolbar.menuItemSelected(Menu::record,3);require(commands==std::vector<int>{Menu::record},"stop-take command dispatches");
     // A menu opened before an asynchronous operation began must recheck state.
     commands.clear();toolbar.menuItemSelected(Menu::save,0);toolbar.menuItemSelected(Menu::undo,1);
-    toolbar.menuItemSelected(Menu::audioSettings,4);toolbar.menuItemSelected(999999,0);
+    toolbar.menuItemSelected(Menu::audioSettings,4);toolbar.menuItemSelected(Menu::saveWindowLayout,2);
+    toolbar.menuItemSelected(Menu::resetWindowLayout,2);toolbar.menuItemSelected(999999,0);
     require(commands.empty(),"stale/unknown menu commands are rejected at selection time");
     state={};state.hasSong=true;state.hasLoop=true;state.undoLabel="Edit";state.redoLabel="Edit";
     state.viewDetached=true;state.hasDetachedViews=true;
@@ -53,7 +56,7 @@ static void applicationToolbarChecks() {
             require(commands.size()==before+1&&commands.back()==item.itemID,"every listed action reaches callback with its own ID");
         }}
     }
-    require(ids.size()==36,"all application commands and nine views are reachable");
+    require(ids.size()==38,"all application commands and nine views are reachable");
     for(int index:{-1,6,99})require(toolbar.getMenuForIndex(index,{}).getNumItems()==0,"invalid menu index is empty");
     for(int width:{960,1180,1280,1920}) {
         toolbar.setSize(width,Menu::height);

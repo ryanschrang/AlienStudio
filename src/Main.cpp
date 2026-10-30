@@ -64,6 +64,7 @@ private:
         startupFinished = true;
         window->setVisible(true);
         window->toFront(true);
+        window->restoreWorkspace();
         if (splash != nullptr) {
             splash->onDismissed = [this] { splash.reset(); };
             splash->dismiss();
@@ -87,7 +88,26 @@ private:
             // Windows takes the icon from the embedded ICO resource; elsewhere set it here.
             setIcon(alien::branding::artworkAtSize(256));
            #endif
-            // Shown by the application once the startup splash finishes.
+            if (auto* content = dynamic_cast<MainComponent*>(getContentComponent())) {
+                content->captureMainWindow = [this] { return geometry.capture(); };
+                content->restoreMainWindow = [this](const alien::layout::WindowState& state) {
+                    alien::layout::apply(*this, state, alien::layout::mainLimits);
+                };
+            }
+            // Geometry can be restored while hidden; detached peers wait until
+            // the startup splash finishes and the main window is visible.
+            alien::layout::apply(*this, saved.mainWindow, alien::layout::mainLimits);
+        }
+        ~Window() override {
+            // Capture before DocumentWindow destroys MainComponent and its
+            // detached hosts. An interrupted startup must not overwrite preferences.
+            if (restored) if (auto* content = dynamic_cast<MainComponent*>(getContentComponent())) content->saveWindowLayout(false);
+        }
+        void restoreWorkspace() {
+            if (restored) return;
+            restored = true;
+            setFullScreen(saved.mainWindow.maximized);
+            if (auto* content = dynamic_cast<MainComponent*>(getContentComponent())) content->restoreWindowLayout(saved);
         }
         // The native window can be recreated, so colour the title bar again when it appears.
         void visibilityChanged() override { DocumentWindow::visibilityChanged(); alien::ui::applyBrandTitleBar(*this); }
@@ -96,6 +116,10 @@ private:
                 if (auto* content = dynamic_cast<MainComponent*>(getContentComponent())) content->applicationWindowDeactivated();
         }
         void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
+    private:
+        alien::layout::Tracker geometry{*this};
+        alien::layout::State saved = alien::layout::load(alien::layout::defaultFile());
+        bool restored{};
     };
     std::unique_ptr<Window> window;
     std::unique_ptr<alien::branding::SplashWindow> splash;
