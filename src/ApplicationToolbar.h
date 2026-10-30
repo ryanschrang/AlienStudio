@@ -16,7 +16,7 @@ public:
         newProject = 1000, openProject, save, saveAs, savePortable, exportSong, exportLoop, quit,
         undo, redo, devices, keyboard, playStop, record, metronome, songMode,
         audioSettings, midiSettings, recordingOptions, plugins, recoverTakes, shortcuts, about,
-        detachView, dockView, dockAllViews,
+        detachView, dockView, dockAllViews, saveWindowLayout, resetWindowLayout,
         viewBase = 2000, viewCount = 9
     };
     struct State {
@@ -59,7 +59,8 @@ public:
         if(id>=viewBase&&id<viewBase+viewCount)return true;
         const bool idle=!s.busy&&!s.recording;
         switch(id) {
-            case newProject:case openProject:case save:case saveAs:case savePortable:return idle;
+            case newProject:case openProject:case save:case saveAs:case savePortable:
+            case saveWindowLayout:case resetWindowLayout:return idle;
             case exportSong:return idle&&s.hasSong;
             case exportLoop:return idle&&s.hasSong&&s.hasLoop;
             case undo:return idle&&s.undoLabel.isNotEmpty();
@@ -96,7 +97,8 @@ public:
                 menu.addSeparator();item(devices,"Devices / MIDI input",{},s.deviceView);
                 item(keyboard,"Show on-screen keyboard",{},s.keyboardVisible);
                 menu.addSeparator();item(detachView,s.viewDetached?"Show detached view":"Detach current view");
-                item(dockView,"Dock current view");item(dockAllViews,"Dock all views");break;
+                item(dockView,"Dock current view");item(dockAllViews,"Dock all views");
+                menu.addSeparator();item(saveWindowLayout,"Save window layout");item(resetWindowLayout,"Reset window layout");break;
             }
             case 3:
                 item(playStop,s.playing?"Stop playback":"Start playback");

@@ -162,6 +162,7 @@ static void layout() {
 
 #include "ApplicationToolbarTests.h"
 #include "DetachableViewTests.h"
+#include "WindowLayoutTests.h"
 #include "ProgressionEditorTests.h"
 
 int main(int argc,char** argv) {
@@ -170,9 +171,11 @@ int main(int argc,char** argv) {
     viewSwitch();
     moreListContents();
     songModeSwitch();
-    layout();
+    ::layout();
     progressionEditorChecks(argc > 2 ? juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]) : juce::File{});
     applicationToolbarChecks();
+    windowLayoutChecks();
+    restoredDetachedLayoutChecks();
     detachableViewChecks();
     detachedTypingChecks();
     if(argc>1)renderToolbarPreview(juce::File::getCurrentWorkingDirectory().getChildFile(argv[1]));

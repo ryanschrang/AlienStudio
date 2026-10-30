@@ -1,6 +1,7 @@
 #pragma once
 #include "StudioWidgets.h"
 #include "WindowChrome.h"
+#include "WindowLayout.h"
 #include <functional>
 #include <memory>
 
@@ -22,6 +23,16 @@ public:
     std::function<void()> onDocked,onWindowDeactivated;
     bool isDetached() const noexcept {return window!=nullptr;}
     juce::DocumentWindow* detachedWindow() const noexcept {return window.get();}
+    layout::PanelState layoutState() const {
+        auto state = remembered; state.detached = isDetached();
+        if (window) state.window = window->geometry.capture();
+        return state;
+    }
+    void restoreLayout(const layout::PanelState& state) {
+        if (window) dock();
+        remembered = state;
+        if (state.detached) detach();
+    }
     void detach() {
         if(window){bringToFront();return;}
         juce::Component::SafePointer<DetachableView> safe(this);
@@ -31,9 +42,11 @@ public:
         window->setContentOwned(new FloatingContent(view,[safe]{if(safe)safe->dock();}),false);
         window->setResizable(true,true);window->setResizeLimits(960,360,3840,2160);
         window->centreAroundComponent(isShowing()?this:nullptr,juce::jmax(1000,getWidth()),juce::jmax(480,getHeight()+34));
+        const auto state = remembered.window.value_or(layout::WindowState{window->getBounds(), layout::areaFor(window->getBounds()), false});
+        layout::apply(*window, state, layout::panelLimits);
         if(onWindowOpened)onWindowOpened(*window);
         setPlaceholder(true);resized();
-        window->setVisible(true);window->toFront(true);
+        window->setVisible(true);window->setFullScreen(state.maximized);window->toFront(true);
     }
     void dock() {
         if(!window)return;
@@ -70,6 +83,7 @@ private:
             :DocumentWindow(title,ui::colours::surface,DocumentWindow::allButtons),onClose(std::move(close)),onBlur(std::move(blur)) {
             setUsingNativeTitleBar(true);ui::applyBrandTitleBar(*this);
         }
+        layout::Tracker geometry{*this};
         void visibilityChanged() override {DocumentWindow::visibilityChanged();ui::applyBrandTitleBar(*this);}
         void closeButtonPressed() override {if(onClose)onClose();}
         void activeWindowStatusChanged() override {if(!isActiveWindow()&&onBlur)onBlur();}
@@ -79,12 +93,14 @@ private:
     void setPlaceholder(bool visible) {message.setVisible(visible);show.setVisible(visible);returnHere.setVisible(visible);}
     void closeWindow() {
         if(!window)return;
+        remembered.window = window->geometry.capture();
         if(onWindowClosed)onWindowClosed(*window);
         window->clearContentComponent(); // the editor is non-owned by FloatingContent
         window->setLookAndFeel(nullptr);window.reset();
     }
     juce::String name;juce::Component& view;
     juce::Label message;juce::TextButton show,returnHere;
+    layout::PanelState remembered;
     std::unique_ptr<Window> window;
 };
 }
