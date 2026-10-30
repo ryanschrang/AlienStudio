@@ -162,6 +162,7 @@ static void layout() {
 
 #include "ApplicationToolbarTests.h"
 #include "DetachableViewTests.h"
+#include "PresetBrowserTests.h"
 #include "WindowLayoutTests.h"
 #include "ProgressionEditorTests.h"
 
@@ -174,6 +175,7 @@ int main(int argc,char** argv) {
     ::layout();
     progressionEditorChecks(argc > 2 ? juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]) : juce::File{});
     applicationToolbarChecks();
+    presetBrowserChecks();
     windowLayoutChecks();
     restoredDetachedLayoutChecks();
     detachableViewChecks();

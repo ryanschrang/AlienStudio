@@ -214,7 +214,7 @@ artwork stay original.
 | INST-05 | Physical-modelling instruments (Live Collision/Tension) | Planned | |
 | INST-06 | Drum synth (FL Drumaxx, Logic Drum Synth) | Planned | Kick/snare/hat voices usable from the Channel Rack |
 | INST-07 | Sampler with chopping and slicing (Logic Quick Sampler, Live Simpler slicing, FL Slicex) | Planned | Transient slicing shares analysis with WARP-03 |
-| INST-08 | Preset browser for instruments (FL FLEX-style browsing) | Planned | Search and audition presets without opening each instrument |
+| INST-08 | Preset browser for instruments (FL FLEX-style browsing) | Partial | T1-10 factory-synth slice: searchable Devices list, name/type tokens, stable filtered preset IDs, explicit Use preset for live/step synth and isolated bounded C4 audition. SongFlowTests covers search, empty/apply/busy state, menu access and search typing focus; ToneEngineTests covers audible factory previews, timed release, independent live notes, monitor-only routing, master gain and allocation safety. Plugin/sample browsing remains. |
 | INST-09 | MPE instrument (Live Meld) | Planned | Needs MIDI-08 |
 | INST-10 | VST3 instruments as Channel Rack channels | Planned | Live MIDI and keyboard routing into rack instruments included |
 | MIX-03 | Group buses and output routing (track to bus to master) | Implemented (T1-05): up to eight group buses, each with volume, pan, mute, solo, meter and an eight-slot FX rack; each track's Output goes to the master or a bus; buses feed only the master (no loops); soloing a track keeps its bus audible and soloing a bus keeps its tracks audible; delay compensation across buses (bus stage before the returns); stems add one file per bus and mark tracks routed into one; freeze renders the track without its bus; mixer Add bus / rename / delete and Output menus; project format 19 (older projects: every track to the master). Windows listening and real-plugin latency checks pending | GroupBusTests (exact bus levels, pan, mute, solo across tracks and buses, missing-bus fallback, delay alignment with latent bus and return FX, no allocation, format round-trip/older files/damage, controller undo/redo, mixer and plugin panels, stem capture alignment and files, freeze) |
@@ -236,7 +236,7 @@ artwork stay original.
 | CONV-03 | Chord detection from audio or MIDI (Logic Chord ID) | Planned | Feeds the chord progression builder |
 | FINISH-02 | Mastering assistant (Logic Mastering Assistant) | Planned | Built from stock EQ, compressor and limiter |
 | AI-01 | Assistant that answers questions and can act on the project (FL Gopher; Logic Session Players) | Planned | Every action undoable; opt-in network use |
-| BROWSE-01 | Sound browser with search and tempo/key-synced auditioning (Live's Splice integration) | Planned | Local library first |
+| BROWSE-01 | Sound browser with search and tempo/key-synced auditioning (Live's Splice integration) | Partial | First slice: searchable built-in synth presets with isolated audition (INST-08). Local sample library, plugin browsing and tempo/key-synced sample previews remain. |
 | SYNC-01 | Ableton Link tempo sync | Planned | Check the Link license before release |
 | EXT-01 | Scripting or device SDK for custom MIDI tools and devices (Max for Live, FL scripting) | Planned | Sandboxed, outside the audio callback |
 | CLOUD-01 | Optional project backup and version history (FL Cloud) | Planned | Opt-in; never required to save |

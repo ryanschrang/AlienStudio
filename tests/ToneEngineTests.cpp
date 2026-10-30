@@ -790,7 +790,50 @@ static void inputMonitoringTests() {
     require(!settings.valid(), "only three monitoring modes exist");
 }
 
+static void factoryPresetPreviewTests() {
+    auto rig = std::make_unique<OfflineEngine>();
+    require(!rig->engine.factoryPresetPreview.request(-1) && !rig->engine.factoryPresetPreview.request(alien::presetCount), "preview refuses invalid preset indices");
+    rig->engine.preset.store(4); rig->engine.tracks[0].preset.store(2);
+    for (int preset = 0; preset < alien::presetCount; ++preset) {
+        require(rig->engine.factoryPresetPreview.request(preset), "request existing factory sound");
+        const auto before = allocationCount;
+        const auto energy = rig->render(12000);
+        require(energy > 1e-8 && allocationCount == before, "every factory preview is audible, finite and allocation-free through the real callback");
+        require(rig->engine.plugins->master.getMagnitude(0, 0, 128) == 0, "audition never enters the project master/stem buffer");
+        require(rig->engine.preset.load() == 4 && rig->engine.tracks[0].preset.load() == 2 && !rig->engine.playing.load(), "audition preserves project preset, track sound and transport");
+    }
+    rig->render(144000); require(rig->render(1024) == 0, "preview ends without a mouse-up or note-off event");
+    rig->engine.factoryPresetPreview.request(8); rig->render(1000);
+    rig->engine.factoryPresetPreview.stop(); require(rig->render(1024) == 0, "preview Stop silences only its own voice");
+    rig->engine.factoryPresetPreview.request(5); rig->engine.notes.panic.store(true);
+    require(rig->render(1024) == 0, "panic cancels a pending preview");
+    rig->engine.factoryPresetPreview.request(0); rig->render(1000); rig->engine.prepare(48000);
+    require(rig->render(1024) == 0, "device reprepare clears preview state");
+    auto baseline = std::make_unique<OfflineEngine>();
+    rig->engine.preset.store(0); rig->engine.notes.push(64, .5f); baseline->engine.notes.push(64, .5f);
+    rig->engine.factoryPresetPreview.request(7);
+    rig->render(4096); baseline->render(4096);
+    rig->engine.factoryPresetPreview.stop();
+    require(rig->render(256) == baseline->render(256) && rig->left == baseline->left,
+        "stopping preview preserves independent held live notes sample-for-sample");
+    rig->engine.notes.panic.store(true); rig->render(256);
+    rig->engine.masterControls.gain.store(0); rig->render(48000);
+    rig->engine.factoryPresetPreview.request(8);
+    require(rig->render(4096) == 0, "preview respects master silence");
+    // Sample scheduling is independent of callback block size.
+    alien::FactoryPresetPreview a, b; a.prepare(48000); b.prepare(48000); a.request(5); b.request(5);
+    std::array<float, 256> reference{};
+    for (int block = 0; block < 460; ++block) {
+        a.beginBlock(); for (auto& value : reference) value = a.nextSample();
+        for (int group = 0; group < 4; ++group) {
+            b.beginBlock(); for (int i = 0; i < 64; ++i) require(reference[static_cast<std::size_t>(group * 64 + i)] == b.nextSample(), "preview timing and release are block-size independent");
+        }
+    }
+    std::cout << "PASS: isolated factory previews, bounded release, stop/panic/device lifecycle and callback safety\n";
+}
+
 int main() {
+    factoryPresetPreviewTests();
     inputMonitoringTests();
     masterStageTests();
     arrangementRepublishTests();

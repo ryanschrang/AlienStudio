@@ -247,6 +247,7 @@ public:
     }
 
     void releaseNotes() {
+        engine.factoryPresetPreview.stop();
         pianoRoll.releaseAudition();
         typingInput.release();
         keyboardState.allNotesOff(0);
@@ -328,6 +329,7 @@ private:
                 case Menu::audioSettings:showAudioSettings();break;
                 case Menu::recordingOptions:topBar.openRecordingOptions();break;
                 case Menu::plugins:showView(7);break;
+                case Menu::presetBrowser:workspace.showDevices(true);devicesView.presets().focusSearch();break;
                 case Menu::detachView:if(auto* view=currentWorkspace())view->detach();break;
                 case Menu::dockView:if(auto* view=currentWorkspace())view->dock();break;
                 case Menu::dockAllViews:
@@ -637,10 +639,14 @@ private:
             mixerPanel.refreshSettings();
             sessionView.repaint();
         };
+        devicesView.presets().onAudition = [this](int preset) { if (workspace.isDeviceView()) engine.factoryPresetPreview.request(preset); };
+        devicesView.presets().onStop = [this] { engine.factoryPresetPreview.stop(); };
         devicesView.onPresetChanged = [this](int preset) {
+            if (projectBusy || controller.isBusy() || controller.isRecording() || activeCapture || preset == controller.document().livePreset) return;
             releaseNotes();
             controller.setLivePreset(preset);
             controller.commit("Change live sound");
+            devicesView.setPreset(preset);
             stepsView.repaint();
             updateEditorTitle();
         };
@@ -1036,6 +1042,7 @@ private:
     }
 
     void timerCallback() override {
+        devicesView.presets().setApplyEnabled(!projectBusy && !controller.isBusy() && !controller.isRecording() && !activeCapture);
         applicationToolbar.refreshState();
         controller.pollRecording();
         const int recordPhase = engine.recording.phase.load();

@@ -2,6 +2,7 @@
 #include "StudioWidgets.h"
 #include "MidiInputPanel.h"
 #include "SynthEngine.h"
+#include "PresetBrowser.h"
 #include <functional>
 
 // Smaller shell panels around the editors: the keyboard dock, the status bar
@@ -155,18 +156,14 @@ public:
         midiLabel.setText("MIDI INPUT", juce::dontSendNotification);
         presetLabel.setText("LIVE / STEP SYNTH", juce::dontSendNotification);
         addAndMakeVisible(midiInput);
-        addAndMakeVisible(preset);
-        preset.setName("Live and step synth preset");
-        preset.setTooltip("Sound used by the computer keyboard, on-screen keyboard, MIDI input and step sequencer");
-        for (std::size_t i = 0; i < presetNames.size(); ++i)
-            preset.addItem(presetNames[i], static_cast<int>(i) + 1);
-        preset.setSelectedId(1, juce::dontSendNotification);
-        preset.onChange = [this] { if (onPresetChanged) onPresetChanged(preset.getSelectedId() - 1); };
+        addAndMakeVisible(browser);
+        browser.onApply = [this](int index) { if (onPresetChanged) onPresetChanged(index); };
     }
 
     std::function<void(int)> onPresetChanged;
 
-    void setPreset(int index) { preset.setSelectedId(index + 1, juce::dontSendNotification); }
+    void setPreset(int index) { browser.setCurrentPreset(index); }
+    PresetBrowser& presets() noexcept { return browser; }
     MidiInputPanel& midi() noexcept { return midiInput; }
 
     void resized() override {
@@ -174,13 +171,13 @@ public:
         deviceHelp.setBounds(r.removeFromTop(22));
         r.removeFromTop(14);
         const int cardWidth = juce::jmin(560, r.getWidth());
-        synthCard = r.removeFromTop(112).withWidth(cardWidth);
+        synthCard = r.removeFromTop(juce::jlimit(200, 320, r.getHeight() - 182)).withWidth(cardWidth);
         r.removeFromTop(14);
-        midiCard = r.removeFromTop(168).withWidth(cardWidth);
+        midiCard = r.removeFromTop(juce::jmin(168, r.getHeight())).withWidth(cardWidth);
         auto synth = synthCard.reduced(18, 14).withTrimmedLeft(4);
         presetLabel.setBounds(synth.removeFromTop(16));
         synth.removeFromTop(10);
-        preset.setBounds(synth.removeFromTop(32).withWidth(juce::jmin(280, synth.getWidth())));
+        browser.setBounds(synth);
         auto midi = midiCard.reduced(18, 14).withTrimmedLeft(4);
         midiLabel.setBounds(midi.removeFromTop(16));
         midi.removeFromTop(10);
@@ -198,8 +195,6 @@ public:
         }
         g.setColour(col::textFaint);
         g.setFont(ui::font(12.0f));
-        g.drawText("Plays from the computer keyboard, the on-screen keyboard, MIDI input and the step sequencer.",
-                   synthCard.reduced(22, 14).removeFromBottom(18), juce::Justification::centredLeft, true);
         g.drawText("MPK mini profiles map pads and knobs; pitch, modulation and sustain route to the active instrument.",
                    midiCard.reduced(22, 14).removeFromBottom(18), juce::Justification::centredLeft, true);
     }
@@ -207,7 +202,7 @@ public:
 private:
     MidiInputPanel midiInput;
     juce::Label deviceHelp, presetLabel, midiLabel;
-    juce::ComboBox preset;
+    PresetBrowser browser;
     juce::Rectangle<int> synthCard, midiCard;
 };
 

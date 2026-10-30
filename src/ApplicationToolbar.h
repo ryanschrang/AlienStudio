@@ -17,6 +17,7 @@ public:
         undo, redo, devices, keyboard, playStop, record, metronome, songMode,
         audioSettings, midiSettings, recordingOptions, plugins, recoverTakes, shortcuts, about,
         detachView, dockView, dockAllViews, saveWindowLayout, resetWindowLayout,
+        presetBrowser = 1100,
         viewBase = 2000, viewCount = 9
     };
     struct State {
@@ -68,7 +69,7 @@ public:
             case audioSettings:case recordingOptions:case recoverTakes:case songMode:return idle;
             case record:return !s.busy||s.recording;
             case devices:case keyboard:case playStop:case metronome:case midiSettings:
-            case plugins:case shortcuts:case about:case quit:return true;
+            case plugins:case presetBrowser:case shortcuts:case about:case quit:return true;
             case detachView:return !s.deviceView&&s.view>=0&&s.view<viewCount;
             case dockView:return !s.deviceView&&s.viewDetached;
             case dockAllViews:return s.hasDetachedViews;
@@ -94,7 +95,7 @@ public:
             case 2: {
                 const std::array<const char*,viewCount> names{"Steps","Piano Roll","Session","Mixer","Drums","Song","Audio lab","Plugins","Channel Rack"};
                 for(int i=0;i<viewCount;++i)item(viewBase+i,names[static_cast<size_t>(i)],{},!s.deviceView&&s.view==i);
-                menu.addSeparator();item(devices,"Devices / MIDI input",{},s.deviceView);
+                menu.addSeparator();item(presetBrowser,"Factory preset browser...");item(devices,"Devices / MIDI input",{},s.deviceView);
                 item(keyboard,"Show on-screen keyboard",{},s.keyboardVisible);
                 menu.addSeparator();item(detachView,s.viewDetached?"Show detached view":"Detach current view");
                 item(dockView,"Dock current view");item(dockAllViews,"Dock all views");
