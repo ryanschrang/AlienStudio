@@ -276,12 +276,16 @@ public:
     }
     Preview preview(const Command& command) const { return preview(std::vector<Command>{command}); }
 
-    // One command, one undo step.
-    Result execute(const Command& command) { return batch({command}, label(command)); }
+    // One command, one undo step. Repeated wheel edits can use a timed key;
+    // a drag uses its own unique key with continuous=true until release.
+    Result execute(const Command& command, const juce::String& coalesceKey = {}, bool continuous = false) {
+        return batch({command}, label(command), coalesceKey, continuous);
+    }
 
     // Every command, in order, as one undo step named `undoLabel`. If any command
     // would be refused, nothing changes: not the document, the engine or the history.
-    Result batch(const std::vector<Command>& commands, const juce::String& undoLabel) {
+    Result batch(const std::vector<Command>& commands, const juce::String& undoLabel,
+                 const juce::String& coalesceKey = {}, bool continuous = false) {
         if (controller.isBusy()) return refused("The project is busy; try again when it has finished.");
         Result result = preview(commands);
         if (!result.ok || !result.changed) return result;
@@ -294,7 +298,7 @@ public:
                 failed.failedCommand = static_cast<int>(i);
                 return failed;
             }
-        controller.commit(undoLabel.isNotEmpty() ? undoLabel : juce::String("Edit tracks"));
+        controller.commit(undoLabel.isNotEmpty() ? undoLabel : juce::String("Edit tracks"), -1, -1, coalesceKey, continuous);
         return result;
     }
 

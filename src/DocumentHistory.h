@@ -28,16 +28,18 @@ public:
         position = 0;
     }
 
-    // Record the document as it is after an edit.
+    // Record the document as it is after an edit. A continuous gesture supplies
+    // a unique key so its updates merge even after a pause. Other edits or an
+    // undo still break adjacency; a later gesture must use a new key.
     void record(const ProjectDocument& after, const juce::String& label, int focusTrack = -1, int focusScene = -1,
-                const juce::String& coalesceKey = {}) {
+                const juce::String& coalesceKey = {}, bool continuous = false) {
         if (entries.empty()) { reset(after); return; }
         // Nothing actually changed (e.g. a click that did not move a control).
         if (sameContent(entries[position].document, after)) return;
         const auto now = juce::Time::getMillisecondCounter();
         auto& top = entries[position];
         if (coalesceKey.isNotEmpty() && position + 1 == entries.size() && position > 0
-            && top.coalesceKey == coalesceKey && now - top.time < coalesceMilliseconds) {
+            && top.coalesceKey == coalesceKey && (continuous || now - top.time < coalesceMilliseconds)) {
             top.document = after;
             top.time = now;
             top.id = nextId++;
