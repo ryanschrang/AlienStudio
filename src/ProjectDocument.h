@@ -114,6 +114,8 @@ struct StepSequence {
 };
 
 struct ProjectDocument {
+    std::uint32_t identityScope = newObjectId(); // runtime fence for project-scoped IDs in deferred UI work
+    TrackRegistry trackRegistry;
     std::vector<SessionTrack> tracks;
     std::vector<SessionScene> scenes;
     // The Session grid, [scene][track]: each cell names the clip it launches, or none. The clip's
@@ -157,6 +159,41 @@ struct ProjectDocument {
 
     static juce::String defaultTrackName(int index) { return "Track " + juce::String(index + 1); }
     static juce::String defaultSceneName(int index) { return "Scene " + juce::String(index + 1); }
+
+    // Adapt each existing owner to the shared registry. Rack lane tokens survive
+    // row edits; Session runtime tokens survive reorder and undo. Neither is saved
+    // as a TrackId. Returns/buses retire their identity when their slot is removed.
+    std::vector<TrackBinding> trackOwners() const {
+        std::vector<TrackBinding> owners;
+        for (const auto& track : tracks) owners.push_back({TrackRole::session, track.id});
+        for (int c = 0; c < channelRack.channelCount; ++c) owners.push_back({TrackRole::rack, channelRack.lanes[static_cast<std::size_t>(c)]});
+        owners.push_back({TrackRole::master, 1});
+        for (std::size_t r = 0; r < returns.size(); ++r) if (returns[r].used) owners.push_back({TrackRole::returnTrack, r + 1});
+        for (std::size_t b = 0; b < buses.size(); ++b) if (buses[b].used) owners.push_back({TrackRole::bus, b + 1});
+        return owners;
+    }
+    bool synchronizeTrackRegistry() { return trackRegistry.synchronize(trackOwners()); }
+    TrackId trackId(TrackRole role, int slot = 0) const noexcept {
+        if (slot < 0) return {};
+        std::uint64_t key = static_cast<std::uint64_t>(slot) + 1;
+        if (role == TrackRole::session) { if (slot >= trackCount()) return {}; key = tracks[static_cast<std::size_t>(slot)].id; }
+        if (role == TrackRole::rack) { if (!channelRack.validChannel(slot)) return {}; key = channelRack.lanes[static_cast<std::size_t>(slot)]; }
+        return trackRegistry.idFor({role, key});
+    }
+    // Views and mixer adapters can address the same owner without retaining an index.
+    int trackSlot(TrackId id, TrackRole role) const noexcept {
+        const auto binding = trackRegistry.resolve(id);
+        if (!binding || binding->role != role) return -1;
+        if (role == TrackRole::session) {
+            for (int t = 0; t < trackCount(); ++t) if (tracks[static_cast<std::size_t>(t)].id == binding->key) return t;
+            return -1;
+        }
+        if (role == TrackRole::rack) {
+            for (int c = 0; c < channelRack.channelCount; ++c) if (channelRack.lanes[static_cast<std::size_t>(c)] == binding->key) return c;
+            return -1;
+        }
+        return static_cast<int>(binding->key - 1);
+    }
 
     int trackCount() const noexcept { return static_cast<int>(tracks.size()); }
     int sceneCount() const noexcept { return static_cast<int>(scenes.size()); }
@@ -352,9 +389,18 @@ struct ProjectDocument {
             r.rackClip = id;
             r.source = static_cast<int>(std::find(next.clips.begin(), next.clips.begin() + next.patternCount, id) - next.clips.begin());
         }
+        auto identities = trackRegistry;
+        auto owners = trackOwners();
+        std::erase_if(owners, [](const TrackBinding& owner) { return owner.role == TrackRole::rack; });
+        // Keep registry enumeration deterministic, following the current view order.
+        auto position = owners.begin() + static_cast<std::ptrdiff_t>(tracks.size());
+        for (int c = 0; c < next.channelCount; ++c)
+            position = owners.insert(position, {TrackRole::rack, next.lanes[static_cast<std::size_t>(c)]}) + 1;
+        if (!identities.synchronize(owners)) return false;
         library = std::move(lib);
         channelRack = std::move(next);
         timeline = std::move(rebound);
+        trackRegistry = std::move(identities);
         prune();
         return true;
     }
@@ -461,6 +507,7 @@ inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
             && x.armed == y.armed && x.input == y.input && x.stereoInput == y.stereoInput && x.monitor == y.monitor
             && x.send == y.send && x.sendPre == y.sendPre && x.freezeScene == y.freezeScene && x.output == y.output;
     };
+    if (!a.trackRegistry.sameOwners(b.trackRegistry)) return false;
     if (a.masterPlugins != b.masterPlugins || a.masterGain != b.masterGain || !(a.recording == b.recording) || a.returns != b.returns
         || a.buses != b.buses) return false;
 
@@ -496,6 +543,15 @@ inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
 // strings; decoding is done separately by the loader.
 inline SessionProjectData toProjectData(const ProjectDocument& doc) {
     SessionProjectData data(doc.trackCount(), doc.sceneCount());
+    {
+        std::vector<TrackEntry> entries;
+        for (auto role : {TrackRole::session, TrackRole::rack, TrackRole::master, TrackRole::returnTrack, TrackRole::bus}) {
+            const int count = role == TrackRole::session ? doc.trackCount() : role == TrackRole::rack ? doc.channelRack.channelCount
+                : role == TrackRole::master ? 1 : role == TrackRole::returnTrack ? maxReturns : maxBuses;
+            for (int slot = 0; slot < count; ++slot) if (auto id = doc.trackId(role, slot)) entries.push_back({id, {role, static_cast<std::uint64_t>(slot + 1)}});
+        }
+        if (!data.trackRegistry.restore(std::move(entries), doc.trackRegistry.nextId())) { data.selectedTrack = -1; return data; }
+    }
     data.timeline = doc.timeline;
     data.masterPlugins = doc.masterPlugins;
     for (std::size_t r = 0; r < doc.returns.size(); ++r) {
@@ -550,7 +606,9 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
     return data;
 }
 
-inline ProjectDocument fromProjectData(const SessionProjectData& data) {
+inline ProjectDocument fromProjectData(const SessionProjectData& source) {
+    auto data = source;
+    if (data.trackRegistry.entries().empty()) data.trackRegistry.synchronize(data.trackOwners());
     auto doc = ProjectDocument::createDefault(data.trackCount(), data.sceneCount());
     // Rack ids belong to the saved document's namespace. Rebind all uses together after importing its bank.
     doc.timeline = {};
@@ -620,6 +678,19 @@ inline ProjectDocument fromProjectData(const SessionProjectData& data) {
         placed[saved] = doc.addPlacementClip(source.pattern.shared() != nullptr ? source.pattern.shared() : emptyPattern(), source.name).value;
     for (auto* list : {&doc.timeline.regions, &doc.timeline.frozenOriginals})
         for (auto& r : *list) if (r.ownsClip()) { const auto found = placed.find(r.clip); r.clip = found != placed.end() ? found->second : 0; }
+    {
+        std::vector<TrackEntry> entries;
+        for (auto owner : doc.trackOwners()) {
+            int slot = 0;
+            if (owner.role == TrackRole::session) {
+                while (doc.tracks[static_cast<std::size_t>(slot)].id != owner.key) ++slot;
+            } else if (owner.role == TrackRole::rack) {
+                while (doc.channelRack.lanes[static_cast<std::size_t>(slot)] != owner.key) ++slot;
+            } else slot = static_cast<int>(owner.key - 1);
+            entries.push_back({data.trackRegistry.idFor({owner.role, static_cast<std::uint64_t>(slot + 1)}), owner});
+        }
+        doc.trackRegistry.restore(std::move(entries), data.trackRegistry.nextId());
+    }
     doc.prune();
     doc.clampSelection();
     return doc;

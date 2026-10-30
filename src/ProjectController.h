@@ -70,6 +70,7 @@ public:
     void commit(const juce::String& label, int focusTrack = -1, int focusScene = -1,
                 const juce::String& coalesceKey = {}) {
         for(int t=0;t<doc.trackCount();++t)engine.tracks[static_cast<std::size_t>(t)].freezeScene.store(doc.tracks[static_cast<std::size_t>(t)].settings.freezeScene);
+        doc.synchronizeTrackRegistry();
         const auto previous = history.currentId();
         history.record(doc, label, focusTrack, focusScene, coalesceKey);
         if (history.currentId() != previous) publishArrangement();
@@ -264,6 +265,7 @@ public:
 
     // Engine synchronisation ---------------------------------------------
     void pushDocumentToEngine() {
+        doc.synchronizeTrackRegistry();
         engine.bpm.store(doc.bpm);
         engine.launchQuantizationSteps.store(doc.launchQuantizationSteps);
         engine.preset.store(doc.livePreset);
@@ -300,7 +302,7 @@ public:
     bool addTrack() {
         if (busy) return false;
         if (beforeStructureEdit) beforeStructureEdit();
-        if (!doc.canAddTrack()) return false;
+        if (!doc.canAddTrack() || !doc.trackRegistry.canAllocate()) return false;
         doc.tracks.push_back({doc.nextTrackName(), {}, doc.nextTrackColour()});
         for (auto& scene : doc.cells) scene.emplace_back();
         publishStop(static_cast<std::size_t>(doc.trackCount() - 1));
@@ -431,7 +433,7 @@ public:
     // master, so no edit can make a loop. The caller commits, and rebuilds the plugin racks
     // after a delete.
     int addBus(const juce::String& name = {}) {
-        if (busy) return -1;
+        if (busy || !doc.trackRegistry.canAllocate()) return -1;
         for (std::size_t b = 0; b < doc.buses.size(); ++b) {
             if (doc.buses[b].used) continue;
             const auto trimmed = name.trim().substring(0, 64);
@@ -468,7 +470,7 @@ public:
     // never moves another's. Removing one turns every track's send to it off, drops its send
     // automation and its FX. The caller commits, and rebuilds the plugin racks after a removal.
     int addReturn(const juce::String& name = {}) {
-        if (busy) return -1;
+        if (busy || !doc.trackRegistry.canAllocate()) return -1;
         for (std::size_t r = 0; r < doc.returns.size(); ++r) {
             if (doc.returns[r].used) continue;
             const auto trimmed = name.trim().substring(0, 64);
@@ -2207,6 +2209,7 @@ private:
             reordered = previous.scenes[static_cast<std::size_t>(s)].id != state.scenes[static_cast<std::size_t>(s)].id;
         doc = state;
         doc.library.retainIssuedIdsFrom(previous.library);
+        doc.trackRegistry.retainIssuedIdsFrom(previous.trackRegistry);
         // Keep the user's current selection unless the step names a clip.
         doc.selectedTrack = step.focusTrack >= 0 ? step.focusTrack : previous.selectedTrack;
         doc.selectedScene = step.focusScene >= 0 ? step.focusScene : previous.selectedScene;

@@ -408,8 +408,15 @@ public:
                 return p.repeatRow(p.selectedPattern, r, id == cmdRepeat4 ? 4 : id == cmdRepeat8 ? 8 : 16);
             }); changed(); return;
         }
-        if (id == cmdRename) { askForName("Rename channel", project().info[static_cast<std::size_t>(row)].name,
-                                       [this, row](const juce::String& name) {
+        if (id == cmdRename) {
+            const auto track = controller.document().trackId(TrackRole::rack, row);
+            const auto scope = controller.document().identityScope;
+            askForName("Rename channel", project().info[static_cast<std::size_t>(row)].name,
+                                       [this, track, scope](const juce::String& name) {
+                                           const auto& d = controller.document();
+                                           if (d.identityScope != scope) return;
+                                           const int row = d.trackSlot(track, TrackRole::rack);
+                                           if (row < 0) return;
                                            controller.editRack("Rename channel", [&](rack::Project& p) { return p.renameChannel(row, name.toStdString()); });
                                            repaint(); if (onStructureChanged) onStructureChanged(); });
         } else if (id == cmdMute) toggleMute(row);
