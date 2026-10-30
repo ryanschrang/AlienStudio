@@ -61,6 +61,24 @@ Window placement is temporary and is not saved in project files. Physical
 multi-monitor movement, mixed-DPI layouts and audio-device listening remain
 manual checks before release.
 
+### Factory preset browser
+
+Open **View > Factory preset browser...** (also available on the Devices page).
+Search the twelve built-in sounds by name or type, such as `bass square`, `pad`,
+or `keys`. Select a result, then **Audition C4** to hear a short preview; double-click
+or Enter also auditions it. **Stop** ends the preview. Selecting/searching and
+previewing leave the project sounds unchanged.
+
+**Use preset** explicitly applies the selected sound to the live keyboard and step
+sequencer as one undoable edit. Session track and Channel Rack instruments keep
+their own presets. Applying is disabled while recording or busy. Preview uses an
+independent synth voice after project processing, follows master volume/output
+limiting, and stops on hide, panic, transport stop or device reset. Search text
+keeps ordinary text entry rather than playing the typing piano.
+
+This is the first browser slice: factory synth presets only. Sample libraries,
+plugin presets and tempo/key-synced sample auditioning remain future work.
+
 ### Implemented foundations
 - [x] C++20/JUCE/CMake project, Windows Debug/Release CI, and automated tests.
 - [x] Polyphonic lead/bass/pluck synth, USB MIDI input/sustain/reconnection, typing and mouse piano.

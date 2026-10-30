@@ -53,7 +53,7 @@ static void applicationToolbarChecks() {
             require(commands.size()==before+1&&commands.back()==item.itemID,"every listed action reaches callback with its own ID");
         }}
     }
-    require(ids.size()==35,"all application commands and nine views are reachable");
+    require(ids.size()==36,"all application commands and nine views are reachable");
     for(int index:{-1,6,99})require(toolbar.getMenuForIndex(index,{}).getNumItems()==0,"invalid menu index is empty");
     for(int width:{960,1180,1280,1920}) {
         toolbar.setSize(width,Menu::height);

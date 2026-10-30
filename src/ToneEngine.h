@@ -3,6 +3,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include "SynthEngine.h"
 #include "NoteQueue.h"
+#include "FactoryPresetPreview.h"
 #include "StepClock.h"
 #include "PianoRollSequence.h"
 #include "MidiInputEngine.h"
@@ -78,6 +79,7 @@ public:
     // Export only: a tick before the end of the song where playback stops (-1: the song's end).
     std::atomic<std::int64_t> timelineEnd{-1};
     NoteQueue notes;
+    alien::FactoryPresetPreview factoryPresetPreview; // isolated monitor preview; never a project instrument
     alien::MidiInputPipe midi;
     alien::MidiControllerMappings controllerMappings;
     alien::MidiControllerActionQueue controllerActions;
@@ -173,6 +175,7 @@ public:
         stopClipPlayers();
         audioClipMode.fill(false);
         synth.prepare(sampleRate);
+        factoryPresetPreview.prepare(sampleRate);
         for (auto& voice : trackSynths) voice.prepare(sampleRate);
         for (auto& sampler : drumSamplers) sampler.prepare(sampleRate);
         rackPlayer.prepare(sampleRate); rackStep.store(-1);
@@ -334,6 +337,7 @@ private:
         updateMonitorRoute();
         NoteQueue::Event event{};
         const bool panic = notes.panic.exchange(false);
+        factoryPresetPreview.beginBlock(panic);
         // Bound work per callback even if the producer keeps publishing.
         for (int n = 0; n < 256 && notes.pop(event); ++n) {
             if (!panic) keyboardNote(event.note, event.velocity);
@@ -641,7 +645,10 @@ private:
         for (int i = 0; i < samples; ++i) {
             masterRamp += masterRampCoefficient * (masterTarget - masterRamp);
             if (std::abs(masterRamp - masterTarget) < 1.0e-6f) masterRamp = masterTarget;
-            const float left = plugins->master.getSample(0,i) * masterRamp, right = plugins->master.getSample(1,i) * masterRamp;
+            // Preview joins the monitor output after project FX/stem buffers.
+            // It follows master gain and the output safety limiter, never inserts.
+            const float preview = factoryPresetPreview.nextSample() * masterRamp;
+            const float left = plugins->master.getSample(0,i) * masterRamp + preview, right = plugins->master.getSample(1,i) * masterRamp + preview;
             if (std::isfinite(left) && std::isfinite(right)) masterPeak = std::max(masterPeak, std::max(std::abs(left), std::abs(right)));
             for (int c = 0; c < channels; ++c) if (outputs[c]) {
                 const float sample = (c == 0 ? left : c == 1 ? right : (left + right) * 0.5f) + clickBuffer[static_cast<std::size_t>(i)];
@@ -1486,6 +1493,7 @@ private:
         else trackSynths[track].noteOff(note, source);
     }
     void allSoundOff(bool stopRack = true) noexcept {
+        factoryPresetPreview.reset();
         synth.allSoundOff();
         if (stopRack) rackPlayer.stop();
 
