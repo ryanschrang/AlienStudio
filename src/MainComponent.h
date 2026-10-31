@@ -411,6 +411,12 @@ private:
         timelineView.onExport = [this](std::int64_t from, std::int64_t to) { chooseWavExport(from, to); };
         timelineView.onExportStems = [this](std::int64_t from, std::int64_t to) { chooseStemExport(from, to); };
         timelineView.onFreezeTrack=[this](int track){startTrackFreeze(track);};
+        // The automation editor offers the parameters of the plugins on the chosen track (T1-09).
+        timelineView.trackAutomation().pluginParameters = [this](int track) {
+            std::vector<alien::TrackAutomationEditor::PluginParameter> list;
+            for (auto& choice : pluginHost.parameterChoices(track)) list.push_back({std::move(choice.target), choice.plugin, choice.parameter});
+            return list;
+        };
         timelineView.onUnfreezeTrack=[this](int track){if(controller.unfreezeTrack(track)){refreshExtraViews();timelineView.setStatus("Track unfrozen; original clips and saved settings restored.");}};
         timelineView.onTitleChanged = [this] { if (tabs.getCurrentTabIndex() == 5) updateEditorTitle(); };
         auto& canvas = timelineView.timelineCanvas();
@@ -1517,6 +1523,7 @@ private:
 
         pluginPanel.setStatus(errors.isEmpty()?"Plugin racks restored. Select a slot to open its editor.":"Missing or unsupported plugins (saved state preserved):\n"+errors);
         refreshPlugins();
+        timelineView.trackAutomation().refresh();   // the plugins whose parameters can be automated
     }
     void addPlugin(bool instrument,int choice) {
         if(controller.isTrackFrozen(pluginTarget())){pluginPanel.setStatus("Unfreeze the track before editing its instrument or effects.");return;}

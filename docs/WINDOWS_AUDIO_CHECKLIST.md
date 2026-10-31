@@ -424,3 +424,8 @@ Not yet run on hardware. Record commit, device/driver, sample rate and buffer si
   one occurrence of that source. New projects launch one occurrence per assigned row.
 - Test stop/panic, transport restart, document replacement and device changes with held
   notes. Check row indicators at 960x650 and 150/200% scaling.
+
+## Plugin parameter automation (T1-09 part 3)
+- Put a VST3 effect (a filter or EQ) and a stock effect on a track. Song > Automation: choose the track, then the effect's submenu and a parameter. Draw a ramp over a bar and play: the parameter moves in the plugin's editor and you hear it, smoothly at 48 kHz with 128, 512 and 1024-sample buffers. Read off: the parameter stays where you set it by hand.
+- Move the effect up or down the rack, undo, save and reopen: the lane still drives the same effect. Remove the effect: playback carries on and the lane does nothing; undo brings both back.
+- Export the song to WAV and stems, and freeze the track: the automation is in the result. Loop playback over the ramp: the parameter jumps back at the loop start.

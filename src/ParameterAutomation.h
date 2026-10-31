@@ -62,6 +62,26 @@ struct ParameterBinding {
     std::string parameterId;
     int rack{-1}, slot{-1}, parameter{-1};
 };
+// The audio thread finds a lane's parameter by binary search, so bindings are kept sorted by instance, then ID.
+inline bool bindingBefore(const ParameterBinding& b, const ParameterTarget& t) noexcept {
+    return b.instance != t.instance ? b.instance < t.instance : std::string_view(b.parameterId) < std::string_view(t.parameterId);
+}
+inline void sortBindings(std::vector<ParameterBinding>& bindings) {
+    std::sort(bindings.begin(), bindings.end(), [](const ParameterBinding& a, const ParameterBinding& b) {
+        return a.instance != b.instance ? a.instance < b.instance : a.parameterId < b.parameterId;
+    });
+}
+// Audio thread: the one binding for target in sorted bindings, or nullptr (none, or an ambiguous ID).
+// No allocation.
+inline const ParameterBinding* findSorted(const ParameterTarget& target, const std::vector<ParameterBinding>& sorted) noexcept {
+    if (!target.valid()) return nullptr;
+    const auto at = std::lower_bound(sorted.begin(), sorted.end(), target, bindingBefore);
+    if (at == sorted.end() || at->instance != target.instance || at->parameterId != target.parameterId) return nullptr;
+    const auto next = at + 1;
+    if (next != sorted.end() && next->instance == target.instance && next->parameterId == target.parameterId) return nullptr;
+    if (at->rack < 0 || at->slot < -1 || at->slot >= 8 || at->parameter < 0) return nullptr;
+    return &*at;
+}
 inline const ParameterBinding* resolve(const ParameterTarget& target,
     const std::vector<ParameterBinding>& bindings) noexcept {
     if (!target.valid()) return nullptr;

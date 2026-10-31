@@ -558,6 +558,13 @@ private:
                 }
             }
         }
+        // Plugin parameter automation (Song), set from where the song is at the start of the block.
+        if (modeNow == 2 && !song->timeline.parameterLanes.empty())
+            for (int i = 0; i < samples; ++i)
+                if (const double tick = automationTicks[static_cast<std::size_t>(i)]; tick >= 0.0) {
+                    plugins->applyParameterAutomation(song->timeline.parameterLanes, tick);
+                    break;
+                }
         plugins->instruments(samples);
         for (std::size_t t = 0; t < sessionTracks; ++t)
             for (int c = 0; c < 2; ++c) plugins->tracks[t].addFrom(c,0,clipBuffers[t],c,0,samples);

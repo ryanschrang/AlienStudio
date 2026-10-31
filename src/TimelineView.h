@@ -2346,24 +2346,41 @@ private:
 
 // One editable automation lane at a time. Edits stay in a local preview during a
 // gesture and commit once on mouse-up, so a drag is one undo transaction.
+// A lane is a track's volume, pan or send, or (T1-09) a parameter of a plugin on the track: the owner lists those
+// through pluginParameters, and they are offered in one submenu per plugin. Plugin values are normalized (0 to 1).
 class TrackAutomationEditor final : public juce::Component {
 public:
+    struct PluginParameter { automation::ParameterTarget target; juce::String plugin, parameter; };
+    // The automatable parameters of the plugins on a track (its instrument, then its FX), or none.
+    std::function<std::vector<PluginParameter>(int track)> pluginParameters;
+    static constexpr int pluginBase = 1000;   // parameter chooser ids of plugin parameters
+
     explicit TrackAutomationEditor(ProjectController& owner) : controller(owner) {
         setName("Track automation");
         addAndMakeVisible(trackBox); addAndMakeVisible(parameterBox); addAndMakeVisible(curveBox);
         addAndMakeVisible(enableButton); addAndMakeVisible(hint);
         trackBox.setName("Automation track"); parameterBox.setName("Automation parameter");
-        refreshSends(); parameterBox.setSelectedId(1);
+        refreshParameters(); parameterBox.setSelectedId(1);
         curveBox.setName("Automation interpolation");
         curveBox.addItem("Linear", 1); curveBox.addItem("Hold", 2); curveBox.setSelectedId(1);
         enableButton.setButtonText("Read"); enableButton.setName("Automation read"); enableButton.setClickingTogglesState(true);
         enableButton.setTooltip("Enable playback of this automation lane");
         hint.setText("Click to add; drag to move; right-click a point to delete. Values are absolute.", juce::dontSendNotification);
         hint.setColour(juce::Label::textColourId, ui::colours::textDim); hint.setFont(ui::font(11.0f));
-        trackBox.onChange = parameterBox.onChange = [this] { preview.reset(); base.reset(); refresh(); };
+        trackBox.onChange = [this] { preview.reset(); base.reset(); refresh(); };
+        parameterBox.onChange = [this] {
+            const auto* plugin = selectedPlugin();
+            chosenPlugin = plugin != nullptr ? std::optional<automation::ParameterTarget>(plugin->target) : std::nullopt;
+            preview.reset(); base.reset(); refresh();
+        };
         enableButton.onClick = [this] {
             const int track = selectedTrack(); const auto parameter = selectedParameter();
+            const auto plugin = chosenPlugin;
             controller.editTimeline("Toggle automation read", [=](timeline::Timeline& t) {
+                if (plugin) {
+                    for (auto& lane : t.parameterLanes) if (lane.target == *plugin) { lane.enabled = !lane.enabled; return true; }
+                    return false;
+                }
                 for (auto& lane : t.automationLanes) if (lane.track == track && lane.parameter == parameter) {
                     lane.enabled = !lane.enabled; return true;
                 }
@@ -2379,16 +2396,17 @@ public:
         trackBox.clear(juce::dontSendNotification);
         for (int t = 0; t < d.trackCount(); ++t) trackBox.addItem("Track " + juce::String(t + 1), t + 1);
         trackBox.setSelectedId(juce::jlimit(1, d.trackCount(), previous > 0 ? previous : 1), juce::dontSendNotification);
-        refreshSends();
-        const auto* lane = find(controller.timeline());
-        enableButton.setToggleState(lane != nullptr && lane->enabled, juce::dontSendNotification);
-        enableButton.setEnabled(lane != nullptr && !controller.isBusy());
+        refreshParameters();
+        bool found = false, enabled = false;
+        withLane(controller.timeline(), [&](const auto& lane) { found = true; enabled = lane.enabled; });
+        enableButton.setToggleState(found && enabled, juce::dontSendNotification);
+        enableButton.setEnabled(found && !controller.isBusy());
         repaint();
     }
     void resized() override {
         auto bar = getLocalBounds().removeFromTop(30).reduced(6, 3);
         trackBox.setBounds(bar.removeFromLeft(110)); bar.removeFromLeft(6);
-        parameterBox.setBounds(bar.removeFromLeft(110)); bar.removeFromLeft(6);
+        parameterBox.setBounds(bar.removeFromLeft(selectedPlugin() != nullptr ? 220 : 110)); bar.removeFromLeft(6);
         curveBox.setBounds(bar.removeFromLeft(95)); bar.removeFromLeft(6);
         enableButton.setBounds(bar.removeFromLeft(60)); hint.setBounds(bar);
     }
@@ -2397,46 +2415,47 @@ public:
         const auto area = plot(); if (area.isEmpty()) return;
         g.setColour(ui::colours::window); g.fillRect(area);
         const auto& t = preview ? *preview : controller.timeline();
-        const auto* lane = find(t);
-        const bool volume = selectedParameter() == automation::Parameter::volume;
-        const float baseline = volume ? 1.0f : 0.0f;
+        const float baseline = selectedPlugin() == nullptr && selectedParameter() == automation::Parameter::volume ? 1.0f : 0.0f;
         const float baselineY = yFor(baseline);
         g.setColour(ui::colours::line); g.drawHorizontalLine(juce::roundToInt(baselineY), area.getX(), area.getRight());
-        if (lane == nullptr || lane->points.empty()) return;
-        g.setColour(lane->enabled ? ui::colours::accent : ui::colours::textDim);
-        juce::Path path; path.startNewSubPath(area.getX(), yFor(lane->points.front().value));
-        for (std::size_t i = 0; i < lane->points.size(); ++i) {
-            const auto& p = lane->points[i]; const float x = xFor(p.tick), y = yFor(p.value);
-            if (i > 0 && lane->points[i - 1].curve == automation::Curve::hold) path.lineTo(x, yFor(lane->points[i - 1].value));
-            path.lineTo(x, y);
-        }
-        path.lineTo(area.getRight(), yFor(lane->points.back().value));
-        g.strokePath(path, juce::PathStrokeType(1.5f));
-        for (const auto& p : lane->points) g.fillEllipse(xFor(p.tick) - 4.0f, yFor(p.value) - 4.0f, 8.0f, 8.0f);
+        withLane(t, [&](const auto& lane) {
+            if (lane.points.empty()) return;
+            g.setColour(lane.enabled ? ui::colours::accent : ui::colours::textDim);
+            juce::Path path; path.startNewSubPath(area.getX(), yFor(lane.points.front().value));
+            for (std::size_t i = 0; i < lane.points.size(); ++i) {
+                const auto& p = lane.points[i]; const float x = xFor(p.tick), y = yFor(p.value);
+                if (i > 0 && lane.points[i - 1].curve == automation::Curve::hold) path.lineTo(x, yFor(lane.points[i - 1].value));
+                path.lineTo(x, y);
+            }
+            path.lineTo(area.getRight(), yFor(lane.points.back().value));
+            g.strokePath(path, juce::PathStrokeType(1.5f));
+            for (const auto& p : lane.points) g.fillEllipse(xFor(p.tick) - 4.0f, yFor(p.value) - 4.0f, 8.0f, 8.0f);
+        });
     }
     void mouseDown(const juce::MouseEvent& e) override {
         if (controller.isBusy() || !plot().contains(e.position)) return;
         base = controller.timeline(); preview = *base;
-        auto* lane = editable(*preview);
-        int nearest = -1; float distance = 100.0f;
-        for (std::size_t i = 0; i < lane->points.size(); ++i) {
-            const float dx = xFor(lane->points[i].tick) - e.position.x, dy = yFor(lane->points[i].value) - e.position.y;
-            const float d = dx * dx + dy * dy;
-            if (d < distance) { distance = d; nearest = static_cast<int>(i); }
-        }
-        if (e.mods.isPopupMenu()) {
-            if (nearest >= 0) lane->points.erase(lane->points.begin() + nearest);
-            finish("Delete automation point"); return;
-        }
-        activeTick = nearest >= 0 ? lane->points[static_cast<std::size_t>(nearest)].tick : -1;
+        int nearest = -1;
+        withEditable(*preview, [&](auto& lane) {
+            float distance = 100.0f;
+            for (std::size_t i = 0; i < lane.points.size(); ++i) {
+                const float dx = xFor(lane.points[i].tick) - e.position.x, dy = yFor(lane.points[i].value) - e.position.y;
+                const float d = dx * dx + dy * dy;
+                if (d < distance) { distance = d; nearest = static_cast<int>(i); }
+            }
+            if (e.mods.isPopupMenu()) { if (nearest >= 0) lane.points.erase(lane.points.begin() + nearest); return; }
+            activeTick = nearest >= 0 ? lane.points[static_cast<std::size_t>(nearest)].tick : -1;
+        });
+        if (e.mods.isPopupMenu()) { finish("Delete automation point"); return; }
         updatePoint(e.position); repaint();
     }
     void mouseDrag(const juce::MouseEvent& e) override { if (preview && !e.mods.isPopupMenu()) { updatePoint(e.position); repaint(); } }
     void mouseUp(const juce::MouseEvent&) override { if (preview) finish("Edit automation point"); }
 private:
     int selectedTrack() const { return std::max(0, trackBox.getSelectedId() - 1); }
-    // One "Send" item per return that exists (its slot's lane); a removed return's choice falls back to Volume.
-    void refreshSends() {
+    // Volume, pan, one "Send" item per return that exists (its slot's lane; a removed return's choice falls back
+    // to Volume), then the track's plugins' parameters, one submenu per plugin.
+    void refreshParameters() {
         juce::StringArray items{"Volume", "Pan"};
         juce::Array<int> ids{1, 2};
         const auto& returns = controller.document().returns;
@@ -2447,36 +2466,69 @@ private:
             items.add("Send " + letter + (ret.name != defaultReturnName(r) ? " (" + ret.name + ")" : juce::String{}));
             ids.add(3 + r);
         }
-        bool same = parameterBox.getNumItems() == items.size();
-        for (int i = 0; same && i < items.size(); ++i) same = parameterBox.getItemId(i) == ids[i] && parameterBox.getItemText(i) == items[i];
-        if (same) return;
+        auto plugins = pluginParameters ? pluginParameters(selectedTrack()) : std::vector<PluginParameter>{};
+        juce::String signature = items.joinIntoString("|");
+        for (const auto& p : plugins) signature << "|" << p.plugin << ":" << p.parameter << ":" << juce::String(p.target.instance) << ":" << p.target.parameterId;
+        if (signature == shownSignature) return;
+        shownSignature = signature;
         const int selected = parameterBox.getSelectedId();
+        pluginChoices = std::move(plugins);
         parameterBox.clear(juce::dontSendNotification);
         for (int i = 0; i < items.size(); ++i) parameterBox.addItem(items[i], ids[i]);
-        parameterBox.setSelectedId(ids.contains(selected) ? selected : 1, juce::dontSendNotification);
+        juce::String group; juce::PopupMenu sub; int restored = 0;
+        const auto flush = [&] { if (group.isNotEmpty()) parameterBox.getRootMenu()->addSubMenu(group, sub); sub = {}; };
+        for (std::size_t i = 0; i < pluginChoices.size(); ++i) {
+            const auto& p = pluginChoices[i];
+            if (p.plugin != group) { flush(); group = p.plugin; }
+            const int id = pluginBase + static_cast<int>(i);
+            sub.addItem(id, p.parameter.isNotEmpty() ? p.parameter : juce::String(p.target.parameterId));
+            if (chosenPlugin && p.target == *chosenPlugin) restored = id;
+        }
+        flush();
+        // A plugin parameter stays chosen while it is still there (found by its target); otherwise back to Volume.
+        if (restored != 0) parameterBox.setSelectedId(restored, juce::dontSendNotification);
+        else { chosenPlugin.reset(); parameterBox.setSelectedId(selected > 0 && selected < pluginBase && ids.contains(selected) ? selected : 1, juce::dontSendNotification); }
+        resized();
+    }
+    const PluginParameter* selectedPlugin() const {
+        const int index = parameterBox.getSelectedId() - pluginBase;
+        return index >= 0 && index < static_cast<int>(pluginChoices.size()) ? &pluginChoices[static_cast<std::size_t>(index)] : nullptr;
     }
     automation::Parameter selectedParameter() const { return static_cast<automation::Parameter>(std::clamp(parameterBox.getSelectedId() - 1, 0, automation::parametersPerTrack - 1)); }
-    const automation::Lane* find(const timeline::Timeline& t) const {
-        for (const auto& lane : t.automationLanes) if (lane.track == selectedTrack() && lane.parameter == selectedParameter()) return &lane;
-        return nullptr;
+    float low() const { return selectedPlugin() != nullptr ? 0.0f : automation::minimum(selectedParameter()); }
+    float high() const { return selectedPlugin() != nullptr ? 1.0f : automation::maximum(selectedParameter()); }
+    // Calls f with the chosen lane (a track lane or a plugin parameter lane) if it exists.
+    template <class F> void withLane(const timeline::Timeline& t, F&& f) const {
+        if (const auto* plugin = selectedPlugin()) {
+            for (const auto& lane : t.parameterLanes) if (lane.target == plugin->target) { f(lane); return; }
+            return;
+        }
+        for (const auto& lane : t.automationLanes) if (lane.track == selectedTrack() && lane.parameter == selectedParameter()) { f(lane); return; }
     }
-    automation::Lane* editable(timeline::Timeline& t) {
-        for (auto& lane : t.automationLanes) if (lane.track == selectedTrack() && lane.parameter == selectedParameter()) return &lane;
+    // Calls f with the chosen lane, adding it first if it does not exist yet.
+    template <class F> void withEditable(timeline::Timeline& t, F&& f) {
+        if (const auto* plugin = selectedPlugin()) {
+            for (auto& lane : t.parameterLanes) if (lane.target == plugin->target) { f(lane); return; }
+            t.parameterLanes.push_back({plugin->target, true, {}});
+            f(t.parameterLanes.back()); return;
+        }
+        for (auto& lane : t.automationLanes) if (lane.track == selectedTrack() && lane.parameter == selectedParameter()) { f(lane); return; }
         t.automationLanes.push_back({selectedTrack(), selectedParameter(), true, {}});
-        return &t.automationLanes.back();
+        f(t.automationLanes.back());
     }
     juce::Rectangle<float> plot() const { return getLocalBounds().withTrimmedTop(34).reduced(12, 8).toFloat(); }
     float xFor(std::int64_t tick) const { const auto a = plot(); return a.getX() + a.getWidth() * static_cast<float>(static_cast<double>(tick) / controller.timeline().length()); }
-    float yFor(float value) const { const auto a = plot(); const float low = automation::minimum(selectedParameter()); return a.getBottom() - (value - low) / (automation::maximum(selectedParameter()) - low) * a.getHeight(); }
+    float yFor(float value) const { const auto a = plot(); return a.getBottom() - (value - low()) / (high() - low()) * a.getHeight(); }
     void updatePoint(juce::Point<float> position) {
-        auto* lane = editable(*preview); const auto a = plot();
+        const auto a = plot();
         if (a.getWidth() <= 0 || a.getHeight() <= 0) return;
-        if (activeTick >= 0) std::erase_if(lane->points, [&](const automation::Point& p) { return p.tick == activeTick; });
-        const double fraction = std::clamp(static_cast<double>((position.x - a.getX()) / a.getWidth()), 0.0, 1.0);
-        activeTick = std::clamp<std::int64_t>(static_cast<std::int64_t>(std::llround(fraction * preview->length() / timeline::ticksPerStep)) * timeline::ticksPerStep, 0, preview->length());
-        const float low = automation::minimum(selectedParameter());
-        const float value = low + (automation::maximum(selectedParameter()) - low) * std::clamp((a.getBottom() - position.y) / a.getHeight(), 0.0f, 1.0f);
-        lane->put({activeTick, value, curveBox.getSelectedId() == 2 ? automation::Curve::hold : automation::Curve::linear});
+        withEditable(*preview, [&](auto& lane) {
+            if (activeTick >= 0) std::erase_if(lane.points, [&](const automation::Point& p) { return p.tick == activeTick; });
+            const double fraction = std::clamp(static_cast<double>((position.x - a.getX()) / a.getWidth()), 0.0, 1.0);
+            activeTick = std::clamp<std::int64_t>(static_cast<std::int64_t>(std::llround(fraction * preview->length() / timeline::ticksPerStep)) * timeline::ticksPerStep, 0, preview->length());
+            const float value = low() + (high() - low()) * std::clamp((a.getBottom() - position.y) / a.getHeight(), 0.0f, 1.0f);
+            lane.put({activeTick, value, curveBox.getSelectedId() == 2 ? automation::Curve::hold : automation::Curve::linear});
+        });
     }
     void finish(const juce::String& label) {
         // A load, undo or edit elsewhere during the gesture must not be overwritten.
@@ -2492,6 +2544,9 @@ private:
     juce::Label hint;
     std::optional<timeline::Timeline> preview, base;
     std::int64_t activeTick{-1};
+    std::vector<PluginParameter> pluginChoices;
+    std::optional<automation::ParameterTarget> chosenPlugin;
+    juce::String shownSignature;
 };
 
 // Recording passes remain separate from the active arrangement. Comping places
@@ -2700,6 +2755,7 @@ public:
              + (t.loopEnabled ? "loop on" : "loop off");
     }
 
+    TrackAutomationEditor& trackAutomation() noexcept { return automationEditor; }
     // Re-read the document (after undo, open, new project, or an edit made elsewhere).
     void refresh() {
         const auto& t = controller.timeline();

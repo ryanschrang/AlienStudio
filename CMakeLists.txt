@@ -290,6 +290,13 @@ if(BUILD_TESTING)
     add_test(NAME GroupBusTests COMMAND GroupBusTests)
 
     # Flexible returns (MIX-05): adding, removing and renaming returns, more than four, format, undo, panels, stems.
+    # Plugin parameter automation playback (T1-09 part 3): lanes drive parameters by instance ID; the editor.
+    add_executable(PluginAutomationPlaybackTests tests/PluginAutomationPlaybackTests.cpp)
+    target_include_directories(PluginAutomationPlaybackTests PRIVATE src)
+    target_compile_definitions(PluginAutomationPlaybackTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(PluginAutomationPlaybackTests PRIVATE AlienStudioBranding juce::juce_audio_processors juce::juce_gui_basics juce::juce_gui_extra
+        juce::juce_audio_devices juce::juce_audio_formats juce::juce_audio_basics)
+    add_test(NAME PluginAutomationPlaybackTests COMMAND PluginAutomationPlaybackTests)
     add_executable(FlexibleReturnTests tests/FlexibleReturnTests.cpp)
     target_include_directories(FlexibleReturnTests PRIVATE src)
     target_compile_definitions(FlexibleReturnTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
