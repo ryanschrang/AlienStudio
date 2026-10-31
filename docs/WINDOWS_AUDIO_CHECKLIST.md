@@ -396,6 +396,12 @@ Nothing should sound or look different: this moves where the rack's patterns are
 - Give two tracks different instruments (a plugin, a drum kit, the built-in synth). Open a clip on each and click-and-hold piano keys: you hear that track's instrument, with the transport stopped and while playing. Open a Channel Rack row and do the same: you hear that channel.
 - Hold a key, then switch the piano roll to another clip, track or rack channel (or Alt-Tab away) before letting go: nothing is left sounding. Record into a clip while clicking keys in another: the clicks are not recorded.
 
+## Piano-roll pitch rows (PROD-06 part 2)
+- Open a clip with a chord and a melody. Rows button above the keyboard > Used: only the pitches in use are shown, every key is named, and a line marks each fold. Draw, drag, Shift-drag select, arrow up/down and click-and-hold keys: each lands on and plays the pitch of the row under the mouse. Back to All: every note is where it was.
+- Scale tool (Alt L): choose A minor, then Rows > Scale. Only A minor's notes are rows; A keys carry the wide root mark. Add a note outside the scale (switch to All, draw a C#, switch back): its row stays, tinted red. Change the key to D dorian: rows and marks follow; no note moves.
+- In Used rows, clear the clip: every row returns. Undo: the notes and their rows come back. Scroll Scale rows with the wheel and the scroll bar from the lowest to the highest note.
+- Turn on ghost notes and multi-clip editing: Used rows include the other clips' pitches. Check the rows button and key names at 100%, 150% and 200% display scaling.
+
 
 ## Overlapping rack instances (T1-03 D3, format 28)
 

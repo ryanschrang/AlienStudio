@@ -67,6 +67,7 @@ public:
         Edge fade{Edge::none};   // a fade handle at the top of an audio clip: left is the fade in (or crossfade), right the fade out
         enum class LoopPart { none, start, end, body } loopPart{LoopPart::none};
         std::uint32_t take{0};    // a take lane under a track (its label in the header, or the lane itself)
+        int warp{-1}; // index of a marker handle along the bottom of the region
         int takeLane{-1};         // which of the track's take lanes, from 0
     };
 
@@ -74,7 +75,7 @@ public:
         setName("Arrangement timeline");
         setHelpText("Alt-drag an audio clip's body to slip its source without moving its boundaries. "
                     "Drag right to reveal later source audio; drag left to reveal earlier audio. "
-                    "Slip is unsnapped. Edges trim and top-corner handles edit fades.");
+                    "Slip is unsnapped. Edges trim and top-corner handles edit fades. Right-click audio for warp markers; drag their bottom handles to retime source audio.");
         setWantsKeyboardFocus(true);
         setMouseClickGrabsKeyboardFocus(true);
     }
@@ -846,6 +847,7 @@ public:
     enum Command { cmdSplit = 1, cmdMute, cmdDuplicate, cmdCopy, cmdCut, cmdDelete, cmdGroup, cmdUngroup, cmdOpen, cmdPaste, cmdSelectAll, cmdAddMarker,
                    cmdSlipLeft, cmdSlipRight, cmdSourceLoop, cmdReverse, cmdNormalize, cmdFade, cmdCrossfade,
                    cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdRemoveFades, cmdTempo, cmdRemoveTempo, cmdMeter, cmdRemoveMeter, cmdMakeUnique, cmdColourBase = 100, cmdFadeShapeBase = 500,
+                   cmdWarp = 40, cmdAddWarp, cmdRemoveWarp, cmdDetectTransients, cmdDisableWarp, cmdRebuildWarp,
                    cmdArm = 200, cmdFreeze = 201, cmdUnfreeze = 202, cmdTakeLanes = 203, cmdPlayTake = 204, cmdPlayTakeLoop = 205, cmdForgetTake = 206,
                    cmdMonitorBase = 210, cmdInputMonoBase = 300, cmdInputStereoBase = 400 };
     juce::PopupMenu placeMenu(int row) const {
@@ -990,6 +992,10 @@ public:
             const auto box = regionBounds(*it);
             if (!box.contains(p.toFloat())) continue;
             hit.zone = Zone::region; hit.region = it->id;
+            if (!it->warp.empty() && p.y >= box.getBottom()-12) {
+                for (std::size_t m=0;m<it->warp.size();++m)
+                    if (std::abs(p.x-xForTick(static_cast<double>(it->start+it->warp[m].tick-it->offset))) <= edgeGrab) {hit.warp=static_cast<int>(m);return hit;}
+            }
             if (isAudioRegion(*it) && box.getWidth() >= edgeGrab * 4.0f && static_cast<float>(p.y) - box.getY() <= fadeHandleHeight) {
                 const auto handles = fadeHandles(*it, box);
                 const float x = static_cast<float>(p.x);
@@ -1030,7 +1036,7 @@ public:
     void mouseMove(const juce::MouseEvent& e) override {
         const auto hit = hitTest(e.getPosition());
         auto cursorType = juce::MouseCursor::NormalCursor;
-        if (hit.zone == Zone::region && (hit.edge != Edge::none || hit.fade != Edge::none)) cursorType = juce::MouseCursor::LeftRightResizeCursor;
+        if (hit.zone == Zone::region && (hit.warp >= 0 || hit.edge != Edge::none || hit.fade != Edge::none)) cursorType = juce::MouseCursor::LeftRightResizeCursor;
         else if (hit.zone == Zone::region && e.mods.isAltDown() && !e.mods.isShiftDown() && !e.mods.isCommandDown()) {
             if (const auto* r = committed().find(hit.region); r != nullptr && isAudioRegion(*r))
                 cursorType = juce::MouseCursor::LeftRightResizeCursor;
@@ -1098,6 +1104,11 @@ public:
         case Zone::region: {
             const auto* r = committed().find(hit.region);
             if (r == nullptr) break;
+            if (hit.warp >= 0) {
+                if (controller.isBusy()) break;
+                setSelection({hit.region}); drag.kind=DragKind::warp; drag.grabbed=hit.region; drag.warpIndex=static_cast<std::size_t>(hit.warp);
+                drag.base=baseTimeline(); break;
+            }
             const bool wasSelected = isSelected(hit.region);
             if (hit.fade != Edge::none && !extend) {
                 if (!wasSelected || selected.size() > 1) setSelection({hit.region});
@@ -1169,6 +1180,13 @@ public:
         const bool bypass = e.mods.isAltDown();
         const double tickNow = tickAtX(static_cast<double>(pos.x));
         switch (drag.kind) {
+        case DragKind::warp: {
+            const auto* r=drag.base->find(drag.grabbed); if(!r)break;
+            const auto id=drag.grabbed;const auto index=drag.warpIndex;
+            const auto tick=std::clamp<std::int64_t>(r->offset+snapTick(tickNow,bypass)-r->start,0,timeline::maxLength);
+            drag.label="Move warp marker";
+            drag.apply=[=](auto& t){return t.moveWarpMarker(id,index,tick);};updatePreview();break;
+        }
         case DragKind::scrub: setCursor(snapTick(tickNow, bypass)); break;
         case DragKind::slip: {
             // Relative to the original press, never the previous preview. Right
@@ -1293,7 +1311,7 @@ public:
         preview.reset();
         switch (kind) {
         case DragKind::move: case DragKind::copy: case DragKind::slip: case DragKind::trimStart: case DragKind::trimEnd:
-        case DragKind::fadeIn: case DragKind::fadeOut: case DragKind::marker: case DragKind::loopNew: case DragKind::loopStart: case DragKind::loopEnd: case DragKind::loopMove:
+        case DragKind::warp: case DragKind::fadeIn: case DragKind::fadeOut: case DragKind::marker: case DragKind::loopNew: case DragKind::loopStart: case DragKind::loopEnd: case DragKind::loopMove:
             if (active && finished.apply) {
                 const bool done = edit(finished.label, finished.apply);
                 if (done && kind == DragKind::copy && finished.created) { selected = *finished.created; stateChanged(); }
@@ -1376,6 +1394,7 @@ public:
         const bool command = mods.isCommandDown(), shift = mods.isShiftDown();
         if (mods.isAltDown()) return false;
         const auto letter = juce::CharacterFunctions::toUpperCase(static_cast<juce::juce_wchar>(code));
+        if (code == juce::KeyPress::escapeKey && controller.cancelWarpPreparation()) return true;
         if (code == juce::KeyPress::escapeKey) {
             if (dragging()) { drag = {}; preview.reset(); repaint(); return true; }
             clearSelection(); return true;
@@ -1447,10 +1466,11 @@ public:
     }
 
 private:
-    enum class DragKind { none, scrub, move, copy, slip, trimStart, trimEnd, fadeIn, fadeOut, marker, tempo, loopNew, loopStart, loopEnd, loopMove, marquee, comp };
+    enum class DragKind { warp, none, scrub, move, copy, slip, trimStart, trimEnd, fadeIn, fadeOut, marker, tempo, loopNew, loopStart, loopEnd, loopMove, marquee, comp };
     struct Drag {
         DragKind kind{DragKind::none};
         bool active{};
+        std::size_t warpIndex{};
         juce::Point<int> origin;
         juce::ModifierKeys mods;
         double anchorTick{}, grabOffset{};
@@ -1533,6 +1553,12 @@ private:
                 menu.addItem(cmdSlipLeft, "Slip source left"); menu.addItem(cmdSlipRight, "Slip source right");
                 menu.addItem(cmdSourceLoop, "Loop source"); menu.addItem(cmdReverse, "Reverse"); menu.addItem(cmdNormalize, "Normalize");
                 if (isAudioRegion(*r)) {   // fades act on audio only
+                    menu.addItem(cmdWarp,"Enable warp (fit source to region)",r->warp.empty());
+                    menu.addItem(cmdAddWarp,"Add warp marker here",!r->warp.empty());
+                    menu.addItem(cmdRemoveWarp,"Remove warp marker",hit.warp>0 && hit.warp+1<static_cast<int>(r->warp.size()));
+                    menu.addItem(cmdDetectTransients,"Detect transients as warp markers",!r->warp.empty());
+                    menu.addItem(cmdDisableWarp,"Disable warp",!r->warp.empty());
+                    menu.addItem(cmdRebuildWarp,"Rebuild warped audio",!r->warp.empty());
                     menu.addItem(cmdFade, "Fade in and out"); menu.addItem(cmdCrossfade, "Crossfade", canCrossfadeSelection());
                     menu.addItem(cmdRemoveFades, "Remove fades", selectionHasFades());
                     // One submenu per fade: its shape (the first selected clip's is ticked).
@@ -1557,8 +1583,14 @@ private:
             menu.addSeparator();
             menu.addItem(cmdOpen, r != nullptr && r->isPattern() ? "Open in Channel Rack" : "Open clip");
             if (r != nullptr && !r->isPattern()) menu.addItem(cmdMakeUnique, "Make this placement unique", controller.placementShared(hit.region));
-            launch(std::move(menu), area, [this, region = hit.region](int id) {
+            launch(std::move(menu), area, [this, region = hit.region, warpIndex = hit.warp, tick](int id) {
                 switch (id) {
+                case cmdWarp: if(controller.enableRegionWarp(region))afterEdit();break;
+                case cmdAddWarp: edit("Add warp marker",[=](auto& t){const auto* r=t.find(region);return r && t.addWarpMarker(region,r->offset+tick-r->start);});break;
+                case cmdRemoveWarp: edit("Remove warp marker",[=](auto& t){return t.removeWarpMarker(region,static_cast<std::size_t>(warpIndex));});break;
+                case cmdDisableWarp: edit("Disable audio warp",[=](auto& t){return t.setWarp(region,{});});break;
+                case cmdRebuildWarp: controller.retryWarpPreparation();break;
+                case cmdDetectTransients: controller.detectRegionTransients(region);break;
                 case cmdSplit: splitAtCursor(); break; case cmdMute: toggleMuteSelection(); break;
                 case cmdSlipLeft: slipSelection(-timeline::ticksPerStep); break; case cmdSlipRight: slipSelection(timeline::ticksPerStep); break;
                 case cmdSourceLoop: toggleSourceLoopSelection(); break; case cmdReverse: toggleReverseSelection(); break;
@@ -1911,7 +1943,7 @@ private:
             if (box.getWidth() > 24.0f) {
                 g.setColour(col::text.withAlpha(r.muted ? 0.5f : 0.95f));
                 g.setFont(ui::font(11.0f, true));
-                g.drawText(regionName(r), box.withTrimmedLeft(6.0f).withTrimmedRight(14.0f).withHeight(15.0f).toNearestInt(), juce::Justification::centredLeft, true);
+                g.drawText(r.warp.empty()?regionName(r):"Warp: "+regionName(r), box.withTrimmedLeft(6.0f).withTrimmedRight(14.0f).withHeight(15.0f).toNearestInt(), juce::Justification::centredLeft, true);
             }
             if (r.group != 0 && box.getWidth() > 16.0f) {
                 g.setColour(col::text.withAlpha(0.8f));
@@ -1920,6 +1952,15 @@ private:
             }
         }
         if (isAudioRegion(r)) paintFades(g, r, box);
+        if (!r.warp.empty()) {
+            g.setColour(col::accent);
+            for (std::size_t i=0;i<r.warp.size();++i) {
+                const float x=static_cast<float>(xForTick(static_cast<double>(r.start+r.warp[i].tick-r.offset)));
+                if(x<box.getX() || x>box.getRight())continue;
+                g.drawVerticalLine(static_cast<int>(x),box.getY()+15,box.getBottom()-6);
+                g.fillRect(x-3,box.getBottom()-9,6.0f,7.0f);
+            }
+        }
         g.setColour(colour.withAlpha(r.muted ? 0.4f : 1.0f));
         g.fillRoundedRectangle(box.withWidth(std::min(3.0f, box.getWidth())), 1.5f);
         g.setColour(isSel ? juce::Colours::white : colour.withAlpha(0.65f));
@@ -2073,9 +2114,10 @@ private:
             for (int px = first; px <= last; ++px) {
                 const double tickInRegion = (static_cast<double>(px) - x0) / ppt;
                 if (tickInRegion < 0 || tickInRegion >= static_cast<double>(r.length)) continue;
-                const double seconds = r.audioOffset + tempo.secondsBetween(start, start + tickInRegion);
+                const double seconds = r.warp.empty() ? r.audioOffset + tempo.secondsBetween(start, start + tickInRegion) : timeline::warpSeconds(r.warp, r.offset + tickInRegion);
+                if (seconds < 0) continue;
                 if (seconds >= duration) break;
-                const double secondsNext = r.audioOffset + tempo.secondsBetween(start, start + tickInRegion + 1.0 / ppt);
+                const double secondsNext = r.warp.empty() ? r.audioOffset + tempo.secondsBetween(start, start + tickInRegion + 1.0 / ppt) : timeline::warpSeconds(r.warp, r.offset + tickInRegion + 1.0 / ppt);
                 const auto b0 = std::min(audio.waveformCount - 1, static_cast<std::size_t>(seconds / duration * static_cast<double>(audio.waveformCount)));
                 const auto b1 = std::min(audio.waveformCount - 1, std::max(b0, static_cast<std::size_t>(std::min(secondsNext, duration) / duration * static_cast<double>(audio.waveformCount))));
                 float amp = 0.0f;

@@ -11,6 +11,7 @@
 #include <limits>
 #include <memory>
 #include <thread>
+#include <stdexcept>
 #include <vector>
 
 using namespace alien::timeline;
@@ -226,7 +227,33 @@ static void freezeBuiltinRelease() {
     check(maxDifference(cached,render(song,options))<1e-7,"freeze capture excludes fader, pan and automation");
 }
 
+static void warpedExportChecks() {
+    auto material=makeMaterial(8000,2,2,7);
+    Song song;song.playback->timeline.setLengthBars(1);
+    auto r=region(0,0,0,1920);r.warp={{0,0},{960,.5},{1920,2}};
+    check(song.playback->timeline.place(r) && song.playback->timeline.setTempoChange(960,60),"warp export fixture");
+    put(song,0,0,*material,0);finish(song);const auto original=song.playback->timeline;
+    const auto decoded=render(song);put(song,0,0,*material,1);
+    alien::WavExportOptions odd;odd.blockFrames=113;
+    const auto streamed=render(song,odd);
+    check(maxDifference(decoded,streamed)<3e-7 && energy(streamed,1000,70000)>0,"warped RAM/stream sources and export block sizes give identical audible output");
+    check(song.playback->timeline==original && song.playback->warped.empty(),"export preserves editable source markers and never installs cache files in the project");
+    std::atomic<bool> cancel{false};juce::String error;alien::DrumSamplePointers drums{};
+    material->file->readsBeforeFailure=0;const auto failed=tempWav("alien-warp-failure");
+    check(!alien::exportArrangementWav(failed,*song.project,*song.playback,drums,cancel,error) && !failed.exists(),"warp source failure publishes no export");
+    struct ThrowSource final : alien::DiskAudioFile {
+        ThrowSource():DiskAudioFile(8000,2,16000){}
+        std::unique_ptr<alien::DiskAudioReader> open() const override {throw std::runtime_error("injected decoder failure");}
+    };
+    material->streamed.streamSource=std::make_shared<ThrowSource>();
+    check(!alien::exportArrangementWav(failed,*song.project,*song.playback,drums,cancel,error) && error.containsIgnoreCase("warp") && !failed.exists(),"decoder exceptions fail warp export without publishing output");
+    material->streamed.streamSource=material->file;
+    material->file->readsBeforeFailure=-1;cancel.store(true);
+    check(!alien::exportArrangementWav(failed,*song.project,*song.playback,drums,cancel,error) && !failed.exists(),"cancelled warp publishes no export");
+}
+
 int main() {
+    warpedExportChecks();
     freezeBuiltinRelease();
     stemTests();
     std::atomic<bool> cancelled{false};

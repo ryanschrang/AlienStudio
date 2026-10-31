@@ -55,6 +55,7 @@ public:
     std::array<std::atomic<int>, 16> stepPitches{};
     std::array<std::atomic<int>, 16> stepVelocities{};
     std::atomic<bool> playing{false};
+    std::atomic<bool> arrangementPreparing{false}; // background warp cache is not ready
     std::atomic<int> bpm{120}, currentStep{-1}, preset{0};
     std::array<alien::TrackControls, sessionTracks> tracks;
     std::array<alien::ReturnControls, alien::maxReturns> returns;   // return slots; `active` says which exist
@@ -221,6 +222,7 @@ private:
     void renderBlock(float* const* outputs, int channels, int samples, int outputOffset) {
         handleRecording();
         bool playNow = playing.load();
+        if (arrangementPreparing.load(std::memory_order_acquire)) { playing.store(false); playNow = false; }
         const int modeNow = patternMode.load();
         if (modeNow == 2) {
             const auto bar = song->timeline.meterMap().barAt(timelineTick);
