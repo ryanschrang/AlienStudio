@@ -273,6 +273,14 @@ if(BUILD_TESTING)
         juce::juce_audio_formats juce::juce_audio_basics)
     add_test(NAME PianoRollKeyboardTests COMMAND PianoRollKeyboardTests)
 
+    # Piano-roll pitch rows (PROD-06 part 2): All / Used / Scale rows, scale shading, gestures on hidden rows.
+    add_executable(PianoRollPitchViewTests tests/PianoRollPitchViewTests.cpp)
+    target_include_directories(PianoRollPitchViewTests PRIVATE src)
+    target_compile_definitions(PianoRollPitchViewTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(PianoRollPitchViewTests PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_audio_devices
+        juce::juce_audio_formats juce::juce_audio_basics)
+    add_test(NAME PianoRollPitchViewTests COMMAND PianoRollPitchViewTests)
+
     # Group buses (MIX-03): track output routing, bus strips and FX, solo, delay compensation, format, undo, stems.
     add_executable(GroupBusTests tests/GroupBusTests.cpp)
     target_include_directories(GroupBusTests PRIVATE src)
