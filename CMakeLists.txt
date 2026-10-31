@@ -296,6 +296,12 @@ if(BUILD_TESTING)
     add_test(NAME FaultGuardTests COMMAND FaultGuardTests)
 
     # The host surviving plugins that crash, throw or emit NaN (test plugins that really do).
+    # Plugin blocklist (T1-09): crashed plugins remembered and refused, allowed again, startup-scan switch.
+    add_executable(PluginBlocklistTests tests/PluginBlocklistTests.cpp)
+    target_include_directories(PluginBlocklistTests PRIVATE src)
+    target_compile_definitions(PluginBlocklistTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(PluginBlocklistTests PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_gui_extra juce::juce_audio_devices juce::juce_audio_formats juce::juce_audio_basics)
+    add_test(NAME PluginBlocklistTests COMMAND PluginBlocklistTests)
     add_executable(PluginFaultTests tests/PluginFaultTests.cpp)
     target_include_directories(PluginFaultTests PRIVATE src)
     target_compile_definitions(PluginFaultTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)

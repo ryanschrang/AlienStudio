@@ -103,6 +103,10 @@ public:
     // Message thread: asked before a VST3 plugin is loaded into the session. An empty answer means go ahead;
     // anything else is the reason it must not be (the slot stays in the project with its saved settings).
     std::function<juce::String(const juce::PluginDescription&)> preflight;
+    // Message thread: a plugin crashed while being hosted (while loading, preparing, processing, saving its
+    // state, answering a query or with its editor). Given its saved description and what happened; answers
+    // true if the plugin is now blocked from loading again, which the report then says.
+    std::function<bool(const juce::String& descriptionXml, const juce::String& why)> onCrash;
 
     struct EditorWindow final : juce::DocumentWindow {
         explicit EditorWindow(const juce::String& title) : juce::DocumentWindow(title,juce::Colour(0xff17181c),juce::DocumentWindow::closeButton) { setUsingNativeTitleBar(true); }
@@ -301,6 +305,9 @@ private:
         return name+" ("+where(rack,index)+")";
     }
     juce::String report(const juce::String& level,const juce::String& message) { log.write(level,message); return message; }
+    static juce::String blockedNote(const juce::String& name) {
+        return name+" is blocked from loading again until it is updated; Scan VST3 > Blocked plugins allows it again.";
+    }
     // Turns queued runtime faults into text, appends it to `text`, and logs each one.
     void drain(juce::String& text) {
         PluginFault f;
@@ -314,7 +321,10 @@ private:
             juce::String line=name+" ("+where(f.rack,f.slot)+") "+juce::String(describe(f))+". ";
             if (f.phase==PluginPhase::process || f.phase==PluginPhase::prepare || f.phase==PluginPhase::query)
                 line += f.slot<0 ? "It was switched off and its track is silent. " : "It was switched off and audio now bypasses it. ";
-            line += "Its saved settings are kept; remove it or reload the plugins to try again.";
+            // A crash (not invalid audio) can block the plugin from loading again.
+            const bool blocked=!f.nonFiniteOutput && slot!=nullptr && onCrash && onCrash(slot->description,"it "+juce::String(describe(f)));
+            line += blocked ? "Its saved settings are kept. "+blockedNote(name)
+                            : juce::String("Its saved settings are kept; remove it or reload the plugins to try again.");
             const auto moduleName=juce::String(fault::moduleContaining(f.fault.instruction));
             if (moduleName.isNotEmpty() && !line.contains(moduleName)) line += " [module "+moduleName+"]";
             log.write("fault",line);
@@ -332,6 +342,7 @@ private:
     void loadSlot(PluginRuntime::Slot& slot,const PluginState& state,bool instrument,double rate,juce::String& errors,int rack,int index) {
         if(state.descriptionXml.isEmpty()) return;
         slot.name=pluginDisplayName(state);
+        slot.description=state.descriptionXml;
         slot.instanceId=state.instanceId;
         juce::String error; fault::Fault fault;
         if (preflight) {
@@ -351,6 +362,8 @@ private:
             errors+=error+"\n";
             loadProblems[{rack,index}]=fault.occurred()?"crashed while loading":"could not be loaded";
             log.write(fault.occurred()?"fault":"warn",slot.name+" ("+where(rack,index)+"): "+error);
+            if (fault.occurred() && onCrash && onCrash(state.descriptionXml,"it crashed while loading: "+juce::String(fault::describe(fault))))
+                errors+=blockedNote(slot.name)+"\n";
             return;
         }
         applySidechain(slot,state,index);
