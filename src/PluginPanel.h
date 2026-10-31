@@ -10,7 +10,8 @@
 
 namespace alien {
 // What the Scan menu can ask for.
-enum class ScanCommand { standardFolders, folder, singleFile, retryFailed, rescanAll, openScanLog, openProblemLog, recheckBlocked, togglePreflight };
+enum class ScanCommand { standardFolders, folder, singleFile, retryFailed, rescanAll, openScanLog, openProblemLog, recheckBlocked, togglePreflight,
+                         toggleStartupScan };
 
 class PluginPanel final : public juce::Component {
 public:
@@ -157,10 +158,35 @@ public:
     bool isScanning() const{return scanning;}
     void setPreflightEnabled(bool on){preflightEnabled=on;}
     bool preflightIsEnabled() const{return preflightEnabled;}
+    void setStartupScanEnabled(bool on){startupScan=on;}
+    bool startupScanIsEnabled() const{return startupScan;}
     // Runs a Scan menu command (the menu items call this; tests do too).
     void perform(ScanCommand command){
         if(command==ScanCommand::togglePreflight)preflightEnabled=!preflightEnabled;
+        if(command==ScanCommand::toggleStartupScan)startupScan=!startupScan;
         if(onScanCommand)onScanCommand(command);
+    }
+    // Plugins blocked after crashing while hosted (T1-09): their names for the Blocked plugins menu, and what
+    // allows one again (its index in that list) or every one (-1).
+    std::function<juce::StringArray()> blockedPlugins;
+    std::function<void(int)> onAllowBlocked;
+    // The Blocked plugins submenu: one item per plugin (ids from blockedBase), then Allow all.
+    static constexpr int blockedBase=100, allowAllBlocked=99;
+    juce::PopupMenu blockedMenu() const {
+        juce::PopupMenu menu;
+        const auto names=blockedPlugins?blockedPlugins():juce::StringArray();
+        if(names.isEmpty()){menu.addItem(allowAllBlocked,"No plugin is blocked",false);return menu;}
+        for(int i=0;i<names.size();++i)menu.addItem(blockedBase+i,"Allow "+names[i]+" to load again");
+        menu.addSeparator();
+        menu.addItem(allowAllBlocked,"Allow all of them again");
+        return menu;
+    }
+    // A choice from the Scan menu, by item id (the menu calls this; tests do too).
+    void chooseScanItem(int id){
+        static constexpr ScanCommand commands[]={ScanCommand::standardFolders,ScanCommand::folder,ScanCommand::singleFile,ScanCommand::retryFailed,ScanCommand::rescanAll,ScanCommand::recheckBlocked,ScanCommand::togglePreflight,ScanCommand::openScanLog,ScanCommand::openProblemLog,ScanCommand::toggleStartupScan};
+        if(id>=1&&id<=10){perform(commands[id-1]);return;}
+        if(id==allowAllBlocked){if(onAllowBlocked)onAllowBlocked(-1);return;}
+        if(id>=blockedBase&&onAllowBlocked)onAllowBlocked(id-blockedBase);
     }
     void showScanMenu(){
         juce::PopupMenu menu;
@@ -170,14 +196,15 @@ public:
         menu.addSeparator();
         menu.addItem(4,"Retry plugins that failed",!scanning);
         menu.addItem(5,"Rescan everything",!scanning);
-        menu.addItem(6,"Re-check plugins that were blocked",true);
+        menu.addItem(6,"Re-check plugins the safety check blocked",true);
+        menu.addSubMenu("Blocked plugins (crashed while playing)",blockedMenu());
         menu.addSeparator();
         menu.addItem(7,"Check plugins before loading them (recommended)",true,preflightEnabled);
+        menu.addItem(10,"Look for new plugins when Alien Studio starts",true,startupScan);
         menu.addItem(8,"Show the last scan log",true);
         menu.addItem(9,"Show the plugin problem log",true);
-        static constexpr ScanCommand commands[]={ScanCommand::standardFolders,ScanCommand::folder,ScanCommand::singleFile,ScanCommand::retryFailed,ScanCommand::rescanAll,ScanCommand::recheckBlocked,ScanCommand::togglePreflight,ScanCommand::openScanLog,ScanCommand::openProblemLog};
         juce::Component::SafePointer<PluginPanel> safe(this);
-        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&scan),[safe](int id){if(safe&&id>=1&&id<=9)safe->perform(commands[id-1]);});
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&scan),[safe](int id){if(safe&&id!=0)safe->chooseScanItem(id);});
     }
     void setStatus(const juce::String& text){status.setText(text,juce::dontSendNotification);status.setTooltip(text);}
     void resized() override {
@@ -222,6 +249,6 @@ private:
     std::array<juce::String,maxReturns> keyReturnNames{};
     std::vector<std::pair<KeySource,int>> keyOf;   // each effect's key, as last shown
     juce::Label status;
-    bool scanning{},preflightEnabled{true};
+    bool scanning{},preflightEnabled{true},startupScan{true};
 };
 }
