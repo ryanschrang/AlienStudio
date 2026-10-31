@@ -68,15 +68,74 @@ bool streamTempoWarp(std::int64_t length,double rate,int channels,double ratio,
     return !cancel.load();
 }
 
+// Variable source positions share the original bounded WSOLA search and stereo alignment.
+template<class Position, class Read, class Write>
+bool streamMappedTempoWarp(std::int64_t length,double rate,int channels,std::int64_t total,Position&& sourceAt,
+                     const std::atomic<bool>& cancel,Read&& read,Write&& write) {
+    if(length<=0 || !std::isfinite(rate) || rate<8000 || rate>192000 || channels<1 || channels>2
+        || total <= 0 || total > INT64_MAX-8192 || cancel.load())return false;
+    const int grain=std::max(64,static_cast<int>(rate*0.04)),hop=grain/4,seek=std::max(8,static_cast<int>(rate*0.006));
+    const int region=grain+2*seek;
+    juce::AudioBuffer<float> source(channels,region),previous(channels,grain),sum(channels,grain);
+    std::vector<float> weights(grain),window(grain);
+    sum.clear();previous.clear();
+    for(int n=0;n<grain;++n)window[n]=static_cast<float>(0.5-0.5*std::cos(6.283185307179586*(n+0.5)/grain));
+    auto load=[&](juce::AudioBuffer<float>& buffer,std::int64_t start,int count){
+        buffer.clear();
+        const int skip=static_cast<int>(std::min<std::int64_t>(count,std::max<std::int64_t>(0,-start)));
+        const auto first=std::max<std::int64_t>(0,start);
+        const int valid=static_cast<int>(std::min<std::int64_t>(count-skip,std::max<std::int64_t>(0,length-first)));
+        float* data[]{buffer.getWritePointer(0)+skip,channels==2?buffer.getWritePointer(1)+skip:nullptr};
+        if(valid>0 && !read(data,channels,first,valid))return false;
+        for(int c=0;c<channels;++c)for(int n=skip;n<skip+valid;++n)if(!std::isfinite(buffer.getSample(c,n)))buffer.setSample(c,n,0);
+        return true;
+    };
+    for(std::int64_t pos=0;pos<total;pos+=hop) {
+        if(cancel.load())return false;
+        const double position=sourceAt(pos);
+        if (!std::isfinite(position) || std::abs(position) > static_cast<double>(INT64_MAX/2)) return false;
+        const auto expected=static_cast<std::int64_t>(std::floor(position));
+        const auto start=expected>=0?std::max<std::int64_t>(0,expected-seek):expected-seek;
+        if(!load(source,start,region))return false;
+        int best=static_cast<int>(expected-start);
+        if(pos>0) {
+            double bestScore=-2;
+            for(int candidate=0;candidate<=static_cast<int>(expected+seek-start);++candidate) {
+                if((candidate&63)==0 && cancel.load())return false;
+                double dot=0,aa=0,bb=0;
+                for(int c=0;c<channels;++c)for(int n=0;n<grain-hop;n+=8) {
+                    const double a=previous.getSample(c,hop+n),b=source.getSample(c,candidate+n);
+                    dot+=a*b;aa+=a*a;bb+=b*b;
+                }
+                const double score=dot/std::sqrt(aa*bb+1.0e-20)-1.0e-6*std::abs(start+candidate-expected);
+                if(score>bestScore){bestScore=score;best=candidate;}
+            }
+        }
+        for(int n=0;n<grain;++n) {
+            weights[n]+=window[n];
+            for(int c=0;c<channels;++c) {
+                const float value=source.getSample(c,best+n);
+                previous.setSample(c,n,value);sum.addSample(c,n,window[n]*value);
+            }
+        }
+        const int count=static_cast<int>(std::min<std::int64_t>(hop,total-pos));
+        for(int c=0;c<channels;++c)for(int n=0;n<count;++n)if(weights[n]>0)sum.setSample(c,n,sum.getSample(c,n)/weights[n]);
+        if(!write(sum.getArrayOfReadPointers(),channels,count))return false;
+        for(int c=0;c<channels;++c){auto* data=sum.getWritePointer(c);std::memmove(data,data+hop,(grain-hop)*sizeof(float));std::fill(data+grain-hop,data+grain,0);}
+        std::move(weights.begin()+hop,weights.end(),weights.begin());std::fill(weights.end()-hop,weights.end(),0);
+    }
+    return !cancel.load();
+}
+
 inline RecordingResult warpTempoFile(const juce::File& source,const juce::File& destination,double ratio,
-                                    const std::atomic<bool>& cancel) {
+                                    const std::atomic<bool>& cancel, const juce::File& recovery = RecordingFile::recoveryDirectory()) {
     RecordingResult result;
     juce::AudioFormatManager formats;formats.registerBasicFormats();
     std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(source));
     if(!reader){result.error="Cannot read tempo-warp source audio";return result;}
     if(reader->numChannels<1 || reader->numChannels>2 || reader->lengthInSamples<=0
         || !std::isfinite(ratio) || ratio<0.5 || ratio>2){result.error="Use mono/stereo audio and a duration ratio between 0.5 and 2";return result;}
-    auto output=RecordingFile::create(destination,reader->sampleRate,static_cast<int>(reader->numChannels),result.error);
+    auto output=RecordingFile::create(destination,reader->sampleRate,static_cast<int>(reader->numChannels),result.error,recovery);
     if(!output)return result;
     std::uint64_t written=0,checkpoint=0;
     const bool ok=streamTempoWarp(reader->lengthInSamples,reader->sampleRate,static_cast<int>(reader->numChannels),ratio,cancel,

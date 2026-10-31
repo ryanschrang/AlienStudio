@@ -3,6 +3,7 @@
 // their lanes, live edits that must not restart the song, tempo changes, exactness
 // over a long song, and the promise that the callback never allocates.
 #include "ToneEngine.h"
+#include "ArrangementWarp.h"
 #include "RackSounds.h"
 #include <algorithm>
 #include <array>
@@ -1586,7 +1587,39 @@ static void streamedSessionRackScene() {
     require(launched, "ready streamed scene eventually launches its rack source");
 }
 
+static void warpedPlaybackChecks() {
+    auto input=makeSine(2);
+    auto song=newSong(2);song->clips[0][0].audio=&input;
+    auto region=regionOf(0,0,0,2*ticksPerBeat);region.warp={{0,0},{ticksPerBeat,.5},{2*ticksPerBeat,2}};
+    place(*song,region);require(song->timeline.setTempoChange(ticksPerBeat,60),"warped playback tempo change");
+    require(!alien::ArrangementMailbox::validSnapshot(*song),"raw warp maps cannot enter the audio callback");
+    std::atomic<bool> cancel{false};juce::String error;
+    require(alien::prepareArrangementWarps(*song,cancel,error) && song->warped.size()==1,"prepare playback warp outside callback");
+    require(alien::ArrangementMailbox::validSnapshot(*song) && song->timeline.regions[0].warp.empty(),"only rendered warp snapshots are accepted");
+    auto capture=[&](int block,std::int64_t seek,int frames) {
+        Rig rig;rig.block=block;rig.engine.renderStreamsDeterministically();
+        rig.engine.retainDiskAudioSource(song->warped[0].owner->streamSource);
+        rig.publish(song);rig.seek(seek);rig.play();rig.render(frames);return rig.out;
+    };
+    const auto energy=[](const std::vector<float>& samples,int from,int to){double sum=0;for(int i=from;i<to;++i)sum+=samples[static_cast<std::size_t>(i)]*samples[static_cast<std::size_t>(i)];return sum;};
+    const auto a=capture(64,0,72000),b=capture(311,0,72000);
+    require(a==b && energy(a,1000,70000)>0,"tempo-following warped playback is audible and sample-identical across callback sizes");
+    const auto seekA=capture(73,1200,18000),seekB=capture(257,1200,18000);
+    require(seekA==seekB && energy(seekA,1000,17000)>0,"seeking inside a tempo-changed warp is deterministic and audible");
+    // Production callback: the stream worker owns decoding and cache reads.
+    Rig live;live.engine.retainDiskAudioSource(song->warped[0].owner->streamSource);live.publish(song);live.seek(0);live.play();
+    std::array<float,128> left{},right{};float* outputs[]{left.data(),right.data()};
+    for(int n=0;n<20;++n) {live.engine.audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,128,{});std::this_thread::sleep_for(std::chrono::milliseconds(1));}
+    const auto before=allocationCount;
+    for(int n=0;n<100;++n)live.engine.audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,128,{});
+    require(allocationCount==before,"warped live callback performs no heap allocation");
+    live.engine.arrangementPreparing.store(true);live.engine.playing.store(true);
+    live.engine.audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,128,{});
+    require(!live.engine.playing.load(),"transport cannot start against an unfinished warp cache");
+}
+
 int main() {
+    timed("warped audio", warpedPlaybackChecks);
     timed("streamed Session rack scene", streamedSessionRackScene);
     timed("take comp", takeCompPlaybackTests);
     timed("fades", fadeTests);

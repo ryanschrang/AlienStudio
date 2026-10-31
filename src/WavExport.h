@@ -1,4 +1,5 @@
 #pragma once
+#include "ArrangementWarp.h"
 #include "ToneEngine.h"
 #include "SessionProject.h"
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -96,6 +97,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     const std::int64_t from = std::clamp<std::int64_t>(options.fromTick, 0, songEnd);
     const std::int64_t to = options.toTick < 0 ? songEnd : std::clamp<std::int64_t>(options.toTick, 0, songEnd);
     if (to <= from) { error="Nothing to export in that range."; return false; }
+    if (!prepareArrangementWarps(*song, cancelled, error, from, to)) return false;
 
     // Open every streamed source this render will play before touching the destination, so a missing
     // file is reported up front. Each voice later opens its own reader, so a clip placed twice is read
@@ -194,6 +196,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         if(end>timeline::maxLength){error="Frozen tail exceeds the supported song length.";return false;}
         song->timeline.lengthBars=std::max(song->timeline.lengthBars,static_cast<int>(song->timeline.meterMap().barsCovering(end)));
     }
+    for (const auto& w : song->warped) engine->retainDiskAudioSource(w.owner->streamSource);
     if(!engine->arrangementMailbox.publish(std::shared_ptr<const ArrangementPlayback>(song))) { error="Invalid song data.";return false; }
     for (std::size_t c = 0; c < options.rackClips.size(); ++c) engine->rackSamples[c].store(options.rackClips[c]);
     engine->rackMailbox.publish(project.channelRack.snapshot());
