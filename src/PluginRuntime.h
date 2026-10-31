@@ -1,4 +1,5 @@
 #pragma once
+#include "ParameterAutomation.h"
 #include "PluginFault.h"
 #include "PluginState.h"
 #include "SessionCapacity.h"
@@ -67,6 +68,9 @@ public:
     std::array<int,maxSessionTracks> eventCounts{};
     std::atomic<bool> panic{};
     FaultQueue faults;                          // read by the message thread (PluginHost::poll)
+    // Which plugin parameter each automation target is, sorted (ParameterAutomation.h). Replaced by the
+    // host while the device callback is detached, after every restore; read by the audio thread.
+    std::vector<automation::ParameterBinding> parameterBindings;
     std::atomic<std::uint32_t> faultCount{0};   // every fault ever recorded here; an export compares before and after
 
     PluginRuntime() { prepare(44100); }
@@ -198,6 +202,32 @@ public:
         int latency = slotLatency(rack.instrument);
         for (int i = 0; i < rack.effectCount; ++i) latency += slotLatency(rack.effects[i]);
         return std::clamp(latency,0,maxDelay);
+    }
+    // Audio thread, before the block is processed: sets each automated plugin parameter to its lane's value at
+    // `tick`, so automation is applied once per block (at most blockSize samples late). A lane whose plugin is
+    // missing, replaced or switched off does nothing. No allocation, no lock; the call into the plugin is
+    // contained like every other. Returns how many parameters were changed.
+    int applyParameterAutomation(const std::vector<automation::ParameterLane>& lanes, double tick) noexcept {
+        int changed = 0;
+        for (const auto& lane : lanes) {
+            if (!lane.enabled || lane.points.empty()) continue;
+            const auto* binding = automation::findSorted(lane.target, parameterBindings);
+            if (binding == nullptr || binding->rack >= rackCount) continue;
+            auto& rack = racks[static_cast<std::size_t>(binding->rack)];
+            auto& slot = binding->slot < 0 ? rack.instrument : rack.effects[static_cast<std::size_t>(binding->slot)];
+            if (!slot.processor || slot.faulted.get() || slot.instanceId != binding->instance) continue;
+            fault::Fault fault;
+            const bool completed = fault::guarded([&] {
+                const auto& parameters = slot.processor->getParameters();
+                if (binding->parameter >= parameters.size()) return;
+                auto* parameter = parameters.getUnchecked(binding->parameter);
+                const float current = parameter->getValue();
+                const float value = lane.valueAt(tick, current);
+                if (value != current) { parameter->setValue(value); ++changed; }
+            }, fault);
+            if (!completed) markFaulted(slot, binding->rack, binding->slot, PluginPhase::automation, fault);
+        }
+        return changed;
     }
     // Instrument replaces built-in synth/drum audio. A bypassed instrument is
     // silent; FX bypass passes audio through. Imported clips are added after it.

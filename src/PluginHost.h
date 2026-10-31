@@ -149,8 +149,37 @@ public:
             }
         }
         brokenEditors.clear();   // those processors are gone (or parked), and their addresses may be reused
+        // Automation finds its parameters through these (the callback is detached, as for the slots).
+        runtime.parameterBindings = parameterBindings();
+        automation::sortBindings(runtime.parameterBindings);
         drain(errors);           // a plugin that failed while preparing is part of this restore's result
         return errors;
+    }
+    // What the automation editor offers for one rack: every automatable parameter with a persistent ID, by
+    // plugin. Message thread; the calls into the plugins are contained.
+    struct ParameterChoice { automation::ParameterTarget target; juce::String plugin, parameter; };
+    std::vector<ParameterChoice> parameterChoices(int rack) {
+        std::vector<ParameterChoice> choices;
+        if (rack < 0 || rack >= PluginRuntime::rackCount) return choices;
+        auto collect = [&](PluginRuntime::Slot& slot, int index) {
+            if (!slot.processor || slot.faulted.get() || slot.instanceId == 0) return;
+            const auto plugin = (index < 0 ? juce::String("Instrument: ") : "FX " + juce::String(index + 1) + ": ") + slot.name;
+            std::vector<ParameterChoice> found;
+            fault::Fault fault;
+            if (!fault::guarded([&] {
+                for (auto* p : slot.processor->getParameters()) {
+                    auto* hosted = dynamic_cast<juce::HostedAudioProcessorParameter*>(p);
+                    if (hosted == nullptr || !hosted->isAutomatable()) continue;
+                    automation::ParameterTarget target{slot.instanceId, hosted->getParameterID().toStdString()};
+                    if (target.valid()) found.push_back({std::move(target), plugin, hosted->getName(64)});
+                }
+            }, fault)) { runtime.markFaulted(slot, rack, index, PluginPhase::query, fault); return; }
+            choices.insert(choices.end(), std::make_move_iterator(found.begin()), std::make_move_iterator(found.end()));
+        };
+        auto& r = runtime.racks[static_cast<std::size_t>(rack)];
+        collect(r.instrument, -1);
+        for (int i = 0; i < r.effectCount; ++i) collect(r.effects[static_cast<std::size_t>(i)], i);
+        return choices;
     }
     // Message thread only; callers detach audio, as for restore/snapshot. Never
     // invent an index-based ID for plugins without persistent parameter IDs.
@@ -312,7 +341,7 @@ private:
             }
             const auto name=slot && slot->name.isNotEmpty()?slot->name:juce::String("A plugin");
             juce::String line=name+" ("+where(f.rack,f.slot)+") "+juce::String(describe(f))+". ";
-            if (f.phase==PluginPhase::process || f.phase==PluginPhase::prepare || f.phase==PluginPhase::query)
+            if (f.phase==PluginPhase::process || f.phase==PluginPhase::prepare || f.phase==PluginPhase::query || f.phase==PluginPhase::automation)
                 line += f.slot<0 ? "It was switched off and its track is silent. " : "It was switched off and audio now bypasses it. ";
             line += "Its saved settings are kept; remove it or reload the plugins to try again.";
             const auto moduleName=juce::String(fault::moduleContaining(f.fault.instruction));
