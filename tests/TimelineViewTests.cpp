@@ -2366,8 +2366,12 @@ static void fadeShapeChecks() {
     std::cout << "PASS: fade shapes" << std::endl;
 }
 
+#include "WarpMarkerTests.h"
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    warpRenderChecks();
+    warpEditorChecks();
     freezeMenuChecks();
     placementClipChecks();
     fadeShapeChecks();

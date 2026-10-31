@@ -25,7 +25,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 31;   // 31: VST3 instruments on Channel Rack channels (30 is reserved for warp markers, T1-08); 29: persistent universal track registry and checked document bindings; 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings; 27: fade shapes; 28: independent rack launch slots per Session row
+inline constexpr int sessionProjectFormatVersion = 31;   // 31: VST3 instruments on Channel Rack channels; 30: Song warp anchors; 29: persistent universal track registry and checked document bindings; 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings; 27: fade shapes; 28: independent rack launch slots per Session row
 
 // A group bus slot. Slots keep their index while other buses come and go, so a track's output
 // (TrackSettings::output) and the bus's FX rack never need renumbering.
@@ -541,6 +541,11 @@ inline juce::String serializeSessionProject(const SessionProjectData& source) {
             object->setProperty("row", r.row); object->setProperty("source", r.source);
             object->setProperty("start", static_cast<int>(r.start)); object->setProperty("length", static_cast<int>(r.length));
             object->setProperty("offset", static_cast<int>(r.offset)); object->setProperty("audioOffset", r.audioOffset);
+            if (!r.warp.empty()) {
+                juce::Array<juce::var> markers;
+                for (const auto& m : r.warp) { auto v = juce::var(new juce::DynamicObject()); v.getDynamicObject()->setProperty("tick", static_cast<int>(m.tick)); v.getDynamicObject()->setProperty("seconds", m.seconds); markers.add(v); }
+                object->setProperty("warp", markers);
+            }
             object->setProperty("gain", r.gain); object->setProperty("fadeIn", static_cast<int>(r.fadeIn));
             object->setProperty("fadeOut", static_cast<int>(r.fadeOut)); object->setProperty("loopSource", r.loopSource);
             object->setProperty("reversed", r.reversed); object->setProperty("crossfade", static_cast<int>(r.crossfade));
@@ -740,6 +745,16 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
         region.row = static_cast<int>(row); region.source = static_cast<int>(source);
         region.start = static_cast<int>(start); region.length = static_cast<int>(regionLength);
         region.offset = static_cast<int>(offset); region.audioOffset = static_cast<double>(audioOffset);
+        if (const auto value = r->getProperty("warp"); !value.isVoid()) {
+            const auto* markers = value.getArray();
+            if (!markers || markers->size() < 2 || markers->size() > static_cast<int>(timeline::maxWarpMarkers)) { error = "Invalid warp markers."; return false; }
+            for (const auto& m : *markers) {
+                const auto* o = m.getDynamicObject();
+                if (!o || !o->getProperty("tick").isInt() || !(o->getProperty("seconds").isDouble() || o->getProperty("seconds").isInt())) { error = "Invalid warp marker."; return false; }
+                region.warp.push_back({static_cast<int>(o->getProperty("tick")), static_cast<double>(o->getProperty("seconds"))});
+            }
+            if (!timeline::validWarp(region.warp)) { error = "Warp markers must increase in source time and musical time."; return false; }
+        }
         const auto gain = r->getProperty("gain"), fadeIn = r->getProperty("fadeIn"), fadeOut = r->getProperty("fadeOut"),
                    loopSource = r->getProperty("loopSource"), reversed = r->getProperty("reversed");
         if (requireAudioEdits || !gain.isVoid() || !fadeIn.isVoid() || !fadeOut.isVoid() || !loopSource.isVoid() || !reversed.isVoid()) {

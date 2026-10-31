@@ -3,6 +3,7 @@
 #include "ViewModes.h"
 #include "ToneEngine.h"
 #include "AudioClipImport.h"
+#include "ArrangementWarp.h"
 #include "AudioRelink.h"
 #include "PortableProject.h"
 #include "DocumentHistory.h"
@@ -37,10 +38,12 @@ public:
     }
 
     ~ProjectController() {
+        warpCancelled.store(true);
         alive.reset();
         audioFileChooser.reset();
         projectFileChooser.reset();
         pool.removeAllJobs(true, -1);
+        engine.arrangementPreparing.store(false);
     }
 
     const ProjectDocument& document() const noexcept { return doc; }
@@ -73,7 +76,7 @@ public:
         doc.synchronizeTrackRegistry();
         const auto previous = history.currentId();
         history.record(doc, label, focusTrack, focusScene, coalesceKey, continuous);
-        if (history.currentId() != previous) publishArrangement();
+        if (history.currentId() != previous || (engine.arrangementPreparing.load() && !warpWorkActive)) publishArrangement();
         historyChanged();
     }
 
@@ -1079,7 +1082,10 @@ public:
         engine.stepVelocities[static_cast<std::size_t>(step)].store(doc.steps.velocity[static_cast<std::size_t>(step)]);
     }
     void setBpm(int bpm) {
+        if (busy || (std::any_of(doc.timeline.regions.begin(),doc.timeline.regions.end(),[](const auto& r){return !r.warp.empty();}) && (isRecording() || engine.recording.phase.load()!=RecordControls::idle))) return;
         const bool unfreezing=juce::jlimit(60,200,bpm)!=doc.bpm && unfreezeForTempo();
+        const bool hasWarp=std::any_of(doc.timeline.regions.begin(),doc.timeline.regions.end(),[](const auto& r){return !r.warp.empty();});
+        if(hasWarp && juce::jlimit(60,200,bpm)!=doc.bpm) {engine.arrangementPreparing.store(true);engine.playing.store(false);}
         doc.bpm = juce::jlimit(60, 200, bpm);
         engine.bpm.store(doc.bpm);
         if(unfreezing && onDocumentRestored)onDocumentRestored();
@@ -1342,7 +1348,7 @@ public:
 
     std::shared_ptr<ArrangementPlayback> captureArrangement() const {
         auto song = std::make_shared<ArrangementPlayback>();
-        song->timeline = doc.timeline;
+        song->timeline = doc.timeline; song->timeline.tempo = doc.bpm;
         for (int s = 0; s < doc.sceneCount(); ++s) for (int t = 0; t < doc.trackCount(); ++t) {
             // An offline audio clip stays silent; it must not fall back to playing stray notes.
             if (!doc.clip(t, s).audioOffline()) song->clips[s][t].pattern = doc.clip(t, s).pattern;   // shared, not copied
@@ -1357,6 +1363,7 @@ public:
     // reused by a different clip while it is being compared.
     struct PublishedSong {
         bool known{};
+        int bpm{};
         alien::timeline::Timeline timeline;
         int tracks{}, scenes{};
         std::vector<std::shared_ptr<const PianoRollPattern>> patterns;
@@ -1364,7 +1371,7 @@ public:
         std::vector<std::shared_ptr<const PianoRollPattern>> placements;   // by doc.placementClips()
     };
     bool songDiffersFromPublished() const {
-        if (!published.known || published.tracks != doc.trackCount() || published.scenes != doc.sceneCount()
+        if (!published.known || (published.bpm != doc.bpm && std::any_of(doc.timeline.regions.begin(),doc.timeline.regions.end(),[](const auto& r){return !r.warp.empty();})) || published.tracks != doc.trackCount() || published.scenes != doc.sceneCount()
             || !published.timeline.playbackEquals(doc.timeline)) return true;
         std::size_t index = 0;
         for (int s = 0; s < doc.sceneCount(); ++s)
@@ -1379,7 +1386,7 @@ public:
         return false;
     }
     void rememberPublishedSong() {
-        published.known = true;
+        published.known = true; published.bpm = doc.bpm;
         published.timeline = doc.timeline;
         published.tracks = doc.trackCount();
         published.scenes = doc.sceneCount();
@@ -1393,8 +1400,81 @@ public:
         for (const auto id : doc.placementClips()) published.placements.push_back(doc.contentOf(alien::library::ClipId{id}).pattern);
     }
     void publishArrangement() {
-        if (!songDiffersFromPublished()) return;
-        if (engine.arrangementMailbox.publish(captureArrangement())) rememberPublishedSong();
+        if (warpWorkActive) return;
+        if (!songDiffersFromPublished()) { if(!warpWorkActive)engine.arrangementPreparing.store(false); return; }
+        auto song = captureArrangement();
+        const bool warped = std::any_of(song->timeline.regions.begin(), song->timeline.regions.end(), [](const auto& r) { return !r.warp.empty(); });
+        if (!warped) { if (engine.arrangementMailbox.publish(song)) rememberPublishedSong(); engine.arrangementPreparing.store(false); return; }
+        // The document is committed immediately; edits wait while a private cache
+        // is rendered. Never publish mismatched tempo/audio or do DSP in the GUI.
+        engine.arrangementPreparing.store(true); engine.playing.store(false);
+        setBusy(true); warpWorkActive=true; warpCancelled.store(false);
+        status("Preparing warped audio...", "Press Play when ready; Escape cancels preparation.");
+        const auto revision=history.currentId();
+        std::weak_ptr<int> token = alive;
+        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, song, revision] {
+            juce::String error;
+            bool ok = false;
+            try { ok = prepareArrangementWarps(*song, warpCancelled, error); }
+            catch (...) { error = "Not enough resources to render warped audio."; }
+            juce::MessageManager::callAsync([this, token, song, ok, error, revision] {
+                if (!token.lock()) return;
+                if(history.currentId()!=revision && !warpCancelled.load()) {
+                    warpWorkActive=false;setBusy(false);published.known=false;publishArrangement();return;
+                }
+                // MIDI edits may update a shared clip during a gesture before
+                // its commit. Include those latest notes in the completed song.
+                const auto current=captureArrangement();song->clips=current->clips;song->placements=current->placements;
+                const bool cancelled=warpCancelled.load();
+                const bool ready=ok && !cancelled;
+                const juce::String problem=cancelled?"Warp preparation cancelled; markers kept. Use Rebuild warped audio to retry.":error;
+                if (ready) {
+                    for (const auto& w : song->warped) engine.retainDiskAudioSource(w.owner->streamSource);
+                } else {
+                    // A failed warp is silent, never silently played unstretched.
+                    for (auto& r : song->timeline.regions) if (!r.warp.empty() || std::any_of(song->warped.begin(),song->warped.end(),[&](const auto& w){return w.id==r.id;})) {r.muted = true;r.warp.clear();}
+                }
+                if (!engine.arrangementMailbox.publish(song)) {
+                    warpWorkActive=false;setBusy(false);status("Warp playback snapshot was rejected; Undo or rebuild before playing.",{});return;
+                }
+                rememberPublishedSong();
+                warpWorkActive=false;
+                engine.arrangementPreparing.store(false, std::memory_order_release);
+                setBusy(false);
+                status(ready ? "Warped audio ready" : "Warp render failed: " + problem, problem);
+            });
+            return juce::ThreadPoolJob::jobHasFinished;
+        };
+        pool.addJob(std::move(job));
+    }
+    void detectRegionTransients(std::uint32_t id) {
+        const auto* r=doc.timeline.find(id);
+        if(busy || isRecording() || engine.recording.phase.load()!=RecordControls::idle || !r || r->warp.empty() || !doc.isValidCell(r->row,r->source))return;
+        const auto audio=doc.clip(r->row,r->source).audio;if(!audio)return;
+        const auto map=r->warp;setBusy(true);warpWorkActive=true;warpCancelled.store(false);status("Detecting transients...","Escape cancels analysis.");
+        std::weak_ptr<int> token=alive;
+        std::function<juce::ThreadPoolJob::JobStatus()> job=[this,token,id,audio,map] {
+            juce::String error;std::vector<timeline::WarpMarker> result;
+            try {result=detectWarpTransients(*audio,map,warpCancelled,error);}catch(...){error="Transient analysis failed.";}
+            juce::MessageManager::callAsync([this,token,id,result=std::move(result),error] {
+                if(!token.lock())return;warpWorkActive=false;setBusy(false);
+                if(warpCancelled.load()){status("Transient analysis cancelled",{});return;}
+                if(result.size()>2 && error.isEmpty()) editTimeline("Detect warp transients",[=](auto& t){return t.setWarp(id,result);});
+                else status(error.isEmpty()?"No additional transients found":error,{});
+            });return juce::ThreadPoolJob::jobHasFinished;
+        };pool.addJob(std::move(job));
+    }
+    bool retryWarpPreparation() { if (busy) return false; published.known=false; publishArrangement(); return true; }
+    bool cancelWarpPreparation() { if (!warpWorkActive) return false; warpCancelled.store(true); status("Cancelling warp preparation...",{}); return true; }
+    bool enableRegionWarp(std::uint32_t id) {
+        const auto* r = doc.timeline.find(id);
+        if (busy || isRecording() || engine.recording.phase.load()!=RecordControls::idle || !r || r->isPattern() || !r->warp.empty() || !doc.isValidCell(r->row,r->source)) return false;
+        const auto audio=doc.clip(r->row,r->source).audio;
+        if (!audio) return false;
+        const double end=static_cast<double>(audio->frames)/audio->sampleRate;
+        if (r->audioOffset >= end || r->offset > timeline::maxLength-r->length) return false;
+        const std::vector<timeline::WarpMarker> markers{{r->offset,r->audioOffset},{r->offset+r->length,end}};
+        return editTimeline("Enable audio warp", [=](auto& t){return t.setWarp(id,markers);});
     }
     // The Arrangement timeline ------------------------------------------------------
     const alien::timeline::Timeline& timeline() const noexcept { return doc.timeline; }
@@ -1409,6 +1489,9 @@ public:
         auto next = doc.timeline;
         next.tempo = doc.bpm;
         if (!edit(next)) return false;
+        const bool hasWarp=std::any_of(next.regions.begin(),next.regions.end(),[](const auto& r){return !r.warp.empty();})
+            || std::any_of(doc.timeline.regions.begin(),doc.timeline.regions.end(),[](const auto& r){return !r.warp.empty();});
+        if(hasWarp && (isRecording() || engine.recording.phase.load()!=RecordControls::idle) && !next.playbackEquals(doc.timeline)) return false;
         for (auto& r : next.regions) {
             if (r.ownsClip() && doc.library.clip(alien::library::ClipId{r.clip}) == nullptr) return false;
             if (r.isPattern()) {
@@ -2594,6 +2677,8 @@ private:
     bool runtimeDirty{};
     bool autosaveWarned{};
     PublishedSong published;
+    std::atomic<bool> warpCancelled{};
+    bool warpWorkActive{}; // message thread only
     // Decoded Channel Rack samples by path. Kept (with `retained`) for the life of
     // the controller so the engine can hold raw pointers to them.
     std::map<std::string, std::shared_ptr<const SessionAudioClip>> rackAudio;

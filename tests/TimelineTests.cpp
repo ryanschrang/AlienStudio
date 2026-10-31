@@ -824,7 +824,27 @@ static void fadeShapeTests() {
     }
 }
 
+static void warpMarkerChecks() {
+    using namespace alien::timeline;
+    Timeline t; Region r; r.length=4*ticksPerBeat; r.warp={{0,0},{ticksPerBeat,.5},{4*ticksPerBeat,2}};
+    std::uint32_t id{}; check(t.place(r,&id),"place a warped region");
+    check(validWarp(r.warp) && std::abs(warpSeconds(r.warp,1920)-1)<1e-10 && std::abs(warpTick(r.warp,1)-1920)<1e-10,"warp map and inverse agree");
+    check(t.addWarpMarker(id,2*ticksPerBeat) && t.moveWarpMarker(id,2,3*ticksPerBeat),"insert and move an interior marker");
+    check(std::abs(warpSeconds(t.find(id)->warp,3*ticksPerBeat)-1)<1e-10,"moving marker retains source seconds");
+    const auto moved=t;
+    check(!t.moveWarpMarker(id,2,ticksPerBeat) && !t.removeWarpMarker(id,0) && !t.addWarpMarker(id,ticksPerBeat) && t==moved,"crossing, duplicate and endpoint edits are refused atomically");
+    auto bad=r.warp;bad[1].seconds=0;check(!t.setWarp(id,bad) && t==moved,"non-increasing source time is refused");
+    bad=r.warp;bad[1].seconds=std::numeric_limits<double>::quiet_NaN();check(!t.setWarp(id,bad),"non-finite markers are refused");
+    check(t.split({id},2*ticksPerBeat),"split warped clip");
+    const auto* right=t.regionAt(0,2*ticksPerBeat);
+    check(right && right->offset==2*ticksPerBeat && right->warp==moved.find(id)->warp && std::abs(right->audioOffset-warpSeconds(right->warp,right->offset))<1e-10,"split preserves source map and advances content position");
+    const auto rightId=right->id;const auto anchors=right->warp;
+    check(t.slip({rightId},ticksPerStep) && t.find(rightId)->warp==anchors,"slip advances content without rewriting source anchors");
+    const auto same=t;check(t.move({rightId},ticksPerBeat) && t.find(rightId)->warp==anchors && !t.playbackEquals(same),"move retains markers but changes playback");
+}
+
 int main() {
+    warpMarkerChecks();
     freezeModelChecks();
     constantsAndDefaults();
     placementTests();
