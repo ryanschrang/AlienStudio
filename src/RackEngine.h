@@ -66,6 +66,17 @@ public:
     static constexpr int masterBus = maxSessionTracks;  // buses 0..maxSessionTracks-1 are Session tracks
     static constexpr int busCount = maxSessionTracks + 1;
     using SampleTable = std::array<std::atomic<const SessionAudioClip*>, maxChannels>;
+    // A channel played by a plugin instrument (T1-09) makes no sound here: its hits become notes for the plugin,
+    // with the same timing, gates, ratchets, choke groups, mute and solo as any other channel. The owner reads
+    // them after each block (midiNotes), plays them into the plugins, and clears them. velocity 0 is a note-off.
+    struct MidiNote { int channel{}, sample{}, note{}; float velocity{}; };
+    static constexpr int maxMidiNotes = 1024;
+    const MidiNote* midiNotes() const noexcept { return midiStorage->data(); }
+    int midiNoteCount() const noexcept { return midiCount; }
+    void clearMidiNotes() noexcept { midiCount = 0; midiSample = 0; }
+    // A plugin channel's fader and pan as they glide (the same values the rack's own voices follow).
+    float channelGain(int channel) const noexcept { return channel >= 0 && channel < maxChannels ? gain[static_cast<std::size_t>(channel)] : 0.0f; }
+    float channelPan(int channel) const noexcept { return channel >= 0 && channel < maxChannels ? pan[static_cast<std::size_t>(channel)] : 0.0f; }
 
     void prepare(double rate) noexcept {
         sampleRate = std::isfinite(rate) && rate > 0.0 ? rate : 44100.0;
@@ -77,6 +88,7 @@ public:
         clock.reset(); wasRunning = false; lastStep = -1; controlCountdown = 0; pendingCount = 0; now = 0;
         launchRunning = false; launches = {}; instanceRandom.fill(seed);
         performSwingPending = false;
+        clearMidiNotes();
     }
     // Fades every sound out over a few milliseconds, drops hits not yet played and rewinds the clock.
     void stop() noexcept {
@@ -155,14 +167,16 @@ public:
         const auto& settings = snap.channels[static_cast<std::size_t>(channel)];
         const int note = 60 + std::clamp(pitch, -60, 67);
         if (velocity <= 0) {
-            for (auto& v : voices) if (v.active && v.preview && v.channel == channel && v.synthPreset >= 0 && v.note == note)
-                synthFor(v).noteOff(v.note);
+            for (auto& v : voices) if (v.active && v.preview && v.channel == channel && v.note == note) {
+                if (v.plugin) releaseVoice(v);
+                else if (v.synthPreset >= 0) synthFor(v).noteOff(v.note);
+            }
             return;
         }
-        if (clip == nullptr && !settings.isSynth()) return;
+        if (clip == nullptr && !settings.isInstrument()) return;
         auto& voice = start(settings, channel, clip, std::clamp(velocity, 0.0f, 1.0f), 0.0f, note - 60, true);
         // Clicking a channel name must not leave a sustaining instrument held.
-        if (voice.synthPreset >= 0 && !held) voice.gateLeft = static_cast<std::int64_t>(sampleRate * 0.5) + 1;
+        if ((voice.synthPreset >= 0 || voice.plugin) && !held) voice.gateLeft = static_cast<std::int64_t>(sampleRate * 0.5) + 1;
     }
 
     // Renders `samples` samples and ADDS them to the per-bus output pointers.
@@ -202,7 +216,7 @@ public:
     // the shallow RackPlayer object and externally owned content/samples.
     static constexpr std::size_t fixedStorageBytes() noexcept {
         return sizeof(std::array<Voice, voiceCount>) + sizeof(std::array<Pending, maxPending>)
-            + sizeof(std::array<SynthEngine, voiceCount>);
+            + sizeof(std::array<SynthEngine, voiceCount>) + sizeof(std::array<MidiNote, maxMidiNotes>);
     }
 
     // The step (within the pattern) that started most recently, or -1 when stopped.
@@ -254,6 +268,7 @@ private:
             return;
         }
         for (int i = 0; i < samples; ++i) {
+            midiSample = i;
             if (controlCountdown-- <= 0) { controlCountdown = controlInterval - 1; updateControl(snap); }
             if (running) onSample(i);
             if (pendingCount > 0 && now >= nextDue) firePending(snap, clips);
@@ -281,12 +296,18 @@ private:
         std::uint64_t patternClip{};
         int instance{-1};
         std::uint8_t choke{};
-        bool active{false}, releasing{false}, preview{false};
+        bool active{false}, releasing{false}, preview{false}, plugin{false};
     };
 
     SynthEngine& synthFor(const Voice& voice) noexcept { return (*synthStorage)[static_cast<std::size_t>(&voice - voices.data())]; }
+    void emitNote(int channel, int note, float velocity) noexcept {
+        if (midiCount >= maxMidiNotes) return;
+        (*midiStorage)[static_cast<std::size_t>(midiCount++)] = {channel, midiSample, note, velocity};
+    }
     void releaseVoice(Voice& v) noexcept {
         if (!v.active) return;
+        // A plugin plays its own release: the note ends now and the voice is free.
+        if (v.plugin) { emitNote(v.channel, v.note, 0.0f); v.active = false; return; }
         v.releasing = true;
         if (v.synthPreset >= 0) synthFor(v).noteOff(v.note);
     }
@@ -301,7 +322,7 @@ private:
             const auto c = static_cast<std::size_t>(voice.channel);
             const bool audible = snap.audible(voice.channel);
             if ((!voice.preview && wasAudible[c] && !audible)
-                || voice.synthPreset != snap.channels[c].instrumentPreset) releaseVoice(voice);
+                || voice.synthPreset != snap.channels[c].instrumentPreset || voice.plugin != snap.channels[c].plugin) releaseVoice(voice);
             if (voice.sequence != 0) {
                 const auto* pattern = snap.pattern(voice.patternClip != 0 ? snap.indexOfClip(voice.patternClip) : voice.pattern);
                 if (!pattern || pattern->noteRevisions[c] != voice.sequence) releaseVoice(voice);
@@ -382,11 +403,11 @@ private:
             // One draw decides the whole step, ratchets included.
             if (s.probability < 100 && nextRandom(instance) % 100u >= s.probability) continue;
             if (clips[static_cast<std::size_t>(c)].load(std::memory_order_relaxed) == nullptr
-                && !snap.channels[static_cast<std::size_t>(c)].isSynth()) continue;
+                && !snap.channels[static_cast<std::size_t>(c)].isInstrument()) continue;
             // Ratchets split the step evenly; the gate is a share of the time between them.
             const int hits = std::clamp(static_cast<int>(s.ratchet), 1, maxRatchet);
             const double spacing = stepSamples / hits;
-            const std::int64_t gate = s.gate >= fullGate && !snap.channels[static_cast<std::size_t>(c)].isSynth() ? -1
+            const std::int64_t gate = s.gate >= fullGate && !snap.channels[static_cast<std::size_t>(c)].isInstrument() ? -1
                 : std::max<std::int64_t>(1, std::llround(spacing * static_cast<double>(s.gate) / 100.0));
             const double offset = stepSamples * static_cast<double>(std::min<int>(s.nudge, maxNudge)) / 100.0;
             const float velocity = static_cast<float>(s.velocity) / 127.0f, pan = static_cast<float>(s.pan) / 63.0f;
@@ -427,9 +448,9 @@ private:
     }
     void play(const Snapshot& snap, const SampleTable& clips, int c, float velocity, float stepPan, int pitch, std::int64_t gate, int pattern = -1, std::uint64_t sequence = 0, int instance = -1) noexcept {
         const SessionAudioClip* clip = clips[static_cast<std::size_t>(c)].load(std::memory_order_relaxed);
-        if (clip == nullptr && !snap.channels[static_cast<std::size_t>(c)].isSynth()) return;
+        if (clip == nullptr && !snap.channels[static_cast<std::size_t>(c)].isInstrument()) return;
         Voice& v = start(snap.channels[static_cast<std::size_t>(c)], c, clip, velocity, stepPan, pitch, false, instance);
-        v.gateLeft = v.synthPreset >= 0 && gate < 0 ? static_cast<std::int64_t>(stepSamples) + 1 : gate; v.pattern = pattern; v.sequence = sequence; v.instance = instance;
+        v.gateLeft = (v.synthPreset >= 0 || v.plugin) && gate < 0 ? static_cast<std::int64_t>(stepSamples) + 1 : gate; v.pattern = pattern; v.sequence = sequence; v.instance = instance;
         v.patternClip = pattern >= 0 && pattern < maxPatterns ? snap.clips[static_cast<std::size_t>(pattern)] : 0;
     }
 
@@ -444,11 +465,16 @@ private:
             for (auto& v : voices) if (v.age < chosen->age) chosen = &v;
         }
         const auto c = static_cast<std::size_t>(index);
+        if (chosen->active && chosen->plugin) emitNote(chosen->channel, chosen->note, 0.0f);   // a stolen plugin note ends
         *chosen = Voice{};
         chosen->clip = clip;
         chosen->synthPreset = channel.instrumentPreset;
+        chosen->plugin = channel.plugin;
         chosen->note = std::clamp(60 + semitones, 0, 127);
-        if (chosen->synthPreset >= 0) {
+        if (chosen->plugin) {
+            // Velocity goes to the plugin with the note; the channel's fader and pan are applied to its output.
+            emitNote(index, chosen->note, std::clamp(velocity, 1.0f / 127.0f, 1.0f));
+        } else if (chosen->synthPreset >= 0) {
             auto& synth = synthFor(*chosen);
             synth.prepare(sampleRate);
             synth.setPatch(alien::presets[static_cast<std::size_t>(std::clamp(chosen->synthPreset, 0, alien::presetCount - 1))]);
@@ -480,6 +506,10 @@ private:
     void renderSample(int index, float* const* left, float* const* right) noexcept {
         for (auto& v : voices) {
             if (!v.active) continue;
+            if (v.plugin) {   // only its gate is kept here; the plugin makes the sound
+                if (v.gateLeft > 0 && --v.gateLeft == 0) releaseVoice(v);
+                continue;
+            }
             if (v.gateLeft > 0 && --v.gateLeft == 0) {
                 if (v.synthPreset >= 0) synthFor(v).noteOff(v.note);
                 else v.releasing = true;
@@ -525,6 +555,8 @@ private:
     // Independent one-note engines keep same-pitch overlaps and releases separate.
     // The shared rack voice pool still limits the total to 64 voices, not 64x16.
     std::unique_ptr<std::array<SynthEngine, voiceCount>> synthStorage = std::make_unique<std::array<SynthEngine, voiceCount>>();
+    std::unique_ptr<std::array<MidiNote, maxMidiNotes>> midiStorage = std::make_unique<std::array<MidiNote, maxMidiNotes>>();
+    int midiCount{}, midiSample{};
     std::array<Voice, voiceCount>& voices = *voiceStorage;
     std::array<Pending, maxPending>& pending = *pendingStorage;
     int pendingCount{};

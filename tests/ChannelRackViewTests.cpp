@@ -1399,6 +1399,32 @@ static void nameColumnChecks() {
     std::cout << "PASS: resizable name column\n";
 }
 
+// T1-09: a channel's Sound menu lists the scanned VST3 instruments; choosing one is the owner's job, and a plugin
+// channel offers its instrument editor.
+static void pluginInstrumentMenu() {
+    Rig rig;
+    auto& grid = rig.grid;
+    int chosen = -1, chosenRow = -1, opened = -1;
+    grid.pluginInstruments = [] { return juce::StringArray{"Pad", "Bass"}; };
+    grid.onChoosePlugin = [&](int row, int index) { chosenRow = row; chosen = index; };
+    grid.onOpenPluginEditor = [&](int row) { opened = row; };
+    auto menu = entries(grid.channelMenu(1));
+    require(entry(menu, ChannelRackGrid::pluginBase)->text == "Pad" && entry(menu, ChannelRackGrid::pluginBase + 1)->text == "Bass"
+            && entry(menu, ChannelRackGrid::cmdPluginEditor) == nullptr, "the Sound menu lists every VST3 instrument");
+    grid.runChannelCommand(1, ChannelRackGrid::pluginBase + 1);
+    require(chosenRow == 1 && chosen == 1, "choosing one asks the owner to load it on that channel");
+    juce::PluginDescription d; d.name = "Bass"; d.pluginFormatName = "VST3"; d.fileOrIdentifier = "bass"; d.isInstrument = true;
+    require(rig.controller.setRackPlugin(1, d.createXml()->toString(), d.name), "the owner gives the channel the instrument");
+    menu = entries(grid.channelMenu(1));
+    require(entry(menu, ChannelRackGrid::pluginBase + 1)->ticked && !entry(menu, ChannelRackGrid::cmdSilent)->ticked
+            && entry(menu, ChannelRackGrid::cmdPluginEditor) != nullptr, "its instrument is ticked, and its editor is offered");
+    grid.runChannelCommand(1, ChannelRackGrid::cmdPluginEditor);
+    require(opened == 1, "Open instrument editor asks the owner to open it");
+    grid.pluginInstruments = [] { return juce::StringArray{}; };
+    require(!entry(entries(grid.channelMenu(0)), ChannelRackGrid::pluginBase - 1)->enabled, "with none scanned, the menu says how to find them");
+    std::puts("PASS: VST3 instruments in the channel menu");
+}
+
 static void synthChannelChecks() {
     Rig rig;
     auto& view = rig.view; auto& grid = rig.grid;
@@ -1445,6 +1471,7 @@ int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     deferredTrackIdentityRename();
     synthChannelChecks();
+    pluginInstrumentMenu();
     nameColumnChecks();
     channelPianoRollChecks();
     multiSelectChecks();

@@ -156,13 +156,16 @@ struct Channel {
     std::int8_t output{masterOutput};    // masterOutput or a Session track index
     std::uint8_t chokeGroup{0};          // 0: none. Hits in a group cut off every other sound of the group.
     int instrumentPreset{-1}; // -1: sample, otherwise an index in alien::presets
+    bool plugin{false};       // a VST3 instrument (T1-09) plays this channel; ChannelInfo says which
     bool isSynth() const noexcept { return instrumentPreset >= 0; }
+    // Plays notes rather than a sample: the built-in synth or a plugin instrument.
+    bool isInstrument() const noexcept { return isSynth() || plugin; }
     bool operator==(const Channel&) const = default;
     bool valid() const noexcept {
         return std::isfinite(volume) && volume >= 0.0f && volume <= 1.0f
             && std::isfinite(pan) && pan >= -1.0f && pan <= 1.0f
             && output >= masterOutput && output <= maxOutputTrack && chokeGroup <= maxChokeGroup
-            && instrumentPreset >= -1 && instrumentPreset < alien::presetCount;
+            && instrumentPreset >= -1 && instrumentPreset < alien::presetCount && !(plugin && instrumentPreset >= 0);
     }
 };
 
@@ -171,7 +174,24 @@ struct ChannelInfo {
     std::string name;
     // "" (silent), "builtin:<id>" (a synthesized drum sound), or the path of an audio file.
     std::string sample;
-    bool operator==(const ChannelInfo&) const = default;
+    // A VST3 instrument (T1-09): its saved description (XML) and state (JUCE base64), and its instance identity.
+    // Held by pointer and compared by content, so a channel without one stays small (projects are copied often).
+    struct Plugin {
+        std::string description, state;
+        std::uint64_t instance{};
+        bool operator==(const Plugin&) const = default;
+    };
+    std::shared_ptr<const Plugin> plugin;
+    bool hasPlugin() const { return plugin != nullptr && !plugin->description.empty(); }
+    const std::string& pluginDescription() const { return plugin ? plugin->description : none(); }
+    const std::string& pluginState() const { return plugin ? plugin->state : none(); }
+    std::uint64_t pluginInstance() const { return plugin ? plugin->instance : 0; }
+    bool operator==(const ChannelInfo& o) const {
+        return name == o.name && sample == o.sample && (plugin == o.plugin || (plugin && o.plugin && *plugin == *o.plugin));
+    }
+private:
+    static const std::string& none() { static const std::string empty; return empty; }
+public:
     bool isBuiltin() const { return sample.rfind("builtin:", 0) == 0; }
     bool isFile() const { return !sample.empty() && !isBuiltin(); }
     std::string builtinId() const { return isBuiltin() ? sample.substr(8) : std::string{}; }
@@ -481,15 +501,47 @@ struct Project {
     bool setSample(int index, std::string sample) {
         if (!validChannel(index) || sample.size() > maxSampleBytes) return false;
         const auto c = static_cast<std::size_t>(index);
-        if (info[c].sample == sample && !channels[c].isSynth()) return false;
+        if (info[c].sample == sample && !channels[c].isInstrument()) return false;
         channels[c].instrumentPreset = -1;
+        clearPlugin(c);
         info[c].sample = std::move(sample); return true;
     }
     bool setInstrumentPreset(int index, int preset) {
         if (!validChannel(index) || preset < 0 || preset >= alien::presetCount) return false;
         const auto c = static_cast<std::size_t>(index);
         if (channels[c].instrumentPreset == preset && info[c].sample.empty()) return false;
+        clearPlugin(c);
         channels[c].instrumentPreset = preset; info[c].sample.clear(); return true;
+    }
+    static constexpr std::size_t maxPluginDescriptionBytes = 65536, maxPluginStateBytes = 64u * 1024u * 1024u;
+    // Gives a channel a plugin instrument (a fresh one: no saved state yet). instance must be non-zero and is
+    // the new instance's identity.
+    bool setPlugin(int index, std::string description, std::uint64_t instance) {
+        if (!validChannel(index) || description.empty() || description.size() > maxPluginDescriptionBytes || instance == 0) return false;
+        const auto c = static_cast<std::size_t>(index);
+        channels[c].instrumentPreset = -1; channels[c].plugin = true;
+        info[c].sample.clear();
+        info[c].plugin = std::make_shared<const ChannelInfo::Plugin>(ChannelInfo::Plugin{std::move(description), {}, instance});
+        return true;
+    }
+    // Gives a channel's plugin a new identity (a duplicate is a second instance of the same sound).
+    bool renewPluginInstance(int index, std::uint64_t instance) {
+        if (!validChannel(index) || instance == 0 || !info[static_cast<std::size_t>(index)].hasPlugin()) return false;
+        auto& i = info[static_cast<std::size_t>(index)];
+        i.plugin = std::make_shared<const ChannelInfo::Plugin>(ChannelInfo::Plugin{i.plugin->description, i.plugin->state, instance});
+        return true;
+    }
+    // Keeps what the plugin instance `instance` last reported as its state (a snapshot, not an edit of the sound).
+    bool setPluginState(std::uint64_t instance, std::string state) {
+        if (instance == 0 || state.size() > maxPluginStateBytes) return false;
+        for (int c = 0; c < channelCount; ++c) {
+            auto& i = info[static_cast<std::size_t>(c)];
+            if (i.pluginInstance() != instance || !i.hasPlugin()) continue;
+            if (i.pluginState() == state) return false;
+            i.plugin = std::make_shared<const ChannelInfo::Plugin>(ChannelInfo::Plugin{i.plugin->description, std::move(state), instance});
+            return true;
+        }
+        return false;
     }
     bool setSwing(float value) {
         if (!std::isfinite(value)) return false;
@@ -525,6 +577,9 @@ struct Project {
             const auto i = static_cast<std::size_t>(c);
             if (!channels[i].valid() || info[i].name.size() > maxNameBytes || info[i].sample.size() > maxSampleBytes) return false;
             if (channels[i].isSynth() && !info[i].sample.empty()) return false;
+            if (channels[i].plugin != info[i].hasPlugin() || (info[i].hasPlugin() && (!info[i].sample.empty() || info[i].pluginInstance() == 0))
+                || (!info[i].hasPlugin() && info[i].plugin != nullptr)
+                || info[i].pluginDescription().size() > maxPluginDescriptionBytes || info[i].pluginState().size() > maxPluginStateBytes) return false;
             if (c >= channelCount && !(channels[i] == Channel{} && info[i] == ChannelInfo{})) return false;
             if (c < channelCount ? lanes[i] == 0 || lanes[i] >= nextLane : lanes[i] != 0) return false;
             for (int d = 0; d < c && c < channelCount; ++d) if (lanes[static_cast<std::size_t>(d)] == lanes[i]) return false;
@@ -559,6 +614,13 @@ struct Project {
         return true;
     }
 
+    // The plugin instance identities by channel (0: no plugin), so the owner can tell when the instruments it
+    // hosts no longer match (a channel added, removed, moved or given another instrument).
+    std::array<std::uint64_t, maxChannels> pluginInstances() const {
+        std::array<std::uint64_t, maxChannels> ids{};
+        for (int c = 0; c < channelCount; ++c) ids[static_cast<std::size_t>(c)] = info[static_cast<std::size_t>(c)].pluginInstance();
+        return ids;
+    }
     std::shared_ptr<const Snapshot> snapshot() const {
         auto s = std::make_shared<Snapshot>();
         s->channelCount = channelCount; s->channels = channels; s->selectedPattern = selectedPattern; s->swing = swing;
@@ -583,6 +645,10 @@ struct Project {
     }
 
 private:
+    void clearPlugin(std::size_t c) {
+        channels[c].plugin = false;
+        info[c].plugin.reset();
+    }
     std::string freshPatternName() const {
         for (int n = patternCount;; ++n) {
             const auto candidate = "Pattern " + std::to_string(n);

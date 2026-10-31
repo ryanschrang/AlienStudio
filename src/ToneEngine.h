@@ -97,6 +97,7 @@ public:
     // Slot zero is the Rack menu; slots 1..16 belong to Session tracks.
     using RackSources = alien::rack::RackPlayer::LaunchSources;
     static_assert(alien::rack::RackPlayer::timelineSlots == alien::timeline::rackLanes);
+    static_assert(alien::PluginRuntime::maxRackChannels == alien::rack::maxChannels, "one plugin slot per rack channel");
     std::array<std::atomic<std::uint64_t>, sessionTracks> requestedTrackRackClip{}, sceneTrackRackClip{}, activeTrackRackClip{}, queuedTrackRackClip{};
     std::atomic<int> launchQuantizationSteps{16}; // One bar by default (16 sixteenth-note steps).
     // Channel Rack. The project is published as an immutable snapshot; each
@@ -732,6 +733,7 @@ private:
             rackPlayer.processLaunched(*rackSnapshot, rackSamples, running, bpm.load(), activeTracks.load(), samples, left.data(), right.data(),
                                       rackRequestInBlock, launchQuantizationSteps.load(), startSelected,
                                       startSelected ? nullptr : rackLaunchTicks.data(), rackLaunchTickCount, rackSceneDue, rackSceneSample, &rackTrackRequests, &rackTrackSceneDue);
+        renderRackPlugins(samples, left.data(), right.data());
         activeRackClip.store(timelineRunning ? 0 : rackPlayer.playingClip(), std::memory_order_relaxed);
         queuedRackClip.store(timelineRunning ? alien::rack::RackPlayer::noLaunchRequest : rackPlayer.waitingClip(), std::memory_order_relaxed);
         if (!timelineRunning && synchronizedScenePending && synchronizedRackSource != alien::rack::RackPlayer::noLaunchRequest)
@@ -750,6 +752,37 @@ private:
         }
         plugins->live.addFrom(0, 0, left[alien::rack::RackPlayer::masterBus], samples);
         plugins->live.addFrom(1, 0, right[alien::rack::RackPlayer::masterBus], samples);
+    }
+    // The Channel Rack's plugin instruments (T1-09): each plays this block's notes for its channel, and its output
+    // joins the channel's bus with the channel's fader and pan (silent while muted or soloed out), gliding across
+    // the block so a fader move never steps.
+    void renderRackPlugins(int samples, float* const* left, float* const* right) noexcept {
+        const auto* notes = rackPlayer.midiNotes();
+        const int noteCount = rackPlayer.midiNoteCount();
+        const auto& snap = *rackSnapshot;
+        for (int c = 0; c < alien::PluginRuntime::maxRackChannels; ++c) {
+            if (!plugins->hasRackChannel(c)) continue;
+            const auto* out = plugins->processRackChannel(c, samples, [&](auto&& add) {
+                for (int n = 0; n < noteCount; ++n) if (notes[n].channel == c) add(notes[n].sample, notes[n].note, notes[n].velocity);
+            });
+            auto& previous = rackPluginGains[static_cast<std::size_t>(c)];
+            if (out == nullptr || c >= snap.channelCount) { previous = {}; continue; }
+            const auto& channel = snap.channels[static_cast<std::size_t>(c)];
+            const float level = snap.audible(c) ? rackPlayer.channelGain(c) : 0.0f;
+            const float angle = (std::clamp(rackPlayer.channelPan(c), -1.0f, 1.0f) + 1.0f) * 0.78539816339744830962f;
+            const std::array<float, 2> target{std::cos(angle) * level, std::sin(angle) * level};
+            const auto bus = static_cast<std::size_t>(alien::rack::RackPlayer::busFor(channel.output, activeTracks.load()));
+            const float* in[]{out->getReadPointer(0), out->getReadPointer(1)};
+            float* dest[]{left[bus], right[bus]};
+            for (std::size_t side = 0; side < 2; ++side) {
+                const float step = (target[side] - previous[side]) / static_cast<float>(samples);
+                float g = previous[side];
+                for (int i = 0; i < samples; ++i) { g += step; dest[side][i] += in[side][i] * g; }
+                previous[side] = target[side];
+            }
+        }
+        plugins->rackChannelsDone();
+        rackPlayer.clearMidiNotes();
     }
     // --- Live audio input --------------------------------------------------------------
     // An armed or monitoring track meters its input; a monitoring one also plays it, through the
@@ -1576,6 +1609,7 @@ private:
     alien::MetronomeClick click;
     std::array<float, alien::PluginRuntime::blockSize> clickBuffer{};
     std::array<double, alien::PluginRuntime::blockSize> automationTicks{};
+    std::array<std::array<float, 2>, alien::PluginRuntime::maxRackChannels> rackPluginGains{};   // each rack plugin's last gains
     std::int64_t lastClickBeat{-1};
     double countInBeats{}, countInTotalBeats{};                 // in quarter notes
     double countInBeatQuarters{1.0}; int countInNumerator{4};    // the count-in's beat and bar

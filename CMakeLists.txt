@@ -130,6 +130,13 @@ if(BUILD_TESTING)
     # A test function here holds many engines, patterns and projects, and a Debug build gives each its own stack space; Windows' default 1 MB is not enough (it crashed in CI).
     target_link_options(TimelinePlaybackTests PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/STACK:8388608>")
 
+    # VST3 instruments on Channel Rack channels (T1-09 part 2): model, notes, engine, containment, controller.
+    add_executable(RackPluginInstrumentTests tests/RackPluginInstrumentTests.cpp)
+    target_include_directories(RackPluginInstrumentTests PRIVATE src)
+    target_compile_definitions(RackPluginInstrumentTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(RackPluginInstrumentTests PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_gui_extra
+        juce::juce_audio_devices juce::juce_audio_formats juce::juce_audio_basics)
+    add_test(NAME RackPluginInstrumentTests COMMAND RackPluginInstrumentTests)
     add_executable(RackIntegrationTests tests/RackIntegrationTests.cpp)
     target_include_directories(RackIntegrationTests PRIVATE src)
     target_compile_definitions(RackIntegrationTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
