@@ -28,6 +28,7 @@
 #include "PluginHost.h"
 #include "PluginPanel.h"
 #include "PluginPreflight.h"
+#include "PluginBlocklist.h"
 
 // The application window's content. It owns the audio engine and device, the
 // project controller and every view, and wires them together. Views never talk
@@ -107,7 +108,23 @@ public:
         preflight = std::make_unique<alien::Preflight>(alien::scan::ScanDatabase::defaultFile().getSiblingFile("PluginPreflight.xml"),
             alien::isolatedPreflightChecker(juce::File::getSpecialLocation(juce::File::currentExecutableFile), 45000), alien::DiagnosticLog(hostLogFile()));
         pluginPanel.setPreflightEnabled(preflight->enabled());
-        pluginHost.preflight = [this](const juce::PluginDescription& description) { return preflight->verify(description); };
+        // A plugin that crashed while hosted earlier is refused before the safety check is even asked.
+        pluginHost.preflight = [this](const juce::PluginDescription& description) {
+            if (const auto refused = blocklist.refusal(description); refused.isNotEmpty()) return refused;
+            return preflight->verify(description);
+        };
+        pluginHost.onCrash = [this](const juce::String& descriptionXml, const juce::String& why) {
+            juce::PluginDescription description;
+            const auto xml = juce::parseXML(descriptionXml);
+            return xml != nullptr && description.loadFromXml(*xml) && blocklist.recordCrash(description, why);
+        };
+        pluginPanel.setStartupScanEnabled(blocklist.scanAtStartup());
+        pluginPanel.blockedPlugins = [this] {
+            juce::StringArray names;
+            for (const auto& entry : blocklist.blocked()) names.add(entry.name);
+            return names;
+        };
+        pluginPanel.onAllowBlocked = [this](int index) { allowBlockedPlugin(index); };
         scanDatabase.load(alien::scan::ScanDatabase::defaultFile());
         pluginPanel.onLiveInput = [this](int track) { releaseNotes(); engine.liveDrumTrack.store(track); drumPanel.setLiveInput(track); };
         pluginPanel.onTarget = [this](int) { refreshPlugins(); };
@@ -203,6 +220,8 @@ public:
     }
 
     // Close the app, prompting for unsaved changes first.
+    // Called once the main window is up (Main.cpp), so tests that build this component never scan.
+    void startBackgroundWork() { startupPluginScan(); }
     void requestQuit(std::function<void()> quit) {
         if (activeCapture) { closeAfterTake = true; finishRecording(); return; }
         if (controller.isRecording()) {
@@ -1649,6 +1668,11 @@ private:
                 for (const auto& entry : scanDatabase.all()) if (juce::File(entry.path).exists()) o.bundles.push_back(juce::File(entry.path));
                 startScan(std::move(o)); break; }
             case C::recheckBlocked: recheckBlockedPlugins(); break;
+            case C::toggleStartupScan:
+                blocklist.setScanAtStartup(pluginPanel.startupScanIsEnabled());
+                pluginPanel.setStatus(blocklist.scanAtStartup() ? "New and updated plugins will be found when Alien Studio starts, in the background."
+                                                                : "Plugins will only be scanned when you choose a scan.");
+                break;
             case C::togglePreflight:
                 if (preflight) {
                     preflight->setEnabled(pluginPanel.preflightIsEnabled());
@@ -1671,6 +1695,27 @@ private:
         pluginPanel.setStatus("Checking " + juce::String(n) + " blocked plugin(s) again...");
         snapshotPlugins(SnapshotReason::always);
         restorePlugins(true);
+    }
+    // Lets a plugin blocked after a crash load again (index into the Blocked plugins list; -1: all of them),
+    // then reloads the project's plugins so it comes back where it was.
+    void allowBlockedPlugin(int index) {
+        if (projectBusy || controller.isBusy()) return;
+        const auto list = blocklist.blocked();
+        juce::String what;
+        if (index < 0) { if (blocklist.allowAll() == 0) return; what = "every blocked plugin"; }
+        else if (index < static_cast<int>(list.size()) && blocklist.allow(list[static_cast<std::size_t>(index)].path)) what = list[static_cast<std::size_t>(index)].name;
+        else return;
+        pluginPanel.setStatus("Allowed " + what + " to load again. If it crashes again it will be switched off and blocked again.");
+        snapshotPlugins(SnapshotReason::always);
+        restorePlugins(true);
+    }
+    // At startup, in the background: finds plugins installed or updated since the last scan. Files that are
+    // unchanged, or failed before and have not changed, are not loaded again, so this is quick when nothing is new.
+    void startupPluginScan() {
+        if (!blocklist.scanAtStartup() || scanning) return;
+        alien::scan::ScanOptions o; o.folders = alien::scan::standardVst3Folders();
+        startupScanRunning = true;
+        startScan(std::move(o));
     }
     void chooseScanFolder() {
         if(projectBusy || controller.isBusy() || scanning)return;
@@ -1753,6 +1798,13 @@ private:
                 failures.getParentDirectory().createDirectory(); failures.appendText(b.bundle.getFullPathName() + "\n");
             }
         refreshPlugins();
+        const bool quiet = std::exchange(startupScanRunning, false) && report.pluginsAdded == 0 && report.pluginsRemoved == 0 && !report.cancelled;
+        int newFailures = 0;
+        for (const auto& b : report.bundles) newFailures += b.action == alien::scan::BundleReport::Action::scanned && b.status != alien::scan::Status::ok;
+        if (quiet && newFailures == 0) {
+            pluginPanel.setStatus("Plugin list is up to date: " + juce::String(static_cast<int>(report.bundles.size())) + " plugin file(s) checked at startup.");
+            return;
+        }
         auto text = report.summary();
         if (report.failedCount() > 0) text += "\nScan VST3 > Show the last scan log lists each file that failed and why. Retry plugins that failed tries them again.";
         pluginPanel.setStatus(text);
@@ -1769,6 +1821,8 @@ private:
     alien::PluginPanel pluginPanel;
     juce::KnownPluginList knownPlugins;
     alien::scan::ScanDatabase scanDatabase;       // what has been scanned, and what happened to each file
+    alien::PluginBlocklist blocklist{alien::PluginBlocklist::defaultFile()};   // plugins that crashed while hosted
+    bool startupScanRunning{};
     std::unique_ptr<alien::Preflight> preflight;  // the safety check before a plugin is loaded into a project
     bool scanning{};
     std::shared_ptr<std::atomic<bool>> scanCancel;

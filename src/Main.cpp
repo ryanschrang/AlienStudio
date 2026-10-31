@@ -65,6 +65,7 @@ private:
         window->setVisible(true);
         window->toFront(true);
         window->restoreWorkspace();
+        if (auto* content = dynamic_cast<MainComponent*>(window->getContentComponent())) content->startBackgroundWork();
         if (splash != nullptr) {
             splash->onDismissed = [this] { splash.reset(); };
             splash->dismiss();

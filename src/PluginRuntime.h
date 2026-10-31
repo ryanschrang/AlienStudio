@@ -52,6 +52,7 @@ public:
         std::uint64_t instanceId{}; // assigned by the host off the audio thread
         Flag faulted;               // set by whichever thread saw the failure; cleared only by unloading the slot
         juce::String name;          // for reports; the host fills it in when it loads the plugin
+        juce::String description;   // the plugin's saved description (message thread), so a crash can be traced to its file
         int keyIndex{-1};           // what keys this effect's sidechain input (set while the slot is loaded), or -1
         KeySource keyFrom{KeySource::track};
     };
