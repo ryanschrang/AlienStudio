@@ -401,6 +401,7 @@ private:
     }
 
     void togglePlay() {
+        if (engine.arrangementPreparing.load()) return;
         // During a count-in the transport has not started, so Play/Stop cancels the take instead.
         if (engine.recording.phase.load() == alien::RecordControls::countIn) { controller.stopRecording(); return; }
         releaseNotes();
@@ -975,6 +976,7 @@ private:
     // Window-level shortcuts. Text fields and the piano roll handle their own
     // Ctrl+Z first; this only sees keys nothing else used.
     bool keyPressed(const juce::KeyPress& key, juce::Component*) override {
+        if (key.getKeyCode()==juce::KeyPress::escapeKey && controller.cancelWarpPreparation()) return true;
         const auto mods = key.getModifiers();
         if(key.getKeyCode()==juce::KeyPress::F10Key&&!mods.isAnyModifierKeyDown()) {
             releaseNotes();applicationToolbar.openMenus();return true;
