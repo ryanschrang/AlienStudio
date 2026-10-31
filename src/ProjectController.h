@@ -1729,7 +1729,9 @@ public:
     bool editRack(const juce::String& label, const std::function<bool(rack::Project&)>& edit,
                   const juce::String& coalesceKey = {}) {
         auto next = doc.channelRack;
-        if (!edit(next) || !next.valid() || next == doc.channelRack) return false;
+        if (!edit(next)) return false;
+        freshPluginInstances(next);
+        if (!next.valid() || next == doc.channelRack) return false;
         for(int c=0;c<next.channelCount;++c)if(isTrackFrozen(next.channels[static_cast<std::size_t>(c)].output))return false;
         const bool content = !next.sameContent(doc.channelRack);
         const bool fewerPatterns = next.patternCount < doc.channelRack.patternCount;
@@ -1737,7 +1739,47 @@ public:
         if (fewerPatterns) doc.timeline.prune(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount);
         pushRackToEngine();
         if (content) commit(label, -1, -1, coalesceKey);
+        notifyRackPlugins();
         return true;
+    }
+    // The owner hosts the rack's plugin instruments: told when which channel holds which one has changed
+    // (a plugin chosen or replaced, a channel added, removed, moved or duplicated, undo and redo).
+    std::function<void()> onRackPluginsChanged;
+    // Gives a channel a VST3 instrument (descriptionXml from the plugin list), named after it. One undo step.
+    bool setRackPlugin(int channel, const juce::String& descriptionXml, const juce::String& name) {
+        if (descriptionXml.isEmpty() || !doc.channelRack.validChannel(channel)) return false;
+        const auto description = descriptionXml.toStdString();
+        const auto instance = freshInstanceId();
+        return editRack("Change channel instrument", [&](rack::Project& p) {
+            const bool changed = p.setPlugin(channel, description, instance);
+            if (changed && name.isNotEmpty()) p.renameChannel(channel, name.toStdString());
+            return changed;
+        });
+    }
+    // Keeps each rack plugin instrument's current state (from the host, by instance). Like capturing a track's
+    // plugins before a save, it is not an undo step of its own.
+    void setRackPluginStates(const std::vector<std::pair<std::uint64_t, juce::String>>& states) {
+        auto next = doc.channelRack;
+        bool changed = false;
+        for (const auto& [instance, state] : states) changed = next.setPluginState(instance, state.toStdString()) || changed;
+        if (!changed || !next.valid() || !doc.setRack(std::move(next))) return;
+        runtimeDirty = true;
+        pushRackToEngine();
+    }
+    // The rack's plugin instruments in channel order (an empty state where a channel has none).
+    std::vector<PluginState> rackPlugins() const {
+        std::vector<PluginState> plugins;
+        for (int c = 0; c < doc.channelRack.channelCount; ++c) {
+            const auto& info = doc.channelRack.info[static_cast<std::size_t>(c)];
+            PluginState plugin;
+            if (info.hasPlugin()) {
+                plugin.descriptionXml = juce::String::fromUTF8(info.pluginDescription().c_str());
+                plugin.stateBase64 = juce::String::fromUTF8(info.pluginState().c_str());
+                plugin.instanceId = info.pluginInstance();
+            }
+            plugins.push_back(std::move(plugin));
+        }
+        return plugins;
     }
     bool selectRackPattern(int index) {
         if (!doc.channelRack.selectPattern(index)) return false;
@@ -1900,6 +1942,30 @@ private:
     }
     // Hands the engine the rack and the sound for each channel. Skipped when
     // nothing changed, so unrelated edits do not rebuild the snapshot.
+    static std::uint64_t freshInstanceId() {
+        std::uint64_t id = 0;
+        while (id == 0) id = static_cast<std::uint64_t>(juce::Random::getSystemRandom().nextInt64());
+        return id;
+    }
+    // A duplicated plugin channel is a second instance with the same sound: it gets an identity of its own.
+    static void freshPluginInstances(rack::Project& p) {
+        for (int c = 0; c < p.channelCount; ++c) {
+            const auto& info = p.info[static_cast<std::size_t>(c)];
+            if (!info.hasPlugin()) continue;
+            for (int d = 0; d < c; ++d)
+                if (p.info[static_cast<std::size_t>(d)].pluginInstance() == info.pluginInstance()) { p.renewPluginInstance(c, freshInstanceId()); break; }
+        }
+    }
+    void notifyRackPlugins() {
+        // One number for which channel holds which instrument, rather than a copy of every identity.
+        std::uint64_t now = 1469598103934665603ull;
+        for (int c = 0; c < doc.channelRack.channelCount; ++c)
+            now = (now ^ doc.channelRack.info[static_cast<std::size_t>(c)].pluginInstance()) * 1099511628211ull + static_cast<std::uint64_t>(c);
+        if (now == notifiedRackPlugins) return;
+        notifiedRackPlugins = now;
+        if (onRackPluginsChanged) onRackPluginsChanged();
+    }
+    std::uint64_t notifiedRackPlugins{1469598103934665603ull};
     void pushRackToEngine() {
         std::array<const SessionAudioClip*, rack::maxChannels> clips{};
         for (int c = 0; c < doc.channelRack.channelCount; ++c)

@@ -37,6 +37,11 @@ public:
     std::function<void(int)> onScrolled;         // horizontal scroll position changed
     std::function<void(int)> onScrolledY;        // vertical scroll position changed
     std::function<void(int)> onOpenPianoRoll;    // "Open in piano roll" was chosen for a channel
+    // VST3 instruments a channel can be played by (T1-09): their names, then what gives channel `row` the one
+    // at `index` in that list, and what opens a channel's instrument editor.
+    std::function<juce::StringArray()> pluginInstruments;
+    std::function<void(int row, int index)> onChoosePlugin;
+    std::function<void(int row)> onOpenPluginEditor;
     std::function<void()> onLayoutChanged;       // the name column was resized, so the steps start elsewhere
     // How pop-up menus and the rename box are shown. Left empty they use JUCE's
     // real windows; the tests set them to capture what would be shown and to
@@ -297,14 +302,21 @@ public:
     enum MenuId { cmdRename = 1, cmdMute, cmdSolo, cmdClearSteps, cmdMoveUp, cmdMoveDown, cmdDelete, cmdSilent, cmdLoadSample,
                   cmdDuplicate = 100, cmdCopyRow, cmdPasteRow, cmdFill2, cmdFill4, cmdFill8,
                   cmdRotateLeft, cmdRotateRight, cmdReverseRow, cmdRepeat4, cmdRepeat8, cmdRepeat16, cmdPianoRoll,
-                  synthBase = 200, builtinBase = 20, outputMaster = 40, outputBase = 41, chokeNone = 60, chokeBase = 61 };
+                  synthBase = 200, builtinBase = 20, outputMaster = 40, outputBase = 41, chokeNone = 60, chokeBase = 61,
+                  cmdPluginEditor = 190, pluginBase = 1000 };
 
+    // The name in a plugin channel's saved description (what the instrument list shows).
+    static juce::String pluginName(const rack::ChannelInfo& info) {
+        const auto xml = juce::parseXML(juce::String::fromUTF8(info.pluginDescription().c_str()));
+        return xml != nullptr ? xml->getStringAttribute("name") : juce::String();
+    }
     juce::PopupMenu channelMenu(int row) const {
         juce::PopupMenu menu;
         if (!project().validChannel(row)) return menu;
         const auto& channel = project().channels[static_cast<std::size_t>(row)];
         const auto& info = project().info[static_cast<std::size_t>(row)];
         menu.addItem(cmdPianoRoll, "Open in piano roll", onOpenPianoRoll != nullptr);
+        if (info.hasPlugin()) menu.addItem(cmdPluginEditor, "Open instrument editor", onOpenPluginEditor != nullptr);
         menu.addItem(cmdRename, "Rename...");
         menu.addSeparator();
         juce::PopupMenu sound;
@@ -314,9 +326,15 @@ public:
         for (int preset = 0; preset < alien::presetCount; ++preset)
             synths.addItem(synthBase + preset, alien::presetNames[static_cast<std::size_t>(preset)], true, channel.instrumentPreset == preset);
         sound.addSubMenu("Built-in synth", synths);
+        juce::PopupMenu instruments;
+        const auto names = pluginInstruments ? pluginInstruments() : juce::StringArray();
+        for (int i = 0; i < names.size(); ++i)
+            instruments.addItem(pluginBase + i, names[i], onChoosePlugin != nullptr, info.hasPlugin() && pluginName(info) == names[i]);
+        if (names.isEmpty()) instruments.addItem(pluginBase - 1, "No VST3 instruments found (Plugins > Scan VST3)", false);
+        sound.addSubMenu("VST3 instrument", instruments);
         sound.addSeparator();
         sound.addItem(cmdLoadSample, "Load sample file...");
-        sound.addItem(cmdSilent, "Silent (no sound)", true, info.sample.empty() && !channel.isSynth());
+        sound.addItem(cmdSilent, "Silent (no sound)", true, info.sample.empty() && !channel.isInstrument());
         menu.addSubMenu("Sound", sound);
         juce::PopupMenu output;
         output.addItem(outputMaster, "Master", true, channel.output == rack::masterOutput);
@@ -453,6 +471,8 @@ public:
             changed();
         } else if (id == cmdSilent) { forEach(plural("Silence channel", rows), [](rack::Project& p, int r) { return p.setSample(r, ""); }); changed(); }
         else if (id == cmdLoadSample) chooseSample(row);
+        else if (id == cmdPluginEditor) { if (onOpenPluginEditor) onOpenPluginEditor(row); }
+        else if (id >= pluginBase) { if (onChoosePlugin) onChoosePlugin(row, id - pluginBase); changed(); }
         else if (id >= synthBase && id < synthBase + alien::presetCount) {
             const int preset = id - synthBase;
             forEach("Change channel instrument", [&](rack::Project& p, int r) {
@@ -805,6 +825,7 @@ private:
         const auto& info = project().info[static_cast<std::size_t>(row)];
         const auto name = juce::String::fromUTF8(info.name.c_str(), static_cast<int>(info.name.size()));
         if (project().channels[static_cast<std::size_t>(row)].isSynth()) return name + " (built-in synth)";
+        if (info.hasPlugin()) return name + " (" + pluginName(info) + ", VST3 instrument)";
         if (info.sample.empty()) return name + " (no sound)";
         if (info.isBuiltin()) return name + " (built-in drum)";
         return name + " (" + sampleFileName(row) + ")";

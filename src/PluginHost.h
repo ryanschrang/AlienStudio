@@ -179,6 +179,34 @@ public:
         }
         return bindings;
     }
+    // The Channel Rack's plugin instruments (T1-09), by channel: loaded like a track's instrument (the safety
+    // check, the blocklist and crash containment all apply). Callers detach audio, as for restore.
+    juce::String restoreRackChannels(const std::vector<PluginState>& channels, double rate) {
+        juce::String errors;
+        for (int c=0;c<PluginRuntime::maxRackChannels;++c) {
+            auto& slot=runtime.rackChannels[static_cast<std::size_t>(c)];
+            if (slot.processor) slot.processor->removeListener(this);
+            runtime.destroy(slot,PluginRuntime::channelBase+c,-1);
+            slot={};
+            loadProblems.erase({PluginRuntime::channelBase+c,-1});
+            if (c<static_cast<int>(channels.size())) loadSlot(slot,channels[static_cast<std::size_t>(c)],true,rate,errors,PluginRuntime::channelBase+c,-1);
+        }
+        drain(errors);
+        return errors;
+    }
+    // The state of each loaded rack-channel instrument that is working, by instance identity (a failed one keeps
+    // what was saved before it failed). Callers detach audio.
+    std::vector<std::pair<std::uint64_t,juce::String>> rackChannelStates() {
+        std::vector<std::pair<std::uint64_t,juce::String>> states;
+        for (int c=0;c<PluginRuntime::maxRackChannels;++c) {
+            auto& slot=runtime.rackChannels[static_cast<std::size_t>(c)];
+            if (!slot.processor || slot.faulted.get() || slot.instanceId==0) continue;
+            juce::MemoryBlock bytes; fault::Fault fault;
+            if (!fault::guarded([&]{ slot.processor->getStateInformation(bytes); },fault)) { runtime.markFaulted(slot,PluginRuntime::channelBase+c,-1,PluginPhase::saveState,fault); continue; }
+            states.emplace_back(slot.instanceId,bytes.toBase64Encoding());
+        }
+        return states;
+    }
     // Copies each plugin's state into the rack states. A plugin that has failed keeps the state
     // saved before the failure: asking a broken plugin for its state would only break it more.
     void snapshot(std::vector<PluginRackState>& tracks, PluginRackState& master) { ReturnRacks unused; snapshot(tracks, master, unused); }
@@ -212,10 +240,11 @@ public:
     }
     // Opens (or raises) a plugin's editor. Returns an empty string on success, otherwise a message
     // for the user; the failure is also logged. An editor that crashes while opening is contained.
+    // A Channel Rack channel's instrument is rack PluginRuntime::channelBase + channel, slot -1.
     juce::String openEditor(int track,int slot) {
-        if (track<0 || track>=PluginRuntime::rackCount || slot<-1 || slot>=static_cast<int>(runtime.racks[0].effects.size())) return {};
-        auto& rack=runtime.racks[static_cast<std::size_t>(track)];
-        auto& entry=slot<0?rack.instrument:rack.effects[static_cast<std::size_t>(slot)];
+        auto* found=slotAt(track,slot);
+        if (found==nullptr) return {};
+        auto& entry=*found;
         auto* processor=entry.processor.get();
         if (!processor) return {};
         const auto label=slotLabel(entry,track,slot);
@@ -251,9 +280,9 @@ public:
     }
     // Empty when the slot is fine, otherwise a short description for the plugin panel.
     juce::String health(int track,int slot) const {
-        if (track<0 || track>=PluginRuntime::rackCount || slot<-1 || slot>=static_cast<int>(runtime.racks[0].effects.size())) return {};
-        const auto& rack=runtime.racks[static_cast<std::size_t>(track)];
-        const auto& entry=slot<0?rack.instrument:rack.effects[static_cast<std::size_t>(slot)];
+        const auto* found=const_cast<PluginHost*>(this)->slotAt(track,slot);
+        if (found==nullptr) return {};
+        const auto& entry=*found;
         if (!entry.processor) {
             const auto found=loadProblems.find({track,slot});
             return found!=loadProblems.end() ? "NOT LOADED - "+found->second : juce::String();
@@ -279,7 +308,16 @@ private:
         editors.clear();
     }
     struct Found { PluginRuntime::Slot* slot; int rack; int index; };
+    // A mixer rack's instrument (-1) or effect, or a Channel Rack channel's instrument (channelBase + channel, -1).
+    PluginRuntime::Slot* slotAt(int rack,int slot) {
+        if (PluginRuntime::isRackChannel(rack)) return slot==-1 ? &runtime.rackChannels[static_cast<std::size_t>(rack-PluginRuntime::channelBase)] : nullptr;
+        if (rack<0 || rack>=PluginRuntime::rackCount || slot<-1 || slot>=static_cast<int>(runtime.racks[0].effects.size())) return nullptr;
+        auto& r=runtime.racks[static_cast<std::size_t>(rack)];
+        return slot<0 ? &r.instrument : &r.effects[static_cast<std::size_t>(slot)];
+    }
     std::optional<Found> findSlot(const juce::AudioProcessor* processor) {
+        for (int c=0;c<PluginRuntime::maxRackChannels;++c)
+            if (runtime.rackChannels[static_cast<std::size_t>(c)].processor.get()==processor) return Found{&runtime.rackChannels[static_cast<std::size_t>(c)],PluginRuntime::channelBase+c,-1};
         for (int t=0;t<PluginRuntime::rackCount;++t) {
             auto& rack=runtime.racks[static_cast<std::size_t>(t)];
             if (rack.instrument.processor.get()==processor) return Found{&rack.instrument,t,-1};
@@ -289,6 +327,7 @@ private:
         return std::nullopt;
     }
     static juce::String where(int rack,int index) {
+        if (PluginRuntime::isRackChannel(rack)) return "Channel Rack channel "+juce::String(rack-PluginRuntime::channelBase+1);
         const juce::String place = rack<0 ? juce::String("unknown location") : rack==PluginRuntime::masterIndex ? juce::String("master")
             : PluginRuntime::isReturn(rack) ? "return "+juce::String::charToString(static_cast<juce::juce_wchar>('A'+rack-PluginRuntime::returnBase))
             : PluginRuntime::isBus(rack) ? "bus "+juce::String(rack-PluginRuntime::busBase+1)
@@ -305,11 +344,7 @@ private:
     void drain(juce::String& text) {
         PluginFault f;
         while (runtime.faults.pop(f)) {
-            const PluginRuntime::Slot* slot=nullptr;
-            if (f.rack>=0 && f.rack<PluginRuntime::rackCount) {
-                const auto& rack=runtime.racks[static_cast<std::size_t>(f.rack)];
-                if (f.slot<0) slot=&rack.instrument; else if (f.slot<static_cast<int>(rack.effects.size())) slot=&rack.effects[static_cast<std::size_t>(f.slot)];
-            }
+            const PluginRuntime::Slot* slot=slotAt(f.rack,f.slot);
             const auto name=slot && slot->name.isNotEmpty()?slot->name:juce::String("A plugin");
             juce::String line=name+" ("+where(f.rack,f.slot)+") "+juce::String(describe(f))+". ";
             if (f.phase==PluginPhase::process || f.phase==PluginPhase::prepare || f.phase==PluginPhase::query)
@@ -328,6 +363,7 @@ private:
             if(rack.instrument.processor) rack.instrument.processor->removeListener(this);
             for(auto& slot:rack.effects) if(slot.processor) slot.processor->removeListener(this);
         }
+        for(auto& slot:runtime.rackChannels) if(slot.processor) slot.processor->removeListener(this);
     }
     void loadSlot(PluginRuntime::Slot& slot,const PluginState& state,bool instrument,double rate,juce::String& errors,int rack,int index) {
         if(state.descriptionXml.isEmpty()) return;

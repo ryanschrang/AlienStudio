@@ -418,3 +418,10 @@ Not yet run on hardware. Record commit, device/driver, sample rate and buffer si
   one occurrence of that source. New projects launch one occurrence per assigned row.
 - Test stop/panic, transport restart, document replacement and device changes with held
   notes. Check row indicators at 960x650 and 150/200% scaling.
+
+## VST3 instruments on Channel Rack channels (T1-09 part 2)
+- Scan a VST3 instrument (a synth or a sampler). Right-click a rack channel > Sound > VST3 instrument and choose it: the channel is renamed after it. Click the channel name: you hear a short note. Open instrument editor: its window opens; change a sound and hear it.
+- Draw steps (with velocity, pitch, gate, ratchets, nudge and swing) and piano-roll notes for the channel and play the pattern, then the Song: notes start and end on time at 48 kHz with 128, 512 and 1024-sample buffers. Turn the channel's volume and pan: no clicks. Mute and solo: it stops at once. Route it to a track: it plays through the track's strip and FX.
+- Stop the transport while long notes play, switch patterns, delete or move the channel, change the audio device: nothing is left sounding.
+- Save, close and reopen: the instrument comes back with the sound you set in its editor. Duplicate the channel and change the copy's sound: the original is unchanged. Undo the instrument choice: the channel's old sound returns.
+- Export WAV and stems, and freeze a track the channel plays on: the instrument is in the result. With a plugin that crashes, it is switched off with a message naming the channel, and the rest keeps playing.

@@ -26,6 +26,10 @@ public:
     static constexpr int blockSize = 512, maxDelay = 96000, masterIndex = maxSessionTracks;
     static constexpr int returnBase = masterIndex + 1, busBase = returnBase + maxReturns, rackCount = busBase + maxBuses;
     static constexpr int returnIndex(int r) noexcept { return returnBase + r; }
+    // Channel Rack channels played by plugin instruments (T1-09): one slot per channel, reported in faults as
+    // "rack" channelBase + channel (outside the mixer's racks).
+    static constexpr int maxRackChannels = 64, channelBase = 1000;
+    static constexpr bool isRackChannel(int rack) noexcept { return rack >= channelBase && rack < channelBase + maxRackChannels; }
     static constexpr bool isReturn(int rack) noexcept { return rack >= returnBase && rack < busBase; }
     static constexpr int busIndex(int b) noexcept { return busBase + b; }
     static constexpr bool isBus(int rack) noexcept { return rack >= busBase && rack < rackCount; }
@@ -58,6 +62,7 @@ public:
         int effectCount{};
     };
     std::array<Rack, rackCount> racks;
+    std::array<Slot, maxRackChannels> rackChannels;   // the rack's plugin instruments, by channel
     std::array<juce::AudioBuffer<float>, maxSessionTracks> tracks;
     juce::AudioBuffer<float> live, master;
     std::array<juce::AudioBuffer<float>, maxReturns> returns;   // what the tracks send to each return, then its FX
@@ -75,6 +80,7 @@ public:
             destroy(racks[static_cast<std::size_t>(r)].instrument,r,-1);
             for (int i=0;i<static_cast<int>(racks[static_cast<std::size_t>(r)].effects.size());++i) destroy(racks[static_cast<std::size_t>(r)].effects[static_cast<std::size_t>(i)],r,i);
         }
+        for (int c=0;c<maxRackChannels;++c) destroy(rackChannels[static_cast<std::size_t>(c)],channelBase+c,-1);
     }
     // Records that `slot` failed and disables it. Safe on the audio thread: no allocation, no lock.
     void markFaulted(Slot& slot,int rack,int index,PluginPhase phase,const fault::Fault& fault,bool nonFinite=false) noexcept {
@@ -123,6 +129,8 @@ public:
         for (auto& b : returns) b.setSize(2, blockSize);
         for (auto& b : buses) b.setSize(2, blockSize);
         for (auto& m : midi) m.ensureSize(65536);
+        for (auto& m : channelMidi) m.ensureSize(16384);
+        channelScratch.setSize(2, blockSize);
         emptyMidi.ensureSize(65536);
         for (auto& delay : delays) delay.prepare();
         for (auto& delay : returnDelays) delay.prepare();
@@ -134,6 +142,8 @@ public:
             prepareSlot(rack.instrument,r,-1);
             for (int i=0;i<static_cast<int>(rack.effects.size());++i) prepareSlot(rack.effects[static_cast<std::size_t>(i)],r,i);
         }
+        for (int c=0;c<maxRackChannels;++c) prepareSlot(rackChannels[static_cast<std::size_t>(c)],channelBase+c,-1);
+        channelPanic = true;
         panic.store(true);
     }
     void silence(std::size_t track, int onlyChannel = 0) noexcept {
@@ -198,6 +208,34 @@ public:
         int latency = slotLatency(rack.instrument);
         for (int i = 0; i < rack.effectCount; ++i) latency += slotLatency(rack.effects[i]);
         return std::clamp(latency,0,maxDelay);
+    }
+    // Audio thread: plays one block of a rack channel's plugin instrument. `notes` are this block's notes for it
+    // (sample offset, MIDI note, velocity; velocity 0 ends the note). Returns the plugin's stereo output (the
+    // channel's fader and pan are the caller's), or nullptr when the channel has no working instrument. A plugin
+    // that crashes or produces invalid audio is switched off and contained, as on a track.
+    template <class Notes>
+    const juce::AudioBuffer<float>* processRackChannel(int channel, int samples, Notes&& notes) noexcept {
+        if (channel < 0 || channel >= maxRackChannels) return nullptr;
+        auto& slot = rackChannels[static_cast<std::size_t>(channel)];
+        if (!slot.processor || slot.faulted.get()) return nullptr;
+        samples = std::clamp(samples, 1, blockSize);
+        auto& messages = channelMidi[static_cast<std::size_t>(channel)];
+        messages.clear();
+        if (channelPanic) for (int ch = 1; ch <= 16; ++ch) { messages.addEvent(juce::MidiMessage::allSoundOff(ch), 0); messages.addEvent(juce::MidiMessage::allNotesOff(ch), 0); }
+        int count = 0;
+        notes([&](int sample, int note, float velocity) {
+            if (++count > 512) return;   // bounded by the preallocated MIDI storage
+            const int at = std::clamp(sample, 0, samples - 1);
+            messages.addEvent(velocity > 0.0f ? juce::MidiMessage::noteOn(1, note, velocity) : juce::MidiMessage::noteOff(1, note), at);
+        });
+        channelScratch.clear(0, samples);
+        process(slot, channelBase + channel, -1, channelScratch, messages, samples);
+        return slot.faulted.get() ? nullptr : &channelScratch;
+    }
+    // After the rack channels have been played this block.
+    void rackChannelsDone() noexcept { channelPanic = false; }
+    bool hasRackChannel(int channel) const noexcept {
+        return channel >= 0 && channel < maxRackChannels && rackChannels[static_cast<std::size_t>(channel)].processor != nullptr;
     }
     // Instrument replaces built-in synth/drum audio. A bypassed instrument is
     // silent; FX bypass passes audio through. Imported clips are added after it.
@@ -314,6 +352,7 @@ public:
         };
         double longest=0, busTail=0, returnTail=0;
         for(int t=0;t<maxSessionTracks;++t)longest=std::max(longest,rackTail(racks[static_cast<std::size_t>(t)],t));
+        for(int c=0;c<maxRackChannels;++c){const double tail=slotTail(rackChannels[static_cast<std::size_t>(c)],channelBase+c,-1);longest=std::max(longest,std::isfinite(tail)?std::clamp(tail,0.0,30.0):30.0);}
         // A bus or a return rings on after the track that feeds it, and the master after that.
         for(int b=0;b<maxBuses;++b)busTail=std::max(busTail,rackTail(racks[static_cast<std::size_t>(busIndex(b))],busIndex(b)));
         for(int r=0;r<maxReturns;++r)returnTail=std::max(returnTail,rackTail(racks[static_cast<std::size_t>(returnIndex(r))],returnIndex(r)));
@@ -394,6 +433,9 @@ private:
     std::array<bool,maxReturns> returnLive = [] { std::array<bool,maxReturns> live{}; live.fill(true); return live; }();   // audio thread: setReturnActive
     Delay dryDelay, directDelay;
     juce::MidiBuffer emptyMidi;
+    std::array<juce::MidiBuffer, maxRackChannels> channelMidi;
+    juce::AudioBuffer<float> channelScratch;
+    bool channelPanic{true};   // the rack's instruments are told all notes off on their first block after a prepare
     double rate{44100};
     juce::int64 renderedSamples{};
     int currentSamples{};
