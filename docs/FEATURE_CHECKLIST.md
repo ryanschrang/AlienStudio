@@ -85,8 +85,9 @@ The current project format is 28 (18: song tempo changes, #104; 19: group buses,
 
 ## Piano-roll keyboard and pitch visibility upgrade (PROD-06)
 
-Status: Part 1 implemented (labels, key highlights, auditioning; PianoRollKeyboardTests); part 2 (pitch filtering
-and integrated scale guidance) planned. Added to the completion checklist on 2026-10-27.
+Status: Implemented in code: part 1 (labels, key highlights, auditioning; PianoRollKeyboardTests) and part 2 (All /
+Used / Scale rows and shared scale shading; PianoRollPitchViewTests). Windows visual and listening checks are pending,
+so the upgrade is not yet complete. Added to the completion checklist on 2026-10-27.
 Build on PROD-02 / PROD-05 and coordinate scale behavior with MIDI-06.
 Existing auditioning and scale guides are foundations, not evidence that this
 complete upgrade has passed acceptance.
@@ -94,10 +95,13 @@ complete upgrade has passed acceptance.
 - [x] Note-name labels with octave numbers (C3, C#3, D3, etc.), with All labels
   and C notes only display options. (Edit > Keyboard labels; C4 is MIDI 60, as the piano roll already
   named notes; all names show when rows are tall enough to read them.)
-- [ ] Pitch visibility toolbar modes: All notes, Used notes and Scale notes;
-  keyboard keys and grid rows stay aligned in every mode.
-- [ ] Scale notes mode keeps existing out-of-scale notes visible; changing
-  visibility never changes or deletes MIDI data.
+- [x] Pitch visibility toolbar modes: All notes, Used notes and Scale notes;
+  keyboard keys and grid rows stay aligned in every mode. (The rows button above the keyboard, or Edit > Show rows.
+  Keys and rows are drawn from one row list; a line marks where pitches are folded away, and every key is named
+  while rows are hidden. Used rows also show ghost notes' pitches; an empty clip shows every row.)
+- [x] Scale notes mode keeps existing out-of-scale notes visible; changing
+  visibility never changes or deletes MIDI data. (A note's pitch always has a row in Used and Scale rows; an
+  out-of-scale row is tinted red on its key and in the grid.)
 - [x] Selected MIDI notes highlight the corresponding piano keys in matching
   colors; sounding notes also light up their keys. Preserve multi-clip colors.
   (A note under the playhead lights its key brighter; another clip's notes keep that clip's colour.)
@@ -105,10 +109,14 @@ complete upgrade has passed acceptance.
   instrument; release, focus loss and destination changes stop preview notes.
   (Previews play on the edited clip's track instrument, or the rack channel, never on the live synth and never
   into a take; a note-off always reaches the instrument its note-on went to, PianoRollAuditionRouter.)
-- [ ] Root-note emphasis and scale-note shading use the selected key/scale
-  consistently with MIDI-06.
-- [ ] Drawing, selecting, moving, resizing and auditioning target the correct
-  MIDI pitches with hidden rows, zoom and scrolling; undo/redo preserves edits.
+- [x] Root-note emphasis and scale-note shading use the selected key/scale
+  consistently with MIDI-06. (The Scale tool's root and scale drive the grid rows, the keys, Scale rows and snapping
+  alike: a wide mark on root keys, a narrow one on the scale's other keys. Shown when Highlight scale is on or Scale
+  rows are shown. MIDI-06 itself, project-wide key awareness, is still planned; the scale stays per editor.)
+- [x] Drawing, selecting, moving, resizing and auditioning target the correct
+  MIDI pitches with hidden rows, zoom and scrolling; undo/redo preserves edits. (Dragging and the arrow keys move
+  a row at a time across hidden pitches; a drag keeps its starting rows until it ends. Scrolling is covered; the
+  piano roll has no vertical zoom yet, and resizing does not depend on rows.)
 - [ ] Verify empty clips, chords, out-of-scale notes and multi-clip editing;
   record automated results plus Windows visual/listening checks under the
   existing completion rule before marking the upgrade complete.

@@ -9,6 +9,8 @@
 #include "PianoRollChordStamp.h"
 #include "PianoRollProgression.h"
 #include "PianoRollScale.h"
+#include "PianoRollPitchRows.h"
+#include <bitset>
 #include <cmath>
 #include <functional>
 #include <span>
@@ -248,10 +250,13 @@ public:
         addAndMakeVisible(pitchScroll);
         pitchScroll.setName("Piano roll pitch range");
         pitchScroll.setTitle("Piano roll pitch range");
-        pitchScroll.setRangeLimits(0, highestPitch - lowestPitch + 1);
         pitchScroll.setSingleStepSize(1);
         pitchScroll.addListener(this);
-        updatePitchScroll();
+        configureButton(pitchViewButton, "All", "Piano roll rows shown");
+        pitchViewButton.setTooltip("Rows: all notes, only the pitches notes use, or the notes of the scale chosen in the Scale tool "
+                                   "(Alt L). Hiding rows never changes notes; notes outside the scale stay visible.");
+        pitchViewButton.onClick = [this] { showPitchViewMenu(); };
+        refreshRows();
 
         for (auto* label : { &snapLabel, &velocityLabel, &probabilityLabel })
             label->setColour(juce::Label::textColourId, juce::Colour(0xff9ea3ab));
@@ -287,6 +292,7 @@ public:
     std::span<const PianoRollGhostClip> getGhostClips() const noexcept { return ghostClips; }
     void setGhostClips(std::vector<PianoRollGhostClip> clips) {
         ghostClips = ghostSource == GhostNoteSource::off ? std::vector<PianoRollGhostClip> {} : std::move(clips);
+        refreshRows();
         repaint();
     }
     // Multi-clip editing: the owner merges the shown clips into the pattern it gives setPattern and splits each
@@ -326,6 +332,41 @@ public:
         }
         return light;
     }
+    // Pitch rows (PROD-06): every pitch, the pitches notes (and ghost notes) use, or the selected scale's notes plus
+    // any pitch a note uses. Switching hides rows only; notes are never changed, and none is ever hidden.
+    PitchView getPitchView() const noexcept { return pitchView; }
+    void setPitchView(PitchView view) {
+        if (view == pitchView) return;
+        releaseAudition();
+        endEdit();
+        drag = Drag::none;
+        pitchView = view;
+        pitchViewButton.setButtonText(view == PitchView::all ? "All" : view == PitchView::used ? "Used" : "Scale");
+        refreshRows();
+        if (const auto* note = pattern.find(activeId)) revealPitch(note->pitch);
+        statusMessage = view == PitchView::all ? juce::String("Showing all notes")
+            : view == PitchView::used ? (pattern.count == 0 && ghostNoteCount() == 0 ? juce::String("No notes yet: showing all notes")
+                                                                                     : "Showing the " + juce::String(rows.count) + " pitches in use")
+            : "Showing " + scaleName() + " notes; notes outside the scale stay visible";
+        repaint();
+    }
+    const ScaleSettings& getScaleSettings() const noexcept { return scaleSettings; }
+    void setScaleSettings(const ScaleSettings& settings) {
+        scaleSettings = settings;
+        syncScaleControls();
+        refreshRows();
+        repaint();
+    }
+    // The pitches whose rows are on screen, top to bottom.
+    std::vector<int> shownPitches() const {
+        std::vector<int> shown;
+        for (int row = juce::jmin(topRow(), rows.count - 1); row >= firstRow; --row) shown.push_back(rows.pitches[static_cast<std::size_t>(row)]);
+        return shown;
+    }
+    // A key's and its row's place in the selected scale, shown when highlighting the scale or showing its rows.
+    ScaleRole keyScale(int pitch) const {
+        return scaleSettings.highlight || pitchView == PitchView::scale ? scaleRole(pitch, scaleSettings) : ScaleRole::none;
+    }
     void setEditingClipCount(int clips) { if (editingClips != clips) { editingClips = clips; updateSelection(); } }
     int editingClipCount() const noexcept { return editingClips; }
     std::size_t ghostNoteCount() const {
@@ -351,10 +392,7 @@ public:
         selection = result.selection;
         if (result.changed()) {
             changed();
-            if (const auto* moved = pattern.find(activeId)) {
-                if (moved->pitch < lowestVisiblePitch) setLowestVisible(moved->pitch);
-                if (moved->pitch > topPitch()) setLowestVisible(moved->pitch - visiblePitches + 1);
-            }
+            if (const auto* moved = pattern.find(activeId)) revealPitch(moved->pitch);
         }
         endEdit();
         if (!result.changed()) {
@@ -526,6 +564,7 @@ public:
         panelHelp.setBounds(20, 145, getWidth() - 40, 22);
         const auto a = areas();
         pitchScroll.setBounds(a.grid.getRight() + 4, a.grid.getY(), 12, a.grid.getHeight());
+        pitchViewButton.setBounds(a.piano.getX(), a.ruler.getY() + 1, a.piano.getWidth(), a.ruler.getHeight() - 2);
     }
 
     void paint(juce::Graphics& g) override {
@@ -546,23 +585,31 @@ public:
         g.fillRect(a.ruler);
         g.setFont(juce::FontOptions(10.5f));
         const auto rowHeight = rowSize(a);
-        for (int row = 0; row < visiblePitches; ++row) {
-            const auto pitch = topPitch() - row;
-            const auto y = a.grid.getY() + row * rowHeight;
+        for (int screenRow = 0; screenRow < visiblePitches; ++screenRow) {
+            const auto row = topRow() - screenRow;
+            const auto y = a.grid.getY() + screenRow * rowHeight;
             const juce::Rectangle<float> rowBounds(static_cast<float>(a.grid.getX()), y,
                                                   static_cast<float>(a.grid.getWidth()), rowHeight);
-            const bool scaleTone = scaleSettings.highlight && isPitchInScale(pitch, scaleSettings);
-            const bool tonic = scaleTone && pitch % 12 == scaleSettings.rootPitchClass;
-            g.setColour(tonic ? juce::Colour(0xff1f3530)
-                              : scaleTone ? juce::Colour(0xff1c2a27)
+            const juce::Rectangle<float> key(static_cast<float>(a.piano.getX()), y,
+                                             static_cast<float>(a.piano.getWidth()), rowHeight);
+            if (row >= rows.count) {   // fewer rows than fit: the space above the highest is left empty
+                g.setColour(juce::Colour(0xff131417));
+                g.fillRect(rowBounds);
+                g.fillRect(key);
+                continue;
+            }
+            const auto pitch = rows.pitches[static_cast<std::size_t>(row)];
+            const auto role = keyScale(pitch);
+            g.setColour(role == ScaleRole::root ? juce::Colour(0xff1f3530)
+                              : role == ScaleRole::tone ? juce::Colour(0xff1c2a27)
+                              : role == ScaleRole::outside && pitchView == PitchView::scale ? juce::Colour(0xff2a1e21)
                               : isBlack(pitch) ? juce::Colour(0xff17181c) : juce::Colour(0xff1e2025));
             g.fillRect(rowBounds);
             g.setColour(pitch % 12 == 0 ? juce::Colour(0xff33363d) : juce::Colour(0xff222429));
             g.drawHorizontalLine(juce::roundToInt(y + rowHeight),
                                  static_cast<float>(a.grid.getX()), static_cast<float>(a.grid.getRight()));
-
-            const juce::Rectangle<float> key(static_cast<float>(a.piano.getX()), y,
-                                             static_cast<float>(a.piano.getWidth()), rowHeight);
+            // Hidden pitches between this row and the one above: a brighter line marks the fold.
+            const bool folded = row + 1 < rows.count && rows.pitches[static_cast<std::size_t>(row + 1)] != pitch + 1;
             const auto light = keyLight(pitch);
             const bool lit = light.state != KeyState::none;
             g.setColour(lit && !isBlack(pitch) ? light.colour : juce::Colour(0xffe2e4e7));
@@ -571,13 +618,26 @@ public:
                 g.setColour(lit ? light.colour.darker(0.35f) : juce::Colour(0xff1a1b1f));
                 g.fillRect(key.withWidth(key.getWidth() * 0.72f));
             }
+            // The scale's root, its other notes and (in Scale rows) a note's pitch outside it, as on the grid.
+            if (role != ScaleRole::none) {
+                g.setColour(role == ScaleRole::root ? juce::Colour(0xff4fe0b6)
+                            : role == ScaleRole::tone ? juce::Colour(0xff2f7f69) : juce::Colour(0xffd9645a));
+                if (role != ScaleRole::outside || pitchView == PitchView::scale)
+                    g.fillRect(key.withWidth(role == ScaleRole::root ? 5.0f : 3.0f));
+            }
             g.setColour(juce::Colour(0xffa6abb2));
             g.drawHorizontalLine(juce::roundToInt(y + rowHeight), key.getX(), key.getRight());
-            // Every key's name when there is room for it, or only the Cs.
-            if (pitch % 12 == 0 || (keyLabels == KeyLabels::all && rowHeight >= 8.0f)) {
+            if (folded) {
+                g.setColour(juce::Colour(0xff565b64));
+                g.drawHorizontalLine(juce::roundToInt(y), key.getX(), static_cast<float>(a.grid.getRight()));
+            }
+            // Every key's name when there is room for it, or only the Cs; with rows hidden the keys no longer say
+            // which pitches they are by their place, so every key is named.
+            if (pitch % 12 == 0 || ((keyLabels == KeyLabels::all || pitchView != PitchView::all) && rowHeight >= 8.0f)) {
                 g.setColour(isBlack(pitch) && !lit ? juce::Colour(0xffc4c8ce) : juce::Colour(0xff4a4f57));
                 g.setFont(juce::FontOptions(juce::jmin(10.5f, rowHeight - 1.0f)));
-                g.drawText(noteName(pitch), key.reduced(3.0f, 0.0f), juce::Justification::centredRight);
+                g.drawText(noteName(pitch), (isBlack(pitch) ? key.withWidth(key.getWidth() * 0.72f) : key).reduced(3.0f, 0.0f),
+                           juce::Justification::centredRight);
                 g.setFont(juce::FontOptions(10.5f));
             }
         }
@@ -651,7 +711,9 @@ public:
         g.setFont(juce::FontOptions(11.0f));
         g.setColour(juce::Colour(0xff9ea3ab));
         juce::String status = juce::String(pattern.loopSteps / 16.0, 0) + "-bar loop  |  "
-            + noteName(lowestVisiblePitch) + " - " + noteName(topPitch()) + "  |  "
+            + noteName(rows.pitches[static_cast<std::size_t>(firstRow)]) + " - "
+            + noteName(rows.pitches[static_cast<std::size_t>(juce::jmin(topRow(), rows.count - 1))])
+            + (pitchView == PitchView::used ? juce::String(" (used rows)") : pitchView == PitchView::scale ? " (" + scaleName() + " rows)" : juce::String()) + "  |  "
             + juce::String(static_cast<int>(pattern.count)) + "/" + juce::String(static_cast<int>(PianoRollPattern::maxNotes)) + " notes";
         status += "  |  " + juce::String(static_cast<int>(selection.count)) + " selected";
         status += "  |  Edit cursor: step " + juce::String(insertionStep + 1.0, 3);
@@ -732,6 +794,7 @@ public:
                 dragPattern = pattern;
                 dragOriginal = *pattern.find(created);
                 drag = Drag::move;
+                holdRows();
                 changed();
             } else {
                 endEdit();
@@ -752,6 +815,7 @@ public:
             const auto bounds = noteBounds(*note, a);
             drag = e.position.x >= bounds.getRight() - juce::jmin(6.0f, bounds.getWidth() * 0.4f)
                  ? Drag::resize : Drag::move;
+            holdRows();
         }
         updateSelection();
     }
@@ -781,7 +845,7 @@ public:
         if (drag == Drag::move) {
             moveSelection(dragPattern,
                 std::round((dragOriginal.startStep + delta) / snapSteps()) * snapSteps() - dragOriginal.startStep,
-                -juce::roundToInt((e.position.y - dragOrigin.y) / rowSize(a)), true);
+                pitchDeltaForRows(dragRows, dragOriginal.pitch, -juce::roundToInt((e.position.y - dragOrigin.y) / rowSize(a))), true);
         } else if (drag == Drag::resize) {
             const auto end = std::round((dragOriginal.startStep + dragOriginal.lengthSteps + delta)
                                        / snapSteps()) * snapSteps();
@@ -793,6 +857,7 @@ public:
         releaseAudition();
         drag = Drag::none;
         endEdit();
+        releaseRows();
         repaint();
     }
 
@@ -808,7 +873,7 @@ public:
     }
 
     void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails& wheel) override {
-        if (wheel.deltaY != 0.0f) setLowestVisible(lowestVisiblePitch + (wheel.deltaY > 0 ? 3 : -3));
+        if (wheel.deltaY != 0.0f) setFirstRow(firstRow + (wheel.deltaY > 0 ? 3 : -3));
     }
 
     bool keyPressed(const juce::KeyPress& key) override {
@@ -845,7 +910,7 @@ public:
         if (!hasKeyboardFocus(false)
             || (key.getModifiers().isAnyModifierKeyDown() && !key.getModifiers().isShiftDown())) return false;
         if (code == juce::KeyPress::pageUpKey || code == juce::KeyPress::pageDownKey) {
-            setLowestVisible(lowestVisiblePitch + (code == juce::KeyPress::pageUpKey ? 12 : -12));
+            setFirstRow(firstRow + (code == juce::KeyPress::pageUpKey ? 12 : -12));
             return true;
         }
         const auto* note = pattern.find(activeId);
@@ -868,17 +933,14 @@ public:
         } else {
             moveSelection(before,
                 code == juce::KeyPress::rightKey ? snapSteps() : code == juce::KeyPress::leftKey ? -snapSteps() : 0,
-                code == juce::KeyPress::upKey ? 1 : code == juce::KeyPress::downKey ? -1 : 0, false);
-            if (const auto* moved = pattern.find(activeId)) {
-                if (moved->pitch < lowestVisiblePitch) setLowestVisible(moved->pitch);
-                if (moved->pitch > topPitch()) setLowestVisible(moved->pitch - visiblePitches + 1);
-            }
+                pitchDeltaForRows(rows, note->pitch, code == juce::KeyPress::upKey ? 1 : code == juce::KeyPress::downKey ? -1 : 0), false);
+            if (const auto* moved = pattern.find(activeId)) revealPitch(moved->pitch);
         }
         endEdit();
         return true;
     }
 
-    void focusLost(FocusChangeType) override { releaseAudition(); endEdit(); drag = Drag::none; repaint(); }
+    void focusLost(FocusChangeType) override { releaseAudition(); endEdit(); drag = Drag::none; releaseRows(); repaint(); }
     void focusGained(FocusChangeType) override { repaint(); }
     void visibilityChanged() override { if (!isShowing()) { releaseAudition(); endEdit(); drag = Drag::none; } }
 
@@ -900,9 +962,22 @@ private:
     float stepSize(const Areas& a) const { return a.grid.getWidth() / static_cast<float>(juce::jmax(1, pattern.loopSteps)); }
     static float rowSize(const Areas& a) { return a.grid.getHeight() / static_cast<float>(visiblePitches); }
     float stepX(double step, const Areas& a) const { return a.grid.getX() + static_cast<float>(step) * stepSize(a); }
-    int topPitch() const { return lowestVisiblePitch + visiblePitches - 1; }
+    // Rows count up from the lowest shown pitch; firstRow is the row at the bottom of the grid.
+    int topRow() const { return firstRow + visiblePitches - 1; }
+    bool rowOnScreen(int row) const { return row >= firstRow && row <= topRow() && row < rows.count; }
     int pitchAt(float y, const Areas& a) const {
-        return juce::jlimit(lowestVisiblePitch, topPitch(), topPitch() - static_cast<int>((y - a.grid.getY()) / rowSize(a)));
+        const auto row = juce::jlimit(firstRow, juce::jmin(topRow(), rows.count - 1),
+                                      topRow() - static_cast<int>(std::floor((y - a.grid.getY()) / rowSize(a))));
+        return rows.pitches[static_cast<std::size_t>(row)];
+    }
+    // The pitch change that moves a note at pitch by deltaRows rows (semitones when every row is shown).
+    static int pitchDeltaForRows(const PitchRows& on, int pitch, int deltaRows) {
+        const auto row = on.rowOf(pitch);
+        if (deltaRows == 0 || row < 0) return 0;
+        return on.pitches[static_cast<std::size_t>(juce::jlimit(0, on.count - 1, row + deltaRows))] - pitch;
+    }
+    juce::String scaleName() const {
+        return juce::String(scalePitchClassName(scaleSettings.rootPitchClass)) + " " + scaleType.getText();
     }
     int snapSteps() const { return juce::jmax(1, snap.getSelectedId()); }
     int snapStep(float x, const Areas& a) const {
@@ -922,8 +997,10 @@ private:
         return names[juce::jlimit(0, 11, pitchClass)];
     }
     juce::Rectangle<float> noteBounds(const PianoRollNote& note, const Areas& a) const {
+        const auto row = rows.rowOf(note.pitch);
+        if (row < 0) return { -1.0e4f, -1.0e4f, 0.0f, 0.0f };   // a hidden row (only while rows are being rebuilt)
         return { stepX(note.startStep, a) + 1.0f,
-                 a.grid.getY() + (topPitch() - note.pitch) * rowSize(a) + 1.0f,
+                 a.grid.getY() + (topRow() - row) * rowSize(a) + 1.0f,
                  juce::jmax(2.0f, static_cast<float>(note.lengthSteps) * stepSize(a) - 2.0f), juce::jmax(2.0f, rowSize(a) - 2.0f) };
     }
     std::uint32_t hitNote(juce::Point<float> position, const Areas& a) const {
@@ -956,7 +1033,7 @@ private:
         return tint.value_or(juce::Colour(0xff3fc9a2));
     }
     void paintNote(juce::Graphics& g, const PianoRollNote& note, const Areas& a, bool isSelected) const {
-        if (note.pitch < lowestVisiblePitch || note.pitch > topPitch()) return;
+        if (!rowOnScreen(rows.rowOf(note.pitch))) return;
         const auto bounds = noteBounds(note, a);
         const auto opacity = 0.25f + 0.75f * note.probability;
         const auto tint = noteTint ? noteTint(note.id) : std::nullopt;   // a note of another clip being edited
@@ -972,7 +1049,7 @@ private:
         }
     }
     void paintGhost(juce::Graphics& g, const PianoRollGhostNote& ghost, const Areas& a) const {
-        if (ghost.pitch < lowestVisiblePitch || ghost.pitch > topPitch()) return;
+        if (!rowOnScreen(rows.rowOf(ghost.pitch))) return;
         const PianoRollNote shape { 0, ghost.pitch, ghost.startStep, ghost.lengthSteps };
         const auto bounds = noteBounds(shape, a);
         g.setColour(juce::Colour(0x389ea3ab));
@@ -1049,6 +1126,7 @@ private:
             rememberedVelocity = note->velocity;
             rememberedProbability = note->probability;
         }
+        refreshRows();
         updateSelection();
         if (onChange) onChange();
     }
@@ -1201,6 +1279,11 @@ private:
         labels.addItem(30, "C notes only", true, keyLabels == KeyLabels::cNotes);
         labels.addItem(31, "All notes", true, keyLabels == KeyLabels::all);
         menu.addSubMenu("Keyboard labels", labels);
+        juce::PopupMenu shown;
+        shown.addItem(40, "All notes", true, pitchView == PitchView::all);
+        shown.addItem(41, "Used notes", true, pitchView == PitchView::used);
+        shown.addItem(42, "Scale notes", true, pitchView == PitchView::scale);
+        menu.addSubMenu("Show rows", shown);
         juce::PopupMenu ghosts;
         ghosts.addItem(20, "Off", true, ghostSource == GhostNoteSource::off);
         ghosts.addItem(21, "Other clips in this scene", true, ghostSource == GhostNoteSource::sameScene);
@@ -1227,6 +1310,7 @@ private:
                                          : action == 21 ? GhostNoteSource::sameScene : GhostNoteSource::sameTrack);
                 else if (action == 23) safe->setMultiClipEditing(!safe->multiClip);
                 else if (action == 30 || action == 31) safe->setKeyLabels(action == 30 ? KeyLabels::cNotes : KeyLabels::all);
+                else if (action >= 40 && action <= 42) safe->setPitchView(static_cast<PitchView>(action - 40));
                 if (action != 0) safe->grabKeyboardFocus();
             });
     }
@@ -1366,10 +1450,7 @@ private:
             chordType.setSelectedId(static_cast<int>(chordSettings.type) + 1, juce::dontSendNotification);
             updateChordInversionRange();
         } else if (tool == 6) {
-            scaleRoot.setSelectedId(scaleSettings.rootPitchClass + 1, juce::dontSendNotification);
-            scaleType.setSelectedId(static_cast<int>(scaleSettings.type) + 1, juce::dontSendNotification);
-            scaleHighlight.setToggleState(scaleSettings.highlight, juce::dontSendNotification);
-            scaleSnap.setToggleState(scaleSettings.snap, juce::dontSendNotification);
+            syncScaleControls();
         } else if (tool == 11) {
             configureParameter(0, "Tonic (MIDI)", "Progression tonic MIDI note", 0, 127, progressionSettings.tonic);
             configureParameter(1, "Steps / chord", "Progression chord length steps", 1, 64, progressionSettings.chordSteps);
@@ -1572,30 +1653,81 @@ private:
         scaleSettings.type = static_cast<ScaleType>(juce::jlimit(1, 10, scaleType.getSelectedId()) - 1);
         scaleSettings.highlight = scaleHighlight.getToggleState();
         scaleSettings.snap = scaleSnap.getToggleState();
-        statusMessage = juce::String(scalePitchClassName(scaleSettings.rootPitchClass)) + " "
-            + scaleType.getText() + (scaleSettings.snap ? " scale snap on" : " scale highlight");
+        statusMessage = scaleName() + (scaleSettings.snap ? " scale snap on" : " scale highlight");
+        refreshRows();
         repaint();
     }
-    void setLowestVisible(int pitch) {
-        const auto next = juce::jlimit(lowestPitch, highestPitch - visiblePitches + 1, pitch);
-        if (next == lowestVisiblePitch) return;
+    void showPitchViewMenu() {
+        juce::PopupMenu menu;
+        menu.addItem(1, "All notes", true, pitchView == PitchView::all);
+        menu.addItem(2, "Used notes", true, pitchView == PitchView::used);
+        menu.addItem(3, "Scale notes (" + scaleName() + ")", true, pitchView == PitchView::scale);
+        juce::Component::SafePointer<PianoRollEditor> safe(this);
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(pitchViewButton), [safe](int choice) {
+            if (safe == nullptr || choice == 0) return;
+            safe->setPitchView(static_cast<PitchView>(choice - 1));
+            safe->grabKeyboardFocus();
+        });
+    }
+    void syncScaleControls() {
+        scaleRoot.setSelectedId(scaleSettings.rootPitchClass + 1, juce::dontSendNotification);
+        scaleType.setSelectedId(static_cast<int>(scaleSettings.type) + 1, juce::dontSendNotification);
+        scaleHighlight.setToggleState(scaleSettings.highlight, juce::dontSendNotification);
+        scaleSnap.setToggleState(scaleSettings.snap, juce::dontSendNotification);
+    }
+    // Rebuilds the row list from the notes, ghost notes, view and scale, keeping the lowest shown pitch in place.
+    void refreshRows() {
+        std::bitset<128> used = heldRows;
+        for (std::size_t i = 0; i < pattern.count; ++i)
+            if (pattern.notes[i].pitch >= 0 && pattern.notes[i].pitch <= 127) used.set(static_cast<std::size_t>(pattern.notes[i].pitch));
+        forEachGhostNote(ghostClips, pattern.loopSteps, [&](const PianoRollGhostNote& ghost) {
+            if (ghost.pitch >= 0 && ghost.pitch <= 127) used.set(static_cast<std::size_t>(ghost.pitch));
+        });
+        const auto next = pitchRows(pitchView, used, scaleSettings);
+        if (next == rows) return;
+        const auto anchor = rows.count != 0 ? rows.pitches[static_cast<std::size_t>(juce::jlimit(0, rows.count - 1, firstRow))] : firstRow;
+        rows = next;
+        firstRow = juce::jlimit(0, juce::jmax(0, rows.count - visiblePitches), rows.rowAtOrAbove(anchor));
+        pitchScroll.setRangeLimits(0, juce::jmax(rows.count, visiblePitches), juce::dontSendNotification);
+        updatePitchScroll();
+        repaint();
+    }
+    // A drag keeps the rows it started on, so its notes can be dragged back to where they were.
+    void holdRows() {
+        dragRows = rows;
+        for (int row = 0; row < rows.count; ++row) heldRows.set(static_cast<std::size_t>(rows.pitches[static_cast<std::size_t>(row)]));
+    }
+    void releaseRows() {
+        if (heldRows.none()) return;
+        heldRows.reset();
+        refreshRows();
+    }
+    void revealPitch(int pitch) {
+        const auto row = rows.rowOf(pitch);
+        if (row < 0) return;
+        if (row < firstRow) setFirstRow(row);
+        else if (row > topRow()) setFirstRow(row - visiblePitches + 1);
+    }
+    void setFirstRow(int row) {
+        const auto next = juce::jlimit(0, juce::jmax(0, rows.count - visiblePitches), row);
+        if (next == firstRow) return;
         releaseAudition();
-        lowestVisiblePitch = next;
+        firstRow = next;
         updatePitchScroll();
         repaint();
     }
     void updatePitchScroll() {
-        pitchScroll.setCurrentRange(highestPitch - topPitch(), visiblePitches, juce::dontSendNotification);
+        pitchScroll.setCurrentRange(rows.count - 1 - topRow(), visiblePitches, juce::dontSendNotification);
     }
     void scrollBarMoved(juce::ScrollBar*, double newStart) override {
-        setLowestVisible(highestPitch - juce::roundToInt(newStart) - visiblePitches + 1);
+        setFirstRow(rows.count - juce::roundToInt(newStart) - visiblePitches);
     }
 
     PianoRollPattern pattern;
     juce::ComboBox snap, tools, chordType, scaleRoot, scaleType;
     juce::Label snapLabel, velocityLabel, probabilityLabel, chordTypeLabel, scaleRootLabel, scaleTypeLabel;
     juce::Slider velocity, probability;
-    juce::TextButton clearButton, exampleButton, editActionsButton, toolButton, undoButton, redoButton, applyButton, cancelButton;
+    juce::TextButton clearButton, exampleButton, editActionsButton, pitchViewButton, toolButton, undoButton, redoButton, applyButton, cancelButton;
     juce::Label panelTitle, panelHelp, seedLabel;
     std::array<juce::Label, 3> parameterLabels;
     std::array<juce::Slider, 3> parameters;
@@ -1632,7 +1764,10 @@ private:
     ScaleSettings scaleSettings;
     std::array<int, 4> previewedChordPitches {};
     std::size_t previewedChordCount {};
-    int lowestVisiblePitch { 48 }, auditionPitch { -1 };
+    PitchView pitchView { PitchView::all };
+    PitchRows rows, dragRows;
+    std::bitset<128> heldRows;   // pitches kept as rows while a drag is under way
+    int firstRow { 48 }, auditionPitch { -1 };
     double playhead { -1.0 }, insertionStep {}, rememberedLength {};
     float rememberedVelocity { 0.8f };
     float rememberedProbability { 1.0f };
