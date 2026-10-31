@@ -28,6 +28,8 @@ ordinary source playback. Warp editing is refused during recording.
 
 - Anchors pair musical content ticks with source seconds. Region content offsets
   advance through that map on trim, split and slip; moving/copying retains it.
+  Caches retain the original musical origin, so cutting a region does not reset
+  the stretch alignment; a split-cache comparison checks retained audio samples.
 - A piecewise-linear source map and the complete Song tempo map drive linked
   stereo WSOLA. Local duration ratios from 1/8 to 8x are admitted; extreme segments
   report an error rather than falling back to pitch-changing resampling.

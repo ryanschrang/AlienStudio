@@ -135,11 +135,17 @@ inline bool prepareArrangementWarps(ArrangementPlayback& song, const std::atomic
         if (r.muted || r.start>=to || r.end()+tail<=from) {r.warp.clear();r.muted=true;continue;}
         const auto* source=song.clipFor(r,static_cast<std::size_t>(r.row)).audio;
         if (!source) {error="A warped region has no available audio source.";return false;}
-        auto clip=renderRegionWarp(*source,r,song.timeline,tail,cancel,error);
+        // Retain the original musical origin through a trim/split. Rendering
+        // from each new cut would reset WSOLA's alignment and change the sound.
+        const auto prefix=std::min<std::int64_t>(timeline::maxLength,std::max<std::int64_t>(0,r.offset-r.warp.front().tick));
+        auto renderRegion=r;renderRegion.start-=prefix;renderRegion.length+=prefix;renderRegion.offset-=prefix;
+        renderRegion.audioOffset=std::max(0.0,timeline::warpSeconds(r.warp,static_cast<double>(renderRegion.offset)));
+        auto clip=renderRegionWarp(*source,renderRegion,song.timeline,tail,cancel,error);
         if (!clip) return false;
         const auto at=std::lower_bound(song.warped.begin(),song.warped.end(),r.id,[](const auto& w,std::uint32_t id){return w.id<id;});
         song.warped.insert(at,ArrangementPlayback::WarpedRegion{r.id,std::move(clip)});
-        r.audioOffset=0;r.loopSource=false;r.reversed=false;r.warp.clear();
+        r.audioOffset=timeline::TempoMap{song.timeline.tempoChanges,song.timeline.tempo}.secondsBetween(static_cast<double>(renderRegion.start),static_cast<double>(r.start));
+        r.loopSource=false;r.reversed=false;r.warp.clear();
     }
     if(cancel.load()){error="Warp preparation cancelled.";return false;}
     return true;

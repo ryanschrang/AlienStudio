@@ -53,6 +53,13 @@ static void warpRenderChecks() {
         for(int n=centre-480;n<centre+480;++n)sum+=attackL[static_cast<std::size_t>(n)]*attackL[static_cast<std::size_t>(n)];
         require(sum>.01,"non-linear source anchors move audible attacks with the tempo map");
     }
+    ArrangementPlayback splitSong;splitSong.timeline=song;splitSong.clips[0][0].audio=source.get();
+    std::uint32_t splitId{};require(splitSong.timeline.place(region,&splitId) && splitSong.timeline.split({splitId},960),"split a warped source at the tempo change");
+    require(prepareArrangementWarps(splitSong,cancel,error),"prepare split warp caches");
+    const auto* rightPiece=splitSong.timeline.regionAt(0,960);require(rightPiece && rightPiece->audioOffset==.5,"split cache retains its original stretch origin");
+    const auto* rightAudio=splitSong.clipFor(*rightPiece,0).audio;auto splitReader=rightAudio->streamSource->open();
+    std::array<float,1024> splitL{},splitR{};require(splitReader && splitReader->read(4000,splitL.data(),splitR.data(),1024),"read retained split prefix");
+    require(std::equal(splitL.begin(),splitL.end(),l.begin()+4000),"splitting warped audio preserves the original stretch sample-for-sample");
     auto loud=warpTestSine();for(auto& v:loud->left)v*=4;for(auto& v:loud->right)v*=4;
     auto loudCache=renderRegionWarp(*loud,region,song,0,cancel,error);
     require(loudCache!=nullptr,"render floating-point headroom fixture");
