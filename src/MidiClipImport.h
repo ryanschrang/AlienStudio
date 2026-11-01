@@ -3,9 +3,11 @@
 // piano roll's grid: one step is a sixteenth of 240 ticks, so a file's ticks are rescaled from its own
 // pulses per quarter note to 960. Message thread only: it reads files and allocates.
 //
-// Timing is musical, not clock time: tempo and time-signature meta events are read only to report the
-// file's tempo, never to stretch notes, so a groove recorded at 80 BPM plays in time at the project's tempo.
-// Files timed in SMPTE frames have no beats to map onto and are refused.
+// Timing is musical, not clock time: the file's first tempo is read only to report it, never to stretch notes,
+// so a groove recorded at 80 BPM plays in time at the project's tempo. The file's first time signature sets
+// how long a bar is, which only decides the clip's length (whole bars) and how far an import may lengthen the
+// piano roll's loop; notes keep their positions in beats. A file without one is 4/4. Files timed in SMPTE
+// frames have no beats to map onto and are refused.
 //
 // Note pairing never leaves a note open. A note-on with velocity 0 is a note-off. Each channel and key holds
 // at most one note: a second note-on for a key that is already down ends the first one there (a retrigger),
@@ -39,9 +41,11 @@ struct ImportedNote {
 
 struct ImportedClip {
     std::vector<ImportedNote> notes;   // sorted by start, then pitch
-    int lengthTicks{};                 // the clip rounded up to whole bars of 4/4
+    int lengthTicks{};                 // the clip rounded up to whole bars of its time signature
     int filePpq{};
     double fileTempo{};                // the first tempo in the file, in BPM, or 0 when it has none; never applied
+    int beatsPerBar{4}, beatUnit{4};   // the first time signature in the file, or 4/4 when it has none
+    int barTicks{ticksPerQuarter * 4}; // one bar of that signature, in project ticks
     int retriggered{}, unterminated{}, zeroLength{}, strayOffs{};   // what pairing had to repair
     juce::String error;                // empty when the file was read
     bool ok() const noexcept { return error.isEmpty(); }
@@ -58,6 +62,13 @@ inline int toProjectTicks(double fileTicks, int ppq) noexcept {
     return static_cast<int>(std::clamp(ticks, 0.0, 1.0e9));
 }
 
+// One bar of `beats`/`unit` in project ticks, or 0 for a signature that cannot be a bar on the grid (a zero
+// count, or a beat unit that is not a power of two from 1 to 64).
+inline int barTicksOf(int beats, int unit) noexcept {
+    if (beats < 1 || beats > 255 || unit < 1 || unit > 64 || (unit & (unit - 1)) != 0) return 0;
+    return beats * ticksPerQuarter * 4 / unit;
+}
+
 inline ImportedClip fromMidiFile(const juce::MidiFile& file) {
     ImportedClip clip;
     const int ppq = file.getTimeFormat();
@@ -65,6 +76,7 @@ inline ImportedClip fromMidiFile(const juce::MidiFile& file) {
     clip.filePpq = ppq;
     struct Open { int start; float velocity; };
     int lastTick = 0;
+    bool signed_ = false;   // the first time signature, in file order, is the clip's
     for (int t = 0; t < file.getNumTracks(); ++t) {
         const auto& track = *file.getTrack(t);
         std::map<int, Open> held;   // channel * 128 + key
@@ -76,6 +88,14 @@ inline ImportedClip fromMidiFile(const juce::MidiFile& file) {
             if (m.isTempoMetaEvent() && clip.fileTempo == 0.0) {
                 const double seconds = m.getTempoSecondsPerQuarterNote();
                 if (seconds > 0.0) clip.fileTempo = 60.0 / seconds;
+            }
+            if (m.isTimeSignatureMetaEvent() && !signed_) {
+                int beats = 4, unit = 4;
+                m.getTimeSignatureInfo(beats, unit);
+                if (const int bar = barTicksOf(beats, unit); bar > 0) {
+                    clip.beatsPerBar = beats; clip.beatUnit = unit; clip.barTicks = bar;
+                    signed_ = true;
+                }
             }
             if (!m.isNoteOnOrOff()) continue;
             const int key = m.getChannel() * 128 + m.getNoteNumber();
@@ -132,7 +152,7 @@ inline ImportedClip fromMidiFile(const juce::MidiFile& file) {
     }
     // Whole bars that hold every note: one that starts in a bar is in it, and a note held less than a sixteenth
     // past a bar line (a loose release) does not make another bar.
-    constexpr int bar = PianoRollPattern::ticksPerStep * 16;
+    const int bar = clip.barTicks;
     int bars = 1;
     for (const auto& note : clip.notes)
         bars = std::max({bars, note.startTicks / bar + 1,
@@ -164,11 +184,27 @@ inline std::vector<PianoRollNote> pianoRollNotes(const ImportedClip& clip) {
     return notes;
 }
 
+// How an import of `clip` may lengthen the piano roll's loop: to whole bars of the clip's time signature.
+inline LoopGrowth loopGrowth(const ImportedClip& clip) noexcept {
+    return {PianoRollPattern::fromTicks(clip.lengthTicks), clip.barTicks};
+}
+
 // One line for the editor's status bar: what was added, what was left out, and the tempo note.
 inline juce::String describe(const ImportedClip& clip, const NoteInsertResult& result, const juce::String& name) {
     if (!clip.ok()) return "No changes: " + clip.error;
     if (!result.changed()) return "No changes: none of " + name + "'s notes fit after the cursor. Move the cursor earlier.";
     juce::String text = "Imported " + juce::String(result.added) + " notes from " + name;
+    if (result.grewLoop()) {
+        // In bars of the clip's signature when the new loop is whole bars of it, otherwise in sixteenths.
+        const auto length = [&](int steps) {
+            const int ticks = steps * PianoRollPattern::ticksPerStep;
+            const juce::String of = clip.barTicks == ticksPerQuarter * 4 && clip.beatsPerBar == 4 ? juce::String()
+                                  : " of " + juce::String(clip.beatsPerBar) + "/" + juce::String(clip.beatUnit);
+            if (ticks % clip.barTicks == 0) return juce::String(ticks / clip.barTicks) + (ticks == clip.barTicks ? " bar" : " bars") + of;
+            return juce::String(steps) + " sixteenths";
+        };
+        text << "; the clip was lengthened from " << length(result.loopFrom) << " to " << length(result.loopTo) << " to hold it";
+    }
     if (result.skipped != 0) text << "; " << result.skipped << " past the clip's end were left out";
     if (result.trimmed != 0) text << "; " << result.trimmed << " were cut at the clip's end";
     if (clip.fileTempo > 0.0) text << ". The file's " << juce::roundToInt(clip.fileTempo) << " BPM is not applied; notes follow the project tempo";

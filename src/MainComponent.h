@@ -611,7 +611,11 @@ private:
             const auto clip = alien::midi_import::read(file);
             if (!clip.ok()) { pianoRoll.showStatus("No changes: " + clip.error); return; }
             const auto notes = alien::midi_import::pianoRollNotes(clip);
-            const auto result = pianoRoll.importNotes(notes);
+            // A Session clip grows to hold the import. A rack channel's notes are as long as its rack pattern, and a
+            // Song placement's length is laid out on the timeline, so those keep their length and cut the clip.
+            const bool growable = !rollTarget.rack && rollTarget.placement == 0 && !multiClip.active();
+            const auto growth = alien::midi_import::loopGrowth(clip);
+            const auto result = pianoRoll.importNotes(notes, growable ? &growth : nullptr);
             pianoRoll.showStatus(alien::midi_import::describe(clip, result, file.getFileNameWithoutExtension()));
         };
         sessionView.onSelectionChanged = [this] { rollTarget = {}; loadSelectedClip(); };

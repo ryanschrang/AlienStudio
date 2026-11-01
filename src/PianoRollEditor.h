@@ -386,12 +386,13 @@ public:
     std::function<void(const juce::File&)> onImportMidiFile;
     juce::File starterFolder = starterPack::folder();   // where the Starter Pack's clips are; tests point it elsewhere
     // Adds `notes` (timed from their own start) at the amber cursor, keeping the notes already there, as one
-    // undoable edit, and selects them. Notes past the clip's end are left out (see insertNotes).
-    NoteInsertResult importNotes(std::span<const PianoRollNote> notes) {
+    // undoable edit, and selects them. With `grow` the clip's loop first lengthens to hold them, in the same
+    // edit, so one undo restores both; without it notes past the clip's end are left out (see insertNotes).
+    NoteInsertResult importNotes(std::span<const PianoRollNote> notes, const LoopGrowth* grow = nullptr) {
         if (locked) return {};
         prepareClipboardAction();
         beginEdit();
-        const auto result = insertNotes(pattern, notes, insertionStep);
+        const auto result = insertNotes(pattern, notes, insertionStep, grow);
         if (result.changed()) {
             selection = result.selection;
             activeId = selection.count != 0 ? selection.ids[0] : 0;
