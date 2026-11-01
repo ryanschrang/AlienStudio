@@ -436,8 +436,11 @@ static void continuousCommandTests() {
     require(c.undo() && engine.tracks[0].gain.load() == .5f && engine.tracks[1].mute.load(), "grouping never absorbs an unrelated intervening command");
 }
 
+#include "MidiClipCommandTests.h"
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    midiClipCommandChecks();
     continuousCommandTests();
     nameTests();
     singleCommandTests();

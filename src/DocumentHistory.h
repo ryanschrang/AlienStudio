@@ -20,6 +20,7 @@ public:
     struct Step {
         juce::String label;
         int focusTrack{-1}, focusScene{-1}; // Clip to show when this step is undone/redone.
+        int undoTrack{-1}, undoScene{-1}; // Optional different focus when undoing creation/copy.
     };
 
     void reset(const ProjectDocument& document) {
@@ -32,7 +33,7 @@ public:
     // a unique key so its updates merge even after a pause. Other edits or an
     // undo still break adjacency; a later gesture must use a new key.
     void record(const ProjectDocument& after, const juce::String& label, int focusTrack = -1, int focusScene = -1,
-                const juce::String& coalesceKey = {}, bool continuous = false) {
+                const juce::String& coalesceKey = {}, bool continuous = false, int undoTrack = -1, int undoScene = -1) {
         if (entries.empty()) { reset(after); return; }
         // Nothing actually changed (e.g. a click that did not move a control).
         if (sameContent(entries[position].document, after)) return;
@@ -41,12 +42,13 @@ public:
         if (coalesceKey.isNotEmpty() && position + 1 == entries.size() && position > 0
             && top.coalesceKey == coalesceKey && (continuous || now - top.time < coalesceMilliseconds)) {
             top.document = after;
+            if(undoTrack>=0) {top.step.focusTrack=focusTrack;top.step.focusScene=focusScene;}
             top.time = now;
             top.id = nextId++;
             return;
         }
         entries.resize(position + 1);
-        entries.push_back({after, {label, focusTrack, focusScene}, coalesceKey, nextId++, now});
+        entries.push_back({after, {label, focusTrack, focusScene, undoTrack, undoScene}, coalesceKey, nextId++, now});
         if (entries.size() > limit + 1) entries.erase(entries.begin());
         position = entries.size() - 1;
     }
@@ -66,6 +68,8 @@ public:
     const ProjectDocument* undo(Step& undone) {
         if (!canUndo()) return nullptr;
         undone = entries[position].step;
+        if(undone.undoTrack>=0)undone.focusTrack=undone.undoTrack;
+        if(undone.undoScene>=0)undone.focusScene=undone.undoScene;
         --position;
         return &entries[position].document;
     }

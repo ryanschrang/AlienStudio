@@ -293,14 +293,15 @@ struct ProjectDocument {
     // Gives a cell new content, as a new revision of the clip it already has (every use of that
     // clip hears it), or as a new clip for an empty cell. Content that is just a new, empty clip (no
     // audio, no notes, the default loop) empties the cell; an empty clip with its own loop is kept.
-    void setClip(int track, int scene, const SessionClip& content) {
+    // keepEmpty preserves explicit clip presence when loading or pasting a saved/copy identity.
+    void setClip(int track, int scene, const SessionClip& content, bool keepEmpty = false) {
         if (content.rackClip != 0) { bindRackClip(track, scene, content.rackClip); return; }
         // Replacing a rack assignment creates ordinary content; it never rewrites the shared rack source.
         if (clip(track, scene).rackClip != 0) cells[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)] = {};
         const auto& blank = *emptyPattern();
         const bool nothing = !content.isAudioClip() && (content.pattern == nullptr
             || (content.pattern->count == 0 && content.pattern->loopSteps == blank.loopSteps));
-        if (nothing) { clearClip(track, scene); return; }
+        if (nothing && !keepEmpty) { clearClip(track, scene); return; }
         auto data = std::make_shared<library::PatternData>();
         const auto& notes = content.pattern != nullptr ? content.pattern : emptyPattern();
         data->lengthTicks = library::PatternData::loopTicks(*notes);
@@ -596,7 +597,9 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
             destination.pattern = doc.clip(t, s).pattern;   // shared, not copied
             destination.audioFilePath = doc.clip(t, s).audioFilePath;
             destination.rackClip = doc.clip(t, s).rackClip;
-            if (const auto link = doc.linkOf(t, s); destination.rackClip == 0 && link != 0 && uses[link] > 1) destination.link = link;
+            if (const auto link = doc.linkOf(t, s); destination.rackClip == 0 && link != 0
+                && (uses[link] > 1 || (doc.cellClip(t,s) && !doc.clip(t,s).isAudioClip() && destination.pattern->count==0
+                    && destination.pattern->loopSteps==emptyPattern()->loopSteps))) destination.link = link;
         }
     for (const auto id : doc.placementClips()) {
         auto& destination = data.placementClips[id];
@@ -669,7 +672,8 @@ inline ProjectDocument fromProjectData(const SessionProjectData& source) {
             SessionClip clip;
             clip.pattern = source.pattern.shared() != nullptr ? source.pattern.shared() : emptyPattern();
             clip.audioFilePath = source.audioFilePath;
-            doc.setClip(t, s, clip);
+            // Nonzero saved identity distinguishes an explicit empty clip.
+            doc.setClip(t, s, clip, source.link != 0);
             if (source.link != 0 && doc.cellClip(t, s)) links[source.link] = doc.cellClip(t, s);
         }
     // Placement clips get new ids in this library; the regions follow.
