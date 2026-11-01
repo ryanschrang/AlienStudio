@@ -1346,6 +1346,36 @@ public:
         pool.addJob(std::move(job));
     }
 
+    // Browser import captures the destination before decoding. Busy state prevents
+    // structural edits while the worker runs; recheck the destination before install.
+    void importBrowserSample(const juce::File& file, int track, int scene, std::int64_t songTick = -1) {
+        if (busy || isRecording() || engine.recording.phase.load() != RecordControls::idle || !doc.isValidCell(track, scene) || isTrackFrozen(track)) return;
+        if (songTick < 0 && doc.cellClip(track, scene)) { importStatus("Choose an empty Session cell.", {}); return; }
+        setBusy(true); importStatus("Loading sample...", file.getFullPathName());
+        std::weak_ptr<int> token = alive;
+        pool.addJob([this, token, file, track, scene, songTick] {
+            auto result = std::make_shared<AudioClipImportResult>(importSessionAudioClip(file));
+            juce::MessageManager::callAsync([this, token, file, track, scene, songTick, result] {
+                if (!token.lock()) return;
+                setBusy(false);
+                if (!result->clip) { importStatus(result->error, file.getFullPathName()); return; }
+                if (!doc.isValidCell(track, scene) || isTrackFrozen(track)) return;
+                if (songTick < 0) {
+                    if (doc.cellClip(track, scene)) { importStatus("Destination is no longer empty.", {}); return; }
+                    finishImport(file, track, scene, *result);
+                } else {
+                    const auto end = timeline::TempoMap{doc.timeline.tempoChanges, static_cast<double>(doc.bpm)}.tickAfter(static_cast<double>(songTick), result->clip->frames / result->clip->sampleRate);
+                    if (end > timeline::maxLength || end <= songTick) { importStatus("Sample does not fit in the Song.", {}); return; }
+                    RecordedTake take; take.track = track; take.file = file; take.clip = result->clip;
+                    take.placement = {true, songTick, std::max<std::int64_t>(1, static_cast<std::int64_t>(std::ceil(end)) - songTick), 0};
+                    if (addRecordedTakes({take}, "Import sample to Song") != 1) { importStatus("Sample could not be placed in the Song.", {}); return; }
+                    importStatus("Imported " + file.getFileName() + " to Song", file.getFullPathName());
+                    if (onDocumentRestored) onDocumentRestored();
+                }
+            });
+        });
+    }
+
     std::shared_ptr<ArrangementPlayback> captureArrangement() const {
         auto song = std::make_shared<ArrangementPlayback>();
         song->timeline = doc.timeline; song->timeline.tempo = doc.bpm;
@@ -1612,7 +1642,7 @@ public:
     // a loop recording becomes a take of that cell, and only the active pass is put on the song. When the
     // take list has no room for every pass, the earliest are left out. Nothing changes when any take
     // cannot be placed. Returns how many tracks' takes were placed.
-    int addRecordedTakes(const std::vector<RecordedTake>& takes) {
+    int addRecordedTakes(const std::vector<RecordedTake>& takes, const juce::String& label = "Record take") {
         using namespace alien::timeline;
         if (busy || takes.empty()) return 0;
         const auto saved = doc;
@@ -1637,7 +1667,7 @@ public:
             };
             int scene = -1;
             for (int s = 0; s < doc.sceneCount() && scene < 0; ++s)
-                if (doc.clip(row, s).isEmpty() && !usedByTimeline(s)) scene = s;
+                if (!doc.cellClip(row, s) && !usedByTimeline(s)) scene = s;
             if (scene < 0) {
                 if (!doc.canAddScene() || !insertScene(doc.sceneCount(), nullptr)) return fail();
                 scene = doc.sceneCount() - 1;
@@ -1669,7 +1699,7 @@ public:
         if (!next.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount)) return fail();
         doc.timeline = std::move(next);
         if (!cells.empty()) selectClip(cells.front().first, cells.front().second);
-        commit("Record take", cells.size() == 1 ? cells.front().first : -1, cells.size() == 1 ? cells.front().second : -1);
+        commit(label, cells.size() == 1 ? cells.front().first : -1, cells.size() == 1 ? cells.front().second : -1);
         return static_cast<int>(cells.size());
     }
     bool compRecordedTake(std::uint32_t id, std::int64_t from, std::int64_t to) {

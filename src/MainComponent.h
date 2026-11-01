@@ -286,7 +286,7 @@ public:
     }
 
     void releaseNotes() {
-        engine.factoryPresetPreview.stop();
+        engine.factoryPresetPreview.stop(); engine.samplePreview.stop();
         pianoRoll.releaseAudition();
         typingInput.release();
         keyboardState.allNotesOff(0);
@@ -368,6 +368,7 @@ private:
                 case Menu::audioSettings:showAudioSettings();break;
                 case Menu::recordingOptions:topBar.openRecordingOptions();break;
                 case Menu::plugins:showView(7);break;
+                case Menu::sampleBrowser:workspace.showDevices(true);devicesView.samples().focusSearch();break;
                 case Menu::presetBrowser:workspace.showDevices(true);devicesView.presets().focusSearch();break;
                 case Menu::detachView:if(auto* view=currentWorkspace())view->detach();break;
                 case Menu::dockView:if(auto* view=currentWorkspace())view->dock();break;
@@ -515,6 +516,7 @@ private:
         };
         controller.onImportStatus = [this](const juce::String& text, const juce::String& tip) {
             sessionView.setImportStatus(text, tip);
+            devicesView.samples().setStatus(text);
         };
         controller.onBusyChanged = [this](bool busy) {
             topBar.setBusy(busy);
@@ -681,7 +683,18 @@ private:
             mixerPanel.refreshSettings();
             sessionView.repaint();
         };
-        devicesView.presets().onAudition = [this](int preset) { if (workspace.isDeviceView()) engine.factoryPresetPreview.request(preset); };
+        devicesView.samples().onPreview = [this](const alien::SessionAudioClip& clip) {
+            engine.factoryPresetPreview.stop();
+            if (!engine.samplePreview.request(clip.left.data(), clip.channels == 2 ? clip.right.data() : nullptr, static_cast<int>(clip.frames), clip.sampleRate))
+                devicesView.samples().setStatus("Preview is busy. Try again.");
+        };
+        devicesView.samples().onStop = [this] { engine.samplePreview.stop(); };
+        devicesView.samples().onImport = [this](const juce::File& file, bool song) {
+            const auto& d = controller.document();
+            if (projectBusy || controller.isBusy() || controller.isRecording() || activeCapture || (!song && d.cellClip(d.selectedTrack, d.selectedScene)) || controller.isTrackFrozen(d.selectedTrack)) return;
+            controller.importBrowserSample(file, d.selectedTrack, d.selectedScene, song ? timelineView.timelineCanvas().cursorTick() : -1);
+        };
+        devicesView.presets().onAudition = [this](int preset) { if (workspace.isDeviceView()) { devicesView.samples().stop(); engine.factoryPresetPreview.request(preset); } };
         devicesView.presets().onStop = [this] { engine.factoryPresetPreview.stop(); };
         devicesView.onPresetChanged = [this](int preset) {
             if (projectBusy || controller.isBusy() || controller.isRecording() || activeCapture || preset == controller.document().livePreset) return;
@@ -1085,6 +1098,10 @@ private:
     }
 
     void timerCallback() override {
+        const auto& sampleDestination = controller.document();
+        devicesView.samples().setImportEnabled(!projectBusy && !controller.isBusy() && !controller.isRecording() && !activeCapture
+            && !sampleDestination.cellClip(sampleDestination.selectedTrack, sampleDestination.selectedScene) && !controller.isTrackFrozen(sampleDestination.selectedTrack),
+            !projectBusy && !controller.isBusy() && !controller.isRecording() && !activeCapture && !controller.isTrackFrozen(sampleDestination.selectedTrack));
         devicesView.presets().setApplyEnabled(!projectBusy && !controller.isBusy() && !controller.isRecording() && !activeCapture);
         applicationToolbar.refreshState();
         controller.pollRecording();

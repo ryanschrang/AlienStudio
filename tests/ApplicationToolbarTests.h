@@ -14,6 +14,7 @@ static void applicationToolbarChecks() {
         while(iterator.next())if(iterator.getItem().itemID==id)return juce::PopupMenu::Item(iterator.getItem());
         require(false,"expected command is present in its menu");return juce::PopupMenu::Item{};
     };
+    require(entry(2,Menu::sampleBrowser).isEnabled, "sample browser accessible from View menu");
     require(entry(0,Menu::save).isEnabled,"save available while idle");
     require(!entry(0,Menu::exportSong).isEnabled,"empty song cannot be exported from menu");
     require(!entry(1,Menu::undo).isEnabled,"empty undo disabled");
@@ -56,7 +57,7 @@ static void applicationToolbarChecks() {
             require(commands.size()==before+1&&commands.back()==item.itemID,"every listed action reaches callback with its own ID");
         }}
     }
-    require(ids.size()==38,"all application commands and nine views are reachable");
+    require(ids.size()==39,"all application commands and nine views are reachable");
     for(int index:{-1,6,99})require(toolbar.getMenuForIndex(index,{}).getNumItems()==0,"invalid menu index is empty");
     for(int width:{960,1180,1280,1920}) {
         toolbar.setSize(width,Menu::height);
