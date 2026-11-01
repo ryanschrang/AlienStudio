@@ -7,6 +7,7 @@
 // nothing from this file; a drag is previewed on a copy and committed once, so
 // each gesture is one undo step.
 #include "ClipBin.h"
+#include "SampleDrag.h"
 #include "ProjectController.h"
 #include "StudioWidgets.h"
 #include "Timeline.h"
@@ -802,6 +803,30 @@ public:
         }
         return plan;
     }
+    DropPlan planSampleDrop(juce::Point<int> pointer) const {
+        DropPlan plan;
+        plan.message = "Drop on a free track lane, to the right of its name.";
+        if (!getLocalBounds().contains(pointer) || pointer.x < headerWidth || pointer.y < topHeight) return plan;
+        const int displayRow = displayRowAt(pointer.y);
+        if (displayRow < 0 || pointer.y >= rowTop(displayRow) + rowHeight) return plan;
+        plan.row = timelineRow(displayRow);
+        const auto& d = controller.document();
+        if (!controller.canImportBrowserSample(plan.row, d.selectedScene, true)) return plan;
+        plan.tick = snapTick(tickAtX(static_cast<double>(pointer.x)));
+        if (plan.tick < 0 || plan.tick >= timeline::maxLength) return plan;
+        // Duration is known only after worker decoding. Refuse an occupied start
+        // now, then check the entire decoded range before any document mutation.
+        for (const auto& region : d.timeline.regions) if (region.row == plan.row && region.start <= plan.tick && region.start + region.length > plan.tick) {
+            plan.message = "Choose a free Song range; existing clips are preserved."; return plan;
+        }
+        plan.valid = true; plan.length = timeline::ticksPerBeat;
+        plan.message = "Drop sample on " + laneName(plan.row) + " at " + barBeat(plan.tick) + ". Existing clips will be preserved.";
+        return plan;
+    }
+    DropPlan dragPlan(const SourceDetails& details) const {
+        return sampledrag::decode(details.description) != juce::File{} ? planSampleDrop(details.localPosition)
+            : planDrop(clipbin::decode(details.description), details.localPosition);
+    }
     juce::String laneName(int row) const {
         const auto& d = controller.document();
         if (timeline::isPatternRow(row)) return "Pattern lane " + juce::String(row - timeline::rackRowBase + 1);
@@ -821,18 +846,23 @@ public:
     }
 
     // ---- dropping from the clip list ---------------------------------------------------------------------------------------
-    bool isInterestedInDragSource(const SourceDetails& details) override { return clipbin::decode(details.description).valid(); }
+    bool isInterestedInDragSource(const SourceDetails& details) override { return sampledrag::decode(details.description) != juce::File{} || clipbin::decode(details.description).valid(); }
     void itemDragEnter(const SourceDetails& details) override {
-        const auto plan = planDrop(clipbin::decode(details.description), details.localPosition);
+        const auto plan = dragPlan(details);
         if (plan.valid) scrollRowIntoView(plan.row);
         showDropPlan(plan);
     }
-    void itemDragMove(const SourceDetails& details) override { showDropPlan(planDrop(clipbin::decode(details.description), details.localPosition)); }
+    void itemDragMove(const SourceDetails& details) override { showDropPlan(dragPlan(details)); }
     void itemDragExit(const SourceDetails&) override { showDropPlan({}); say({}); }
     void itemDropped(const SourceDetails& details) override {
-        const auto plan = planDrop(clipbin::decode(details.description), details.localPosition);
+        const auto plan = dragPlan(details);
         showDropPlan({});
         if (!plan.valid) { say(plan.message.isNotEmpty() ? plan.message : "That cannot be placed there."); return; }
+        const auto file = sampledrag::decode(details.description);
+        if (file != juce::File{}) {
+            controller.importBrowserSample(file, plan.row, controller.document().selectedScene, plan.tick, true);
+            return;
+        }
         if (place(plan.row, plan.source, plan.tick)) say("Placed on " + laneName(plan.row) + " at bar " + barBeat(plan.tick).upToFirstOccurrenceOf(".", false, false) + ".");
     }
     void showDropPlan(const DropPlan& plan) {

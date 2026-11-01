@@ -1125,8 +1125,27 @@ static void midiClipMenuCommands() {
     std::cout<<"PASS: Session clip command menu, destination selection, single history steps and stale identities\n";
 }
 
+#include "SampleDropFixture.h"
+static void sampleDropChecks() {
+    SampleDropFixture audio; ToneEngine engine; ProjectController c(engine); SessionView view(c, engine); view.setSize(1200, 700);
+    juce::Component source; const auto desc = sampledrag::encode(audio.file);
+    using Details = juce::DragAndDropTarget::SourceDetails;
+    const auto cell = view.clipArea(1, 1).getCentre();
+    Details drag(desc, &source, cell);
+    require(view.isInterestedInDragSource(drag) && view.sampleDropCell(cell) == std::pair<int,int>{1,1}, "Session drop resolves pointed cell");
+    require(!view.isInterestedInDragSource(Details("other payload", &source, cell)), "Session ignores other drags");
+    require(view.sampleDropCell(view.sceneArea(1).getCentre()).first < 0, "scene header cannot receive sample");
+    c.setExternalBusy(true); view.itemDropped(drag); require(!c.document().cellClip(1,1), "busy drop does not mutate cell"); c.setExternalBusy(false);
+    view.itemDragEnter(drag); view.itemDropped(drag); SampleDropFixture::wait(c);
+    require(c.document().clip(1,1).isAudioClip() && !c.document().cellClip(0,1), "drop imports into pointer cell rather than selected cell");
+    const auto id = c.document().cellClip(1,1); view.itemDropped(drag); require(!c.isBusy() && c.document().cellClip(1,1) == id, "occupied drop preserves clip");
+    c.undo(); require(!c.document().cellClip(1,1), "Session drop has one Undo step"); c.redo(); require(c.document().clip(1,1).isAudioClip(), "Session drop redo restores clip");
+    view.itemDragExit(drag);
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    sampleDropChecks();
     midiClipMenuCommands();
     layoutChecks();
     wheelEvents();
