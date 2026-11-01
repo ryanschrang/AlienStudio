@@ -832,7 +832,35 @@ static void factoryPresetPreviewTests() {
     std::cout << "PASS: isolated factory previews, bounded release, stop/panic/device lifecycle and callback safety\n";
 }
 
+static void samplePreviewTests() {
+    alien::SamplePreview preview; preview.prepare(48000);
+    std::vector<float> left(4800, .8f), right(4800, -.4f);
+    require(!preview.request(nullptr, nullptr, 1, 48000), "invalid sample preview refused");
+    require(preview.request(left.data(), right.data(), 4800, 48000), "sample preview accepted");
+    preview.beginBlock(); for (int i = 0; i < 500; ++i) preview.nextSample();
+    const auto stereo = preview.nextSample();
+    require(stereo[0] > .39f && stereo[1] < -.19f, "preview retains stereo at bounded gain");
+    preview.stop(); preview.beginBlock(); require(preview.nextSample()[0] == 0, "stop clears preview");
+    preview.request(left.data(), nullptr, 4800, 24000); preview.beginBlock();
+    for (int i = 0; i < 10000; ++i) preview.nextSample();
+    require(preview.nextSample()[0] == 0, "resampled preview finishes automatically");
+    for (int i = 0; i < 3; ++i) require(preview.request(left.data(), nullptr, 4800, 48000), "pending preview slots available");
+    require(!preview.request(left.data(), nullptr, 4800, 48000), "mailbox bounded");
+    preview.beginBlock(true); require(preview.nextSample()[0] == 0, "panic cancels pending previews");
+    require(preview.request(left.data(), nullptr, 4800, 48000), "panic reclaims slots");
+    auto rig = std::make_unique<OfflineEngine>();
+    rig->engine.samplePreview.request(left.data(), nullptr, 4800, 48000);
+    const auto before = allocationCount;
+    require(rig->render(1024) > .00001 && allocationCount == before, "sample audition is audible and allocation-free in real callback");
+    require(rig->engine.plugins->master.getMagnitude(0, 0, 128) == 0 && !rig->engine.playing.load(), "sample audition stays outside project buffers and transport");
+    rig->engine.samplePreview.stop(); require(rig->render(1024) == 0, "sample stop silences monitor preview");
+    rig->engine.masterControls.gain.store(0); rig->render(48000);
+    rig->engine.samplePreview.request(left.data(), nullptr, 4800, 48000);
+    require(rig->render(1024) == 0, "sample preview follows master gain");
+}
+
 int main() {
+    samplePreviewTests();
     factoryPresetPreviewTests();
     inputMonitoringTests();
     masterStageTests();

@@ -3,6 +3,7 @@
 #include "MidiInputPanel.h"
 #include "SynthEngine.h"
 #include "PresetBrowser.h"
+#include "SampleBrowser.h"
 #include <functional>
 
 // Smaller shell panels around the editors: the keyboard dock, the status bar
@@ -144,7 +145,7 @@ public:
     explicit DevicesView(MidiInputPipe& pipe) : midiInput(pipe) {
         namespace col = ui::colours;
         addAndMakeVisible(deviceHelp);
-        deviceHelp.setText("Choose the live keyboard / step synth and MIDI input. Session instruments are in Mixer. Shift+Tab returns.",
+        deviceHelp.setText("Browse sounds and local samples, or choose MIDI input. Session instruments are in Mixer. Shift+Tab returns.",
                            juce::dontSendNotification);
         deviceHelp.setFont(ui::font(12.5f));
         deviceHelp.setColour(juce::Label::textColourId, col::textFaint);
@@ -157,12 +158,14 @@ public:
         presetLabel.setText("LIVE / STEP SYNTH", juce::dontSendNotification);
         addAndMakeVisible(midiInput);
         addAndMakeVisible(browser);
+        addAndMakeVisible(sampleBrowser);
         browser.onApply = [this](int index) { if (onPresetChanged) onPresetChanged(index); };
     }
 
     std::function<void(int)> onPresetChanged;
 
     void setPreset(int index) { browser.setCurrentPreset(index); }
+    SampleBrowser& samples() noexcept { return sampleBrowser; }
     PresetBrowser& presets() noexcept { return browser; }
     MidiInputPanel& midi() noexcept { return midiInput; }
 
@@ -170,7 +173,9 @@ public:
         auto r = getLocalBounds().reduced(20, 16);
         deviceHelp.setBounds(r.removeFromTop(22));
         r.removeFromTop(14);
-        const int cardWidth = juce::jmin(560, r.getWidth());
+        auto samplesArea = r.removeFromRight(juce::jmax(280, r.getWidth() / 2));
+        sampleBrowser.setBounds(samplesArea.reduced(12, 0));
+        const int cardWidth = r.getWidth();
         synthCard = r.removeFromTop(juce::jlimit(200, 320, r.getHeight() - 182)).withWidth(cardWidth);
         r.removeFromTop(14);
         midiCard = r.removeFromTop(juce::jmin(168, r.getHeight())).withWidth(cardWidth);
@@ -203,6 +208,7 @@ private:
     MidiInputPanel midiInput;
     juce::Label deviceHelp, presetLabel, midiLabel;
     PresetBrowser browser;
+    SampleBrowser sampleBrowser;
     juce::Rectangle<int> synthCard, midiCard;
 };
 
