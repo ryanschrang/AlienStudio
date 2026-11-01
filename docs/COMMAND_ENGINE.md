@@ -1,6 +1,6 @@
 # Command Engine
 
-Roadmap workstream T1-02, checklist ID CMD-01. This note covers structural tracks, volume/pan, mute/solo and what later
+Roadmap workstream T1-02, checklist ID CMD-01. This note covers structural tracks, volume/pan, mute/solo, Session MIDI clips and what later
 slices need.
 
 ## Why
@@ -15,7 +15,7 @@ instead of driving the UI.
 Code: `src/CommandEngine.h`, tests: `tests/CommandEngineTests.cpp`.
 
 - **Command.** A `std::variant` of small argument structs (`CreateTrack`, `DeleteTrack`,
-  `MoveTrack`, `RenameTrack`, `ColorTrack`, `SetTrackVolume`, `SetTrackPan`, `SetTrackMute`, `SetTrackSolo`). `name()` gives the stable name (for example
+  `MoveTrack`, `RenameTrack`, `ColorTrack`, `SetTrackVolume`, `SetTrackPan`, `SetTrackMute`, `SetTrackSolo`, `CreateClip`, `DuplicateClip`, `MakeClipUnique`). `name()` gives the stable name (for example
   `"RenameTrack"`) and `label()` the undo-menu text. `arguments()` and `parse()` convert a command
   to and from its name plus a JSON-style object (`{"track": 1, "name": "Bass"}`), so scripts and
   macros can store and replay commands. `parse()` refuses unknown names, missing or mistyped
@@ -108,7 +108,7 @@ Busy commands and unchanged values write nothing and preserve redo. A drag that
 becomes busy or whose row is replaced/reordered stops accepting queued events;
 changes already accepted remain undoable. Gestures preserve the existing ranges,
 whole-percent rounding, centre/unity snapping and fine movement. No saved format
-or engine-capacity change. Mixer controls outside Session remain a later slice.
+or engine-capacity change. Master, bus, return and send controls remain later command slices.
 
 CommandEngineTests covers grouping, refusal and interleaved commands.
 SessionViewTests drives real handlers, including a pause beyond the timed window,
@@ -132,10 +132,10 @@ Exact build/test results belong in the PR; listening remains a manual check.
 | Command | Maps onto today | Needs new work |
 | --- | --- | --- |
 | CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack | Done in this slice | - |
-| CreateClip | `ProjectController::placeNewClip`, `setClipPattern`, `importAudio` | Async audio import needs a command that completes later |
-| DuplicateClip | `editTimeline` with `Timeline::duplicate`; `duplicateScene` | Command wrapper only |
-| MakeClipUnique | Song regions share Session clip notes | New operation (T1-03 shared clip model) |
-| SetTrackVolume, SetTrackPan | Implemented: command setters write document then the addressed engine control | Existing mixer UI still uses its direct editing path |
+| CreateClip | Implemented for an empty Session MIDI cell | Song placement creation and asynchronous audio import remain |
+| DuplicateClip | Implemented for independent Session MIDI copies with explicit source/destination cells | Song placement and whole-scene duplication remain |
+| MakeClipUnique | Implemented for linked Session MIDI content | Audio/rack and Song placement command wrappers remain |
+| SetTrackVolume, SetTrackPan | Implemented: command setters write document then the addressed engine control | Session and Mixer track UI adopted; other parameter targets remain |
 | SetParameter (other targets) | Mixer edits via `trackSettingsEdited`, `returnSettingsEdited`, `masterGainEdited` with coalesced `commit` | Remaining targets need command wrappers |
 | AutomateParameter | `editTimeline` on `parameterLanes`, plugin automation targets | Command wrapper over lane edits |
 | CreateSend | Four fixed returns with per-track send level and pre/post (`TrackSettings`) | "Create" means new return tracks: T1-05 routing |
@@ -154,3 +154,34 @@ updates document and engine together. The host notification only refreshes the
 other view. Busy projects refuse these edits, and queued events from a strip
 whose track identity no longer matches its row are ignored. Instrument, send,
 master, return and bus controls retain their existing edit paths.
+
+## Session MIDI clip commands
+
+Use the Session **Copy / link** menu to create an empty MIDI clip, duplicate it
+into the next free cell on its track (wrapping through existing scenes), or make
+linked MIDI content independent. A full track needs a free cell/new scene before
+duplicating; these actions never overwrite occupied cells or silently add scenes.
+Allocated empty MIDI clips are displayed as clips and survive save/reopen and
+clipboard copying through the existing saved pattern-identity field. No project
+format version changes. Ordinary unallocated empty cells remain empty.
+
+| Name | Arguments (zero-based) | Behavior |
+| --- | --- | --- |
+| CreateClip | `track`, `scene` | Allocate a default-length, empty MIDI clip in an unused cell |
+| DuplicateClip | `track`, `scene`, `toTrack`, `toScene` | Independent copy of the source's current immutable MIDI content into an unused cell |
+| MakeClipUnique | `track`, `scene` | Detach shared MIDI content; already-independent content is a no-op |
+
+Preview and execution use the same pure document operations in MidiClipCommands.h.
+Previews do not consume live identities. Create/duplicate select the destination;
+Undo restores the selection before the batch, while Redo selects the final
+destination. The history step has optional separate Undo focus, leaving all
+existing commands' focus behavior intact. Unique keeps selection and playing
+voices unchanged. The host refreshes without making another commit.
+
+Busy projects, recording/count-in, frozen destinations, invalid addresses and
+occupied destinations are refused. Audio/offline-audio and rack sources use their
+existing paths. A stale menu checks captured track/scene/clip identities before
+acting. CommandEngineTests and SessionViewTests cover Preview/live agreement,
+sequential batches, atomic refusal, no-op/redo preservation, link independence,
+empty-clip persistence, focus and actual menu actions. Audio imports, Song
+placements, whole-scene copies and clipboard command wrappers remain later work.

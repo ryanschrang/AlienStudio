@@ -1,5 +1,6 @@
 #pragma once
 #include "ProjectDocument.h"
+#include "MidiClipCommands.h"
 #include "ViewModes.h"
 #include "ToneEngine.h"
 #include "AudioClipImport.h"
@@ -68,11 +69,11 @@ public:
     // edit changed (shown again when it is undone). Edits with the same
     // coalesceKey made in quick succession become one undo step.
     void commit(const juce::String& label, int focusTrack = -1, int focusScene = -1,
-                const juce::String& coalesceKey = {}, bool continuous = false) {
+                const juce::String& coalesceKey = {}, bool continuous = false, int undoTrack = -1, int undoScene = -1) {
         for(int t=0;t<doc.trackCount();++t)engine.tracks[static_cast<std::size_t>(t)].freezeScene.store(doc.tracks[static_cast<std::size_t>(t)].settings.freezeScene);
         doc.synchronizeTrackRegistry();
         const auto previous = history.currentId();
-        history.record(doc, label, focusTrack, focusScene, coalesceKey, continuous);
+        history.record(doc, label, focusTrack, focusScene, coalesceKey, continuous, undoTrack, undoScene);
         if (history.currentId() != previous) publishArrangement();
         historyChanged();
     }
@@ -962,10 +963,20 @@ public:
             doc.prune();
         } else {
             doc.clearClip(track, scene);
-            doc.setClip(track, scene, *copiedContent);
+            doc.setClip(track, scene, *copiedContent, static_cast<bool>(copiedCell));
         }
         republishIfLive(track, scene);
         commit(linked ? "Paste linked clip" : "Paste clip", track, scene);
+        return true;
+    }
+    // Non-committing command boundary. Only the addressed live cell is
+    // republished; queued launches, transport and unrelated voices keep running.
+    bool canEditMidiClips() const { return !busy && !isRecording() && engine.recording.phase.load()==RecordControls::idle; }
+    bool applyMidiClipCommand(const midi_clip::Edit& edit) {
+        if (!canEditMidiClips() || midi_clip::refusal(doc,edit).isNotEmpty()) return false;
+        const auto id=doc.cellClip(edit.track,edit.scene);const auto link=doc.linkOf(edit.track,edit.scene);
+        if (!midi_clip::apply(doc,edit)) return false;
+        if (edit.kind!=midi_clip::Kind::makeUnique && (id!=doc.cellClip(edit.track,edit.scene) || link!=doc.linkOf(edit.track,edit.scene))) republishIfLive(edit.track,edit.scene);
         return true;
     }
     bool makeCellUnique(int track, int scene) {

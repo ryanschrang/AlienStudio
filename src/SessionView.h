@@ -257,10 +257,19 @@ public:
         const auto& d = controller.document();
         const int track = d.selectedTrack, scene = d.selectedScene;
         const int linked = d.linkedCells(track, scene);
+        const auto ownerTrack=d.tracks[static_cast<std::size_t>(track)].id;
+        const auto ownerScene=d.scenes[static_cast<std::size_t>(scene)].id;
+        const auto ownerClip=d.cellClip(track,scene);
+        const bool midi=ownerClip && !d.selectedClip().isAudioClip() && d.selectedClip().rackClip==0;
+        const bool canEdit=controller.canEditMidiClips() && !d.tracks[static_cast<std::size_t>(track)].settings.frozen();
+        int freeScene=-1;
+        for(int n=1;n<d.sceneCount();++n) {const int s=(scene+n)%d.sceneCount();if(!d.cellClip(track,s)){freeScene=s;break;}}
         juce::PopupMenu menu;
         menu.addItem(1, "Copy clip", d.cellClip(track, scene) ? true : false);
         menu.addItem(2, "Paste a copy here", controller.hasCopiedCell());
         menu.addItem(3, "Paste linked here", controller.canPasteLinked());
+        menu.addItem(6,"New empty MIDI clip",!ownerClip && canEdit);
+        menu.addItem(7,"Duplicate MIDI clip to free cell",midi && freeScene>=0 && canEdit);
         menu.addSeparator();
         menu.addItem(4, linked > 1 ? "Make unique (linked with " + juce::String(linked - 1) + (linked == 2 ? " other cell)" : " other cells)") : juce::String("Make unique"), linked > 1 || d.selectedClip().rackClip != 0);
         std::vector<std::uint64_t> rackIds;
@@ -272,20 +281,34 @@ public:
         menu.addSubMenu("Assign rack clip (linked)", rackMenu);
         menu.addItem(5, "Place rack clip at Song playhead", d.selectedClip().rackClip != 0);
         juce::Component::SafePointer<SessionView> safe(this);
-        auto done = [safe, track, scene, rackIds = std::move(rackIds)](int choice) {
+        auto done = [safe, track, scene, ownerTrack, ownerScene, ownerClip, rackIds = std::move(rackIds)](int choice) {
             if (safe == nullptr || choice == 0) return;
             auto& c = safe->controller;
             bool changed = false;
             if (choice == 1) { if (c.copyCell(track, scene)) safe->setImportStatus("Copied Track " + juce::String(track + 1) + ", Scene " + juce::String(scene + 1) + ". Select a cell and paste a copy or a linked clip.", {}); return; }
             if (choice == 2) changed = c.pasteCell(track, scene, false);
             if (choice == 3) changed = c.pasteCell(track, scene, true);
-            if (choice == 4) changed = c.makeCellUnique(track, scene);
+            if(choice==4 || choice==6 || choice==7) {
+                const auto& now=c.document();
+                if(!now.isValidCell(track,scene) || now.tracks[static_cast<std::size_t>(track)].id!=ownerTrack
+                    || now.scenes[static_cast<std::size_t>(scene)].id!=ownerScene || now.cellClip(track,scene)!=ownerClip) {
+                    safe->setImportStatus("That cell changed while the menu was open. Open the menu again.",{});return;
+                }
+                if(choice==6) changed=command::CommandEngine(c).execute(command::CreateClip{track,scene}).changed;
+                else if(choice==7) {
+                    int target=-1;for(int n=1;n<now.sceneCount();++n){const int s=(scene+n)%now.sceneCount();if(!now.cellClip(track,s)){target=s;break;}}
+                    if(target>=0)changed=command::CommandEngine(c).execute(command::DuplicateClip{track,scene,track,target}).changed;
+                } else if(!now.clip(track,scene).isAudioClip() && now.clip(track,scene).rackClip==0)
+                    changed=command::CommandEngine(c).execute(command::MakeClipUnique{track,scene}).changed;
+                else changed=c.makeCellUnique(track,scene); // existing audio/rack behavior
+            }
             if (choice == 5) changed = c.placeRegion(track, scene, std::max<std::int64_t>(0, safe->engine.timelinePosition.load()));
             if (choice >= 1000 && choice < 1000 + static_cast<int>(rackIds.size()))
                 changed = c.assignRackClip(track, scene, rackIds[static_cast<std::size_t>(choice - 1000)]);
             if (!changed) { safe->setImportStatus("Nothing changed: that cell cannot take it (it may be frozen, recording or already linked).", {}); return; }
             safe->setImportStatus(choice >= 1000 ? "Assigned a shared rack source. One rack source can launch per scene; its channels keep their routing."
                                   : choice == 5 ? "Placed the shared rack source in Song."
+                                  : choice == 6 ? "Created an empty MIDI clip." : choice == 7 ? "Duplicated MIDI clip into a free cell; its edits are independent."
                                   : choice == 2 ? "Pasted an independent copy." : choice == 3 ? "Pasted a linked clip: editing it edits every linked cell."
                                   : "The clip is unique again: its edits are its own.", {});
             if (safe->onCellContentChanged) safe->onCellContentChanged();
@@ -594,7 +617,7 @@ public:
                 visual.kind = clip.hasAudio() ? SessionClipButton::Kind::audio
                     : clip.audioOffline() ? SessionClipButton::Kind::offline
                     : clip.rackClip != 0 ? SessionClipButton::Kind::rack
-                    : noteCount > 0 ? SessionClipButton::Kind::midi : SessionClipButton::Kind::empty;
+                    : (noteCount > 0 || d.cellClip(track,scene)) ? SessionClipButton::Kind::midi : SessionClipButton::Kind::empty;
                 visual.colour = ui::trackColour(d.tracks[index].colour);
                 visual.label = clip.rackClip != 0 ? "Rack: " + clip.rackName : clip.hasAudio() ? clip.audioFileName
                     : clip.audioOffline() ? clip.audioFileName

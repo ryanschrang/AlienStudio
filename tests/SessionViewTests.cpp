@@ -1102,8 +1102,32 @@ static void savedRackAssignmentMenu() {
     std::cout << "PASS: saved rack assignment, tile launch, independent paste and Song placement menu\n";
 }
 
+static void midiClipMenuCommands() {
+    auto rig=std::make_unique<Rig>();auto& c=rig->controller;
+    juce::PopupMenu shown;std::function<void(int)> choose;int notifications=0;
+    rig->view.linkMenuLauncher=[&](juce::PopupMenu menu,std::function<void(int)> done){shown=std::move(menu);choose=std::move(done);};
+    rig->view.onCellContentChanged=[&]{++notifications;};
+    const auto enabled=[&](int id){for(juce::PopupMenu::MenuItemIterator it(shown);it.next();)if(it.getItem().itemID==id)return it.getItem().isEnabled;return false;};
+    c.selectClip(0,0);c.markAsNewBaseline();rig->view.showLinkMenu();
+    require(enabled(6) && !enabled(7),"empty cell offers creation but not duplication");choose(6);
+    require(c.document().cellClip(0,0) && c.undoLabel()=="Create MIDI clip" && notifications==1,"menu creation uses one command-owned edit");
+    rig->view.showLinkMenu();require(!enabled(6) && enabled(7),"explicit empty MIDI clip is occupied and can be duplicated");choose(7);
+    require(c.document().selectedScene==1 && c.document().cellClip(0,1) && c.document().linkOf(0,0)!=c.document().linkOf(0,1)
+        && c.undoLabel()=="Duplicate MIDI clip" && notifications==2,"menu duplication selects a free cell and independent content");
+    require(c.undo() && !c.document().cellClip(0,1) && c.document().selectedScene==0,"one undo removes the menu duplicate and restores selection");
+    require(c.undo() && !c.document().cellClip(0,0) && !c.canUndo(),"no legacy host commit duplicates clip history");
+    require(c.redo() && c.redo(),"redo both menu clip commands");
+    c.selectClip(2,2);rig->view.showLinkMenu();auto stale=choose;
+    require(c.moveTrack(2,1),"reorder while menu is open");c.commit("Move row");const auto moved=c.document();stale(6);
+    require(sameContent(c.document(),moved) && notifications==2,"stale cell menu cannot create on a replacement track");
+    c.setExternalBusy(true);rig->view.showLinkMenu();require(!enabled(6) && !enabled(7),"busy menu disables MIDI edits");c.setExternalBusy(false);
+    rig->view.linkMenuLauncher={};rig->view.onCellContentChanged={};
+    std::cout<<"PASS: Session clip command menu, destination selection, single history steps and stale identities\n";
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    midiClipMenuCommands();
     layoutChecks();
     wheelEvents();
     launching();
