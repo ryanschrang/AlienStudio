@@ -2368,8 +2368,32 @@ static void fadeShapeChecks() {
 
 #include "WarpMarkerTests.h"
 
+#include "SampleDropFixture.h"
+static void sampleDropChecks() {
+    SampleDropFixture audio; ToneEngine engine; ProjectController c(engine); TimelineCanvas canvas(c); canvas.setSize(1000, 600);
+    juce::Component source; using Details = juce::DragAndDropTarget::SourceDetails;
+    const auto point = juce::Point<int>{juce::roundToInt(canvas.xForTick(3840)), TimelineCanvas::topHeight + TimelineCanvas::rowHeight + 20};
+    const auto plan = canvas.planSampleDrop(point);
+    require(plan.valid && plan.row == 1 && plan.tick == 3840, "Song sample plan follows pointed track and snapped tick");
+    require(!canvas.planSampleDrop({10, point.y}).valid && !canvas.planSampleDrop({point.x, 10}).valid && !canvas.planSampleDrop({-10,-10}).valid, "Song headers/ruler/outside refuse samples");
+    Details drag(sampledrag::encode(audio.file), &source, point);
+    require(canvas.isInterestedInDragSource(drag), "Song accepts browser sample payload");
+    c.setExternalBusy(true); require(!canvas.planSampleDrop(point).valid, "busy Song refuses drop"); c.setExternalBusy(false);
+    canvas.itemDragEnter(drag); require(canvas.dropPreview().valid && c.timeline().regions.empty(), "Song drag previews without mutation");
+    canvas.itemDropped(drag); SampleDropFixture::wait(c);
+    require(c.timeline().regions.size() == 1 && c.timeline().regions[0].row == 1 && c.timeline().regions[0].start == 3840, "drop imports at pointer track and tick");
+    require(!canvas.dropPreview().valid && !canvas.planSampleDrop(point).valid, "drop clears ghost and occupied start refuses");
+    c.undo(); require(c.timeline().regions.empty(), "Song drop undone in one step"); c.redo(); require(c.timeline().regions.size() == 1, "Song drop redo restores region");
+    // An initially free start can still run into a later clip. The worker must
+    // refuse the whole import after decoding its duration, preserving history.
+    const auto saved = c.timeline().regions; const auto label = c.undoLabel();
+    c.importBrowserSample(audio.file, 1, 0, 3000, true); SampleDropFixture::wait(c);
+    require(c.timeline().regions == saved && c.undoLabel() == label, "decoded overlap refuses atomically without replacing Song clips");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    sampleDropChecks();
     warpRenderChecks();
     warpEditorChecks();
     freezeMenuChecks();

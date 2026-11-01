@@ -1,6 +1,7 @@
 #pragma once
 #include "StudioWidgets.h"
 #include "AudioClipImport.h"
+#include "SampleDrag.h"
 #include <functional>
 
 namespace alien {
@@ -8,7 +9,10 @@ class SampleBrowser final : public juce::Component, private juce::ListBoxModel {
 public:
     SampleBrowser() {
         setName("Local sample browser");
-        for (auto* component : std::initializer_list<juce::Component*>{&folder, &search, &list, &preview, &stopButton, &session, &song, &status, &empty}) addAndMakeVisible(component);
+        for (auto* component : std::initializer_list<juce::Component*>{&folder, &search, &list, &preview, &stopButton, &session, &song, &status, &empty, &dragDestination}) addAndMakeVisible(component);
+        dragDestination.setName("Sample drag destination"); dragDestination.addItem("Drag into Session", 1); dragDestination.addItem("Drag into Song", 2); dragDestination.setSelectedId(1);
+        dragDestination.setTooltip("Dragging a sample reveals this editor. Drop it onto an empty Session cell or a free Song lane position.");
+        list.setTooltip("Drag a sample to import it. Choose Session or Song above; the editor opens when dragging starts.");
         folder.setButtonText("Choose sample folder..."); folder.onClick = [this] { chooseFolder(); };
         search.setName("Sample search"); search.setTextToShowWhenEmpty("Search WAV / MP3 names and folders", ui::colours::textFaint);
         search.onTextChange = [this] { rebuild(); }; search.onReturnKey = [this] { audition(); }; search.onEscapeKey = [this] { stop(); };
@@ -23,18 +27,20 @@ public:
         updateButtons();
     }
     ~SampleBrowser() override { stop(); cancelled->store(true); pool.removeAllJobs(true, -1); list.setModel(nullptr); }
+    std::function<void(bool)> onDragStarted;
     std::function<void(const SessionAudioClip&)> onPreview;
     std::function<void()> onStop;
     std::function<void(const juce::File&, bool)> onImport;
     void focusSearch() { search.grabKeyboardFocus(); }
     void setImportEnabled(bool enabled, bool songEnabled) { canImport = enabled; canImportSong = songEnabled; updateButtons(); }
     juce::File selectedFile() const { const int row = list.getSelectedRow(); return row >= 0 && row < static_cast<int>(matches.size()) ? matches[static_cast<std::size_t>(row)] : juce::File{}; }
+    juce::var dragDescriptionFor(int row) const { return row >= 0 && row < static_cast<int>(matches.size()) ? sampledrag::encode(matches[static_cast<std::size_t>(row)]) : juce::var{}; }
     int resultCount() const { return static_cast<int>(matches.size()); }
     void setStatus(const juce::String& text) { status.setText(text, juce::dontSendNotification); }
     void stop() { previewCancelled->store(true); ++previewGeneration; if (onStop) onStop(); }
     void visibilityChanged() override { if (!isShowing()) stop(); }
     void resized() override {
-        auto r = getLocalBounds(); folder.setBounds(r.removeFromTop(28)); r.removeFromTop(6); search.setBounds(r.removeFromTop(26)); r.removeFromTop(6);
+        auto r = getLocalBounds(); folder.setBounds(r.removeFromTop(28)); r.removeFromTop(6); search.setBounds(r.removeFromTop(26)); r.removeFromTop(6); dragDestination.setBounds(r.removeFromTop(26)); r.removeFromTop(6);
         status.setBounds(r.removeFromBottom(38)); song.setBounds(r.removeFromBottom(28)); r.removeFromBottom(4); session.setBounds(r.removeFromBottom(28)); r.removeFromBottom(6);
         auto buttons = r.removeFromBottom(28); preview.setBounds(buttons.removeFromLeft(100)); buttons.removeFromLeft(6); stopButton.setBounds(buttons.removeFromLeft(60)); r.removeFromBottom(6); list.setBounds(r); empty.setBounds(r.reduced(8));
     }
@@ -105,6 +111,17 @@ private:
             });
         });
     }
+public:
+    juce::var getDragSourceDescription(const juce::SparseSet<int>& rows) override {
+        const auto description = rows.size() == 1 ? dragDescriptionFor(rows[0]) : juce::var{};
+        if (!description.isVoid()) {
+            stop(); const bool song = dragDestination.getSelectedId() == 2;
+            juce::Component::SafePointer<SampleBrowser> safe(this);
+            juce::MessageManager::callAsync([safe, song] { if (safe && safe->onDragStarted) safe->onDragStarted(song); });
+        }
+        return description;
+    }
+private:
     int getNumRows() override { return resultCount(); }
     void selectedRowsChanged(int) override { stop(); updateButtons(); }
     void listBoxItemDoubleClicked(int, const juce::MouseEvent&) override { audition(); }
@@ -115,6 +132,7 @@ private:
         g.setColour(ui::colours::text); g.setFont(ui::font(12)); g.drawText(matches[static_cast<std::size_t>(row)].getRelativePathFrom(folderRoot), 6, 0, width - 12, height, juce::Justification::centredLeft);
     }
     juce::TextButton folder, preview, stopButton, session, song;
+    juce::ComboBox dragDestination;
     juce::TextEditor search; juce::ListBox list; juce::Label status, empty;
     juce::File folderRoot; std::vector<juce::File> files, matches;
     std::unique_ptr<juce::FileChooser> chooser; juce::ThreadPool pool{1};

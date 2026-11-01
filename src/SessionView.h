@@ -2,6 +2,7 @@
 #include "FlLook.h"
 #include "ProjectController.h"
 #include "CommandEngine.h"
+#include "SampleDrag.h"
 #include "SessionClipButton.h"
 #include "SessionTrackStrip.h"
 #include "AudioClipWaveform.h"
@@ -41,7 +42,7 @@ public:
 // track's controls (light, pan, volume, name, solo, stop) at its left end, and one column per scene with the
 // scene's launch button on top. The track column stays pinned at the left and the scene row stays pinned at
 // the top while the clip grid scrolls in both directions, so any number of tracks and scenes fits the window.
-class SessionView final : public juce::Component {
+class SessionView final : public juce::Component, public juce::DragAndDropTarget {
 public:
     // Layout, in pixels. The track column is as wide as SessionTrackStrip; clip columns grow with the window up to maxSceneWidth.
     static constexpr int headerWidth = SessionTrackStrip::width, gap = 6, sceneBarHeight = 30, rowHeight = 36,
@@ -433,6 +434,34 @@ public:
         refreshClips();
     }
 
+    std::pair<int, int> sampleDropCell(juce::Point<int> point) const {
+        const auto local = viewport.getLocalPoint(this, point);
+        const auto visible = viewport.getLocalBounds().withWidth(viewport.getMaximumVisibleWidth()).withHeight(viewport.getMaximumVisibleHeight());
+        if (!visible.contains(local)) return {-1, -1};
+        const auto& d = controller.document();
+        for (int t = 0; t < d.trackCount(); ++t) for (int s = 0; s < d.sceneCount(); ++s)
+            if (clipArea(t, s).contains(point) && controller.canImportBrowserSample(t, s, false)) return {t, s};
+        return {-1, -1};
+    }
+    bool isInterestedInDragSource(const SourceDetails& details) override { return sampledrag::decode(details.description) != juce::File{}; }
+    void itemDragEnter(const SourceDetails& details) override { itemDragMove(details); }
+    void itemDragMove(const SourceDetails& details) override {
+        sampleDrop = isInterestedInDragSource(details) ? sampleDropCell(details.localPosition) : std::pair<int, int>{-1, -1}; repaint();
+    }
+    void itemDragExit(const SourceDetails&) override { sampleDrop = {-1, -1}; repaint(); }
+    void itemDropped(const SourceDetails& details) override {
+        const auto file = sampledrag::decode(details.description);
+        const auto cell = sampleDropCell(details.localPosition); itemDragExit(details);
+        if (file == juce::File{}) return;
+        if (cell.first < 0) { setImportStatus("Drop onto an empty, unfrozen Session cell.", {}); return; }
+        controller.importBrowserSample(file, cell.first, cell.second);
+    }
+    void paintOverChildren(juce::Graphics& g) override {
+        if (sampleDrop.first < 0) return;
+        g.reduceClipRegion(viewport.getBounds()); g.setColour(ui::colours::accent);
+        g.drawRoundedRectangle(clipArea(sampleDrop.first, sampleDrop.second).toFloat().reduced(1), 3, 2);
+    }
+
     // Where things are, for tests and for the owner.
     SessionTrackStrip& tracks() { return trackStrip; }
     SessionClipButton* clipSlot(int track, int scene) const { return clipButton(track, scene); }
@@ -792,6 +821,7 @@ private:
     juce::TextButton rackClipsButton;
     SessionTrackStrip trackStrip{controller, engine};
     GridViewport viewport;
+    std::pair<int, int> sampleDrop{-1, -1};
     juce::Component gridContent, sceneStrip;
     std::vector<std::unique_ptr<ContextGlyphButton>> sceneButtons;
     std::vector<std::unique_ptr<SessionClipButton>> clipButtons; // [scene * tracks + track]

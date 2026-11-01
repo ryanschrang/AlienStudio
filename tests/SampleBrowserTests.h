@@ -26,6 +26,15 @@ static void sampleBrowserChecks() {
             require(browser.getLocalBounds().contains(c->getBounds()), "sample controls fit compact layout");
         }
         require(search && preview && import, "sample browser controls available");
+        require(alien::sampledrag::decode(browser.dragDescriptionFor(0)) == wav, "drag payload preserves selected full path with spaces");
+        require(browser.dragDescriptionFor(-1).isVoid() && browser.dragDescriptionFor(9).isVoid(), "invalid browser drag rows refused");
+        for (const juce::var bad : {juce::var(3), juce::var("alien-local-sample\nrelative.wav"), juce::var("alien-local-sample\nC:/sample.txt"), juce::var("alien-local-sample\nC:/one.wav\nC:/two.wav")})
+            require(alien::sampledrag::decode(bad) == juce::File{}, "malformed sample payload refused");
+        int dragViews = 0; browser.onDragStarted = [&](bool song) { require(song, "drag destination selector chooses Song"); ++dragViews; };
+        for (auto* child : browser.getChildren()) if (auto* combo = dynamic_cast<juce::ComboBox*>(child)) combo->setSelectedId(2);
+        juce::SparseSet<int> rows; rows.addRange({0, 1});
+        require(alien::sampledrag::decode(browser.getDragSourceDescription(rows)) == wav, "list model supplies sample drag description");
+        pump(); require(dragViews == 1, "drag start asynchronously reveals selected destination");
         int imports = 0, previews = 0; browser.onImport = [&](const juce::File& file, bool song) { require(file == wav && !song, "explicit Session target"); ++imports; };
         browser.onPreview = [&](const alien::SessionAudioClip& sample) { require(sample.frames == 40000, "preview decoding capped at five seconds"); ++previews; };
         search->setText("DEEP kick", false); search->onTextChange(); require(browser.resultCount() == 1, "search matches case-insensitive path terms");
@@ -34,7 +43,7 @@ static void sampleBrowserChecks() {
         require(previews == 1 && imports == 0, "preview does not import");
         preview->onClick(); browser.stop(); for (int i = 0; i < 10; ++i) pump(); require(previews == 1, "stop invalidates pending decode");
         browser.setImportEnabled(true, true); import->onClick(); require(imports == 1, "import requires explicit action");
-        search->setText("no match", false); search->onTextChange(); require(browser.resultCount() == 0 && !import->isEnabled() && !preview->isEnabled(), "empty search clears stale actions");
+        search->setText("no match", false); search->onTextChange(); require(browser.dragDescriptionFor(0).isVoid(), "empty filtered list has no stale drag payload"); require(browser.resultCount() == 0 && !import->isEnabled() && !preview->isEnabled(), "empty search clears stale actions");
     }
     require(root.deleteRecursively(), "remove sample fixtures");
 }
