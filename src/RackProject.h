@@ -7,6 +7,7 @@
 // relinkable when missing).
 #include "RackModel.h"
 #include "ClipLibrary.h"
+#include "PluginState.h"
 #include <limits>
 #include <juce_core/juce_core.h>
 #include <cmath>
@@ -59,6 +60,14 @@ inline juce::var rackToVar(const Project& project, bool identities = false) {
         channel->setProperty("output", static_cast<int>(project.channels[i].output));
         channel->setProperty("chokeGroup", static_cast<int>(project.channels[i].chokeGroup));
         channel->setProperty("instrumentPreset", project.channels[i].instrumentPreset);
+        // A plugin instrument (format 31), saved like a track's instrument.
+        if (project.info[i].hasPlugin()) {
+            PluginState plugin;
+            plugin.descriptionXml = juce::String::fromUTF8(project.info[i].pluginDescription().c_str());
+            plugin.stateBase64 = juce::String::fromUTF8(project.info[i].pluginState().c_str());
+            plugin.instanceId = project.info[i].pluginInstance();
+            channel->setProperty("plugin", pluginToVar(plugin));
+        }
         channels.add(value);
     }
     object->setProperty("channels", juce::var(channels));
@@ -147,12 +156,23 @@ inline bool rackFromVar(const juce::var& value, Project& out, juce::String& erro
             && !detail::integerIn(channel->getProperty("instrumentPreset"), -1, alien::presetCount - 1, settings.instrumentPreset))
             return fail("Invalid Channel Rack instrument preset.");
         if (settings.isSynth() && !sample.toString().isEmpty()) return fail("A synth channel cannot also name a sample.");
+        PluginState plugin;
+        if (channel->hasProperty("plugin")) {
+            if (!pluginFromVar(channel->getProperty("plugin"), plugin) || plugin.descriptionXml.isEmpty() || plugin.instanceId == 0
+                || settings.isSynth() || !sample.toString().isEmpty() || plugin.sidechain >= 0)
+                return fail("A Channel Rack plugin instrument is invalid.");
+        }
         settings.mute = static_cast<bool>(mute); settings.solo = static_cast<bool>(solo);
         settings.output = static_cast<std::int8_t>(output); settings.chokeGroup = static_cast<std::uint8_t>(choke);
         const auto sampleText = sample.toString().toStdString();
         if (sampleText.size() > maxSampleBytes) return fail("A Channel Rack sample path is too long.");
         if (!parsed.addChannel(Project::clean(name.toString().toStdString()), sampleText)) return fail("The Channel Rack has too many channels.");
         parsed.channels[static_cast<std::size_t>(parsed.channelCount - 1)] = settings;
+        if (plugin.descriptionXml.isNotEmpty()
+            && !parsed.setPlugin(parsed.channelCount - 1, plugin.descriptionXml.toStdString(), plugin.instanceId))
+            return fail("A Channel Rack plugin instrument is invalid.");
+        if (plugin.descriptionXml.isNotEmpty())
+            parsed.setPluginState(plugin.instanceId, plugin.stateBase64.toStdString());
         if (identities) {
             if (!channel->getProperty("lane").isString()) return fail("Invalid rack lane identity.");
             const auto id = library::parseId<library::LaneKind>(channel->getProperty("lane").toString().toStdString());

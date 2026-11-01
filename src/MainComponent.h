@@ -28,6 +28,7 @@
 #include "PluginHost.h"
 #include "PluginPanel.h"
 #include "PluginPreflight.h"
+#include "PluginBlocklist.h"
 
 // The application window's content. It owns the audio engine and device, the
 // project controller and every view, and wires them together. Views never talk
@@ -74,6 +75,26 @@ public:
         addWorkspace("Channel rack", rackView); // index 8: earlier tab numbers never change
         rackView.onTitleChanged = [this] { updateEditorTitle(); };
         rackView.rackGrid().onOpenPianoRoll = [this](int channel) { openRackChannel(channel); };
+        // A channel can be played by any scanned VST3 instrument (T1-09).
+        rackView.rackGrid().pluginInstruments = [this] {
+            juce::StringArray names;
+            for (const auto& d : rackInstrumentChoices()) names.add(d.name);
+            return names;
+        };
+        rackView.rackGrid().onChoosePlugin = [this](int channel, int index) {
+            if (projectBusy || controller.isBusy()) return;
+            const auto choices = rackInstrumentChoices();
+            if (index < 0 || index >= static_cast<int>(choices.size())) return;
+            const auto& chosen = choices[static_cast<std::size_t>(index)];
+            if (!controller.setRackPlugin(channel, chosen.createXml()->toString(), chosen.name)) return;
+            rackView.refresh();
+            const auto problem = pluginHost.health(alien::PluginRuntime::channelBase + channel, -1);
+            if (problem.isNotEmpty()) statusBar.setProjectStatus(chosen.name + ": " + problem, problem);
+        };
+        rackView.rackGrid().onOpenPluginEditor = [this](int channel) {
+            const auto problem = pluginHost.openEditor(alien::PluginRuntime::channelBase + channel, -1);
+            if (problem.isNotEmpty()) statusBar.setProjectStatus(problem, problem);
+        };
         pluginPanel.onScanCommand = [this](alien::ScanCommand command) { handleScanCommand(command); };
         pluginPanel.onCancelScan = [this] { if (scanCancel) scanCancel->store(true); };
         pluginPanel.health = [this](int destination, int slot) { return pluginHost.health(destination, slot); };
@@ -87,7 +108,23 @@ public:
         preflight = std::make_unique<alien::Preflight>(alien::scan::ScanDatabase::defaultFile().getSiblingFile("PluginPreflight.xml"),
             alien::isolatedPreflightChecker(juce::File::getSpecialLocation(juce::File::currentExecutableFile), 45000), alien::DiagnosticLog(hostLogFile()));
         pluginPanel.setPreflightEnabled(preflight->enabled());
-        pluginHost.preflight = [this](const juce::PluginDescription& description) { return preflight->verify(description); };
+        // A plugin that crashed while hosted earlier is refused before the safety check is even asked.
+        pluginHost.preflight = [this](const juce::PluginDescription& description) {
+            if (const auto refused = blocklist.refusal(description); refused.isNotEmpty()) return refused;
+            return preflight->verify(description);
+        };
+        pluginHost.onCrash = [this](const juce::String& descriptionXml, const juce::String& why) {
+            juce::PluginDescription description;
+            const auto xml = juce::parseXML(descriptionXml);
+            return xml != nullptr && description.loadFromXml(*xml) && blocklist.recordCrash(description, why);
+        };
+        pluginPanel.setStartupScanEnabled(blocklist.scanAtStartup());
+        pluginPanel.blockedPlugins = [this] {
+            juce::StringArray names;
+            for (const auto& entry : blocklist.blocked()) names.add(entry.name);
+            return names;
+        };
+        pluginPanel.onAllowBlocked = [this](int index) { allowBlockedPlugin(index); };
         scanDatabase.load(alien::scan::ScanDatabase::defaultFile());
         pluginPanel.onLiveInput = [this](int track) { releaseNotes(); engine.liveDrumTrack.store(track); drumPanel.setLiveInput(track); };
         pluginPanel.onTarget = [this](int) { refreshPlugins(); };
@@ -183,6 +220,8 @@ public:
     }
 
     // Close the app, prompting for unsaved changes first.
+    // Called once the main window is up (Main.cpp), so tests that build this component never scan.
+    void startBackgroundWork() { startupPluginScan(); }
     void requestQuit(std::function<void()> quit) {
         if (activeCapture) { closeAfterTake = true; finishRecording(); return; }
         if (controller.isRecording()) {
@@ -382,6 +421,7 @@ private:
     }
 
     void togglePlay() {
+        if (engine.arrangementPreparing.load()) return;
         // During a count-in the transport has not started, so Play/Stop cancels the take instead.
         if (engine.recording.phase.load() == alien::RecordControls::countIn) { controller.stopRecording(); return; }
         releaseNotes();
@@ -489,6 +529,7 @@ private:
             tabs.setCurrentTabIndex(controller.document().selectedClip().isAudioClip() ? 2 : 1);
         };
         controller.onDocumentRestored = [this] { restorePlugins(); refreshAll(); };
+        controller.onRackPluginsChanged = [this] { restorePlugins(false, true); };
         controller.onHistoryChanged = [this] { updateUndoState(); };
         controller.onRecordingFinished = [this](const alien::ProjectController::RecordingOutcome& outcome) {
             finishedRecording(outcome);
@@ -956,6 +997,7 @@ private:
     // Window-level shortcuts. Text fields and the piano roll handle their own
     // Ctrl+Z first; this only sees keys nothing else used.
     bool keyPressed(const juce::KeyPress& key, juce::Component*) override {
+        if (key.getKeyCode()==juce::KeyPress::escapeKey && controller.cancelWarpPreparation()) return true;
         const auto mods = key.getModifiers();
         if(key.getKeyCode()==juce::KeyPress::F10Key&&!mods.isAnyModifierKeyDown()) {
             releaseNotes();applicationToolbar.openMenus();return true;
@@ -1318,7 +1360,8 @@ private:
         auto renderHost=std::make_shared<alien::PluginHost>(*renderEngine->plugins,hostLogFile());
         std::vector<alien::PluginRackState> racks(static_cast<std::size_t>(assets.trackCount()));
         racks[static_cast<std::size_t>(track)]=assets.tracks[static_cast<std::size_t>(track)].plugins;
-        const auto errors=renderHost->restore(racks,{},alien::ReturnRacks{},48000);
+        auto errors=renderHost->restore(racks,{},alien::ReturnRacks{},48000);
+        errors+=renderHost->restoreRackChannels(controller.rackPlugins(),48000);   // rack instruments played on this track
         if(errors.isNotEmpty()){timelineView.setStatus("Freeze stopped: "+errors);return;}
         alien::DrumSamplePointers drums{};
         for(int t=0;t<assets.trackCount();++t)for(int p=0;p<alien::drumPadCount;++p)drums[t][p]=assets.tracks[t].drumAssets[p].get();
@@ -1372,7 +1415,8 @@ private:
         auto renderHost = std::make_shared<alien::PluginHost>(*renderEngine->plugins, hostLogFile());
         auto exportRacks=pluginStates();
         for(std::size_t t=0;t<exportRacks.size();++t)if(controller.isTrackFrozen(static_cast<int>(t)))exportRacks[t]={};
-        { const auto errors=renderHost->restore(exportRacks,stems ? alien::PluginRackState{} : controller.document().masterPlugins,controller.returnRacks(),controller.busRacks(),48000);
+        { auto errors=renderHost->restore(exportRacks,stems ? alien::PluginRackState{} : controller.document().masterPlugins,controller.returnRacks(),controller.busRacks(),48000);
+          errors+=renderHost->restoreRackChannels(controller.rackPlugins(),48000);
 
           if(errors.isNotEmpty()){ timelineView.setStatus("Export stopped: " + errors);return; } }
         auto assets = controller.document();
@@ -1420,6 +1464,12 @@ private:
 
         return t==alien::maxSessionTracks ? master : states[static_cast<std::size_t>(t)];
     }
+    // The scanned VST3 instruments, in the order the Channel Rack lists them.
+    std::vector<juce::PluginDescription> rackInstrumentChoices() const {
+        std::vector<juce::PluginDescription> choices;
+        for (const auto& d : knownPlugins.getTypes()) if (d.isInstrument && d.pluginFormatName == "VST3") choices.push_back(d);
+        return choices;
+    }
     std::vector<alien::PluginRackState> pluginStates() const {
         std::vector<alien::PluginRackState> states;
         for (const auto& t:controller.document().tracks) states.push_back(t.plugins);
@@ -1457,6 +1507,7 @@ private:
         for (const auto& b : d.buses) assigned = assigned || !b.plugins.effects.empty();
 
         for (const auto& t : d.tracks) assigned = assigned || !t.plugins.instrument.descriptionXml.isEmpty() || !t.plugins.effects.empty();
+        for (int c = 0; c < d.channelRack.channelCount; ++c) assigned = assigned || d.channelRack.info[static_cast<std::size_t>(c)].hasPlugin();
         return assigned;
     }
     void snapshotPlugins(SnapshotReason reason = SnapshotReason::save, bool closeEditors=false) {
@@ -1473,12 +1524,20 @@ private:
         audio.removeAudioCallback(&engine);
         if(closeEditors)pluginHost.closeEditorWindows();
         pluginHost.snapshot(tracks,master,returns,buses);
+        const auto rackStates=pluginHost.rackChannelStates();
 
         for(std::size_t t=0;t<tracks.size();++t)if(controller.isTrackFrozen(static_cast<int>(t)))tracks[t]=controller.document().tracks[t].plugins;
         audio.addAudioCallback(&engine);
         if(closeEditors && position>=0){engine.timelineSeek.store(position);engine.playing.store(playing);}
+        controller.setRackPluginStates(rackStates);   // before the commit below, which then includes them
         controller.setPluginRacks(tracks,master,returns,buses);
         loadedRacks = tracks; loadedMaster = master; loadedReturns = returns; loadedBuses = controller.busRacks();
+    }
+    // Which rack channel holds which plugin instrument (description and identity; not its changing state).
+    std::vector<std::pair<juce::String,std::uint64_t>> rackPluginIdentities() const {
+        std::vector<std::pair<juce::String,std::uint64_t>> ids;
+        for (const auto& p : controller.rackPlugins()) ids.emplace_back(p.descriptionXml, p.instanceId);
+        return ids;
     }
 
     // Racks differ only if a plugin is present on one side and not the other, or
@@ -1495,19 +1554,26 @@ private:
     // audio callback, so it is skipped when the loaded racks already match, for
     // example after renaming a track or scene or editing notes. Opening or
     // creating a document passes force=true so plugin state always matches the file.
-    void restorePlugins(bool force = false) {
+    // keepRackStates: the rack's channels changed under loaded instruments (moved, removed, duplicated), so what
+    // each loaded instrument sounds like now is kept, by identity, before they are loaded again.
+    void restorePlugins(bool force = false, bool keepRackStates = false) {
         const auto states = pluginStates(); const auto master = controller.document().masterPlugins; const auto returns = controller.returnRacks();
         const auto buses = controller.busRacks();
         std::vector<int> frozen;
         for(const auto& track:controller.document().tracks)frozen.push_back(track.settings.freezeScene);
-        if (!force && frozen==loadedFrozen && returns == loadedReturns && buses == loadedBuses && sameRacks(states, master, loadedRacks, loadedMaster)) { refreshPlugins(); return; }
+        const auto rackIds = rackPluginIdentities();
+        if (!force && frozen==loadedFrozen && returns == loadedReturns && buses == loadedBuses && rackIds == loadedRackPlugins
+            && sameRacks(states, master, loadedRacks, loadedMaster)) { refreshPlugins(); return; }
 
         const bool freezeChanged=frozen!=loadedFrozen;
         const auto position=engine.timelinePosition.load();const bool playing=engine.playing.load();
         audio.removeAudioCallback(&engine);
         auto runtimeStates=states;
         for(std::size_t t=0;t<runtimeStates.size();++t)if(controller.isTrackFrozen(static_cast<int>(t)))runtimeStates[t]={};
+        if (keepRackStates) controller.setRackPluginStates(pluginHost.rackChannelStates());
         auto errors=pluginHost.restore(runtimeStates,master,returns,buses,deviceRate());
+        errors+=pluginHost.restoreRackChannels(controller.rackPlugins(),deviceRate());
+        loadedRackPlugins=rackIds;
         loadedFrozen=frozen;
         audio.addAudioCallback(&engine);
         if(freezeChanged && position>=0){engine.timelineSeek.store(position);engine.playing.store(playing);}
@@ -1602,6 +1668,11 @@ private:
                 for (const auto& entry : scanDatabase.all()) if (juce::File(entry.path).exists()) o.bundles.push_back(juce::File(entry.path));
                 startScan(std::move(o)); break; }
             case C::recheckBlocked: recheckBlockedPlugins(); break;
+            case C::toggleStartupScan:
+                blocklist.setScanAtStartup(pluginPanel.startupScanIsEnabled());
+                pluginPanel.setStatus(blocklist.scanAtStartup() ? "New and updated plugins will be found when Alien Studio starts, in the background."
+                                                                : "Plugins will only be scanned when you choose a scan.");
+                break;
             case C::togglePreflight:
                 if (preflight) {
                     preflight->setEnabled(pluginPanel.preflightIsEnabled());
@@ -1624,6 +1695,27 @@ private:
         pluginPanel.setStatus("Checking " + juce::String(n) + " blocked plugin(s) again...");
         snapshotPlugins(SnapshotReason::always);
         restorePlugins(true);
+    }
+    // Lets a plugin blocked after a crash load again (index into the Blocked plugins list; -1: all of them),
+    // then reloads the project's plugins so it comes back where it was.
+    void allowBlockedPlugin(int index) {
+        if (projectBusy || controller.isBusy()) return;
+        const auto list = blocklist.blocked();
+        juce::String what;
+        if (index < 0) { if (blocklist.allowAll() == 0) return; what = "every blocked plugin"; }
+        else if (index < static_cast<int>(list.size()) && blocklist.allow(list[static_cast<std::size_t>(index)].path)) what = list[static_cast<std::size_t>(index)].name;
+        else return;
+        pluginPanel.setStatus("Allowed " + what + " to load again. If it crashes again it will be switched off and blocked again.");
+        snapshotPlugins(SnapshotReason::always);
+        restorePlugins(true);
+    }
+    // At startup, in the background: finds plugins installed or updated since the last scan. Files that are
+    // unchanged, or failed before and have not changed, are not loaded again, so this is quick when nothing is new.
+    void startupPluginScan() {
+        if (!blocklist.scanAtStartup() || scanning) return;
+        alien::scan::ScanOptions o; o.folders = alien::scan::standardVst3Folders();
+        startupScanRunning = true;
+        startScan(std::move(o));
     }
     void chooseScanFolder() {
         if(projectBusy || controller.isBusy() || scanning)return;
@@ -1706,6 +1798,13 @@ private:
                 failures.getParentDirectory().createDirectory(); failures.appendText(b.bundle.getFullPathName() + "\n");
             }
         refreshPlugins();
+        const bool quiet = std::exchange(startupScanRunning, false) && report.pluginsAdded == 0 && report.pluginsRemoved == 0 && !report.cancelled;
+        int newFailures = 0;
+        for (const auto& b : report.bundles) newFailures += b.action == alien::scan::BundleReport::Action::scanned && b.status != alien::scan::Status::ok;
+        if (quiet && newFailures == 0) {
+            pluginPanel.setStatus("Plugin list is up to date: " + juce::String(static_cast<int>(report.bundles.size())) + " plugin file(s) checked at startup.");
+            return;
+        }
         auto text = report.summary();
         if (report.failedCount() > 0) text += "\nScan VST3 > Show the last scan log lists each file that failed and why. Retry plugins that failed tries them again.";
         pluginPanel.setStatus(text);
@@ -1722,10 +1821,13 @@ private:
     alien::PluginPanel pluginPanel;
     juce::KnownPluginList knownPlugins;
     alien::scan::ScanDatabase scanDatabase;       // what has been scanned, and what happened to each file
+    alien::PluginBlocklist blocklist{alien::PluginBlocklist::defaultFile()};   // plugins that crashed while hosted
+    bool startupScanRunning{};
     std::unique_ptr<alien::Preflight> preflight;  // the safety check before a plugin is loaded into a project
     bool scanning{};
     std::shared_ptr<std::atomic<bool>> scanCancel;
     std::vector<int> loadedFrozen;
+    std::vector<std::pair<juce::String,std::uint64_t>> loadedRackPlugins;   // the rack instruments the host last loaded
     std::vector<alien::PluginRackState> loadedRacks; // Rack states the plugin host last loaded or captured.
     alien::PluginRackState loadedMaster;
     alien::ReturnRacks loadedReturns;

@@ -69,6 +69,14 @@ corrupt settings fall back to the default layout. See [saved window layouts](doc
 Physical multi-monitor movement, mixed-DPI layouts and audio-device listening
 remain manual checks before release.
 
+### Song warp markers
+
+Right-click Song audio and choose **Enable warp (fit source to region)**. Add
+markers from the clip menu, drag their bottom handles to retime audio, or detect
+transients in the background. Marker and tempo changes prepare pitch-preserving
+audio before playback resumes; Escape cancels. Source files remain unchanged.
+See [warp-marker controls, limits and verification](docs/WARP_MARKERS.md).
+
 ### Factory preset browser
 
 Open **View > Factory preset browser...** (also available on the Devices page).

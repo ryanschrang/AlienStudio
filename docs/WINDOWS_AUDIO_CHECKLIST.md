@@ -396,6 +396,12 @@ Nothing should sound or look different: this moves where the rack's patterns are
 - Give two tracks different instruments (a plugin, a drum kit, the built-in synth). Open a clip on each and click-and-hold piano keys: you hear that track's instrument, with the transport stopped and while playing. Open a Channel Rack row and do the same: you hear that channel.
 - Hold a key, then switch the piano roll to another clip, track or rack channel (or Alt-Tab away) before letting go: nothing is left sounding. Record into a clip while clicking keys in another: the clicks are not recorded.
 
+## Piano-roll pitch rows (PROD-06 part 2)
+- Open a clip with a chord and a melody. Rows button above the keyboard > Used: only the pitches in use are shown, every key is named, and a line marks each fold. Draw, drag, Shift-drag select, arrow up/down and click-and-hold keys: each lands on and plays the pitch of the row under the mouse. Back to All: every note is where it was.
+- Scale tool (Alt L): choose A minor, then Rows > Scale. Only A minor's notes are rows; A keys carry the wide root mark. Add a note outside the scale (switch to All, draw a C#, switch back): its row stays, tinted red. Change the key to D dorian: rows and marks follow; no note moves.
+- In Used rows, clear the clip: every row returns. Undo: the notes and their rows come back. Scroll Scale rows with the wheel and the scroll bar from the lowest to the highest note.
+- Turn on ghost notes and multi-clip editing: Used rows include the other clips' pitches. Check the rows button and key names at 100%, 150% and 200% display scaling.
+
 
 ## Overlapping rack instances (T1-03 D3, format 28)
 
@@ -418,3 +424,15 @@ Not yet run on hardware. Record commit, device/driver, sample rate and buffer si
   one occurrence of that source. New projects launch one occurrence per assigned row.
 - Test stop/panic, transport restart, document replacement and device changes with held
   notes. Check row indicators at 960x650 and 150/200% scaling.
+
+## Plugin blocklist and startup scan (T1-09 part 1)
+- Install a new VST3 plugin, then start Alien Studio: without choosing a scan, the plugin appears in the Plugins list shortly after startup, and the panel says what was found. Start again with nothing new: the panel says the list is up to date, and startup is not slowed. Turn off Scan VST3 > Look for new plugins when Alien Studio starts and restart: no scan runs.
+- With a plugin known to crash while playing (or a test build that crashes in processBlock): play until it is switched off. The message says it is blocked. Save, reopen the project: the plugin is not loaded, its slot and settings remain, and Scan VST3 > Blocked plugins lists it. Allow it again: it loads in place. Update or reinstall the plugin: it loads without being allowed by hand.
+- A plugin whose output turns invalid (NaN) is switched off but is not listed as blocked.
+
+## VST3 instruments on Channel Rack channels (T1-09 part 2)
+- Scan a VST3 instrument (a synth or a sampler). Right-click a rack channel > Sound > VST3 instrument and choose it: the channel is renamed after it. Click the channel name: you hear a short note. Open instrument editor: its window opens; change a sound and hear it.
+- Draw steps (with velocity, pitch, gate, ratchets, nudge and swing) and piano-roll notes for the channel and play the pattern, then the Song: notes start and end on time at 48 kHz with 128, 512 and 1024-sample buffers. Turn the channel's volume and pan: no clicks. Mute and solo: it stops at once. Route it to a track: it plays through the track's strip and FX.
+- Stop the transport while long notes play, switch patterns, delete or move the channel, change the audio device: nothing is left sounding.
+- Save, close and reopen: the instrument comes back with the sound you set in its editor. Duplicate the channel and change the copy's sound: the original is unchanged. Undo the instrument choice: the channel's old sound returns.
+- Export WAV and stems, and freeze a track the channel plays on: the instrument is in the result. With a plugin that crashes, it is switched off with a message naming the channel, and the rest keeps playing.

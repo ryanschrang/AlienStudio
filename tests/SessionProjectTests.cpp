@@ -443,7 +443,31 @@ static void parameterPersistenceTests() {
     require(replacement.instanceId != first.instanceId && PluginState{}.instanceId == 0, "new insertions have fresh identities and empty slots do not");
 }
 
+static void warpFormatChecks() {
+    alien::SessionProjectData source, loaded; juce::String error;
+    alien::timeline::Region r; r.warp={{0,0},{960,.5},{3840,2}};
+    require(source.timeline.place(r),"warp format fixture");
+    const auto text=alien::serializeSessionProject(source);
+    require(!text.isEmpty() && alien::parseSessionProject(text,loaded,error) && loaded.timeline.regions[0].warp==r.warp,"format 30 round-trips source/musical warp anchors");
+    auto json=juce::JSON::parse(text);auto* root=json.getDynamicObject();
+    auto* regions=root->getProperty("timeline").getDynamicObject()->getProperty("regions").getArray();
+    auto* region=regions->getReference(0).getDynamicObject();
+    auto original=region->getProperty("warp");
+    for(int damage=0;damage<4;++damage) {
+        auto copy=juce::JSON::parse(juce::JSON::toString(original));auto* a=copy.getArray();
+        if(damage==0)a->getReference(1).getDynamicObject()->setProperty("tick",0);
+        if(damage==1)a->getReference(1).getDynamicObject()->setProperty("seconds",-1);
+        if(damage==2)a->getReference(1).getDynamicObject()->setProperty("seconds","wrong");
+        if(damage==3){a->removeLast();a->removeLast();}
+        region->setProperty("warp",copy);
+        require(!alien::parseSessionProject(juce::JSON::toString(json),loaded,error),"damaged warp maps are rejected");
+    }
+    region->removeProperty("warp");root->setProperty("version",29);
+    require(alien::parseSessionProject(juce::JSON::toString(json),loaded,error) && loaded.timeline.regions[0].warp.empty(),"older projects retain unstretched playback");
+}
+
 int main() {
+    warpFormatChecks();
     freezeFormatTests();
     takeFormatTests();
     tempoMapFormatTests();

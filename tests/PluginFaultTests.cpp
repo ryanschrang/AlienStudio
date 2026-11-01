@@ -9,6 +9,7 @@
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <thread>
 
@@ -281,6 +282,35 @@ static void hostTests() {
         check(racks[0].effects[0] == saved[0].effects[0] && racks[0].effects[1] == saved[0].effects[1] && racks[0].effects[2] == saved[0].effects[2] && racks[0].effects[3] == saved[0].effects[3], "saved descriptions and state of the failed plugins are kept for the next try");
         check(racks[0].effects[4].stateBase64 == encoded("live"), "while the healthy plugin's state is captured as usual");
         check(host.diagnosticLog().read().contains("crashed while loading"), "the failure is written to the log");
+    }
+    // T1-09: a crash is passed to onCrash, which may block the plugin, and the report then says so. A host
+    // that refuses blocked plugins through its preflight leaves them unloaded next time. Invalid audio is not a crash.
+    {
+        add("crash-later", plan(Fail::nullWrite)); add("nan-later", plan(Fail::nan));
+        auto runtime = std::make_unique<PluginRuntime>(); PluginHost host(*runtime, {}, factory);
+        std::vector<std::pair<juce::String, juce::String>> crashes; std::set<juce::String> blocked;
+        host.onCrash = [&](const juce::String& xml, const juce::String& why) {
+            juce::PluginDescription d; if (auto x = juce::parseXML(xml)) d.loadFromXml(*x);
+            crashes.emplace_back(d.fileOrIdentifier, why); blocked.insert(d.fileOrIdentifier); return true;
+        };
+        host.preflight = [&](const juce::PluginDescription& d) { return blocked.count(d.fileOrIdentifier) != 0 ? juce::String("blocked: it crashed earlier") : juce::String(); };
+        juce::String problem; host.onProblem = [&](const juce::String& text) { problem = text; };
+        std::vector<PluginRackState> racks(1); PluginRackState master;
+        racks[0].effects = {stateFor("crash-later", false), stateFor("nan-later", false), stateFor("factory-crash", false)};
+        const auto errors = host.restore(racks, master, 48000);
+        check(crashes.size() == 1 && crashes[0].first == "factory-crash" && crashes[0].second.contains("crashed while loading")
+              && errors.contains("blocked from loading again"), "a crash while loading is passed on, and the report says the plugin is now blocked");
+        runtime->begin(32, 120, true, 0); fill(*runtime, 0, 0.5f, 32); runtime->effectsAndAlign(32);
+        host.poll();
+        check(crashes.size() == 2 && crashes[1].first == "crash-later" && crashes[1].second.contains("processing audio"),
+              "a crash while playing is passed on with what happened");
+        check(problem.contains("blocked from loading again"), "and its report says it is blocked");
+        check(runtime->racks[0].effects[1].faulted.get() && crashes.size() == 2, "invalid audio switches a plugin off but is not passed on as a crash");
+        host.restore(racks, master, 48000);
+        check(!runtime->racks[0].effects[0].processor && !runtime->racks[0].effects[2].processor && runtime->racks[0].effects[1].processor
+              && host.health(0, 0).contains("NOT LOADED"), "on the next load the blocked plugins stay unloaded, the other loads");
+        host.snapshot(racks, master);
+        check(racks[0].effects.size() == 3 && racks[0].effects[0].descriptionXml.contains("crash-later"), "and the blocked plugins' slots and settings stay in the project");
     }
     // Reloading a rack that contains a failed plugin parks the old instance and starts a fresh one.
     {

@@ -227,6 +227,39 @@ inline const char* fadeCurveLabel(FadeCurve curve) noexcept {
 // Which fade of a region a shape is for.
 enum class FadeEdge { in, out, crossfade };
 
+// Source seconds at musical content ticks. Trims/splits retain this map and
+// advance Region::offset, so markers remain attached to the same source audio.
+struct WarpMarker {
+    std::int64_t tick{};
+    double seconds{};
+    bool operator==(const WarpMarker&) const = default;
+};
+inline constexpr std::size_t maxWarpMarkers = 256;
+inline bool validWarp(const std::vector<WarpMarker>& markers) noexcept {
+    if (markers.empty()) return true;
+    if (markers.size() < 2 || markers.size() > maxWarpMarkers) return false;
+    for (std::size_t i = 0; i < markers.size(); ++i) {
+        const auto& m = markers[i];
+        if (m.tick < 0 || m.tick > maxLength || !std::isfinite(m.seconds) || m.seconds < 0 || m.seconds > 1.0e9
+            || (i && (m.tick <= markers[i-1].tick || m.seconds <= markers[i-1].seconds))) return false;
+    }
+    return true;
+}
+inline double warpSeconds(const std::vector<WarpMarker>& markers, double tick) noexcept {
+    if (markers.size() < 2) return 0;
+    auto after = std::upper_bound(markers.begin(), markers.end(), tick, [](double t, const WarpMarker& m) { return t < m.tick; });
+    const auto b = after == markers.begin() ? std::next(after) : after == markers.end() ? std::prev(after) : after;
+    const auto a = std::prev(b);
+    return a->seconds + (tick - a->tick) * (b->seconds - a->seconds) / static_cast<double>(b->tick - a->tick);
+}
+inline double warpTick(const std::vector<WarpMarker>& markers, double seconds) noexcept {
+    if (markers.size() < 2) return 0;
+    auto after = std::upper_bound(markers.begin(), markers.end(), seconds, [](double t, const WarpMarker& m) { return t < m.seconds; });
+    const auto b = after == markers.begin() ? std::next(after) : after == markers.end() ? std::prev(after) : after;
+    const auto a = std::prev(b);
+    return a->tick + (seconds - a->seconds) * static_cast<double>(b->tick - a->tick) / (b->seconds - a->seconds);
+}
+
 struct Region {
     std::uint32_t id{};
     std::uint32_t group{};            // 0: not grouped. Regions sharing a group move, copy and select together.
@@ -242,6 +275,7 @@ struct Region {
     // so a region still plays the right part if its clip is replaced by the other kind.
     std::int64_t offset{};
     double audioOffset{};
+    std::vector<WarpMarker> warp; // empty: ordinary, unstretched audio
     bool muted{};
     // Non-destructive audio edits. The source file is immutable; playback and export
     // interpret these values when reading it.
@@ -392,7 +426,7 @@ struct Timeline {
         if (takes.size() > maxTakes) return false;
         for (std::size_t i = 0; i < takes.size(); ++i) {
             const auto& r = takes[i];
-            if (r.id == 0 || r.row < 0 || r.row >= tracks || r.source < 0 || r.source >= scenes
+            if (!validWarp(r.warp) || r.id == 0 || r.row < 0 || r.row >= tracks || r.source < 0 || r.source >= scenes
                 || r.start < 0 || r.start > length() || r.length < 1 || r.length > length() - r.start
                 || r.offset < 0 || r.offset > maxLength || !std::isfinite(r.audioOffset) || r.audioOffset < 0
                 || !std::isfinite(r.gain) || r.gain < 0 || r.gain > 64
@@ -427,7 +461,7 @@ struct Timeline {
         std::vector<const Region*> order;
         order.reserve(regions.size());
         for (const auto& r : regions) {
-            if (r.id == 0 || r.start < 0 || r.length < 1 || r.end() > length() || r.offset < 0
+            if (!validWarp(r.warp) || (!r.warp.empty() && r.isPattern()) || r.id == 0 || r.start < 0 || r.length < 1 || r.end() > length() || r.offset < 0
                 || !std::isfinite(r.audioOffset) || r.audioOffset < 0.0 || !std::isfinite(r.gain) || r.gain < 0.0 || r.gain > 64.0
                 || r.fadeIn < 0 || r.fadeOut < 0 || r.fadeIn > r.length || r.fadeOut > r.length
                 || r.crossfade < 0 || r.crossfade > r.length
@@ -474,7 +508,7 @@ struct Timeline {
         for (std::size_t i = 0; i < regions.size(); ++i) {
             const auto& a = regions[i]; const auto& b = o.regions[i];
             if (a.row != b.row || a.source != b.source || a.clip != b.clip || a.rackClip != b.rackClip || a.start != b.start || a.length != b.length
-                || a.offset != b.offset || a.audioOffset != b.audioOffset || a.gain != b.gain
+                || a.warp != b.warp || a.offset != b.offset || a.audioOffset != b.audioOffset || a.gain != b.gain
                 || a.fadeIn != b.fadeIn || a.fadeOut != b.fadeOut || a.crossfade != b.crossfade || a.loopSource != b.loopSource
                 || a.reversed != b.reversed || a.muted != b.muted
                 || a.fadeInCurve != b.fadeInCurve || a.fadeOutCurve != b.fadeOutCurve || a.crossfadeCurve != b.crossfadeCurve) return false;
@@ -550,7 +584,7 @@ struct Timeline {
             || found->reversed || found->loopSource) return false;
         Region piece = *found;
         const auto delta = from - piece.start;
-        piece.audioOffset += secondsBetween(static_cast<double>(piece.start), static_cast<double>(from));
+        piece.audioOffset = piece.warp.empty() ? piece.audioOffset + secondsBetween(static_cast<double>(piece.start), static_cast<double>(from)) : std::max(0.0, warpSeconds(piece.warp, static_cast<double>(piece.offset + delta)));
         piece.offset += delta; piece.start = from; piece.length = to - from;
         piece.muted = false; piece.group = 0; piece.crossfade = 0;
         // Five-millisecond edge fades avoid hard edits; users can refine/crossfade
@@ -631,7 +665,7 @@ struct Timeline {
         // Source that lies before the region's start, in ticks, for MIDI and for audio alike.
         const auto audioRoom = static_cast<std::int64_t>(std::floor(static_cast<double>(r->start)
             - tickAfter(static_cast<double>(r->start), -r->audioOffset) + 1e-9));
-        std::int64_t lowest = std::max<std::int64_t>(0, r->start - std::min(r->offset, audioRoom));
+        std::int64_t lowest = std::max<std::int64_t>(0, r->start - (r->warp.empty() ? std::min(r->offset, audioRoom) : r->offset));
         for (const auto& o : next.regions)
             if (o.id != id && o.row == r->row && o.end() <= r->start) lowest = std::max(lowest, o.end());
         newStart = std::clamp(newStart, lowest, r->end() - 1);
@@ -746,10 +780,34 @@ struct Timeline {
             const auto applied = std::max(deltaTicks, -r.offset);
             if (applied == 0) continue;
             r.offset += applied;
-            r.audioOffset = std::max(0.0, r.audioOffset + secondsBetween(static_cast<double>(r.start), static_cast<double>(r.start + applied)));
+            r.audioOffset = r.warp.empty() ? std::max(0.0, r.audioOffset + secondsBetween(static_cast<double>(r.start), static_cast<double>(r.start + applied))) : std::max(0.0, warpSeconds(r.warp, static_cast<double>(r.offset)));
             changed = true;
         }
         return changed && adopt(std::move(next));
+    }
+    bool setWarp(std::uint32_t id, std::vector<WarpMarker> markers) {
+        auto* r = find(id);
+        if (!r || r->isPattern() || !validWarp(markers) || r->warp == markers) return false;
+        r->warp = std::move(markers); return true;
+    }
+    bool addWarpMarker(std::uint32_t id, std::int64_t tick) {
+        const auto* r = find(id);
+        if (!r || r->warp.size() < 2 || r->warp.size() >= maxWarpMarkers || tick <= r->warp.front().tick || tick >= r->warp.back().tick) return false;
+        auto markers = r->warp;
+        const auto at = std::lower_bound(markers.begin(), markers.end(), tick, [](const WarpMarker& m, auto t) { return m.tick < t; });
+        if (at != markers.end() && at->tick == tick) return false;
+        const auto seconds = warpSeconds(markers, static_cast<double>(tick));
+        markers.insert(at, {tick, seconds}); return setWarp(id, std::move(markers));
+    }
+    bool moveWarpMarker(std::uint32_t id, std::size_t index, std::int64_t tick) {
+        const auto* r = find(id);
+        if (!r || index == 0 || index + 1 >= r->warp.size() || tick <= r->warp[index-1].tick || tick >= r->warp[index+1].tick) return false;
+        auto markers = r->warp; markers[index].tick = tick; return setWarp(id, std::move(markers));
+    }
+    bool removeWarpMarker(std::uint32_t id, std::size_t index) {
+        const auto* r = find(id);
+        if (!r || index == 0 || index + 1 >= r->warp.size()) return false;
+        auto markers = r->warp; markers.erase(markers.begin() + static_cast<std::ptrdiff_t>(index)); return setWarp(id, std::move(markers));
     }
     bool setLoopSource(const Ids& ids, bool looped) { return editAudio(ids, [=](Region& r) { if (r.loopSource == looped) return false; r.loopSource = looped; return true; }); }
     bool setReversed(const Ids& ids, bool reversed) { return editAudio(ids, [=](Region& r) { if (r.reversed == reversed) return false; r.reversed = reversed; return true; }); }
@@ -1077,6 +1135,7 @@ private:
     void trimLeftBy(Region& r, std::int64_t delta) const noexcept {
         r.audioOffset = std::max(0.0, r.audioOffset + secondsBetween(static_cast<double>(r.start), static_cast<double>(r.start + delta)));
         r.start += delta; r.length -= delta; r.offset = std::max<std::int64_t>(0, r.offset + delta);
+        if (!r.warp.empty()) r.audioOffset = std::max(0.0, warpSeconds(r.warp, static_cast<double>(r.offset)));
     }
     // Clears [from, to) on a row: regions inside it go, regions that overhang are
     // trimmed, and a region that spans it is cut in two around it.

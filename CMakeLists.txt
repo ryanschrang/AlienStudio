@@ -124,12 +124,19 @@ if(BUILD_TESTING)
     add_executable(TimelinePlaybackTests tests/TimelinePlaybackTests.cpp)
     target_include_directories(TimelinePlaybackTests PRIVATE src)
     target_compile_definitions(TimelinePlaybackTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
-    target_link_libraries(TimelinePlaybackTests PRIVATE juce::juce_audio_processors juce::juce_audio_devices juce::juce_audio_basics)
+    target_link_libraries(TimelinePlaybackTests PRIVATE juce::juce_audio_processors juce::juce_audio_devices juce::juce_audio_basics juce::juce_audio_formats)
     add_test(NAME TimelinePlaybackTests COMMAND TimelinePlaybackTests)
     set_tests_properties(TimelinePlaybackTests PROPERTIES TIMEOUT 1200)   # about 8 minutes in a Debug build on CI runners
     # A test function here holds many engines, patterns and projects, and a Debug build gives each its own stack space; Windows' default 1 MB is not enough (it crashed in CI).
     target_link_options(TimelinePlaybackTests PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/STACK:8388608>")
 
+    # VST3 instruments on Channel Rack channels (T1-09 part 2): model, notes, engine, containment, controller.
+    add_executable(RackPluginInstrumentTests tests/RackPluginInstrumentTests.cpp)
+    target_include_directories(RackPluginInstrumentTests PRIVATE src)
+    target_compile_definitions(RackPluginInstrumentTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(RackPluginInstrumentTests PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_gui_extra
+        juce::juce_audio_devices juce::juce_audio_formats juce::juce_audio_basics)
+    add_test(NAME RackPluginInstrumentTests COMMAND RackPluginInstrumentTests)
     add_executable(RackIntegrationTests tests/RackIntegrationTests.cpp)
     target_include_directories(RackIntegrationTests PRIVATE src)
     target_compile_definitions(RackIntegrationTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
@@ -273,6 +280,14 @@ if(BUILD_TESTING)
         juce::juce_audio_formats juce::juce_audio_basics)
     add_test(NAME PianoRollKeyboardTests COMMAND PianoRollKeyboardTests)
 
+    # Piano-roll pitch rows (PROD-06 part 2): All / Used / Scale rows, scale shading, gestures on hidden rows.
+    add_executable(PianoRollPitchViewTests tests/PianoRollPitchViewTests.cpp)
+    target_include_directories(PianoRollPitchViewTests PRIVATE src)
+    target_compile_definitions(PianoRollPitchViewTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(PianoRollPitchViewTests PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_audio_devices
+        juce::juce_audio_formats juce::juce_audio_basics)
+    add_test(NAME PianoRollPitchViewTests COMMAND PianoRollPitchViewTests)
+
     # Group buses (MIX-03): track output routing, bus strips and FX, solo, delay compensation, format, undo, stems.
     add_executable(GroupBusTests tests/GroupBusTests.cpp)
     target_include_directories(GroupBusTests PRIVATE src)
@@ -296,6 +311,12 @@ if(BUILD_TESTING)
     add_test(NAME FaultGuardTests COMMAND FaultGuardTests)
 
     # The host surviving plugins that crash, throw or emit NaN (test plugins that really do).
+    # Plugin blocklist (T1-09): crashed plugins remembered and refused, allowed again, startup-scan switch.
+    add_executable(PluginBlocklistTests tests/PluginBlocklistTests.cpp)
+    target_include_directories(PluginBlocklistTests PRIVATE src)
+    target_compile_definitions(PluginBlocklistTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(PluginBlocklistTests PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_gui_extra juce::juce_audio_devices juce::juce_audio_formats juce::juce_audio_basics)
+    add_test(NAME PluginBlocklistTests COMMAND PluginBlocklistTests)
     add_executable(PluginFaultTests tests/PluginFaultTests.cpp)
     target_include_directories(PluginFaultTests PRIVATE src)
     target_compile_definitions(PluginFaultTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)

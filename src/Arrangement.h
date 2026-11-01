@@ -35,8 +35,17 @@ struct ArrangementPlayback {
     alien::timeline::Timeline timeline;
     std::array<std::array<ArrangementClip, maxSessionTracks>, maxSessionScenes> clips{};
     std::vector<ArrangementPlacement> placements;   // ascending by clip id
+    struct WarpedRegion {
+        std::uint32_t id{};
+        std::shared_ptr<const SessionAudioClip> owner;
+        ArrangementClip content;
+        WarpedRegion(std::uint32_t region, std::shared_ptr<const SessionAudioClip> clip) : id(region), owner(std::move(clip)), content{{},owner.get()} {}
+    };
+    std::vector<WarpedRegion> warped; // playback-only cache ownership
     // What a track's region plays. Audio thread safe: a binary search, no allocation.
     const ArrangementClip& clipFor(const alien::timeline::Region& region, std::size_t track) const noexcept {
+        const auto warp = std::lower_bound(warped.begin(), warped.end(), region.id, [](const WarpedRegion& w, std::uint32_t id) { return w.id < id; });
+        if (warp != warped.end() && warp->id == region.id) return warp->content;
         if (region.clip == 0) return clips[static_cast<std::size_t>(region.source)][track];
         const auto found = std::lower_bound(placements.begin(), placements.end(), region.clip,
                                             [](const ArrangementPlacement& p, std::uint64_t id) { return p.clip < id; });
@@ -59,6 +68,12 @@ public:
     }
     static bool validSnapshot(const ArrangementPlayback& value) {
         if (!value.timeline.valid()) return false;
+        for (const auto& r : value.timeline.regions) if (!r.warp.empty()) return false; // prepare worker caches before publication
+        for (std::size_t i=0;i<value.warped.size();++i) {
+            const auto& w=value.warped[i];
+            if (!w.owner || w.content.audio!=w.owner.get() || !w.owner->valid() || w.id==0
+                || (i && value.warped[i-1].id>=w.id)) return false;
+        }
         for (const auto& scene : value.clips) for (const auto& clip : scene)
             if (!clip.pattern->valid()) return false;
         for (std::size_t i = 0; i < value.placements.size(); ++i) {
