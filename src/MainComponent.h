@@ -524,6 +524,7 @@ private:
         controller.onImportStatus = [this](const juce::String& text, const juce::String& tip) {
             sessionView.setImportStatus(text, tip);
             devicesView.samples().setStatus(text);
+            timelineView.setStatus(text);
         };
         controller.onBusyChanged = [this](bool busy) {
             topBar.setBusy(busy);
@@ -698,6 +699,9 @@ private:
         sessionView.onTrackMixCommandExecuted = [this](int) {
             mixerPanel.refreshSettings();
             sessionView.repaint();
+        };
+        devicesView.samples().onDragStarted = [this](bool song) {
+            if (isDragAndDropActive()) showView(song ? 5 : 2);
         };
         devicesView.samples().onPreview = [this](const alien::SessionAudioClip& clip) {
             engine.factoryPresetPreview.stop();
@@ -1115,6 +1119,7 @@ private:
 
     void timerCallback() override {
         const auto& sampleDestination = controller.document();
+        devicesView.samples().setProjectTempo(sampleDestination.bpm);
         devicesView.samples().setImportEnabled(!projectBusy && !controller.isBusy() && !controller.isRecording() && !activeCapture
             && !sampleDestination.cellClip(sampleDestination.selectedTrack, sampleDestination.selectedScene) && !controller.isTrackFrozen(sampleDestination.selectedTrack),
             !projectBusy && !controller.isBusy() && !controller.isRecording() && !activeCapture && !controller.isTrackFrozen(sampleDestination.selectedTrack));

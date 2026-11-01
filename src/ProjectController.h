@@ -1359,14 +1359,18 @@ public:
 
     // Browser import captures the destination before decoding. Busy state prevents
     // structural edits while the worker runs; recheck the destination before install.
-    void importBrowserSample(const juce::File& file, int track, int scene, std::int64_t songTick = -1) {
+    bool canImportBrowserSample(int track, int scene, bool song) const {
+        return !busy && !isRecording() && engine.recording.phase.load() == RecordControls::idle
+            && doc.isValidCell(track, scene) && !isTrackFrozen(track) && (song || !doc.cellClip(track, scene));
+    }
+    void importBrowserSample(const juce::File& file, int track, int scene, std::int64_t songTick = -1, bool preserveSong = false) {
         if (busy || isRecording() || engine.recording.phase.load() != RecordControls::idle || !doc.isValidCell(track, scene) || isTrackFrozen(track)) return;
         if (songTick < 0 && doc.cellClip(track, scene)) { importStatus("Choose an empty Session cell.", {}); return; }
         setBusy(true); importStatus("Loading sample...", file.getFullPathName());
         std::weak_ptr<int> token = alive;
-        pool.addJob([this, token, file, track, scene, songTick] {
+        pool.addJob([this, token, file, track, scene, songTick, preserveSong] {
             auto result = std::make_shared<AudioClipImportResult>(importSessionAudioClip(file));
-            juce::MessageManager::callAsync([this, token, file, track, scene, songTick, result] {
+            juce::MessageManager::callAsync([this, token, file, track, scene, songTick, preserveSong, result] {
                 if (!token.lock()) return;
                 setBusy(false);
                 if (!result->clip) { importStatus(result->error, file.getFullPathName()); return; }
@@ -1377,6 +1381,9 @@ public:
                 } else {
                     const auto end = timeline::TempoMap{doc.timeline.tempoChanges, static_cast<double>(doc.bpm)}.tickAfter(static_cast<double>(songTick), result->clip->frames / result->clip->sampleRate);
                     if (end > timeline::maxLength || end <= songTick) { importStatus("Sample does not fit in the Song.", {}); return; }
+                    if (preserveSong && std::any_of(doc.timeline.regions.begin(), doc.timeline.regions.end(), [&](const auto& region) {
+                        return region.row == track && region.start < static_cast<std::int64_t>(std::ceil(end)) && region.start + region.length > songTick;
+                    })) { importStatus("Drop onto a free Song range; existing clips were preserved.", {}); return; }
                     RecordedTake take; take.track = track; take.file = file; take.clip = result->clip;
                     take.placement = {true, songTick, std::max<std::int64_t>(1, static_cast<std::int64_t>(std::ceil(end)) - songTick), 0};
                     if (addRecordedTakes({take}, "Import sample to Song") != 1) { importStatus("Sample could not be placed in the Song.", {}); return; }
