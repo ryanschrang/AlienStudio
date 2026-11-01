@@ -1,5 +1,6 @@
 #include "AudioCapture.h"
 #include "TempoWarp.h"
+#include "SamplePreviewRender.h"
 #include "AudioFileWrite.h"
 #include "ToneEngine.h"
 #include <cstdlib>
@@ -44,7 +45,22 @@ int main(){
     check(std::abs(decoded.getSample(1,7999)+0.5f)<1e-6,"recorded WAV contains captured input");reader.reset();
     juce::MemoryBlock before,after;file.loadFileAsData(before);cancel.store(true);
     check(!alien::writeClipWav(file,*take,cancel,error),"cancelled write rejected");file.loadFileAsData(after);
-    check(before==after,"cancelled write preserves every byte");file.deleteFile();
+    check(before==after,"cancelled write preserves every byte");
+    cancel.store(false); check(alien::writeClipWav(file, source, cancel, error), "write preview pitch fixture"); file.loadFileAsData(before);
+    for (double bpm : {60., 120., 180., 240.}) {
+        auto preview = alien::renderSamplePreview(file, true, bpm, 120, cancel);
+        check(preview.clip && preview.clip->valid() && preview.clip->frames == static_cast<std::size_t>(48000 * bpm / 120), "synced preview duration follows source/project BPM ratio");
+        int crosses = 0; const auto& data = preview.clip->left; const std::size_t begin = 4800, end = data.size() - 4800;
+        for (std::size_t i = begin; i < end; ++i) { if (data[i-1] <= 0 && data[i] > 0) ++crosses; check(std::abs(data[i] + preview.clip->right[i]) < 1e-6, "preview stretch keeps stereo phase linked"); }
+        const double hz = crosses * 48000.0 / (end - begin); check(hz > 435 && hz < 445, "preview keeps 440 Hz pitch when matching tempo");
+    }
+    auto plain = alien::renderSamplePreview(file, false, 0, 0, cancel);
+    auto unity = alien::renderSamplePreview(file, true, 120, 120, cancel);
+    check(plain.clip && unity.clip && plain.clip->left == unity.clip->left, "equal-tempo preview is exact decoded bypass");
+    check(!alien::renderSamplePreview(file, true, 30, 200, cancel).clip, "unsupported tempo ratio refuses preview");
+    check(!alien::validPreviewTempoRatio(std::numeric_limits<double>::quiet_NaN(), 120), "nonfinite preview BPM refused");
+    cancel.store(true); check(!alien::renderSamplePreview(file, true, 180, 120, cancel).clip, "cancelled preview returns no partial asset");
+    file.loadFileAsData(after); check(before == after, "tempo preview preserves source file byte-for-byte"); file.deleteFile();
     cancel.store(false);auto unwritable=file.getChildFile("missing").getChildFile("take.wav");
     check(!alien::writeClipWav(unwritable,*take,cancel,error) && take->valid(),"failed write preserves take for retry");
     std::cout<<"Capture, device stop, recording WAV and pitch-preserving tempo tests passed\n";
