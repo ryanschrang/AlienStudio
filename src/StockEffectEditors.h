@@ -775,6 +775,14 @@ private:
     double lastKey{-1.0};
 };
 
+class ChorusEditor final : public EffectEditor {
+public:
+    explicit ChorusEditor(ChorusEffect& e) : EffectEditor(e, ui::colours::accent, 420, 220) {
+        addKnob(chorus::rate, "Rate"); addKnob(chorus::depth, "Depth"); addKnob(chorus::mix, "Mix"); finishSetup();
+    }
+    void resized() override { auto area = content(); layoutKnobs(area, 0, 3, area.getWidth() / 3); }
+};
+
 // ---- Registration ----------------------------------------------------------------------
 
 inline juce::AudioProcessorEditor* makeEditor(Effect& effect) {
@@ -787,6 +795,7 @@ inline juce::AudioProcessorEditor* makeEditor(Effect& effect) {
     if (id == catalog[5].id) return new FilterEditor(static_cast<FilterEffect&>(effect));
     if (id == catalog[6].id) return new SaturatorEditor(static_cast<SaturatorEffect&>(effect));
     if (id == catalog[7].id) return new GateEditor(static_cast<GateEffect&>(effect));
+    if (id == catalog[8].id) return new ChorusEditor(static_cast<ChorusEffect&>(effect));
     return nullptr;
 }
 // Including this header installs the editors; without it the host shows its generic one.

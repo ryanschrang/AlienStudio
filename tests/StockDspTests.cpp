@@ -726,7 +726,35 @@ static void saturatorTests() {
     }
 }
 
+static void chorusTests() {
+    const auto input = sine(440, .5, 48000);
+    const auto run = [&](StereoChorus::Settings settings, int block) {
+        StereoChorus chorus; chorus.prepare(rate); auto l = input, r = input;
+        for (int at = 0; at < 48000; at += block) chorus.process(l.data() + at, r.data() + at, std::min(block, 48000 - at), settings);
+        return std::pair{l, r};
+    };
+    const auto dry = run({.8, .5, 0}, 37); check(dry.first == input && dry.second == input, "chorus mix zero is exact dry pass-through");
+    const auto reference = run({.8, .8, .5}, 48000);
+    double stereo = 0, changed = 0;
+    for (int i = 2000; i < 48000; ++i) { stereo += std::abs(reference.first[i] - reference.second[i]); changed += std::abs(reference.first[i] - input[i]); }
+    check(stereo > 100 && changed > 100, "chorus modulates delay and widens mono input");
+    for (int block : {1, 37, 512}) { const auto split = run({.8, .8, .5}, block); check(split == reference, "chorus timing independent of block size"); }
+    StereoChorus chorus; chorus.prepare(rate); std::vector<float> l(48000), r(48000); l[0] = 1;
+    chorus.process(l.data(), r.data(), 48000, {.8, 0, 1});
+    near(l[960], 1, 1e-6, "zero-depth chorus wet delay is 20 milliseconds");
+    bool silent = true; for (int i = 0; i < 48000; ++i) silent = silent && r[i] == 0 && (i < 1600 || l[i] == 0);
+    check(silent, "chorus has no crossfeed and bounded tail");
+    chorus.reset(); l.assign(48000, 0); r = l; chorus.process(l.data(), r.data(), 48000, {.8, .5, .5});
+    check(l == r && l == std::vector<float>(48000), "chorus reset clears delay history");
+    for (double sr : {8000., 44100., 96000., 192000.}) {
+        chorus.prepare(sr); l = input; r = input; chorus.process(l.data(), r.data(), 48000, {5, 1, 1});
+        bool valid = true; for (float sample : l) valid = valid && finite(sample) && std::abs(sample) < 1;
+        check(valid, "chorus stays bounded at supported sample rates");
+    }
+}
+
 int main() {
+    chorusTests();
     smootherTests();
     biquadTests();
     eqTests();

@@ -459,6 +459,43 @@ inline double delayTailSeconds(double timeMs, double feedback) noexcept {
     return std::min(30.0, t * (std::ceil(std::log(0.001) / std::log(fb)) + 1.0));
 }
 
+// Stereo chorus: independent fractional-delay lines with quadrature LFOs.
+// No feedback or crossfeed: the dry path has zero added latency; the wet tail
+// is bounded by the longest modulation delay. All storage is prepared up front.
+class StereoChorus {
+public:
+    struct Settings { double rateHz{.8}, depth{.5}, mix{.35}; };
+    static constexpr double tailSeconds = .032;
+    void prepare(double sampleRate) {
+        rate = std::isfinite(sampleRate) ? std::clamp(sampleRate, 8000.0, 192000.0) : 44100;
+        leftLine.prepare(static_cast<int>(std::ceil(rate * tailSeconds)) + 8);
+        rightLine.prepare(static_cast<int>(std::ceil(rate * tailSeconds)) + 8);
+        coefficient = 1 - std::exp(-1 / (.02 * rate)); ready = true; reset();
+    }
+    void reset() noexcept { leftLine.clear(); rightLine.clear(); phase = 0; initialised = false; }
+    void process(float* left, float* right, int count, const Settings& settings) noexcept {
+        if (!ready) return;
+        const auto bounded = [](double v, double lo, double hi, double fallback) { return std::isfinite(v) ? std::clamp(v, lo, hi) : fallback; };
+        const double targetRate = bounded(settings.rateHz, .05, 5, .8), targetDepth = bounded(settings.depth, 0, 1, .5), targetMix = bounded(settings.mix, 0, 1, .35);
+        if (!initialised) { speed = targetRate; depth = targetDepth; mix = targetMix; initialised = true; }
+        const auto smooth = [&](double& value, double target) { value += coefficient * (target - value); if (std::abs(value - target) < 1e-9) value = target; };
+        for (int i = 0; i < count; ++i) {
+            smooth(speed, targetRate); smooth(depth, targetDepth); smooth(mix, targetMix);
+            const float dryLeft = finite(left[i]) ? left[i] : 0, dryRight = finite(right[i]) ? right[i] : 0;
+            const float wetLeft = leftLine.read(rate * (.020 + .008 * depth * std::sin(phase)));
+            const float wetRight = rightLine.read(rate * (.020 + .008 * depth * std::cos(phase)));
+            leftLine.push(dryLeft); rightLine.push(dryRight);
+            left[i] = static_cast<float>(dryLeft + mix * (wetLeft - dryLeft));
+            right[i] = static_cast<float>(dryRight + mix * (wetRight - dryRight));
+            phase += 2 * pi * speed / rate; if (phase >= 2 * pi) phase -= 2 * pi;
+        }
+    }
+private:
+    FractionalDelayLine leftLine, rightLine;
+    double rate{44100}, coefficient{}, phase{}, speed{}, depth{}, mix{};
+    bool ready{}, initialised{};
+};
+
 class StereoDelay {
 public:
     struct Settings { double timeMs{350}, feedback{0.4}, toneHz{12000}, mix{0.3}; bool pingPong{false}; };

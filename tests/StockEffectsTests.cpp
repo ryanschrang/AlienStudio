@@ -79,7 +79,7 @@ static bool allFinite(const std::vector<float>& x) { for (float v : x) if (!dsp:
 
 // ---------------------------------------------------------------------------
 static void catalogueTests() {
-    check(stock::catalog.size() == 8, "eight stock effects");
+    check(stock::catalog.size() == 9, "nine stock effects");
     std::set<juce::String> names, ids;
     for (const auto& info : stock::catalog) {
         auto e = stock::create(info.id);
@@ -96,7 +96,7 @@ static void catalogueTests() {
         check(PluginState{xml->toString(), {}, false}.valid(), std::string("description is a valid rack entry: ") + info.id);
         check(e->hasEditor(), std::string("has an editor: ") + info.id);
     }
-    check(names.size() == 8 && ids.size() == 8, "names and ids are unique");
+    check(names.size() == 9 && ids.size() == 9, "names and ids are unique");
     check(stock::create("nonsense") == nullptr && stock::create("") == nullptr, "unknown ids create nothing");
     juce::PluginDescription vst; vst.pluginFormatName = "VST3";
     check(!stock::isStock(vst), "a VST3 is not a stock effect");
@@ -475,6 +475,33 @@ static PluginState stockState(const char* id, bool bypass = false) {
     return {};
 }
 
+static void chorusHostTests() {
+    auto runtime = std::make_unique<PluginRuntime>(); runtime->prepare(48000); PluginHost host(*runtime);
+    std::vector<PluginRackState> racks(1); PluginRackState master; racks[0].effects = {stockState("chorus")};
+    check(host.restore(racks, master, 48000).isEmpty(), "chorus restores in track rack");
+    const auto instance = racks[0].effects[0].instanceId;
+    const auto bindings = host.parameterBindings();
+    for (const char* id : {stock::chorus::rate, stock::chorus::depth, stock::chorus::mix}) {
+        const auto* binding = automation::resolve({instance, id}, bindings);
+        check(binding && binding->slot == 0, std::string("chorus exposes stable automation binding: ") + id);
+    }
+    auto* chorus = dynamic_cast<stock::ChorusEffect*>(runtime->racks[0].effects[0].processor.get());
+    check(chorus && chorus->getLatencySamples() == 0 && chorus->getTailLengthSeconds() >= .028, "chorus reports dry-path latency and bounded tail");
+    setParam(*chorus, stock::chorus::depth, .8); host.snapshot(racks, master);
+    std::vector<automation::ParameterLane> lanes;
+    for (const char* id : {stock::chorus::rate, stock::chorus::depth, stock::chorus::mix}) {
+        automation::ParameterLane lane; lane.target = {instance, id}; lane.points = {{0, .75f, automation::Curve::hold}}; lanes.push_back(std::move(lane));
+    }
+    const auto allocationsBefore = allocations; const int changed = runtime->applyParameterAutomation(lanes, 0);
+    const bool allocated = allocations != allocationsBefore;
+    check(changed == 3 && !allocated, "chorus automation applies all controls without allocating");
+    for (const char* id : {stock::chorus::rate, stock::chorus::depth, stock::chorus::mix}) checkNear(chorus->parameters.getParameter(id)->getValue(), .75, 1e-6, "chorus receives normalized automation");
+    auto saved = racks[0].effects[0]; check(host.restore(racks, master, 48000).isEmpty(), "saved chorus restores");
+    chorus = dynamic_cast<stock::ChorusEffect*>(runtime->racks[0].effects[0].processor.get());
+    checkNear(getParam(*chorus, stock::chorus::depth), .8, 1e-6, "chorus host snapshot retains depth");
+    master.effects = {saved}; racks[0].effects.clear(); check(host.restore(racks, master, 48000).isEmpty(), "chorus can move to master rack with identity and state");
+}
+
 static void hostTests() {
     // instantiatePlugin
     {
@@ -714,6 +741,7 @@ int main() {
     filterEffectTests();
     saturatorEffectTests();
     stateTests();
+    chorusHostTests();
     hostTests();
     editorTests();
     if (failures) { std::fprintf(stderr, "%d check(s) failed\n", failures); return 1; }
