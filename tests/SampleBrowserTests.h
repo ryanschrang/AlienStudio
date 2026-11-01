@@ -42,6 +42,21 @@ static void sampleBrowserChecks() {
         preview->onClick(); for (int i = 0; i < 400 && previews == 0; ++i) pump();
         require(previews == 1 && imports == 0, "preview does not import");
         preview->onClick(); browser.stop(); for (int i = 0; i < 10; ++i) pump(); require(previews == 1, "stop invalidates pending decode");
+        juce::Slider* sourceBpm = nullptr; juce::ToggleButton* sync = nullptr;
+        for (auto* child : browser.getChildren()) {
+            if (child->getName() == "Sample source BPM") sourceBpm = dynamic_cast<juce::Slider*>(child);
+            if (child->getName() == "Match sample preview tempo") sync = dynamic_cast<juce::ToggleButton*>(child);
+        }
+        require(sourceBpm && sync, "manual source BPM and tempo-match controls available");
+        sync->setToggleState(true, juce::dontSendNotification); sync->onClick(); sourceBpm->setValue(60, juce::dontSendNotification); sourceBpm->onValueChange();
+        browser.onPreview = [&](const alien::SessionAudioClip& sample) { require(sample.frames == 20000, "faster preview uses source/project tempo ratio"); ++previews; };
+        preview->onClick(); for (int i = 0; i < 400 && previews == 1; ++i) pump(); require(previews == 2 && imports == 0, "synced preview does not import");
+        sourceBpm->setValue(240, juce::dontSendNotification); sourceBpm->onValueChange();
+        browser.onPreview = [&](const alien::SessionAudioClip& sample) { require(sample.frames == 40000, "slower preview stays within five-second playback cap"); ++previews; };
+        preview->onClick(); for (int i = 0; i < 400 && previews == 2; ++i) pump(); require(previews == 3, "slower preview rendered");
+        preview->onClick(); browser.setProjectTempo(140); for (int i = 0; i < 10; ++i) pump(); require(previews == 3, "project tempo change cancels pending preview");
+        sourceBpm->setValue(30, juce::dontSendNotification); sourceBpm->onValueChange(); require(!preview->isEnabled(), "unsupported BPM ratio disables preview");
+        sync->setToggleState(false, juce::dontSendNotification); sync->onClick(); require(preview->isEnabled(), "original-tempo preview remains available");
         browser.setImportEnabled(true, true); import->onClick(); require(imports == 1, "import requires explicit action");
         search->setText("no match", false); search->onTextChange(); require(browser.dragDescriptionFor(0).isVoid(), "empty filtered list has no stale drag payload"); require(browser.resultCount() == 0 && !import->isEnabled() && !preview->isEnabled(), "empty search clears stale actions");
     }
