@@ -36,5 +36,17 @@ static void sampleBrowserChecks() {
         browser.setImportEnabled(true, true); import->onClick(); require(imports == 1, "import requires explicit action");
         search->setText("no match", false); search->onTextChange(); require(browser.resultCount() == 0 && !import->isEnabled() && !preview->isEnabled(), "empty search clears stale actions");
     }
+    {
+        // The Starter Pack: shown at once from its button, with only its samples (not its MIDI clips).
+        alien::SampleBrowser browser; browser.setSize(360, 400); browser.addToDesktop(0); browser.setVisible(true);
+        const juce::File pack{juce::String(ALIEN_STARTER_PACK_DIR)};
+        browser.setStarterFolder(pack); browser.showStarterPack();
+        for (int i = 0; i < 400 && browser.resultCount() == 0; ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+        require(browser.resultCount() == static_cast<int>(alien::starterPack::drumSamples(pack).size()), "the Starter Pack button browses the pack's samples");
+        juce::Button* starter = nullptr;
+        for (auto* c : browser.getChildren()) if (auto* b = dynamic_cast<juce::Button*>(c); b && b->getButtonText() == "Starter Pack") starter = b;
+        require(starter && starter->isEnabled(), "the Starter Pack button is offered");
+        browser.setStarterFolder(pack.getChildFile("missing")); require(!starter->isEnabled(), "and disabled when the pack is missing");
+    }
     require(root.deleteRecursively(), "remove sample fixtures");
 }

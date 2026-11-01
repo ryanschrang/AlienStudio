@@ -441,3 +441,9 @@ Not yet run on hardware. Record commit, device/driver, sample rate and buffer si
 - Put a VST3 effect (a filter or EQ) and a stock effect on a track. Song > Automation: choose the track, then the effect's submenu and a parameter. Draw a ramp over a bar and play: the parameter moves in the plugin's editor and you hear it, smoothly at 48 kHz with 128, 512 and 1024-sample buffers. Read off: the parameter stays where you set it by hand.
 - Move the effect up or down the rack, undo, save and reopen: the lane still drives the same effect. Remove the effect: playback carries on and the lane does nothing; undo brings both back.
 - Export the song to WAV and stems, and freeze the track: the automation is in the result. Loop playback over the ramp: the parameter jumps back at the loop start.
+
+## Starter Pack
+- Build and start Alien Studio: a `Starter Pack` folder sits next to `Alien Studio.exe`. Open the sample browser: it lists the pack's 38 drum sounds without choosing a folder. Preview a kick, a hat and a crash: each starts at once, sounds clean (no clicks at the start or end) and is about as loud as the others.
+- Right-click a Channel Rack channel > Sound > Starter Pack > Snares > Snare: the channel plays it and is renamed. Undo restores the old sound. Save, reopen: the sample is still loaded. Load sample file... opens in the pack's Drums folder.
+- Rename or delete the `Starter Pack` folder and restart: the browser starts empty, its Starter Pack button is disabled, and the channel menu says the pack is missing. Nothing else changes.
+- Open a few files in `Starter Pack/MIDI` in another DAW or MIDI player: the chord progressions play in C major and A minor, and the drum grooves are four bars of General MIDI drums.

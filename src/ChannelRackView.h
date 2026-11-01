@@ -9,6 +9,7 @@
 // All changes go through ProjectController::editRack, so undo, saving and the
 // audio engine need nothing from this file.
 #include "ProjectController.h"
+#include "StarterPack.h"
 #include "StudioWidgets.h"
 #include <functional>
 #include <optional>
@@ -303,7 +304,7 @@ public:
                   cmdDuplicate = 100, cmdCopyRow, cmdPasteRow, cmdFill2, cmdFill4, cmdFill8,
                   cmdRotateLeft, cmdRotateRight, cmdReverseRow, cmdRepeat4, cmdRepeat8, cmdRepeat16, cmdPianoRoll,
                   synthBase = 200, builtinBase = 20, outputMaster = 40, outputBase = 41, chokeNone = 60, chokeBase = 61,
-                  cmdPluginEditor = 190, pluginBase = 1000 };
+                  cmdPluginEditor = 190, pluginBase = 1000, starterBase = 50000 };
 
     // The name in a plugin channel's saved description (what the instrument list shows).
     static juce::String pluginName(const rack::ChannelInfo& info) {
@@ -332,6 +333,7 @@ public:
             instruments.addItem(pluginBase + i, names[i], onChoosePlugin != nullptr, info.hasPlugin() && pluginName(info) == names[i]);
         if (names.isEmpty()) instruments.addItem(pluginBase - 1, "No VST3 instruments found (Plugins > Scan VST3)", false);
         sound.addSubMenu("VST3 instrument", instruments);
+        sound.addSubMenu("Starter Pack", starterMenu(info));
         sound.addSeparator();
         sound.addItem(cmdLoadSample, "Load sample file...");
         sound.addItem(cmdSilent, "Silent (no sound)", true, info.sample.empty() && !channel.isInstrument());
@@ -472,6 +474,10 @@ public:
         } else if (id == cmdSilent) { forEach(plural("Silence channel", rows), [](rack::Project& p, int r) { return p.setSample(r, ""); }); changed(); }
         else if (id == cmdLoadSample) chooseSample(row);
         else if (id == cmdPluginEditor) { if (onOpenPluginEditor) onOpenPluginEditor(row); }
+        else if (id >= starterBase) {
+            const auto index = static_cast<std::size_t>(id - starterBase);
+            if (index < starterSamples.size()) controller.loadRackSample(starterSamples[index].file, row);
+        }
         else if (id >= pluginBase) { if (onChoosePlugin) onChoosePlugin(row, id - pluginBase); changed(); }
         else if (id >= synthBase && id < synthBase + alien::presetCount) {
             const int preset = id - synthBase;
@@ -531,8 +537,30 @@ public:
             chooseSample(selected);
         }
     }
+    // Sound > Starter Pack: the drum one-shots that ship with Alien Studio, one submenu per category.
+    // The list is read when the menu is built, so a pack added or removed while running is noticed.
+    juce::PopupMenu starterMenu(const rack::ChannelInfo& info) const {
+        starterSamples = starterPack::drumSamples(starterFolder);
+        juce::PopupMenu menu, category;
+        juce::String current;
+        for (std::size_t i = 0; i < starterSamples.size(); ++i) {
+            const auto& sample = starterSamples[i];
+            if (sample.category != current) {
+                if (current.isNotEmpty()) menu.addSubMenu(current, category);
+                category = {}; current = sample.category;
+            }
+            category.addItem(starterBase + static_cast<int>(i), sample.file.getFileNameWithoutExtension(), true,
+                             info.sample == sample.file.getFullPathName().toStdString());
+        }
+        if (current.isNotEmpty()) menu.addSubMenu(current, category);
+        if (starterSamples.empty()) menu.addItem(starterBase - 1, "Starter Pack not found next to Alien Studio", false);
+        return menu;
+    }
+    // Where the Starter Pack is; tests point it at the source folder.
+    juce::File starterFolder = starterPack::folder();
     void chooseSample(int row) {
-        chooser = std::make_unique<juce::FileChooser>("Load a sample into this channel", juce::File{}, "*.wav;*.mp3");
+        const auto drums = starterFolder.getChildFile("Drums");
+        chooser = std::make_unique<juce::FileChooser>("Load a sample into this channel", drums.isDirectory() ? drums : juce::File{}, "*.wav;*.mp3");
         juce::Component::SafePointer<ChannelRackGrid> safe(this);
         chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
             [safe, row](const juce::FileChooser& result) {
@@ -1000,6 +1028,7 @@ private:
     juce::String strokeKey, knobKey;
     juce::Point<int> hover{-1, -1};
     std::unique_ptr<juce::FileChooser> chooser;
+    mutable std::vector<starterPack::DrumSample> starterSamples;   // what the last channel menu offered
 };
 
 // Draws one property of every step of the selected channel as bars lined up

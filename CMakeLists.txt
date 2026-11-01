@@ -15,6 +15,12 @@ juce_add_binary_data(AlienStudioBranding HEADER_NAME BrandingData.h NAMESPACE Br
     SOURCES assets/branding/AlienStudio_Icon_Corrected.png)
 target_link_libraries(AlienStudio PRIVATE AlienStudioBranding juce::juce_audio_processors juce::juce_audio_utils juce::juce_gui_extra)
 juce_generate_juce_header(AlienStudio)
+# The Starter Pack (drum samples and MIDI clips, see THIRD_PARTY_NOTICES.md) goes next to the
+# executable, where the app looks for it.
+set(ALIEN_STARTER_PACK "${CMAKE_CURRENT_SOURCE_DIR}/content/Starter Pack")
+add_custom_command(TARGET AlienStudio POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${ALIEN_STARTER_PACK}" "$<TARGET_FILE_DIR:AlienStudio>/Starter Pack"
+    VERBATIM)
 
 # AlienPluginCheck: a command-line tool that scans for VST3 plugins and tests whether Alien Studio can
 # host them, each in its own process. Built with the app so it can be run on a machine with real plugins.
@@ -166,14 +172,16 @@ if(BUILD_TESTING)
     set_tests_properties(RackProjectTests PROPERTIES TIMEOUT 90)
     add_executable(ChannelRackViewTests tests/ChannelRackViewTests.cpp)
     target_include_directories(ChannelRackViewTests PRIVATE src)
-    target_compile_definitions(ChannelRackViewTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_compile_definitions(ChannelRackViewTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1
+        ALIEN_STARTER_PACK_DIR="${ALIEN_STARTER_PACK}")
     target_link_libraries(ChannelRackViewTests PRIVATE AlienStudioBranding juce::juce_audio_processors juce::juce_gui_basics juce::juce_gui_extra
         juce::juce_audio_devices juce::juce_audio_formats juce::juce_audio_basics)
     add_test(NAME ChannelRackViewTests COMMAND ChannelRackViewTests)
     set_tests_properties(ChannelRackViewTests PROPERTIES TIMEOUT 120)
     add_executable(SongFlowTests tests/SongFlowTests.cpp)
     target_include_directories(SongFlowTests PRIVATE src)
-    target_compile_definitions(SongFlowTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_compile_definitions(SongFlowTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1
+        ALIEN_STARTER_PACK_DIR="${ALIEN_STARTER_PACK}")
     target_link_libraries(SongFlowTests PRIVATE AlienStudioBranding juce::juce_audio_processors juce::juce_gui_basics juce::juce_gui_extra
         juce::juce_audio_devices juce::juce_audio_formats juce::juce_audio_basics)
     add_test(NAME SongFlowTests COMMAND SongFlowTests)
@@ -494,6 +502,15 @@ if(BUILD_TESTING)
     target_link_libraries(DeterministicStreamedExportTests PRIVATE juce::juce_audio_processors juce::juce_audio_devices juce::juce_audio_formats)
     add_test(NAME DeterministicStreamedExportTests COMMAND DeterministicStreamedExportTests)
     set_tests_properties(DeterministicStreamedExportTests PROPERTIES TIMEOUT 360)   # 162 s in a Debug build on CI runners
+endif()
+
+if(BUILD_TESTING)
+    add_executable(StarterPackTests tests/StarterPackTests.cpp)
+    target_include_directories(StarterPackTests PRIVATE src)
+    target_compile_definitions(StarterPackTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 ALIEN_STARTER_PACK_DIR="${ALIEN_STARTER_PACK}")
+    target_link_libraries(StarterPackTests PRIVATE juce::juce_audio_formats juce::juce_audio_basics)
+    add_test(NAME StarterPackTests COMMAND StarterPackTests)
+    set_tests_properties(StarterPackTests PROPERTIES TIMEOUT 60)
 endif()
 
 if(BUILD_TESTING)

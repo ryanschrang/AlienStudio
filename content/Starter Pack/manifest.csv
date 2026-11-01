@@ -1,0 +1,77 @@
+file,source,license,origin
+Drums/Claps/Clap Alt.wav,vcsl,CC0-1.0,Idiophones/Struck Idiophones/Claps/Clap_rr4.wav
+Drums/Claps/Clap.wav,vcsl,CC0-1.0,Idiophones/Struck Idiophones/Claps/Clap_rr1.wav
+Drums/Claps/Solo Clap.wav,vcsl,CC0-1.0,Idiophones/Struck Idiophones/Claps/SoloClap_vl3.wav
+Drums/Cymbals/Crash Sizzle.wav,virtuosity,CC0-1.0,Samples/kickmic/crash/kickmic_crash_sizzle_vl3_rr1.flac + Samples/snaremic/crash/snaremic_crash_sizzle_vl3_rr1.flac + Samples/oh/crash/oh_crash_sizzle_vl3_rr1.flac + Samples/room/crash/room_crash_sizzle_vl3_rr1.flac
+Drums/Cymbals/Crash.wav,virtuosity,CC0-1.0,Samples/kickmic/crash/kickmic_crash_crash_vl3_rr1.flac + Samples/snaremic/crash/snaremic_crash_crash_vl3_rr1.flac + Samples/oh/crash/oh_crash_crash_vl3_rr1.flac + Samples/room/crash/room_crash_crash_vl3_rr1.flac
+Drums/Cymbals/Ride Bell.wav,virtuosity,CC0-1.0,Samples/kickmic/ride/kickmic_ride_bell_vl3_rr1.flac + Samples/snaremic/ride/snaremic_ride_bell_vl3_rr1.flac + Samples/oh/ride/oh_ride_bell_vl3_rr1.flac + Samples/room/ride/room_ride_bell_vl3_rr1.flac
+Drums/Cymbals/Ride.wav,virtuosity,CC0-1.0,Samples/kickmic/ride/kickmic_ride_ride_vl3_rr1.flac + Samples/snaremic/ride/snaremic_ride_ride_vl3_rr1.flac + Samples/oh/ride/oh_ride_ride_vl3_rr1.flac + Samples/room/ride/room_ride_ride_vl3_rr1.flac
+Drums/Hats/Hat Closed Soft.wav,virtuosity,CC0-1.0,Samples/kickmic/hh/kickmic_hh_closed_vl2_rr1.flac + Samples/snaremic/hh/snaremic_hh_closed_vl2_rr1.flac + Samples/oh/hh/oh_hh_closed_vl2_rr1.flac + Samples/room/hh/room_hh_closed_vl2_rr1.flac
+Drums/Hats/Hat Closed.wav,virtuosity,CC0-1.0,Samples/kickmic/hh/kickmic_hh_closed_vl3_rr1.flac + Samples/snaremic/hh/snaremic_hh_closed_vl3_rr1.flac + Samples/oh/hh/oh_hh_closed_vl3_rr1.flac + Samples/room/hh/room_hh_closed_vl3_rr1.flac
+Drums/Hats/Hat Half Open.wav,virtuosity,CC0-1.0,Samples/kickmic/hh/kickmic_hh_half_vl3_rr1.flac + Samples/snaremic/hh/snaremic_hh_half_vl3_rr1.flac + Samples/oh/hh/oh_hh_half_vl3_rr1.flac + Samples/room/hh/room_hh_half_vl3_rr1.flac
+Drums/Hats/Hat Open.wav,virtuosity,CC0-1.0,Samples/kickmic/hh/kickmic_hh_open_vl3_rr1.flac + Samples/snaremic/hh/snaremic_hh_open_vl3_rr1.flac + Samples/oh/hh/oh_hh_open_vl3_rr1.flac + Samples/room/hh/room_hh_open_vl3_rr1.flac
+Drums/Hats/Hat Pedal.wav,virtuosity,CC0-1.0,Samples/kickmic/hh/kickmic_hh_pedal_vl3_rr1.flac + Samples/snaremic/hh/snaremic_hh_pedal_vl3_rr1.flac + Samples/oh/hh/oh_hh_pedal_vl3_rr1.flac + Samples/room/hh/room_hh_pedal_vl3_rr1.flac
+Drums/Kicks/Kick Snares On.wav,virtuosity,CC0-1.0,Samples/kickmic/kick/kickmic_kick_snon_vl3_rr1.flac + Samples/snaremic/kick/snaremic_kick_snon_vl3_rr1.flac + Samples/oh/kick/oh_kick_snon_vl3_rr1.flac + Samples/room/kick/room_kick_snon_vl3_rr1.flac
+Drums/Kicks/Kick Soft.wav,virtuosity,CC0-1.0,Samples/kickmic/kick/kickmic_kick_snoff_vl2_rr1.flac + Samples/snaremic/kick/snaremic_kick_snoff_vl2_rr1.flac + Samples/oh/kick/oh_kick_snoff_vl2_rr1.flac + Samples/room/kick/room_kick_snoff_vl2_rr1.flac
+Drums/Kicks/Kick.wav,virtuosity,CC0-1.0,Samples/kickmic/kick/kickmic_kick_snoff_vl3_rr1.flac + Samples/snaremic/kick/snaremic_kick_snoff_vl3_rr1.flac + Samples/oh/kick/oh_kick_snoff_vl3_rr1.flac + Samples/room/kick/room_kick_snoff_vl3_rr1.flac
+Drums/Percussion/Agogo High.wav,virtuosity,CC0-1.0,Samples/perc/close/agogo/Agogo_High_v3_rr1_Close.wav
+Drums/Percussion/Agogo Low.wav,virtuosity,CC0-1.0,Samples/perc/close/agogo/Agogo_Low_v2_rr1_Close.wav
+Drums/Percussion/Bongo High.wav,virtuosity,CC0-1.0,Samples/perc/close/bongoh/BongoH_Hit1_v3_rr1_Close.wav
+Drums/Percussion/Bongo Low.wav,virtuosity,CC0-1.0,Samples/perc/close/bongol/BongoL_Hit1_v3_rr1_Close.wav
+Drums/Percussion/Cabasa.wav,virtuosity,CC0-1.0,Samples/perc/close/cabasa/Cabasa1_Rub_v2_rr1_Close.wav
+Drums/Percussion/Claves.wav,virtuosity,CC0-1.0,Samples/perc/close/claves/Claves1_Hit_v3_rr1_Close.wav
+Drums/Percussion/Conga.wav,virtuosity,CC0-1.0,Samples/perc/close/conga/Conga_22_HitN_101_127_rr1_Close.wav
+Drums/Percussion/Cowbell.wav,virtuosity,CC0-1.0,Samples/perc/close/cowbell/Cowbell1_Normal_v3_rr1_Close.wav
+Drums/Percussion/Shaker.wav,virtuosity,CC0-1.0,Samples/perc/close/shaker/LShaker_Shake1D_rr1_Close.wav
+Drums/Percussion/Tambourine.wav,virtuosity,CC0-1.0,Samples/perc/close/tambourine/Tamb1_Shake_rr1_Close.wav
+Drums/Percussion/Triangle.wav,virtuosity,CC0-1.0,Samples/perc/close/triangle/Triangle1_Hit_v2_rr1_Close.wav
+Drums/Percussion/Tumba.wav,virtuosity,CC0-1.0,Samples/perc/close/tumba/Tumba_24_HitN_101_127_rr1_Close.wav
+Drums/Percussion/Vibraslap.wav,virtuosity,CC0-1.0,Samples/perc/close/vibraslap/Vibraslap1_1_Hit_71_127_rr1_Close.wav
+Drums/Snares/Snare Cross-stick.wav,virtuosity,CC0-1.0,Samples/kickmic/snare/kickmic_snare_crossstick_vl14.flac + Samples/snaremic/snare/snaremic_snare_crossstick_vl14.flac + Samples/oh/snare/oh_snare_crossstick_vl14.flac + Samples/room/snare/room_snare_crossstick_vl14.flac
+Drums/Snares/Snare Flam.wav,virtuosity,CC0-1.0,Samples/kickmic/snare/kickmic_snare_flam_vl10.flac + Samples/snaremic/snare/snaremic_snare_flam_vl10.flac + Samples/oh/snare/oh_snare_flam_vl10.flac + Samples/room/snare/room_snare_flam_vl10.flac
+Drums/Snares/Snare Muted.wav,virtuosity,CC0-1.0,Samples/kickmic/snare/kickmic_snare_muted_vl14.flac + Samples/snaremic/snare/snaremic_snare_muted_vl14.flac + Samples/oh/snare/oh_snare_muted_vl14.flac + Samples/room/snare/room_snare_muted_vl14.flac
+Drums/Snares/Snare Rimshot.wav,virtuosity,CC0-1.0,Samples/kickmic/snare/kickmic_snare_rimshot_vl10.flac + Samples/snaremic/snare/snaremic_snare_rimshot_vl10.flac + Samples/oh/snare/oh_snare_rimshot_vl10.flac + Samples/room/snare/room_snare_rimshot_vl10.flac
+Drums/Snares/Snare Snares Off.wav,virtuosity,CC0-1.0,Samples/kickmic/snareoff/kickmic_snareoff_center_vl10.flac + Samples/snaremic/snareoff/snaremic_snareoff_center_vl10.flac + Samples/oh/snareoff/oh_snareoff_center_vl10.flac + Samples/room/snareoff/room_snareoff_center_vl10.flac
+Drums/Snares/Snare Soft.wav,virtuosity,CC0-1.0,Samples/kickmic/snare/kickmic_snare_center_vl16.flac + Samples/snaremic/snare/snaremic_snare_center_vl16.flac + Samples/oh/snare/oh_snare_center_vl16.flac + Samples/room/snare/room_snare_center_vl16.flac
+Drums/Snares/Snare.wav,virtuosity,CC0-1.0,Samples/kickmic/snare/kickmic_snare_center_vl31.flac + Samples/snaremic/snare/snaremic_snare_center_vl31.flac + Samples/oh/snare/oh_snare_center_vl31.flac + Samples/room/snare/room_snare_center_vl31.flac
+Drums/Toms/Tom High.wav,virtuosity,CC0-1.0,Samples/kickmic/htom/kickmic_htom_center_vl14.flac + Samples/snaremic/htom/snaremic_htom_center_vl14.flac + Samples/oh/htom/oh_htom_center_vl14.flac + Samples/room/htom/room_htom_center_vl14.flac
+Drums/Toms/Tom Low Rimshot.wav,virtuosity,CC0-1.0,Samples/kickmic/ltom/kickmic_ltom_rimshot_vl8.flac + Samples/snaremic/ltom/snaremic_ltom_rimshot_vl8.flac + Samples/oh/ltom/oh_ltom_rimshot_vl8.flac + Samples/room/ltom/room_ltom_rimshot_vl8.flac
+Drums/Toms/Tom Low.wav,virtuosity,CC0-1.0,Samples/kickmic/ltom/kickmic_ltom_center_vl14.flac + Samples/snaremic/ltom/snaremic_ltom_center_vl14.flac + Samples/oh/ltom/oh_ltom_center_vl14.flac + Samples/room/ltom/room_ltom_center_vl14.flac
+MIDI/Chord Progressions/Major/C - I IV V - Joyful Excited.mid,chords,MIT,Major/C - I IV V - Joyful Excited.mid
+MIDI/Chord Progressions/Major/C - I IV ii V - Joyful Triumphant.mid,chords,MIT,Major/C - I IV ii V - Joyful Triumphant.mid
+MIDI/Chord Progressions/Major/C - I V vi IV - Hopeful Romantic.mid,chords,MIT,Major/C - I V vi IV - Hopeful Romantic.mid
+MIDI/Chord Progressions/Major/C - I iii vi IV - Romantic Hopeful.mid,chords,MIT,Major/C - I iii vi IV - Romantic Hopeful.mid
+MIDI/Chord Progressions/Major/C - I vi IV V - Romantic Hopeful.mid,chords,MIT,Major/C - I vi IV V - Romantic Hopeful.mid
+MIDI/Chord Progressions/Major/C - IV I V vi - Joyful Romantic.mid,chords,MIT,Major/C - IV I V vi - Joyful Romantic.mid
+MIDI/Chord Progressions/Major/C - IV vi I V - Hopeful Romantic.mid,chords,MIT,Major/C - IV vi I V - Hopeful Romantic.mid
+MIDI/Chord Progressions/Major/C - Isus2 I vi7 visus4 - Playful Romantic.mid,chords,MIT,Major/C - Isus2 I vi7 visus4 - Playful Romantic.mid
+MIDI/Chord Progressions/Major/C - ii V I - Triumphant.mid,chords,MIT,Major/C - ii V I - Triumphant.mid
+MIDI/Chord Progressions/Major/C - vi IV iii V - Hopeful Romantic.mid,chords,MIT,Major/C - vi IV iii V - Hopeful Romantic.mid
+MIDI/Chord Progressions/Minor/A - VI VII i III - Triumphant Nostalgic.mid,chords,MIT,Minor/A - VI VII i III - Triumphant Nostalgic.mid
+MIDI/Chord Progressions/Minor/A - VI i v III - Hopeful Nostalgic.mid,chords,MIT,Minor/A - VI i v III - Hopeful Nostalgic.mid
+MIDI/Chord Progressions/Minor/A - i VI III VII - Nostalgic Hopeful.mid,chords,MIT,Minor/A - i VI III VII - Nostalgic Hopeful.mid
+MIDI/Chord Progressions/Minor/A - i VII III VI - Rebellious Triumphant.mid,chords,MIT,Minor/A - i VII III VI - Rebellious Triumphant.mid
+MIDI/Chord Progressions/Minor/A - i VII VI III iv VI VII i - Mysterious Surprised.mid,chords,MIT,Minor/A - i VII VI III iv VI VII i - Mysterious Surprised.mid
+MIDI/Chord Progressions/Minor/A - i iv VI v - Sad Hopeful.mid,chords,MIT,Minor/A - i iv VI v - Sad Hopeful.mid
+MIDI/Chord Progressions/Minor/A - i iv v - Sad Lonely.mid,chords,MIT,Minor/A - i iv v - Sad Lonely.mid
+MIDI/Chord Progressions/Minor/A - i v iv VII - Sad Rebellious.mid,chords,MIT,Minor/A - i v iv VII - Sad Rebellious.mid
+MIDI/Chord Progressions/Minor/A - im7 ivsus4 v7 isus4 - Mysterious Tender.mid,chords,MIT,Minor/A - im7 ivsus4 v7 isus4 - Mysterious Tender.mid
+MIDI/Chord Progressions/Minor/A - iv i v VI - Nostalgic Hopeful.mid,chords,MIT,Minor/A - iv i v VI - Nostalgic Hopeful.mid
+MIDI/Drum Grooves/Afrobeat 94 BPM.mid,groove,CC-BY-4.0,drummer1/session3/11_afrobeat_94_beat_4-4.mid (first 4 bars)
+MIDI/Drum Grooves/Blues Shuffle 72 BPM.mid,groove,CC-BY-4.0,drummer5/session1/17_blues-shuffle_72_beat_4-4.mid (first 4 bars)
+MIDI/Drum Grooves/Bossa Nova 127 BPM.mid,groove,CC-BY-4.0,drummer5/session1/1_latin-brazilian-bossa_127_beat_4-4.mid (first 4 bars)
+MIDI/Drum Grooves/Breakbeat 170 BPM.mid,groove,CC-BY-4.0,drummer1/session1/80_dance-breakbeat_170_beat_4-4.mid (first 4 bars)
+MIDI/Drum Grooves/Disco 120 BPM.mid,groove,CC-BY-4.0,drummer1/session1/101_dance-disco_120_beat_4-4.mid (first 4 bars)
+MIDI/Drum Grooves/Funk 80 BPM.mid,groove,CC-BY-4.0,drummer1/session1/1_funk_80_beat_4-4.mid (first 4 bars)
+MIDI/Drum Grooves/Hip-Hop 92 BPM.mid,groove,CC-BY-4.0,drummer3/session2/25_hiphop_92_beat_4-4.mid (first 4 bars)
+MIDI/Drum Grooves/Jazz Swing 124 BPM.mid,groove,CC-BY-4.0,drummer10/session1/1_jazz-swing_124_beat_4-4.mid (first 4 bars)
+MIDI/Drum Grooves/Latin 118 BPM.mid,groove,CC-BY-4.0,drummer8/session1/12_latin_118_beat_4-4.mid (first 4 bars)
+MIDI/Drum Grooves/New Orleans Funk 84 BPM.mid,groove,CC-BY-4.0,drummer1/session1/82_neworleans-funk_84_beat_4-4.mid (first 4 bars)
+MIDI/Drum Grooves/Pop 142 BPM.mid,groove,CC-BY-4.0,drummer7/session2/100_pop_142_beat_4-4.mid (first 4 bars)
+MIDI/Drum Grooves/Punk 140 BPM.mid,groove,CC-BY-4.0,drummer1/session2/32_punk_140_beat_4-4.mid (first 4 bars)
+MIDI/Drum Grooves/Reggae 78 BPM.mid,groove,CC-BY-4.0,drummer1/session1/184_reggae_78_beat_4-4.mid (first 4 bars)
+MIDI/Drum Grooves/Reggaeton 90 BPM.mid,groove,CC-BY-4.0,drummer1/session1/79_latin-reggaeton_90_beat_4-4.mid (first 4 bars)
+MIDI/Drum Grooves/Rock 115 BPM.mid,groove,CC-BY-4.0,drummer1/session2/181_rock_115_beat_4-4.mid (first 4 bars)
+MIDI/Drum Grooves/Rock Halftime 140 BPM.mid,groove,CC-BY-4.0,drummer1/session1/202_rock-halftime_140_beat_4-4.mid (first 4 bars)
+MIDI/Drum Grooves/Samba 89 BPM.mid,groove,CC-BY-4.0,drummer5/session1/3_latin-brazilian-samba_89_beat_4-4.mid (first 4 bars)
+MIDI/Drum Grooves/Soul 96 BPM.mid,groove,CC-BY-4.0,drummer5/session2/11_soul_96_beat_4-4.mid (first 4 bars)

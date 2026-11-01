@@ -1425,6 +1425,36 @@ static void pluginInstrumentMenu() {
     std::puts("PASS: VST3 instruments in the channel menu");
 }
 
+static void starterPackMenu() {
+    Rig rig;
+    auto& grid = rig.grid;
+    grid.starterFolder = juce::File(juce::String(ALIEN_STARTER_PACK_DIR));
+    const auto samples = alien::starterPack::drumSamples(grid.starterFolder);
+    require(!samples.empty(), "the source Starter Pack has drums");
+    auto menu = entries(grid.channelMenu(1));
+    int kick = -1;
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        const auto* item = entry(menu, ChannelRackGrid::starterBase + static_cast<int>(i));
+        require(item != nullptr && item->enabled && !item->ticked && item->text == samples[i].file.getFileNameWithoutExtension(),
+                "Sound > Starter Pack lists every drum sample by name");
+        if (samples[i].category == "Kicks" && kick < 0) kick = static_cast<int>(i);
+    }
+    require(kick >= 0, "the pack has a kick");
+    grid.runChannelCommand(1, ChannelRackGrid::starterBase + kick);
+    const auto path = samples[static_cast<std::size_t>(kick)].file.getFullPathName().toStdString();
+    for (int i = 0; i < 500 && rig.rack().info[1].sample != path; ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+    require(rig.rack().info[1].sample == path && rig.rack().info[1].name == samples[static_cast<std::size_t>(kick)].file.getFileNameWithoutExtension().toStdString(),
+            "choosing one loads it on that channel and names the channel after it");
+    require(entry(entries(grid.channelMenu(1)), ChannelRackGrid::starterBase + kick)->ticked, "the loaded sample is ticked");
+    require(rig.controller.undo() && rig.rack().info[1].sample != path, "loading it is one undoable edit");
+    grid.runChannelCommand(1, ChannelRackGrid::starterBase + 100000);
+    grid.starterFolder = grid.starterFolder.getChildFile("missing");
+    menu = entries(grid.channelMenu(1));
+    require(entry(menu, ChannelRackGrid::starterBase) == nullptr && !entry(menu, ChannelRackGrid::starterBase - 1)->enabled,
+            "without the pack, the menu says it is missing");
+    std::puts("PASS: Starter Pack drums in the channel menu");
+}
+
 static void synthChannelChecks() {
     Rig rig;
     auto& view = rig.view; auto& grid = rig.grid;
@@ -1472,6 +1502,7 @@ int main() {
     deferredTrackIdentityRename();
     synthChannelChecks();
     pluginInstrumentMenu();
+    starterPackMenu();
     nameColumnChecks();
     channelPianoRollChecks();
     multiSelectChecks();
