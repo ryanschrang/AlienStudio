@@ -27,7 +27,8 @@ enum class PluginPhase : std::uint8_t {
     release,        // releaseResources
     saveState,      // getStateInformation
     editor,         // creating or showing the editor window
-    query           // tail length and other getters
+    query,          // tail length and other getters
+    automation      // receiving an automated parameter value
 };
 
 inline const char* phaseName(PluginPhase phase) noexcept {
@@ -39,6 +40,7 @@ inline const char* phaseName(PluginPhase phase) noexcept {
         case PluginPhase::saveState: return "saving its state";
         case PluginPhase::editor: return "opening its editor";
         case PluginPhase::query: return "answering a query";
+        case PluginPhase::automation: return "receiving automation";
     }
     return "running";
 }
