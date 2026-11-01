@@ -168,6 +168,70 @@ static void insertAtCursor() {
     std::puts("PASS: a clip inserts at the cursor without leaving the loop");
 }
 
+static void insertGrowsTheLoop() {
+    const std::array<PianoRollNote, 3> notes{{{0, 60, 0.0, 2.0, 0.5f, 1.0f}, {0, 62, 3.0, 6.0, 0.5f, 1.0f}, {0, 64, 9.0, 1.0, 0.5f, 1.0f}}};
+    const LoopGrowth fourFour{10.0};
+    auto pattern = std::make_unique<PianoRollPattern>();
+    pattern->loopSteps = 16;
+    pattern->add(48, 15, 1);
+    auto result = insertNotes(*pattern, notes, 8.0, &fourFour);
+    require(result.added == 3 && result.trimmed == 0 && result.skipped == 0 && pattern->valid(), "with growth every note fits");
+    require(pattern->loopSteps == 32 && result.grewLoop() && result.loopFrom == 16 && result.loopTo == 32,
+            "the loop grows to the next whole bar after the block's end");
+    require(pattern->find(result.selection.ids[1])->lengthSteps == 6.0 && pattern->notes[0].startStep == 15.0, "nothing is cut or moved");
+    // Already long enough: no change to the loop.
+    result = insertNotes(*pattern, notes, 0.0, &fourFour);
+    require(result.added == 3 && !result.grewLoop() && pattern->loopSteps == 32, "a loop that holds the block keeps its length");
+    // The cursor at the loop's very end still places the clip after it.
+    auto atEnd = std::make_unique<PianoRollPattern>();
+    atEnd->loopSteps = 16;
+    result = insertNotes(*atEnd, notes, 16.0, &fourFour);
+    require(result.added == 3 && atEnd->loopSteps == 32 && atEnd->find(result.selection.ids[0])->startStep == 16.0, "a cursor at the end appends");
+    // Bars of 3/4 are twelve sixteenths.
+    auto waltz = std::make_unique<PianoRollPattern>();
+    waltz->loopSteps = 16;
+    const LoopGrowth threeFour{20.0, 12 * PianoRollPattern::ticksPerStep};
+    require(grownLoopSteps(*waltz, 0.0, threeFour) == 24, "two bars of 3/4 hold twenty sixteenths");
+    // Never past the longest loop: the notes beyond it are cut as before.
+    const std::array<PianoRollNote, 2> late{{{0, 60, 0.0, 1.0, 0.5f, 1.0f}, {0, 62, 250.0, 20.0, 0.5f, 1.0f}}};
+    const LoopGrowth huge{270.0};
+    auto capped = std::make_unique<PianoRollPattern>();
+    result = insertNotes(*capped, late, 0.0, &huge);
+    require(capped->loopSteps == PianoRollPattern::maxLoopSteps && result.trimmed == 1 && capped->valid(), "the loop stops at its longest");
+    // Nothing added: the loop is left alone.
+    auto full = std::make_unique<PianoRollPattern>();
+    full->loopSteps = 16;
+    for (int i = 0; i < static_cast<int>(PianoRollPattern::maxNotes); ++i) full->add(i % 128, (i / 128) * 2.0, 1.0);
+    result = insertNotes(*full, notes, 8.0, &fourFour);
+    require(!result.changed() && full->loopSteps == 16, "a full clip keeps its length");
+    std::puts("PASS: an insert may lengthen the loop to whole bars, never shortening or cutting what is there");
+}
+
+static void timeSignatureSetsTheBar() {
+    const auto signature = [](int beats, int unit) { return juce::MidiMessage::timeSignatureMetaEvent(beats, unit); };
+    // Four quarter notes of 3/4: one bar and a beat, so two bars of twelve sixteenths.
+    const auto waltz = roundTrip(480, {{0, 0, signature(3, 4)}, {0, 0, on(60)}, {0, 1920, off(60)}});
+    require(waltz.ok() && waltz.beatsPerBar == 3 && waltz.beatUnit == 4 && waltz.barTicks == 12 * 240, "3/4 is read");
+    require(waltz.lengthTicks == 24 * 240 && waltz.notes[0].startTicks == 0 && waltz.notes[0].lengthTicks == 3840,
+            "the clip is whole bars of 3/4; the note keeps its length in beats");
+    const auto sixEight = roundTrip(480, {{0, 0, signature(6, 8)}, {0, 0, on(60)}, {0, 240, off(60)}});
+    require(sixEight.barTicks == 12 * 240 && sixEight.lengthTicks == 12 * 240, "a bar of 6/8 is twelve sixteenths");
+    const auto plain = roundTrip(480, {{0, 0, on(60)}, {0, 480, off(60)}});
+    require(plain.beatsPerBar == 4 && plain.beatUnit == 4 && plain.lengthTicks == 16 * 240, "no signature is 4/4");
+    const auto changes = roundTrip(480, {{0, 0, signature(3, 4)}, {0, 1440, signature(4, 4)}, {0, 0, on(60)}, {0, 480, off(60)}});
+    require(changes.beatsPerBar == 3, "the first signature is the clip's");
+    require(midi_import::barTicksOf(5, 8) == 10 * 240 && midi_import::barTicksOf(0, 4) == 0 && midi_import::barTicksOf(4, 3) == 0
+            && midi_import::barTicksOf(4, 128) == 0, "a bar is any count over a power-of-two beat, and nonsense is refused");
+    // The status line says how far the clip grew, in bars of the file's signature.
+    NoteInsertResult grew; grew.added = 1; grew.loopFrom = 12; grew.loopTo = 24;
+    require(midi_import::describe(waltz, grew, "Waltz").contains("lengthened from 1 bar of 3/4 to 2 bars of 3/4"), "3/4 growth is described");
+    grew.loopFrom = 64; grew.loopTo = 128;
+    require(midi_import::describe(plain, grew, "Plain").contains("lengthened from 4 bars to 8 bars"), "4/4 growth is described");
+    grew.loopFrom = 16;
+    require(midi_import::describe(waltz, grew, "Waltz").contains("from 16 sixteenths"), "a length that is not whole bars is in sixteenths");
+    std::puts("PASS: the file's time signature sets the bar; notes keep their places in beats");
+}
+
 static void editorImportIsOneUndoableEdit() {
     PianoRollEditor editor;
     editor.setSize(900, 500);
@@ -194,6 +258,21 @@ static void editorImportIsOneUndoableEdit() {
     editor.setLocked(false);
     editor.showStatus(midi_import::describe(clip, result, "Chords"));
     require(editor.getStatus().startsWith("Imported 3 notes from Chords"), "the status line says what was imported");
+    // Eight bars into a four-bar clip: the loop grows in the same edit, and one undo restores both.
+    PianoRollPattern fourBars;
+    editor.setPattern(fourBars);
+    commits = 0;
+    std::vector<Event> eightBars;
+    for (int bar = 0; bar < 8; ++bar) { eightBars.push_back({0, bar * 1920.0, on(60 + bar)}); eightBars.push_back({0, bar * 1920.0 + 1920, off(60 + bar)}); }
+    const auto progression = roundTrip(480, eightBars);
+    const auto growth = midi_import::loopGrowth(progression);
+    const auto grown = editor.importNotes(midi_import::pianoRollNotes(progression), &growth);
+    require(grown.added == 8 && grown.trimmed == 0 && grown.skipped == 0 && editor.getPattern().loopSteps == 128 && commits == 1,
+            "an eight-bar clip lengthens a four-bar loop in one edit");
+    editor.undo();
+    require(editor.getPattern().loopSteps == 64 && editor.getPattern().count == 0, "one undo restores the length and removes the notes");
+    editor.redo();
+    require(editor.getPattern().loopSteps == 128 && editor.getPattern().count == 8, "and redo brings both back");
     std::puts("PASS: the piano roll imports at its cursor as one undoable edit");
 }
 
@@ -299,6 +378,11 @@ static void everyStarterPackClipImports() {
             auto fourBars = std::make_unique<PianoRollPattern>();   // the default clip length
             const auto result = insertNotes(*fourBars, notes, 0.0);
             require(result.changed() && (clip.lengthSteps() > 64 || result.skipped == 0), "a four-bar progression fits a new clip: " + name);
+            auto growing = std::make_unique<PianoRollPattern>();
+            const auto growth = midi_import::loopGrowth(clip);
+            const auto grown = insertNotes(*growing, notes, 0.0, &growth);
+            require(grown.added == static_cast<int>(notes.size()) && grown.trimmed == 0 && growing->loopSteps == static_cast<int>(clip.lengthSteps()),
+                    "a new Session clip grows to hold the whole progression: " + name);
         }
     }
     require(grooves == 18, "every groove was imported");
@@ -313,6 +397,8 @@ int main() {
     noStuckNotes();
     tempoIsReportedNotApplied();
     insertAtCursor();
+    insertGrowsTheLoop();
+    timeSignatureSetsTheBar();
     editorImportIsOneUndoableEdit();
     drumGrooveToRack();
     everyStarterPackClipImports();
