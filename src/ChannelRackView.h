@@ -9,6 +9,7 @@
 // All changes go through ProjectController::editRack, so undo, saving and the
 // audio engine need nothing from this file.
 #include "ProjectController.h"
+#include "RackGrooveImport.h"
 #include "StarterPack.h"
 #include "StudioWidgets.h"
 #include <functional>
@@ -1309,6 +1310,9 @@ public:
         menu.addItem(clonePattern, "Clone pattern");
         menu.addItem(renamePattern, "Rename pattern...");
         menu.addSeparator();
+        menu.addItem(importGroovePattern, "Import drum groove...");
+        menu.addSubMenu("Import groove from Starter Pack", starterGrooveMenu());
+        menu.addSeparator();
         menu.addItem(clearPattern, "Clear pattern");
         const bool used = controller.rackPatternInUse(controller.channelRack().selectedPattern);
         menu.addItem(deletePattern, used ? "Delete pattern (clear Session/Song uses first)" : "Delete pattern",
@@ -1372,13 +1376,20 @@ public:
     }
 
     // Pattern commands, shared by the buttons, the menu and the tests.
-    enum PatternCommand { newPattern = 1, clonePattern, renamePattern, clearPattern, deletePattern };
+    enum PatternCommand { newPattern = 1, clonePattern, renamePattern, clearPattern, deletePattern, importGroovePattern,
+                          starterGrooveBase = 1000 };
     void patternCommand(int id) {
         const int current = controller.channelRack().selectedPattern;
         if (id == newPattern) controller.editRack("New pattern", [](rack::Project& p) { return p.addPattern(); });
         else if (id == clonePattern) controller.editRack("Clone pattern", [&](rack::Project& p) { return p.addPattern(current); });
         else if (id == clearPattern) controller.editRack("Clear pattern", [](rack::Project& p) { return p.clearPattern(p.selectedPattern); });
         else if (id == deletePattern) controller.deleteRackPattern(current);
+        else if (id == importGroovePattern) { chooseGroove(); return; }
+        else if (id >= starterGrooveBase) {
+            const auto index = static_cast<std::size_t>(id - starterGrooveBase);
+            if (index < starterGrooves.size()) importGroove(starterGrooves[index].file);
+            return;
+        }
         else if (id == renamePattern) {
             const auto name = juce::String::fromUTF8(controller.channelRack().patternNames[static_cast<std::size_t>(current)].c_str());
             grid.askForName("Rename pattern", name, [this, current](const juce::String& text) {
@@ -1389,6 +1400,31 @@ public:
         }
         refresh();
     }
+
+    // Imports a General MIDI drum groove as a new pattern (RackGrooveImport.h): one undo step, and the hint line
+    // says which channels it played on. False when nothing was imported.
+    bool importGroove(const juce::File& file) {
+        const auto clip = midi_import::read(file);
+        const auto name = file.getFileNameWithoutExtension();
+        rack_groove::Report report;
+        juce::String message;
+        bool done = false;
+        if (!clip.ok()) message = "No changes: " + clip.error;
+        else if (!rack_groove::hasDrums(clip)) message = "No changes: " + name + " has no drum notes on MIDI channel 10. Import it in the piano roll instead.";
+        else {
+            done = controller.editRack("Import drum groove", [&](rack::Project& p) {
+                return rack_groove::importGroove(p, clip, name.toStdString(), &report);
+            });
+            message = done ? rack_groove::describe(controller.channelRack(), report, name, clip)
+                           : "No changes: the rack has no room for another pattern or the channels the groove needs.";
+        }
+        refresh();
+        hint.setText(message, juce::dontSendNotification);
+        return done;
+    }
+    juce::String hintText() const { return hint.getText(); }
+    // Where the Starter Pack is; tests point it at the source folder.
+    juce::File starterFolder = starterPack::folder();
 
     void paint(juce::Graphics& g) override { g.fillAll(ui::colours::surface); }
 
@@ -1431,6 +1467,24 @@ public:
     }
 
 private:
+    juce::PopupMenu starterGrooveMenu() const {
+        starterGrooves.clear();
+        for (const auto& clip : starterPack::midiClips(starterFolder)) if (clip.isDrumGroove()) starterGrooves.push_back(clip);
+        juce::PopupMenu menu;
+        for (std::size_t i = 0; i < starterGrooves.size(); ++i)
+            menu.addItem(starterGrooveBase + static_cast<int>(i), starterGrooves[i].file.getFileNameWithoutExtension());
+        if (starterGrooves.empty()) menu.addItem(starterGrooveBase - 1, "Starter Pack not found next to Alien Studio", false);
+        return menu;
+    }
+    void chooseGroove() {
+        const auto grooves = starterFolder.getChildFile("MIDI").getChildFile("Drum Grooves");
+        grooveChooser = std::make_unique<juce::FileChooser>("Import a drum groove as a new pattern", grooves.isDirectory() ? grooves : juce::File{}, "*.mid;*.midi");
+        juce::Component::SafePointer<ChannelRackView> safe(this);
+        grooveChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+            [safe](const juce::FileChooser& chooser) {
+                if (safe != nullptr && chooser.getResult().existsAsFile()) safe->importGroove(chooser.getResult());
+            });
+    }
     void showMenu(juce::PopupMenu menu, juce::Component& target, std::function<void(int)> chosen) {
         juce::Component::SafePointer<ChannelRackView> safe(this);
         std::function<void(int)> done = [safe, chosen = std::move(chosen)](int id) { if (safe != nullptr && id != 0) chosen(id); };
@@ -1457,6 +1511,8 @@ private:
     juce::ScrollBar scrollBar, verticalBar;
     int laidOutChannels{-1}, laidOutNameWidth{-1};
     juce::Label patternLabel, lengthLabel, swingLabel, hint;
+    mutable std::vector<starterPack::MidiClip> starterGrooves;   // what the last Starter Pack groove menu offered
+    std::unique_ptr<juce::FileChooser> grooveChooser;
     juce::ComboBox patternBox, lengthBox;
     juce::StringArray patternNames;
     juce::TextButton newPatternButton, patternMenuButton, addChannelButton;

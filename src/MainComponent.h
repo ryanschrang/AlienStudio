@@ -5,6 +5,7 @@
 #include "PianoRollEditor.h"
 #include "PianoRollAudition.h"
 #include "PianoRollGhostSources.h"
+#include "MidiClipImport.h"
 #include "CompactWorkspace.h"
 #include "TrackMixerPanel.h"
 #include "ProjectController.h"
@@ -604,6 +605,15 @@ private:
             return alien::ui::trackColour(colour).withSaturation(0.55f).brighter(0.15f);
         };
         pianoRoll.onAudition = [this](int note, float velocity) { auditionPianoRoll(note, velocity); };
+        // Edit > Import MIDI clip: the notes go in at the cursor through the editor, so the import is one edit of
+        // whichever clip, placement or rack channel is open, and one project undo step (onChange, onEditCommitted).
+        pianoRoll.onImportMidiFile = [this](const juce::File& file) {
+            const auto clip = alien::midi_import::read(file);
+            if (!clip.ok()) { pianoRoll.showStatus("No changes: " + clip.error); return; }
+            const auto notes = alien::midi_import::pianoRollNotes(clip);
+            const auto result = pianoRoll.importNotes(notes);
+            pianoRoll.showStatus(alien::midi_import::describe(clip, result, file.getFileNameWithoutExtension()));
+        };
         sessionView.onSelectionChanged = [this] { rollTarget = {}; loadSelectedClip(); };
         // Launching a clip plays it. With Song mode on, Play plays the Song instead, so say so rather than stay silent.
         sessionView.onLaunched = [this](bool) {

@@ -35,4 +35,26 @@ inline std::vector<DrumSample> drumSamples(const juce::File& root = folder()) {
     return samples;
 }
 
+// One MIDI clip: its category (its folder under MIDI, such as "Chord Progressions/Major" or "Drum Grooves")
+// and its file.
+struct MidiClip {
+    juce::String category;
+    juce::File file;
+    bool isDrumGroove() const { return category.startsWith("Drum Grooves"); }
+};
+
+// The pack's MIDI clips, by category then name, in a stable order. Empty when the pack is missing.
+inline std::vector<MidiClip> midiClips(const juce::File& root = folder()) {
+    std::vector<MidiClip> clips;
+    const auto midi = root.getChildFile("MIDI");
+    if (!midi.isDirectory()) return clips;
+    for (const auto& entry : juce::RangedDirectoryIterator(midi, true, "*.mid", juce::File::findFiles))
+        clips.push_back({entry.getFile().getParentDirectory().getRelativePathFrom(midi).replaceCharacter('\\', '/'), entry.getFile()});
+    std::sort(clips.begin(), clips.end(), [](const auto& a, const auto& b) {
+        if (const int order = a.category.compareNatural(b.category); order != 0) return order < 0;
+        return a.file.getFileName().compareNatural(b.file.getFileName()) < 0;
+    });
+    return clips;
+}
+
 } // namespace alien::starterPack
