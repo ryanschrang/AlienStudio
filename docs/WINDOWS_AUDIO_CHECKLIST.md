@@ -425,6 +425,11 @@ Not yet run on hardware. Record commit, device/driver, sample rate and buffer si
 - Test stop/panic, transport restart, document replacement and device changes with held
   notes. Check row indicators at 960x650 and 150/200% scaling.
 
+## Plugin blocklist and startup scan (T1-09 part 1)
+- Install a new VST3 plugin, then start Alien Studio: without choosing a scan, the plugin appears in the Plugins list shortly after startup, and the panel says what was found. Start again with nothing new: the panel says the list is up to date, and startup is not slowed. Turn off Scan VST3 > Look for new plugins when Alien Studio starts and restart: no scan runs.
+- With a plugin known to crash while playing (or a test build that crashes in processBlock): play until it is switched off. The message says it is blocked. Save, reopen the project: the plugin is not loaded, its slot and settings remain, and Scan VST3 > Blocked plugins lists it. Allow it again: it loads in place. Update or reinstall the plugin: it loads without being allowed by hand.
+- A plugin whose output turns invalid (NaN) is switched off but is not listed as blocked.
+
 ## Plugin parameter automation (T1-09 part 3)
 - Put a VST3 effect (a filter or EQ) and a stock effect on a track. Song > Automation: choose the track, then the effect's submenu and a parameter. Draw a ramp over a bar and play: the parameter moves in the plugin's editor and you hear it, smoothly at 48 kHz with 128, 512 and 1024-sample buffers. Read off: the parameter stays where you set it by hand.
 - Move the effect up or down the rack, undo, save and reopen: the lane still drives the same effect. Remove the effect: playback carries on and the lane does nothing; undo brings both back.
