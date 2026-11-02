@@ -5,6 +5,7 @@
 // menus and the rename box go through test seams.
 #include "AudioFileWrite.h"
 #include "ChannelRackView.h"
+#include "SampleDrag.h"
 #include "RackChannelNotes.h"
 #include "TopBar.h"
 #include "StudioTheme.h"
@@ -1535,9 +1536,39 @@ static void starterGrooveImport() {
     std::puts("PASS: Starter Pack drum grooves import into the Channel Rack");
 }
 
+// A MIDI clip dragged from the sample browser onto the rack imports as a groove, one undo step.
+static void grooveDrop() {
+    Rig rig;
+    rig.view.setSize(1100, 600);
+    const juce::File pack(juce::String(ALIEN_STARTER_PACK_DIR));
+    juce::File funk;
+    for (const auto& clip : alien::starterPack::midiClips(pack)) if (clip.file.getFileName().startsWith("Funk")) funk = clip.file;
+    require(funk.existsAsFile(), "the source Starter Pack has the Funk groove");
+    juce::Component source;
+    using Details = juce::DragAndDropTarget::SourceDetails;
+    const Details drag(alien::mididrag::encode(funk), &source, rig.view.getLocalBounds().getCentre());
+    require(rig.view.isInterestedInDragSource(drag), "the rack takes a dragged MIDI clip");
+    require(!rig.view.isInterestedInDragSource(Details(alien::sampledrag::encode(juce::File("C:/kick.wav")), &source, {})), "but not a sample drag");
+    rig.view.itemDragEnter(drag);
+    require(rig.view.isGrooveDropTarget(), "it highlights while a clip is over it");
+    rig.view.itemDragExit(drag);
+    require(!rig.view.isGrooveDropTarget(), "and stops when it leaves");
+    rig.view.itemDragEnter(drag);
+    rig.view.itemDropped(drag);
+    require(!rig.view.isGrooveDropTarget() && rig.rack().patternCount == 2 && rig.rack().patternNames[1] == "Funk 80 BPM"
+            && rig.controller.undoLabel() == "Import drum groove", "dropping imports the groove as a new pattern");
+    require(rig.controller.undo() && rig.rack().patternCount == 1, "one undo takes it back out");
+    // A chord progression is refused with a reason, as from the menu.
+    const auto chords = alien::starterPack::midiClips(pack).front().file;
+    rig.view.itemDropped(Details(alien::mididrag::encode(chords), &source, {}));
+    require(rig.rack().patternCount == 1 && rig.view.hintText().contains("channel 10"), "a dropped clip with no drum notes is refused");
+    std::puts("PASS: a MIDI clip dropped on the Channel Rack imports as a drum groove");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     starterGrooveImport();
+    grooveDrop();
     deferredTrackIdentityRename();
     synthChannelChecks();
     pluginInstrumentMenu();

@@ -8,6 +8,7 @@
 // a name to hear it.
 // All changes go through ProjectController::editRack, so undo, saving and the
 // audio engine need nothing from this file.
+#include "MidiClipDrag.h"
 #include "ProjectController.h"
 #include "RackGrooveImport.h"
 #include "StarterPack.h"
@@ -1222,7 +1223,7 @@ private:
 };
 
 // The whole screen: pattern and swing controls on top, the rack, then the graph.
-class ChannelRackView final : public juce::Component, private juce::ScrollBar::Listener {
+class ChannelRackView final : public juce::Component, public juce::DragAndDropTarget, private juce::ScrollBar::Listener {
 public:
     static constexpr int toolbarHeight = 52, scrollBarHeight = 12, verticalBarWidth = 12;
 
@@ -1423,6 +1424,20 @@ public:
         return done;
     }
     juce::String hintText() const { return hint.getText(); }
+    // A MIDI clip dragged from the sample browser (MidiClipDrag.h) imports as a drum groove wherever it is dropped.
+    bool isInterestedInDragSource(const SourceDetails& details) override { return mididrag::decode(details.description) != juce::File{}; }
+    void itemDragEnter(const SourceDetails&) override { grooveDropping = true; repaint(); }
+    void itemDragExit(const SourceDetails&) override { grooveDropping = false; repaint(); }
+    void itemDropped(const SourceDetails& details) override {
+        itemDragExit(details);
+        if (const auto file = mididrag::decode(details.description); file != juce::File{}) importGroove(file);
+    }
+    bool isGrooveDropTarget() const noexcept { return grooveDropping; }
+    void paintOverChildren(juce::Graphics& g) override {
+        if (!grooveDropping) return;
+        g.setColour(ui::colours::accent);
+        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(2), 4, 2);
+    }
     // Where the Starter Pack is; tests point it at the source folder.
     juce::File starterFolder = starterPack::folder();
 
@@ -1512,6 +1527,7 @@ private:
     int laidOutChannels{-1}, laidOutNameWidth{-1};
     juce::Label patternLabel, lengthLabel, swingLabel, hint;
     mutable std::vector<starterPack::MidiClip> starterGrooves;   // what the last Starter Pack groove menu offered
+    bool grooveDropping{};   // a MIDI clip is being dragged over the rack
     std::unique_ptr<juce::FileChooser> grooveChooser;
     juce::ComboBox patternBox, lengthBox;
     juce::StringArray patternNames;

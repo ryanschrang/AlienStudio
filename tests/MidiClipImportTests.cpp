@@ -3,6 +3,8 @@
 // inserts a clip at its cursor as one undoable edit, General MIDI drum grooves become Channel Rack steps, and
 // every Starter Pack clip imports.
 #include "MidiClipImport.h"
+#include "MidiClipDrag.h"
+#include "SampleDrag.h"
 #include "PianoRollEditor.h"
 #include "RackGrooveImport.h"
 #include "StarterPack.h"
@@ -276,6 +278,44 @@ static void editorImportIsOneUndoableEdit() {
     std::puts("PASS: the piano roll imports at its cursor as one undoable edit");
 }
 
+// A MIDI clip dragged from the sample browser drops at the snapped step under the pointer and imports from there.
+static void editorTakesDroppedClips() {
+    PianoRollEditor editor;
+    editor.setSize(900, 500);
+    PianoRollPattern start;
+    editor.setPattern(start);
+    juce::Component source;
+    using Details = juce::DragAndDropTarget::SourceDetails;
+    const juce::File clip("C:/Clips/Chords.mid");
+    const auto payload = mididrag::encode(clip);
+    const Details nowhere(payload, &source, {450, 250});
+    require(!editor.isInterestedInDragSource(nowhere), "without an importer the editor takes no drops");
+    juce::File imported; double importedAt = -1.0; int imports = 0;
+    editor.onImportMidiFile = [&](const juce::File& file) { imported = file; importedAt = editor.getInsertionStep(); ++imports; };
+    require(editor.isInterestedInDragSource(nowhere), "with one, it takes a dragged MIDI clip");
+    require(!editor.isInterestedInDragSource(Details(sampledrag::encode(juce::File("C:/kick.wav")), &source, {450, 250})), "but not a sample drag");
+    // Halfway across the grid lands on the middle of the 64-step loop, snapped.
+    const Details middle(payload, &source, {64 + (900 - 64 - 26) / 2, 250});
+    editor.itemDragEnter(middle);
+    const int target = editor.midiDropTarget();
+    require(target >= 28 && target <= 32, "the drop marker follows the pointer: " + juce::String(target));
+    editor.itemDropped(middle);
+    require(imports == 1 && imported == clip && importedAt == target && editor.midiDropTarget() < 0, "dropping imports at the marked step");
+    // Left of the grid is its first step; right of it its last snapped step.
+    editor.itemDropped(Details(payload, &source, {0, 250}));
+    require(imports == 2 && importedAt == 0.0, "a drop left of the grid starts at step 1");
+    editor.itemDropped(Details(payload, &source, {899, 250}));
+    require(imports == 3 && importedAt > 56.0 && importedAt < 64.0, "a drop right of the grid starts on its last snapped step");
+    editor.itemDragExit(middle);
+    require(editor.midiDropTarget() < 0, "leaving clears the marker");
+    editor.setLocked(true);
+    editor.itemDragMove(middle);
+    require(editor.midiDropTarget() < 0, "a locked editor shows no marker");
+    editor.itemDropped(middle);
+    require(imports == 3 && editor.getStatus().startsWith("No changes"), "and refuses the drop, saying why");
+    std::puts("PASS: the piano roll takes a dragged MIDI clip at the step under the pointer");
+}
+
 static rack_groove::Report importInto(rack::Project& p, const midi_import::ImportedClip& clip, const std::string& name) {
     rack_groove::Report report;
     require(rack_groove::importGroove(p, clip, name, &report) && p.valid(), "imports: " + juce::String(name));
@@ -400,6 +440,7 @@ int main() {
     insertGrowsTheLoop();
     timeSignatureSetsTheBar();
     editorImportIsOneUndoableEdit();
+    editorTakesDroppedClips();
     drumGrooveToRack();
     everyStarterPackClipImports();
 }
