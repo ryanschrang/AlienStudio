@@ -16,7 +16,7 @@ namespace alien::stock {
 inline constexpr const char* formatName = "AlienStock";
 
 struct Info { const char* id; const char* name; const char* summary; };
-inline constexpr std::array<Info, 9> catalog{{
+inline constexpr std::array<Info, 10> catalog{{
     {"eq", "Alien EQ", "Four-band equaliser with low and high shelves and two bells"},
     {"compressor", "Alien Compressor", "Stereo-linked compressor with soft knee and parallel mix"},
     {"reverb", "Alien Reverb", "Stereo room reverb with pre-delay"},
@@ -26,6 +26,7 @@ inline constexpr std::array<Info, 9> catalog{{
     {"saturator", "Alien Saturator", "Oversampled soft, warm or hard saturation with tone and mix"},
     {"gate", "Alien Gate", "Noise gate with hold and range; key it from another track for rhythmic gating"},
     {"chorus", "Alien Chorus", "Stereo chorus with modulated delay, rate, depth and mix"},
+    {"phaser", "Alien Phaser", "Six-stage stereo phaser with rate, depth, feedback and mix"},
 }};
 
 // Parameter identifiers, shared by the processors and their editors.
@@ -36,6 +37,9 @@ inline constexpr const char *lowFreq = "lowFreq", *lowGain = "lowGain", *m1Freq 
 namespace comp {
 inline constexpr const char *threshold = "threshold", *ratio = "ratio", *attack = "attack", *release = "release",
     *knee = "knee", *makeup = "makeup", *mix = "mix";
+}
+namespace phaser {
+inline constexpr const char *rate = "rate", *depth = "depth", *feedback = "feedback", *mix = "mix";
 }
 namespace chorus {
 inline constexpr const char *rate = "rate", *depth = "depth", *mix = "mix";
@@ -603,6 +607,42 @@ private:
     dsp::StereoChorus engine;
 };
 
+// ---- Phaser -------------------------------------------------------------------
+class PhaserEffect final : public Effect {
+public:
+    PhaserEffect() : Effect(catalog[9], layout()) { speed = parameter(phaser::rate); depth = parameter(phaser::depth); feedback = parameter(phaser::feedback); mix = parameter(phaser::mix); }
+    void prepareToPlay(double sampleRate, int) override { rate = sampleRate; engine.prepare(sampleRate); prepared = true; }
+    void reset() override { engine.reset(); }
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
+        juce::ScopedNoDenormals noDenormals;
+        if (!prepared || buffer.getNumChannels() < 2) return;
+        engine.process(buffer.getWritePointer(0), buffer.getWritePointer(1), buffer.getNumSamples(), settings());
+    }
+    dsp::StereoPhaser::Settings settings() const noexcept { return {speed->get(), depth->get(), feedback->get(), mix->get()}; }
+    // Host automation calls setValue without listeners on the audio thread.
+    // DSP reads each parameter's own atomic value. Snapshot current values into
+    // a private tree, so automation is saved without sending host edit events.
+    void getStateInformation(juce::MemoryBlock& destination) override {
+        auto state = parameters.copyState();
+        for (auto child : state) if (auto* p = parameters.getParameter(child.getProperty("id").toString()))
+            child.setProperty("value", p->convertFrom0to1(p->getValue()), nullptr);
+        if (auto xml = state.createXml()) copyXmlToBinary(*xml, destination);
+    }
+    double getTailLengthSeconds() const override { return dsp::StereoPhaser::tailSeconds; }
+private:
+    juce::AudioParameterFloat* parameter(const char* id) { return static_cast<juce::AudioParameterFloat*>(parameters.getParameter(id)); }
+    static Layout layout() {
+        Layout l;
+        l.add(floatParameter(phaser::rate, "Rate", {.05f, 5, .8f}, .5f, plainFormat(" Hz")));
+        l.add(floatParameter(phaser::depth, "Depth", {0, 1, 0}, .7f, percentFormat()));
+        l.add(floatParameter(phaser::feedback, "Feedback", {0, .85f, 0}, .3f, percentFormat()));
+        l.add(floatParameter(phaser::mix, "Mix", {0, 1, 0}, .5f, percentFormat()));
+        return l;
+    }
+    juce::AudioParameterFloat *speed{}, *depth{}, *feedback{}, *mix{};
+    dsp::StereoPhaser engine;
+};
+
 // ---- Catalogue and project-file identity -----------------------------------------
 
 inline std::unique_ptr<Effect> create(const juce::String& id) {
@@ -615,6 +655,7 @@ inline std::unique_ptr<Effect> create(const juce::String& id) {
     if (id == catalog[6].id) return std::make_unique<SaturatorEffect>();
     if (id == catalog[7].id) return std::make_unique<GateEffect>();
     if (id == catalog[8].id) return std::make_unique<ChorusEffect>();
+    if (id == catalog[9].id) return std::make_unique<PhaserEffect>();
     return {};
 }
 

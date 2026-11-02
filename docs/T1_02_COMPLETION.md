@@ -1,0 +1,58 @@
+# T1-02 completion audit
+
+CMD-01 is **not complete**. The Command Engine currently exposes 17 commands:
+five structural track commands, four Session track mix commands, three Session
+MIDI clip commands, and five Session scene commands (claim #181).
+
+The existing roadmap examples are a target catalog, not proof that every
+operation already has a command. Completion requires both a validated command
+and adoption by the corresponding project-editing UI. Transport, selection,
+audition, and saving a file are separate lifecycle actions, not snapshot edits.
+
+| Family | Delivered | Required before current Tier 1 coverage is complete |
+| --- | --- | --- |
+| Command contract | Typed arguments, stable names, Execute, Preview, Batch, Undo/Redo, grouping, no-op/redo preservation | Cross-family acceptance with dirty plugin state, asynchronous work and runtime failure; document refusal must precede every live side effect |
+| Track structure | Create/delete/move/rename/colour; Session track menus | Audit other entry points for direct mutations and duplicate commits |
+| Session scenes | Create/duplicate/move/rename/delete and Session add/menu/name UI | Native interaction/acceptance; shared reducer remains a follow-up to remove controller/Preview duplication |
+| Session clips | Empty MIDI creation, independent MIDI duplication, MIDI make-independent | Delete/clear, move, clipboard/link operations, audio and rack variants; asynchronous import needs an explicit plan/result boundary |
+| Mixer parameters/routing | Session/Mixer track volume/pan/mute/solo | Master, bus, return and send parameters; create/rename/delete bus/return; track output, group membership and sidechain routing; UI adoption |
+| Devices | Existing host/controller operations and saved plugin instances | Insert/move/remove/bypass devices as commands; noncommitting controller adapters and runtime preparation/restore failure handling |
+| Automation/parameters | Existing saved send/plugin lanes and playback | Named lane/point edits and generic parameter targets; Preview must not instantiate or call plugins; account for the older stock-automation cache audit (#179) |
+| Tempo/meter | Existing project tempo and Song map editors | Named project-tempo, tempo-map and meter commands; unfreeze/warp-preparation lifecycle, grouping and UI adoption |
+| Song/MIDI/rack edits | Existing editor/controller operations | Inventory and route remaining undoable placement, note, pattern and recording-settings edits through the same contract; retain existing gesture grouping |
+
+## Suggested implementation sequence
+
+1. Finish Session clip operations and their UI entry points.
+2. Add mixer parameter and routing families using pure document reducers and
+   validated, noncommitting controller adapters.
+3. Add device/parameter/automation plans with explicit runtime failure behavior.
+4. Add tempo/meter and remaining Song/MIDI/rack editor adapters.
+5. Run cross-family Batch/Preview/Undo/Redo acceptance and remove obsolete direct
+   edit/commit routes. Record native Windows acceptance separately from CI.
+
+Each family is a reviewable increment on its own branch, with one active T1-02
+claim/PR at a time under ROADMAP.md. Do not mark CMD-01 implemented when only a
+command struct/parser exists or while its UI still bypasses the command layer.
+
+`SetChord` and new arrangement-section features depend on T2-04 product/model
+work. They are future command consumers, not authorization to build those
+features inside a Tier 1 command migration. Existing Song marker/region edits
+still belong in the current coverage audit.
+
+## Identity safety
+
+Preview uses a scoped, local runtime-object identity stream and initializes its
+result from a document copy. It does not consume process-global track/scene or
+project-scope identities. Immediate execution predicts the same runtime IDs;
+an intervening real edit requires a fresh Preview. Persistent clip and track
+registries continue to allocate in the copied document. No project format changes.
+
+## Scene acceptance evidence
+
+CommandEngineTests covers sequential scene batches, Preview/live agreement,
+runtime identity isolation, rack duplication, invalid-later-command refusal,
+recording/count-in and busy guards, no-op/redo preservation, strict argument
+roundtrips, frozen/last-scene protection and scene limits. SessionViewTests
+drives menu actions, one-step Undo, refresh-only host notifications, stale menu
+refusal and deferred rename identity. Exact build/test results belong in the PR.

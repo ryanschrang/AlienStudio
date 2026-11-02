@@ -783,6 +783,19 @@ public:
     void resized() override { auto area = content(); layoutKnobs(area, 0, 3, area.getWidth() / 3); }
 };
 
+class PhaserEditor final : public EffectEditor {
+public:
+    explicit PhaserEditor(PhaserEffect& e) : EffectEditor(e, ui::colours::solo, 520, 220) {
+        addKnob(phaser::rate, "Rate"); addKnob(phaser::depth, "Depth"); addKnob(phaser::feedback, "Feedback"); addKnob(phaser::mix, "Mix"); finishSetup();
+    }
+    void tick() override {
+        const auto s = static_cast<PhaserEffect&>(effect).settings();
+        knob(0).slider.setValue(s.rateHz, juce::dontSendNotification); knob(1).slider.setValue(s.depth, juce::dontSendNotification);
+        knob(2).slider.setValue(s.feedback, juce::dontSendNotification); knob(3).slider.setValue(s.mix, juce::dontSendNotification);
+    }
+    void resized() override { auto area = content(); layoutKnobs(area, 0, 4, area.getWidth() / 4); }
+};
+
 // ---- Registration ----------------------------------------------------------------------
 
 inline juce::AudioProcessorEditor* makeEditor(Effect& effect) {
@@ -796,6 +809,7 @@ inline juce::AudioProcessorEditor* makeEditor(Effect& effect) {
     if (id == catalog[6].id) return new SaturatorEditor(static_cast<SaturatorEffect&>(effect));
     if (id == catalog[7].id) return new GateEditor(static_cast<GateEffect&>(effect));
     if (id == catalog[8].id) return new ChorusEditor(static_cast<ChorusEffect&>(effect));
+    if (id == catalog[9].id) return new PhaserEditor(static_cast<PhaserEffect&>(effect));
     return nullptr;
 }
 // Including this header installs the editors; without it the host shows its generic one.

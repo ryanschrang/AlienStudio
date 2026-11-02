@@ -10,6 +10,7 @@
 #include "PianoRollProgression.h"
 #include "PianoRollScale.h"
 #include "PianoRollPitchRows.h"
+#include "MidiClipDrag.h"
 #include "PianoRollNoteInsert.h"
 #include "StarterPack.h"
 #include <bitset>
@@ -25,7 +26,7 @@ namespace alien {
 
 // Message-thread editor. Publishing snapshots and playing notes belong to the
 // owner; drawing and pointer gestures never access the audio engine directly.
-class PianoRollEditor final : public juce::Component, private juce::ScrollBar::Listener {
+class PianoRollEditor final : public juce::Component, public juce::DragAndDropTarget, private juce::ScrollBar::Listener {
 public:
     PianoRollEditor() {
         setName("Piano roll note editor");
@@ -401,6 +402,27 @@ public:
         endEdit();
         return result;
     }
+    // A MIDI clip dragged from the sample browser (MidiClipDrag.h) drops at the snapped step under the pointer:
+    // the amber cursor moves there and the owner imports it as Import MIDI clip... would.
+    bool isInterestedInDragSource(const SourceDetails& details) override {
+        return onImportMidiFile != nullptr && mididrag::decode(details.description) != juce::File{};
+    }
+    void itemDragEnter(const SourceDetails& details) override { itemDragMove(details); }
+    void itemDragMove(const SourceDetails& details) override {
+        const int step = locked ? -1 : dropStepAt(details.localPosition);
+        if (step != midiDropStep) { midiDropStep = step; repaint(); }
+    }
+    void itemDragExit(const SourceDetails&) override { if (midiDropStep >= 0) { midiDropStep = -1; repaint(); } }
+    void itemDropped(const SourceDetails& details) override {
+        const auto file = mididrag::decode(details.description);
+        const int step = dropStepAt(details.localPosition);
+        itemDragExit(details);
+        if (file == juce::File{} || !onImportMidiFile) return;
+        if (locked) { showStatus("No changes: this clip cannot be edited right now, so the MIDI clip was not imported."); return; }
+        setInsertionStep(step);
+        onImportMidiFile(file);
+    }
+    int midiDropTarget() const noexcept { return midiDropStep; }
     // A message for the status line, until the next edit replaces it.
     void showStatus(const juce::String& text) { statusMessage = text; repaint(); }
     juce::String getStatus() const { return statusMessage; }
@@ -723,6 +745,12 @@ public:
         g.setColour(juce::Colour(0x75ffcc74));
         g.drawLine(cursorX, static_cast<float>(a.ruler.getBottom()), cursorX,
                    static_cast<float>(a.grid.getBottom()), 1.0f);
+        if (midiDropStep >= 0) {   // where a dragged MIDI clip would start
+            const auto dropX = juce::jlimit(static_cast<float>(a.grid.getX()) + 1.0f, static_cast<float>(a.grid.getRight()) - 1.0f,
+                                            stepX(midiDropStep, a));
+            g.setColour(juce::Colour(0xffffcc74));
+            g.drawLine(dropX, static_cast<float>(a.ruler.getY()), dropX, static_cast<float>(a.grid.getBottom()), 2.0f);
+        }
         juce::Path cursorMarker;
         cursorMarker.addTriangle(cursorX - 4.0f, static_cast<float>(a.ruler.getY()) + 2.0f,
                                  cursorX + 4.0f, static_cast<float>(a.ruler.getY()) + 2.0f,
@@ -1010,6 +1038,11 @@ private:
         return juce::String(scalePitchClassName(scaleSettings.rootPitchClass)) + " " + scaleType.getText();
     }
     int snapSteps() const { return juce::jmax(1, snap.getSelectedId()); }
+    // The snapped step a drop at `point` lands on; a point left or right of the grid lands on its first or last step.
+    int dropStepAt(juce::Point<int> point) const {
+        const auto a = areas();
+        return snapStep(juce::jlimit(a.grid.getX(), a.grid.getRight() - 1, point.x) + 0.5f, a);
+    }
     int snapStep(float x, const Areas& a) const {
         return juce::jlimit(0, pattern.loopSteps - 1,
             static_cast<int>((x - a.grid.getX()) / stepSize(a) / snapSteps()) * snapSteps());
@@ -1814,6 +1847,7 @@ private:
     PianoRollClipboard clipboard;
     std::vector<starterPack::MidiClip> starterClips;   // what the last Starter Pack menu offered
     std::unique_ptr<juce::FileChooser> midiChooser;
+    int midiDropStep{-1};   // the step a MIDI clip dragged over the editor would land on, or -1
     GhostNoteSource ghostSource { GhostNoteSource::off };
     bool multiClip{false};
     KeyLabels keyLabels{KeyLabels::cNotes};
