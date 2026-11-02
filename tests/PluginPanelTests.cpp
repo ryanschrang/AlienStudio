@@ -23,20 +23,97 @@ static PluginState vst3(const juce::String& name, bool bypass = false) {
 }
 static juce::StringArray slotTexts(juce::ComboBox& box) { juce::StringArray t; for (int i = 0; i < box.getNumItems(); ++i) t.add(box.getItemText(i)); return t; }
 
+static juce::PluginDescription described(const juce::String& name, const juce::String& maker, const juce::String& category, bool instrument) {
+    juce::PluginDescription d; d.name = name; d.manufacturerName = maker; d.category = category; d.isInstrument = instrument;
+    d.pluginFormatName = "VST3"; d.fileOrIdentifier = "C:/VST3/" + name + ".vst3"; d.uniqueId = d.deprecatedUid = name.hashCode();
+    return d;
+}
+
+// T1-10: the plugin browser lists stock effects and scanned plugins, searches and filters them, keeps
+// choice ids stable for the add path, marks blocked plugins, and adds only what the destination takes.
+static void browserTests() {
+    juce::KnownPluginList known;
+    // Added out of name order; the browser sorts by name, but choice ids follow the known list.
+    for (const auto& d : {described("Zeta Verb", "Acme Audio", "Fx|Reverb", false), described("Mono Bass", "Synth Co", "Instrument|Synth", true),
+                          described("Crashy Comp", "Flaky Ltd", "Fx|Dynamics", false)})
+        known.addType(d);
+    const auto types = known.getTypes();
+    const auto idOf = [&](const juce::String& name) { for (int i = 0; i < types.size(); ++i) if (types[i].name == name) return i + 1; return 0; };
+    const auto blocked = [](const juce::PluginDescription& d) { return d.name == "Crashy Comp"; };
+
+    auto rows = PluginBrowser::entriesFor(known, blocked);
+    check(rows.size() == stock::catalog.size() + 3, "one row per stock effect and per scanned plugin");
+    check(rows[0].stock && rows[0].choice == PluginBrowser::stockBase && rows[0].name == stock::catalog[0].name, "stock effects come first, with their stock ids");
+    const auto& firstPlugin = rows[stock::catalog.size()];
+    check(firstPlugin.name == "Crashy Comp" && firstPlugin.choice == idOf("Crashy Comp") && firstPlugin.blocked, "plugins are sorted by name, keep their list ids and show blocks");
+    check(firstPlugin.category == "Fx / Dynamics", "VST3 category paths read as words: " + firstPlugin.category);
+    check(PluginBrowser::matching(rows, "bass synth", PluginBrowser::Kind::all).size() == 1, "every search word must match (name and category)");
+    check(PluginBrowser::matching(rows, "ACME", PluginBrowser::Kind::all).size() == 1, "search ignores case and matches the maker");
+    check(PluginBrowser::matching(rows, "", PluginBrowser::Kind::instruments).size() == 1, "the Instruments filter shows only instruments");
+    check(PluginBrowser::matching(rows, "", PluginBrowser::Kind::effects).size() == stock::catalog.size() + 2, "the Effects filter shows stock and scanned effects");
+    check(PluginBrowser::matching(rows, "stock", PluginBrowser::Kind::all).size() == stock::catalog.size(), "searching for stock finds the stock effects");
+    check(PluginBrowser::matching(rows, "no such plugin", PluginBrowser::Kind::all).empty(), "a search can match nothing");
+
+    PluginPanel panel; panel.setSize(1400, 640); panel.isBlocked = blocked;
+    std::vector<std::pair<bool, int>> added; panel.onAdd = [&](bool instrument, int choice) { added.push_back({instrument, choice}); };
+    PluginRackState rack; panel.refresh({"Track 1"}, rack, known);
+    auto& browser = panel.pluginBrowser();
+    auto* useInstrument = button(panel, "Use instrument"); auto* addFx = button(panel, "Add FX");
+    check(useInstrument != nullptr && addFx != nullptr, "the add buttons exist");
+    check(browser.selectedChoice() == PluginBrowser::stockBase && addFx->isEnabled() && !useInstrument->isEnabled(),
+          "a new panel selects the first stock effect: Add FX on, Use instrument off");
+    check(browser.getRight() <= panel.getWidth() && browser.getX() > button(panel, "Remove")->getRight() && browser.getHeight() > 300,
+          "on a wide panel the browser sits beside the controls with room to browse");
+
+    browser.setQuery("bass");
+    check(browser.resultCount() == 1 && browser.selectedChoice() == idOf("Mono Bass") && useInstrument->isEnabled() && !addFx->isEnabled(),
+          "searching selects the match; an instrument enables Use instrument only");
+    useInstrument->onClick();
+    check(added.size() == 1 && added[0] == std::make_pair(true, idOf("Mono Bass")), "Use instrument adds the selected plugin's id");
+    browser.choose();
+    check(added.size() == 2 && added[1] == std::make_pair(true, idOf("Mono Bass")), "double-click or Enter adds an instrument to the instrument slot");
+
+    panel.refresh({"Track 1"}, rack, known);
+    check(browser.selectedChoice() == idOf("Mono Bass") && browser.resultCount() == 1, "a refresh keeps the search and the selection");
+
+    // Master FX takes no instrument: the button is off and double-click does nothing.
+    combos(panel)[0]->setSelectedId(maxSessionTracks + 1, juce::dontSendNotification); combos(panel)[0]->onChange();
+    check(!useInstrument->isEnabled(), "Use instrument is off for Master FX");
+    browser.choose(); check(added.size() == 2, "an instrument is not added to an effects-only rack");
+    combos(panel)[0]->setSelectedId(1, juce::dontSendNotification); combos(panel)[0]->onChange();
+
+    browser.setQuery("crashy");
+    check(browser.selectedChoice() == idOf("Crashy Comp") && !addFx->isEnabled() && !useInstrument->isEnabled(), "a blocked plugin cannot be added");
+    browser.choose(); check(added.size() == 2, "not even by double-click");
+
+    browser.setQuery("verb"); browser.setKind(PluginBrowser::Kind::effects);
+    check(browser.resultCount() == 2, "search and the Effects filter combine (Alien Reverb and Zeta Verb)");
+    browser.setKind(PluginBrowser::Kind::instruments);
+    check(browser.resultCount() == 0 && browser.selected() == nullptr && !addFx->isEnabled() && !useInstrument->isEnabled(), "nothing listed, nothing to add");
+    check(browser.select(idOf("Zeta Verb")) && browser.selectedChoice() == idOf("Zeta Verb") && addFx->isEnabled(), "select() clears a filter that hides the plugin");
+    addFx->onClick();
+    check(added.size() == 3 && added[2] == std::make_pair(false, idOf("Zeta Verb")), "Add FX adds the selected effect's id");
+
+    // Narrow panels stack the browser under the destination instead.
+    PluginPanel narrow; narrow.setSize(900, 700); narrow.refresh({"Track 1"}, rack, known);
+    check(narrow.pluginBrowser().getWidth() > 0 && narrow.pluginBrowser().getRight() <= narrow.getWidth()
+          && narrow.pluginBrowser().getBottom() < button(narrow, "Use instrument")->getY(), "a narrow panel shows the browser above the add buttons");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juceInit;
     PluginPanel panel; panel.setSize(900, 400);
     auto boxes = combos(panel);
-    check(boxes.size() == 4, "the panel has a destination, a plugin and a slot chooser");
-    auto& slot = *boxes[2];
+    check(boxes.size() == 3, "the panel has a destination, a slot and a live MIDI chooser beside its plugin browser");
+    auto& slot = *boxes[1];
     const juce::StringArray tracks{"Track 1", "Track 2"};
     int liveRoute=-99;
     panel.onLiveInput=[&](int value){liveRoute=value;};
     panel.refreshLiveInput(tracks,1);
-    check(boxes[3]->getSelectedId()==3 && liveRoute==-99,"route refresh is silent and preserves track");
-    boxes[3]->setSelectedId(2,juce::dontSendNotification); boxes[3]->onChange();
+    check(boxes[2]->getSelectedId()==3 && liveRoute==-99,"route refresh is silent and preserves track");
+    boxes[2]->setSelectedId(2,juce::dontSendNotification); boxes[2]->onChange();
     check(liveRoute==0,"live input selects track zero");
-    boxes[3]->setSelectedId(1,juce::dontSendNotification); boxes[3]->onChange();
+    boxes[2]->setSelectedId(1,juce::dontSendNotification); boxes[2]->onChange();
     check(liveRoute==-1,"live input returns to standalone synth");
     PluginRackState rack; rack.instrument = vst3("Big Synth"); rack.effects = {vst3("Verb"), vst3("Comp", true), vst3("Delay")};
     juce::KnownPluginList list;
@@ -104,7 +181,8 @@ int main() {
     check(panel.preflightIsEnabled(), "and back on");
     panel.setPreflightEnabled(false); check(!panel.preflightIsEnabled(), "the owner can set it too");
 
+    browserTests();
     if (failures != 0) { std::cerr << failures << " check(s) failed\n"; return 1; }
-    std::cout << "PASS: the Plugins panel shows slot problems, scan progress and commands\n";
+    std::cout << "PASS: the Plugins panel shows slot problems, scan progress, commands and its plugin browser\n";
     return 0;
 }

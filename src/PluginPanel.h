@@ -1,4 +1,5 @@
 #pragma once
+#include "PluginBrowser.h"
 #include "PluginState.h"
 #include "SessionCapacity.h"
 #include "StockEffects.h"
@@ -16,21 +17,26 @@ enum class ScanCommand { standardFolders, folder, singleFile, retryFailed, resca
 class PluginPanel final : public juce::Component {
 public:
     // Choice ids: stock effects are stockBase + catalog index; scanned VST3 plugins are index + 1.
-    static constexpr int stockBase = 1000;
+    static constexpr int stockBase = PluginBrowser::stockBase;
     PluginPanel() {
-        for (auto* c:std::array<juce::Component*,15>{&target,&available,&slot,&liveInput,&scan,&cancelScan,&addInstrument,&addEffect,&open,&bypass,&sidechain,&up,&down,&remove,&status}) addAndMakeVisible(c);
+        for (auto* c:std::array<juce::Component*,15>{&target,&browser,&slot,&liveInput,&scan,&cancelScan,&addInstrument,&addEffect,&open,&bypass,&sidechain,&up,&down,&remove,&status}) addAndMakeVisible(c);
         cancelScan.setVisible(false);
         scan.setButtonText("Scan VST3..."); cancelScan.setButtonText("Cancel scan"); addInstrument.setButtonText("Use instrument"); addEffect.setButtonText("Add FX");
         open.setButtonText("Open editor"); bypass.setButtonText("Bypass / enable"); up.setButtonText("Move FX up"); down.setButtonText("Move FX down"); remove.setButtonText("Remove");
-        available.setTextWhenNothingSelected("Choose a stock effect or a scanned VST3 plugin");
-        target.setName("Plugin destination track, return or master"); available.setName("Stock effects and scanned VST3 plugins"); slot.setName("Instrument or FX slot");
+        target.setName("Plugin destination track, return or master"); slot.setName("Instrument or FX slot");
         liveInput.setName("Live MIDI destination");
         liveInput.setTooltip("Hardware MIDI, typing keyboard and on-screen piano. Recording uses its armed track.");
         liveInput.onChange=[this]{if(onLiveInput)onLiveInput(liveInput.getSelectedId()-2);};
-        target.onChange=[this]{if(onTarget)onTarget(target.getSelectedId()-1);};
+        target.onChange=[this]{updateAddButtons();if(onTarget)onTarget(target.getSelectedId()-1);};
         scan.onClick=[this]{showScanMenu();}; cancelScan.onClick=[this]{if(onCancelScan)onCancelScan();};
-        addInstrument.onClick=[this]{if(onAdd)onAdd(true,available.getSelectedId());};
-        addEffect.onClick=[this]{if(onAdd)onAdd(false,available.getSelectedId());};
+        addInstrument.onClick=[this]{if(onAdd)onAdd(true,browser.selectedChoice());};
+        addEffect.onClick=[this]{if(onAdd)onAdd(false,browser.selectedChoice());};
+        // Double-click or Enter in the browser adds the row where it belongs, if the destination takes it.
+        browser.onChoose=[this](int choice,bool instrument){
+            if(!(instrument?addInstrument:addEffect).isEnabled())return;
+            if(onAdd)onAdd(instrument,choice);
+        };
+        browser.onSelectionChanged=[this]{updateAddButtons();};
         open.onClick=[this]{action(0);}; bypass.onClick=[this]{action(1);}; remove.onClick=[this]{action(2);}; up.onClick=[this]{action(3);}; down.onClick=[this]{action(4);};
         sidechain.setButtonText("Sidechain..."); sidechain.setName("Sidechain source");
         sidechain.setTooltip("Key this effect from another track: a compressor then ducks this sound whenever that track plays (for example a bass ducking to the kick).");
@@ -52,6 +58,9 @@ public:
         liveInput.setSelectedId(selected>=0 && selected<names.size()?selected+2:1,juce::dontSendNotification);
     }
     std::function<void(bool,int)> onAdd;
+    // Whether a scanned plugin is blocked after crashing while hosted (T1-09); the browser marks it and it cannot be added.
+    std::function<bool(const juce::PluginDescription&)> isBlocked;
+    PluginBrowser& pluginBrowser() noexcept { return browser; }
     std::function<void(int,int)> onAction;
     // Whether the effect in (destination, effect index) has a sidechain input; and the choice of key:
     // (effect index, what kind of key, its track, bus or return slot, or -1 for none).
@@ -89,11 +98,7 @@ public:
         }
         target.addItem("Master FX",maxSessionTracks+1);
         target.setSelectedId(t>maxSessionTracks&&target.indexOfItemId(t)>=0?t:t>maxSessionTracks?maxSessionTracks+1:juce::jlimit(1,names.size(),t),juce::dontSendNotification);
-        const int selectedPlugin=available.getSelectedId(); available.clear(juce::dontSendNotification);
-        for(std::size_t i=0;i<stock::catalog.size();++i)available.addItem(juce::String(stock::catalog[i].name)+" [stock FX]",stockBase+static_cast<int>(i));
-        auto descriptions=list.getTypes(); if(!descriptions.isEmpty())available.addSeparator();
-        for(int i=0;i<descriptions.size();++i)available.addItem(descriptions[i].name+(descriptions[i].isInstrument?" [instrument]":" [FX]"),i+1);
-        available.setSelectedId(available.indexOfItemId(selectedPlugin)>=0?selectedPlugin:stockBase,juce::dontSendNotification);
+        browser.refresh(list,isBlocked);
         const int s=slot.getSelectedId(); slot.clear(juce::dontSendNotification);
         const int where=destination();
         // The master and the returns are effects only: no instrument row.
@@ -102,7 +107,7 @@ public:
         for(std::size_t i=0;i<rack.effects.size();++i)slot.addItem("FX "+juce::String(static_cast<int>(i+1))+": "+name(rack.effects[i])+problem(where,static_cast<int>(i)),static_cast<int>(i+2));
         // A bus has no instrument row, so its first effect is id 2; a kept id of 1 would match no item.
         slot.setSelectedId(s>=(bus?2:1)&&s<=static_cast<int>(rack.effects.size()+1)?s:bus?(rack.effects.empty()?0:2):1,juce::dontSendNotification);
-        addInstrument.setEnabled(!bus);
+        updateAddButtons();
         trackNames=names; keyBusNames=busNames; keyReturnNames=returnNames;
         keyOf.clear(); for(const auto& effect:rack.effects) keyOf.push_back({effect.sidechainFrom,effect.sidechain});
         updateSidechainButton();
@@ -208,10 +213,15 @@ public:
     }
     void setStatus(const juce::String& text){status.setText(text,juce::dontSendNotification);status.setTooltip(text);}
     void resized() override {
-        auto r=getLocalBounds().reduced(20);auto row=r.removeFromTop(32);
+        auto r=getLocalBounds().reduced(20);
+        // The browser takes the right-hand side when there is room, otherwise the space under the destination.
+        const bool beside=r.getWidth()>=controlsWidth+20+320;
+        if(beside){auto right=r.removeFromRight(r.getWidth()-controlsWidth-20);browser.setBounds(right);r.removeFromRight(20);}
+        auto row=r.removeFromTop(32);
         target.setBounds(row.removeFromLeft(190)); row.removeFromLeft(12); scan.setBounds(row.removeFromLeft(140)); row.removeFromLeft(8); cancelScan.setBounds(row.removeFromLeft(130));
         r.removeFromTop(12);liveInput.setBounds(r.removeFromTop(30));
-        r.removeFromTop(12);available.setBounds(r.removeFromTop(30));r.removeFromTop(12);row=r.removeFromTop(32);
+        if(!beside){r.removeFromTop(12);browser.setBounds(r.removeFromTop(juce::jmax(120,r.getHeight()-306)));}  // 306: the rows below it
+        r.removeFromTop(12);row=r.removeFromTop(32);
         addInstrument.setBounds(row.removeFromLeft(150));row.removeFromLeft(10);addEffect.setBounds(row.removeFromLeft(120));
         r.removeFromTop(20);slot.setBounds(r.removeFromTop(30));r.removeFromTop(12);row=r.removeFromTop(32);
         for(auto* b:{&open,&bypass,&sidechain,&up,&down,&remove}){b->setBounds(row.removeFromLeft(118));row.removeFromLeft(8);}
@@ -230,7 +240,16 @@ private:
         sidechain.setEnabled(index>=0 && hasSidechainInput && hasSidechainInput(destination(),index));
     }
     void action(int op){if(onAction && slot.getSelectedId()>0)onAction(op,slot.getSelectedId()-2);}
-    juce::ComboBox target,available,slot,liveInput;
+    // Use instrument takes an instrument on a track; Add FX takes an effect anywhere. A blocked plugin takes neither.
+    void updateAddButtons(){
+        const auto* chosen=browser.selected();
+        const bool usable=chosen!=nullptr && !chosen->blocked;
+        addInstrument.setEnabled(usable && chosen->instrument && destination()<maxSessionTracks);
+        addEffect.setEnabled(usable && !chosen->instrument);
+    }
+    static constexpr int controlsWidth=780;
+    juce::ComboBox target,slot,liveInput;
+    PluginBrowser browser;
     juce::TextButton scan,cancelScan,addInstrument,addEffect,open,bypass,sidechain,up,down,remove;
     juce::String keyName(KeySource from,int i) const {
         const auto slotName=[&](const auto& names,const juce::String& fallback){

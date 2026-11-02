@@ -126,6 +126,9 @@ public:
             return names;
         };
         pluginPanel.onAllowBlocked = [this](int index) { allowBlockedPlugin(index); };
+        pluginPanel.isBlocked = [this](const juce::PluginDescription& d) {
+            return d.pluginFormatName == "VST3" && blocklist.isBlocked(juce::File(d.fileOrIdentifier));
+        };
         scanDatabase.load(alien::scan::ScanDatabase::defaultFile());
         pluginPanel.onLiveInput = [this](int track) { releaseNotes(); engine.liveDrumTrack.store(track); drumPanel.setLiveInput(track); };
         pluginPanel.onTarget = [this](int) { refreshPlugins(); };
@@ -371,6 +374,7 @@ private:
                 case Menu::plugins:showView(7);break;
                 case Menu::sampleBrowser:workspace.showDevices(true);devicesView.samples().focusSearch();break;
                 case Menu::presetBrowser:workspace.showDevices(true);devicesView.presets().focusSearch();break;
+                case Menu::pluginBrowser:showView(7);pluginPanel.pluginBrowser().focusSearch();break;
                 case Menu::detachView:if(auto* view=currentWorkspace())view->detach();break;
                 case Menu::dockView:if(auto* view=currentWorkspace())view->dock();break;
                 case Menu::dockAllViews:
