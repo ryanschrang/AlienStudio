@@ -141,6 +141,7 @@ public:
         for (auto& delay : returnDelays) delay.prepare();
         for (auto& delay : busDelays) delay.prepare();
         for (auto& delay : sendDelays) delay.prepare();
+        for (auto& delay : sourceDelays) delay.prepare();
         dryDelay.prepare(); directDelay.prepare();
         for (int r=0;r<rackCount;++r) {
             auto& rack=racks[static_cast<std::size_t>(r)];
@@ -250,6 +251,7 @@ public:
         auto& slot = rackChannels[static_cast<std::size_t>(channel)];
         if (!slot.processor || slot.faulted.get()) return nullptr;
         samples = std::clamp(samples, 1, blockSize);
+        auto& delay = channelDelays[static_cast<std::size_t>(channel)];
         auto& messages = channelMidi[static_cast<std::size_t>(channel)];
         messages.clear();
         if (channelPanic) for (int ch = 1; ch <= 16; ++ch) { messages.addEvent(juce::MidiMessage::allSoundOff(ch), 0); messages.addEvent(juce::MidiMessage::allNotesOff(ch), 0); }
@@ -261,7 +263,25 @@ public:
         });
         channelScratch.clear(0, samples);
         process(slot, channelBase + channel, -1, channelScratch, messages, samples);
-        return slot.faulted.get() ? nullptr : &channelScratch;
+        if (slot.faulted.get()) return nullptr;
+        // Each instrument waits for the slowest one, so all of them come out channelStage samples late.
+        if (!delay.left.empty()) delay.process(channelScratch, samples, std::max(0, channelStage - slotLatency(slot)));
+        return &channelScratch;
+    }
+    // The delay the Channel Rack's plugin instruments add (the slowest one): everything else that reaches the
+    // tracks and the rack's master bus waits as long, so a latent rack instrument stays in time with them.
+    int rackChannelLatency() const noexcept {
+        int slowest = 0;
+        for (const auto& slot : rackChannels) slowest = std::max(slowest, slotLatency(slot));
+        return slowest;
+    }
+    // Audio thread, after everything but the rack's plugin instruments has reached the tracks and `live`, before
+    // those instruments are played: delays it by the rack instruments' latency (see processRackChannel).
+    void alignToRackChannels(int samples) noexcept {
+        samples = std::min(samples, blockSize);
+        channelStage = rackChannelLatency();
+        for (std::size_t t = 0; t < tracks.size(); ++t) sourceDelays[t].process(tracks[t], samples, channelStage);
+        sourceDelays[maxSessionTracks].process(live, samples, channelStage);
     }
     // After the rack channels have been played this block.
     void rackChannelsDone() noexcept { channelPanic = false; }
@@ -361,11 +381,14 @@ public:
         },fault);
         if (!ready) { markFaulted(slot,rack,index,PluginPhase::prepare,fault); return; }
         slot.prepared=true;
+        // A rack instrument's delay line is only needed while one is loaded (64 of them would be large), and
+        // starts empty, so nothing an earlier instrument played comes out of it.
+        if (isRackChannel(rack)) channelDelays[static_cast<std::size_t>(rack-channelBase)].prepare();
     }
     int latencySamples() const noexcept {
         int maximum = 0;
         for (int t = 0; t < maxSessionTracks; ++t) maximum = std::max(maximum,rackLatency(racks[t]));
-        return maximum + busLatency() + returnLatency() + rackLatency(racks[masterIndex]);
+        return rackChannelLatency() + maximum + busLatency() + returnLatency() + rackLatency(racks[masterIndex]);
     }
     // Asks each plugin how long it rings on. A plugin that fails the question is disabled like any other.
     double tailSeconds() {
@@ -461,6 +484,9 @@ private:
     std::array<Delay,maxReturns> returnDelays;
     std::array<Delay,maxBuses> busDelays;
     std::array<Delay,maxReturns> sendDelays;   // what the tracks send, waiting for the bus stage
+    std::array<Delay,maxSessionTracks+1> sourceDelays;   // the tracks and `live`, waiting for the rack's instruments
+    std::array<Delay,maxRackChannels> channelDelays;     // each rack instrument, waiting for the slowest (while loaded)
+    int channelStage{};                                  // this block's rackChannelLatency (audio thread)
     std::array<bool,maxReturns> returnLive = [] { std::array<bool,maxReturns> live{}; live.fill(true); return live; }();   // audio thread: setReturnActive
     Delay dryDelay, directDelay;
     juce::MidiBuffer emptyMidi;

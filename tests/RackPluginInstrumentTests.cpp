@@ -69,12 +69,52 @@ struct TestInstrument final : juce::AudioProcessor {
     bool crash{};
 };
 
+// An instrument with a lookahead: it reports `latency` samples and plays a single full-scale sample that many
+// samples after each note starts, so where the impulse lands in the mix shows whether the host made up for it.
+struct LatentInstrument final : juce::AudioProcessor {
+    explicit LatentInstrument(int latency) : juce::AudioProcessor(BusesProperties().withOutput("Out", juce::AudioChannelSet::stereo())) {
+        setLatencySamples(latency);
+    }
+    const juce::String getName() const override { return "Latent instrument"; }
+    void prepareToPlay(double, int) override {}
+    void releaseResources() override {}
+    bool isBusesLayoutSupported(const BusesLayout&) const override { return true; }
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) override {
+        for (const auto meta : midi)
+            if (meta.getMessage().isNoteOn() && pendingCount < static_cast<int>(pending.size()))
+                pending[static_cast<std::size_t>(pendingCount++)] = rendered + meta.samplePosition + getLatencySamples();
+        buffer.clear();
+        for (int p = 0; p < pendingCount; ++p) {
+            const auto at = pending[static_cast<std::size_t>(p)] - rendered;
+            if (at < 0 || at >= buffer.getNumSamples()) continue;
+            for (int c = 0; c < buffer.getNumChannels(); ++c) buffer.setSample(c, static_cast<int>(at), 1.0f);
+        }
+        rendered += buffer.getNumSamples();
+    }
+    double getTailLengthSeconds() const override { return 0; }
+    bool acceptsMidi() const override { return true; }
+    bool producesMidi() const override { return false; }
+    juce::AudioProcessorEditor* createEditor() override { return nullptr; }
+    bool hasEditor() const override { return false; }
+    int getNumPrograms() override { return 1; }
+    int getCurrentProgram() override { return 0; }
+    void setCurrentProgram(int) override {}
+    const juce::String getProgramName(int) override { return {}; }
+    void changeProgramName(int, const juce::String&) override {}
+    void getStateInformation(juce::MemoryBlock&) override {}
+    void setStateInformation(const void*, int) override {}
+    std::array<std::int64_t, 64> pending{};
+    int pendingCount{};
+    std::int64_t rendered{};
+};
+
 static juce::String description(const char* id) {
     juce::PluginDescription d; d.name = id; d.pluginFormatName = "VST3"; d.fileOrIdentifier = id; d.isInstrument = true;
     return d.createXml()->toString();
 }
 static PluginFactory factory() {
     return [](const juce::PluginDescription& d, double, int, juce::String&) -> std::unique_ptr<juce::AudioProcessor> {
+        if (d.fileOrIdentifier.startsWith("latent")) return std::make_unique<LatentInstrument>(d.fileOrIdentifier.substring(6).getIntValue());
         return std::make_unique<TestInstrument>(d.fileOrIdentifier == "crashing");
     };
 }
@@ -231,6 +271,89 @@ static void crashing() {
     std::puts("PASS: a crashing rack instrument is contained");
 }
 
+// Rack-plugin latency compensation (T1-09): a rack instrument that reports latency is lined up, to the sample,
+// with the rack's sample channels and with the other rack instruments; the whole mix reports the delay (so an
+// export trims it); and it costs no allocation.
+static void latency() {
+    struct Mix {
+        ToneEngine engine;
+        PluginHost host{*engine.plugins, {}, factory()};
+        Project project = Project::createDefault();
+        std::vector<float> left, right;
+        std::shared_ptr<SessionAudioClip> dc = std::make_shared<SessionAudioClip>();
+        Mix() {
+            engine.prepare(48000);
+            engine.bpm.store(120);
+            for (auto& step : engine.steps) step.store(false);
+            dc->sampleRate = 48000; dc->channels = 1; dc->frames = 48000; dc->left.assign(48000, 1.0f); dc->buildWaveform();
+            left.reserve(1 << 16); right.reserve(1 << 16);
+        }
+        // Channel 0 hard left and channel 1 hard right, both on step 1; every other channel muted.
+        void setUp(const std::vector<const char*>& plugins) {
+            std::vector<PluginState> states(plugins.size());
+            for (std::size_t c = 0; c < plugins.size(); ++c) {
+                if (plugins[c] == nullptr) { project.setSample(static_cast<int>(c), "user:dc.wav"); continue; }
+                project.setPlugin(static_cast<int>(c), description(plugins[c]).toStdString(), 20 + c);
+                states[c].descriptionXml = description(plugins[c]); states[c].instanceId = 20 + c;
+            }
+            for (int c = 0; c < project.channelCount; ++c) {
+                auto channel = project.channels[static_cast<std::size_t>(c)];
+                channel.pan = c == 0 ? -1.0f : 1.0f; channel.mute = c > 1;
+                project.setChannel(c, channel);
+                project.setStepOn(0, c, 0, c <= 1);
+            }
+            require(host.restoreRackChannels(states, 48000).isEmpty(), "the rack instruments load");
+            engine.rackMailbox.publish(project.snapshot());
+            for (std::size_t c = 0; c < plugins.size(); ++c) if (plugins[c] == nullptr) engine.rackSamples[c].store(dc.get());
+            engine.patternMode.store(3);
+        }
+        void render(int blocks) {
+            std::array<float, 512> l{}, r{};
+            for (int b = 0; b < blocks; ++b) {
+                float* outputs[]{l.data(), r.data()};
+                engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
+                left.insert(left.end(), l.begin(), l.end()); right.insert(right.end(), r.begin(), r.end());
+            }
+        }
+        static int onset(const std::vector<float>& side) {
+            for (std::size_t i = 0; i < side.size(); ++i) if (std::abs(side[i]) > 1e-3f) return static_cast<int>(i);
+            return -1;
+        }
+        // Plays step 1 from the start and returns where each side is first heard, counted from the start.
+        std::pair<int, int> play() {
+            render(4);   // stopped: the master gain settles
+            left.clear(); right.clear();
+            engine.playing.store(true);
+            const auto before = allocations;
+            render(8);
+            require(allocations == before, "a latent rack instrument is lined up without allocating");
+            return {onset(left), onset(right)};
+        }
+    };
+    {
+        Mix mix;
+        mix.setUp({"latent300", nullptr});
+        require(mix.engine.plugins->rackChannelLatency() == 300 && mix.engine.plugins->latencySamples() == 300,
+                "the mix reports the rack instrument's latency, so an export trims it");
+        const auto [instrument, sample] = mix.play();
+        require(sample == 300, "a sample channel waits for the latent rack instrument");
+        require(instrument == sample, "and the instrument's note lands on the same sample");
+    }
+    {
+        Mix mix;
+        mix.setUp({"latent300", "latent0"});
+        const auto [slow, fast] = mix.play();
+        require(slow == 300 && fast == slow, "two rack instruments with different latencies line up with each other");
+    }
+    {
+        Mix mix;
+        mix.setUp({"latent0", nullptr});
+        const auto [instrument, sample] = mix.play();
+        require(mix.engine.plugins->latencySamples() == 0 && instrument == 0 && sample == 0, "an instrument without latency delays nothing");
+    }
+    std::puts("PASS: a latent rack instrument stays in time with the rest of the mix, to the sample");
+}
+
 static void controller() {
     ToneEngine engine;
     ProjectController c(engine);
@@ -264,6 +387,7 @@ int main() {
     player();
     engine();
     crashing();
+    latency();
     controller();
     return 0;
 }
