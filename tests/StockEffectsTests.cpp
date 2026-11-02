@@ -522,12 +522,97 @@ static void phaserHostTests() {
     checkNear(effect->settings().feedback, .75 * .85, 1e-6, "phaser DSP sees automated feedback");
     std::unique_ptr<juce::AudioProcessorEditor> editor(effect->createEditorIfNeeded());
     auto* panel = dynamic_cast<stock::PhaserEditor*>(editor.get()); check(panel != nullptr, "phaser custom editor available");
-    if (panel) { panel->tick(); checkNear(panel->knob(1).slider.getValue(), .75, 1e-6, "phaser editor follows host automation on message thread"); }
+    if (panel) { panel->refreshFromParameters(); checkNear(panel->knob(1).slider.getValue(), .75, 1e-6, "phaser editor follows host automation on message thread"); }
     editor.reset();
     host.snapshot(racks, master); check(!host.changed.load(), "phaser automation/editor refresh/snapshot do not emit user edit events"); master.effects = racks[0].effects; racks[0].effects.clear();
     check(host.restore(racks, master, 48000).isEmpty(), "phaser moves to master with saved state");
     effect = dynamic_cast<stock::PhaserEffect*>(runtime->racks[PluginRuntime::masterIndex].effects[0].processor.get());
     check(effect && std::abs(effect->parameters.getParameter(stock::phaser::feedback)->getValue() - .75f) < 1e-6, "phaser state survives host snapshot/restore");
+}
+
+// Host automation calls setValue without listener notifications (none may run on the audio
+// thread). Every stock effect must still play, show and save the automated settings, and none
+// of that may look like a user edit (issue #179).
+static void silentAutomationTests() {
+    const auto load = [](const std::vector<float>& l, const std::vector<float>& r, int split) {
+        // Loud, then quiet: a gate, compressor or limiter sounds different on each half.
+        auto left = l, right = r;
+        for (std::size_t i = static_cast<std::size_t>(split); i < left.size(); ++i) { left[i] *= .01f; right[i] *= .01f; }
+        return std::pair{left, right};
+    };
+    const int length = 24000, split = 12000;
+    const auto input = load(noise(length, .3, 7), noise(length, .3, 8), split);
+    const auto render = [&](juce::AudioProcessor& e) { auto l = input.first, r = input.second; process(e, l, r); return std::pair{l, r}; };
+    const auto difference = [](const std::pair<std::vector<float>, std::vector<float>>& a, const std::pair<std::vector<float>, std::vector<float>>& b) {
+        double d = 0;
+        for (std::size_t i = 0; i < a.first.size(); ++i)
+            d = std::max({d, static_cast<double>(std::abs(a.first[i] - b.first[i])), static_cast<double>(std::abs(a.second[i] - b.second[i]))});
+        return d;
+    };
+    for (const auto& info : stock::catalog) {
+        const std::string name = info.id;
+        auto runtime = std::make_unique<PluginRuntime>(); runtime->prepare(48000); PluginHost host(*runtime);
+        std::vector<PluginRackState> racks(1); PluginRackState master; racks[0].effects = {stockState(info.id)};
+        check(host.restore(racks, master, 48000).isEmpty(), name + " restores in a track rack");
+        auto* automated = dynamic_cast<stock::Effect*>(runtime->racks[0].effects[0].processor.get());
+        if (automated == nullptr) { check(false, name + " is hosted as a stock effect"); continue; }
+        automated->prepareToPlay(rate, 512);
+        // Every control moved well away from its default: by automation on one instance, by
+        // ordinary notifying host edits on a reference instance.
+        auto reference = make(info.id), untouched = make(info.id);
+        reference->setPlayHead(automated->getPlayHead()); untouched->setPlayHead(automated->getPlayHead()); // same tempo for a synced delay
+        const auto instance = racks[0].effects[0].instanceId;
+        std::vector<automation::ParameterLane> lanes;
+        const auto& params = automated->getParameters();
+        for (int i = 0; i < params.size(); ++i) {
+            const auto* ranged = dynamic_cast<juce::RangedAudioParameter*>(params[i]);
+            const float target = params[i]->getDefaultValue() < .5f ? .8f : .2f;
+            automation::ParameterLane lane; lane.target = {instance, ranged->paramID.toStdString()};
+            lane.points = {{0, target, automation::Curve::hold}}; lanes.push_back(std::move(lane));
+            reference->getParameters()[i]->setValueNotifyingHost(target);
+        }
+        host.changed.store(false);
+        const auto before = allocations;
+        const int changed = runtime->applyParameterAutomation(lanes, 0);
+        const bool allocated = allocations != before; // before building any message string
+        check(changed == params.size() && !allocated, name + " automation applies every control without allocating");
+
+        const auto heard = render(*automated), expected = render(*reference), plain = render(*untouched);
+        check(difference(expected, plain) > 1e-3, name + " test settings are audibly different from the defaults");
+        checkNear(difference(heard, expected), 0.0, 1e-6, name + " plays automated settings rather than a stale parameter cache");
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor(automated->createEditorIfNeeded());
+        if (auto* panel = dynamic_cast<stock::EffectEditor*>(editor.get())) {
+            panel->refreshFromParameters();
+            for (std::size_t k = 0; k < panel->knobCount(); ++k) {
+                auto& parameter = panel->knob(k).parameter();
+                const double shown = panel->knob(k).slider.getValue(), actual = parameter.convertFrom0to1(parameter.getValue());
+                checkNear(shown, actual, 1e-4 * std::max(1.0, std::abs(actual)), name + " editor knob follows automation: " + parameter.paramID.toStdString());
+            }
+            if (auto* d = dynamic_cast<stock::DelayEditor*>(panel))
+                check(d->syncButton().getToggleState() == (reference->parameters.getParameter(stock::delay::sync)->getValue() >= .5f),
+                      "delay sync button follows automation");
+            if (auto* f = dynamic_cast<stock::FilterEditor*>(panel))
+                check(f->modeBox().getSelectedItemIndex() == static_cast<int>(static_cast<stock::FilterEffect&>(*reference).settings().mode),
+                      "filter mode menu follows automation");
+            if (auto* s = dynamic_cast<stock::SaturatorEditor*>(panel))
+                check(s->characterBox().getSelectedItemIndex() == static_cast<int>(static_cast<stock::SaturatorEffect&>(*reference).settings().curve),
+                      "saturator character menu follows automation");
+        } else check(false, name + " has a stock editor");
+        editor.reset();
+
+        host.snapshot(racks, master);
+        check(!host.changed.load(), name + " automation, editor refresh and snapshot are not user edits");
+        check(host.restore(racks, master, 48000).isEmpty(), name + " restores from a snapshot taken during automation");
+        auto* restored = dynamic_cast<stock::Effect*>(runtime->racks[0].effects[0].processor.get());
+        // Plain values: a switch set to 0.8 reports 0.8 until it is saved, and "on" after.
+        const auto plainAt = [](stock::Effect& e, int i) { return stock::plainValue(*dynamic_cast<juce::RangedAudioParameter*>(e.getParameters()[i])); };
+        for (int i = 0; restored != nullptr && i < params.size(); ++i) {
+            const double expected = plainAt(*reference, i);
+            checkNear(plainAt(*restored, i), expected, 1e-5 * std::max(1.0, std::abs(expected)),
+                      name + " saves the automated value of parameter " + std::to_string(i));
+        }
+    }
 }
 
 static void hostTests() {
@@ -771,6 +856,7 @@ int main() {
     stateTests();
     phaserHostTests();
     chorusHostTests();
+    silentAutomationTests();
     hostTests();
     editorTests();
     if (failures) { std::fprintf(stderr, "%d check(s) failed\n", failures); return 1; }

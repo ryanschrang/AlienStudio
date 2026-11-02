@@ -22,13 +22,18 @@ public:
         slider.setName(captionText);
         addAndMakeVisible(slider);
         attachment = std::make_unique<Attachments::SliderAttachment>(effect.parameters, parameterId, slider);
-        if (auto* p = effect.parameters.getParameter(parameterId)) {
-            slider.setDoubleClickReturnValue(true, p->convertFrom0to1(p->getDefaultValue()));
-            slider.setTitle(p->getName(64)); // the full name, for screen readers and tooltips
-            slider.setTooltip(p->getName(64) + ": double-click to reset");
-        }
+        bound = effect.parameters.getParameter(parameterId);
+        slider.setDoubleClickReturnValue(true, bound->convertFrom0to1(bound->getDefaultValue()));
+        slider.setTitle(bound->getName(64)); // the full name, for screen readers and tooltips
+        slider.setTooltip(bound->getName(64) + ": double-click to reset");
     }
     juce::Slider slider;
+    juce::RangedAudioParameter& parameter() const noexcept { return *bound; }
+    // Host automation changes the parameter without telling the attachment; show it without
+    // sending it back to the host as an edit. A knob being dragged already shows its value.
+    void refresh() {
+        if (!slider.isMouseButtonDown()) slider.setValue(plainValue(*bound), juce::dontSendNotification);
+    }
     void setEnabledLook(bool on) { slider.setEnabled(on); }
     void paint(juce::Graphics& g) override {
         ui::drawCaption(g, caption, getLocalBounds().removeFromTop(14), slider.isEnabled() ? ui::colours::textDim : ui::colours::textFaint,
@@ -37,6 +42,7 @@ public:
     void resized() override { slider.setBounds(getLocalBounds().withTrimmedTop(14)); }
 private:
     juce::String caption;
+    juce::RangedAudioParameter* bound{};
     std::unique_ptr<Attachments::SliderAttachment> attachment;
 };
 
@@ -66,6 +72,13 @@ public:
     juce::Rectangle<int> content() const { return getLocalBounds().withTrimmedTop(headerHeight).reduced(margin); }
     std::size_t knobCount() const noexcept { return knobs.size(); }
     Knob& knob(std::size_t i) { return *knobs[i]; }
+    // Message thread, 30 times a second: catch the controls up with host automation, then
+    // update the live displays.
+    void refreshFromParameters() {
+        for (auto& k : knobs) k->refresh();
+        for (auto& follow : followers) follow();
+        tick();
+    }
 protected:
     // Each editor calls this last, once its children exist, so the first layout sees them.
     void finishSetup() { setSize(desiredWidth, desiredHeight); startTimerHz(30); }
@@ -79,12 +92,22 @@ protected:
         for (std::size_t i = 0; i < count && first + i < knobs.size(); ++i)
             knobs[first + i]->setBounds(area.removeFromLeft(cell).reduced(4, 0));
     }
-    void timerCallback() override { tick(); }
+    // Menus and switches bound by an attachment, which also misses silent host automation.
+    void follow(juce::ComboBox& box, const char* id) {
+        auto* p = effect.parameters.getParameter(id);
+        followers.push_back([&box, p] { box.setSelectedItemIndex(juce::roundToInt(plainValue(*p)), juce::dontSendNotification); });
+    }
+    void follow(juce::Button& button, const char* id) {
+        auto* p = effect.parameters.getParameter(id);
+        followers.push_back([&button, p] { button.setToggleState(plainValue(*p) >= 0.5, juce::dontSendNotification); });
+    }
+    void timerCallback() override { refreshFromParameters(); }
     virtual void tick() {}
     Effect& effect;
     juce::Colour accent;
     int desiredWidth, desiredHeight;
     std::vector<std::unique_ptr<Knob>> knobs;
+    std::vector<std::function<void()>> followers;
 };
 
 // ---- Equaliser -------------------------------------------------------------------
@@ -456,6 +479,7 @@ public:
         character.setTitle("Saturation character");
         addAndMakeVisible(character);
         characterAttachment = std::make_unique<Attachments::ComboBoxAttachment>(e.parameters, saturator::character, character);
+        follow(character, saturator::character);
         finishSetup();
     }
     ShapeDisplay& display() { return shape; }
@@ -521,8 +545,8 @@ public:
         g.setColour(inset);
         g.fillRoundedRectangle(area, 6.0f);
         const auto& p = delayEffect.parameters;
-        const double fb = *p.getRawParameterValue(delay::feedback);
-        const bool ping = *p.getRawParameterValue(delay::pingPong) > 0.5f;
+        const double fb = plainValue(*p.getParameter(delay::feedback));
+        const bool ping = plainValue(*p.getParameter(delay::pingPong)) > 0.5;
         const int count = 8;
         const float slot = (area.getWidth() - 24.0f) / static_cast<float>(count + 1);
         for (int i = 0; i <= count; ++i) {
@@ -551,9 +575,16 @@ public:
         syncAttachment = std::make_unique<Attachments::ButtonAttachment>(e.parameters, delay::sync, sync);
         pingAttachment = std::make_unique<Attachments::ButtonAttachment>(e.parameters, delay::pingPong, pingPong);
         divisionAttachment = std::make_unique<Attachments::ComboBoxAttachment>(e.parameters, delay::division, division);
+        follow(sync, delay::sync); follow(pingPong, delay::pingPong); follow(division, delay::division);
         sync.onStateChange = [this] { updateEnabled(); };
         updateEnabled();
         finishSetup();
+    }
+    juce::ToggleButton& syncButton() { return sync; }
+    void tick() override {
+        updateEnabled(); // a silent refresh of the sync switch does not call onStateChange
+        const double key = plainValue(*effect.parameters.getParameter(delay::feedback)) + (pingPong.getToggleState() ? 10.0 : 0.0);
+        if (key != lastKey) { lastKey = key; echoes.repaint(); }
     }
     void resized() override {
         auto area = content();
@@ -567,6 +598,7 @@ public:
 private:
     void updateEnabled() { const bool on = sync.getToggleState(); timeKnob->setEnabledLook(!on); division.setEnabled(on); }
     EchoDisplay echoes;
+    double lastKey{-1.0};
     Knob* timeKnob{};
     juce::ToggleButton sync, pingPong;
     juce::ComboBox division;
@@ -584,7 +616,7 @@ public:
         g.setColour(inset);
         g.fillRoundedRectangle(area, 6.0f);
         const auto& p = reverbEffect.parameters;
-        const double size = *p.getRawParameterValue(reverb::size), pre = *p.getRawParameterValue(reverb::preDelay);
+        const double size = plainValue(*p.getParameter(reverb::size)), pre = plainValue(*p.getParameter(reverb::preDelay));
         const double tail = ReverbEffect::tailSecondsFor(size, pre), span = std::max(tail * 1.1, 0.5);
         const float preX = static_cast<float>(pre * 0.001 / span) * area.getWidth();
         juce::Path decay;
@@ -628,12 +660,12 @@ public:
     }
     void tick() override {
         const auto& p = effect.parameters;
-        const float key = *p.getRawParameterValue(reverb::size) * 7.0f + *p.getRawParameterValue(reverb::preDelay);
+        const double key = plainValue(*p.getParameter(reverb::size)) * 7.0 + plainValue(*p.getParameter(reverb::preDelay));
         if (key != lastKey) { lastKey = key; decay.repaint(); }
     }
 private:
     DecayDisplay decay;
-    float lastKey{-1.0f};
+    double lastKey{-1.0};
 };
 
 // ---- Filter ------------------------------------------------------------------------------
@@ -749,6 +781,7 @@ public:
         addAndMakeVisible(mode); addAndMakeVisible(slope);
         modeAttachment = std::make_unique<Attachments::ComboBoxAttachment>(e.parameters, filter::mode, mode);
         slopeAttachment = std::make_unique<Attachments::ComboBoxAttachment>(e.parameters, filter::slope, slope);
+        follow(mode, filter::mode); follow(slope, filter::slope);
         finishSetup();
     }
     FilterCurve& response() { return curve; }
@@ -787,11 +820,6 @@ class PhaserEditor final : public EffectEditor {
 public:
     explicit PhaserEditor(PhaserEffect& e) : EffectEditor(e, ui::colours::solo, 520, 220) {
         addKnob(phaser::rate, "Rate"); addKnob(phaser::depth, "Depth"); addKnob(phaser::feedback, "Feedback"); addKnob(phaser::mix, "Mix"); finishSetup();
-    }
-    void tick() override {
-        const auto s = static_cast<PhaserEffect&>(effect).settings();
-        knob(0).slider.setValue(s.rateHz, juce::dontSendNotification); knob(1).slider.setValue(s.depth, juce::dontSendNotification);
-        knob(2).slider.setValue(s.feedback, juce::dontSendNotification); knob(3).slider.setValue(s.mix, juce::dontSendNotification);
     }
     void resized() override { auto area = content(); layoutKnobs(area, 0, 4, area.getWidth() / 4); }
 };

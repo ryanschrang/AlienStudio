@@ -115,6 +115,14 @@ inline Format plainFormat(const char* suffix = "", int decimals = 2) {
     return {[suffix, decimals](float v, int) { return juce::String(v, decimals) + suffix; }, [](const juce::String& t) { return parseNumber(t); }};
 }
 
+// A parameter's current plain value (Hz, dB, a choice index, 0/1), read from the parameter
+// itself. Host automation calls setValue without notifying listeners, since none may run on
+// the audio thread, so APVTS's separate raw-value cache would keep the old setting.
+inline double plainValue(const juce::RangedAudioParameter& p) noexcept {
+    if (auto* f = dynamic_cast<const juce::AudioParameterFloat*>(&p)) return f->get();  // exact, no round trip
+    return p.convertFrom0to1(p.getValue());
+}
+
 // Common behaviour: stereo in / stereo out, one parameter set, saved as XML.
 class Effect : public juce::AudioProcessor {
 public:
@@ -148,8 +156,13 @@ public:
     bool hasEditor() const override { return editorFactory != nullptr; }
     juce::AudioProcessorEditor* createEditor() override { return editorFactory ? editorFactory(*this) : nullptr; }
     void releaseResources() override {}
+    // Saves each parameter's own value: APVTS's tree misses host automation, which sets values
+    // without notifying it. The snapshot is a private copy, so saving sends no host edit events.
     void getStateInformation(juce::MemoryBlock& destination) override {
-        if (auto xml = parameters.copyState().createXml()) copyXmlToBinary(*xml, destination);
+        auto state = parameters.copyState();
+        for (auto child : state) if (auto* p = parameters.getParameter(child.getProperty("id").toString()))
+            child.setProperty("value", plainValue(*p), nullptr);
+        if (auto xml = state.createXml()) copyXmlToBinary(*xml, destination);
     }
     void setStateInformation(const void* data, int size) override {
         // Anything that is not this effect's own state is ignored, not trusted.
@@ -164,8 +177,22 @@ protected:
         : juce::AudioProcessor(buses(sidechainInput)),
           parameters(*this, nullptr, juce::String("ALIEN_") + juce::String(effectInformation.id).toUpperCase(), std::move(layout)),
           info(effectInformation) {}
-    double value(std::atomic<float>* p) const noexcept { return static_cast<double>(p->load(std::memory_order_relaxed)); }
-    std::atomic<float>* raw(const char* id) const { return parameters.getRawParameterValue(id); }
+    // Audio thread: one parameter's plain value, read from the parameter itself (see plainValue),
+    // with the type check done once when the effect is built.
+    class Source {
+    public:
+        Source() = default;
+        explicit Source(const juce::RangedAudioParameter* p) noexcept
+            : parameter(p), floating(dynamic_cast<const juce::AudioParameterFloat*>(p)) {}
+        double get() const noexcept {
+            return floating != nullptr ? static_cast<double>(floating->get()) : static_cast<double>(parameter->convertFrom0to1(parameter->getValue()));
+        }
+    private:
+        const juce::RangedAudioParameter* parameter{};
+        const juce::AudioParameterFloat* floating{};
+    };
+    double value(const Source& p) const noexcept { return p.get(); }
+    Source source(const char* id) const { return Source(parameters.getParameter(id)); }
     static BusesProperties buses(bool sidechainInput) {
         auto properties = BusesProperties().withInput("Input", juce::AudioChannelSet::stereo(), true)
                                            .withOutput("Output", juce::AudioChannelSet::stereo(), true);
@@ -188,7 +215,7 @@ protected:
 class EqEffect final : public Effect {
 public:
     EqEffect() : Effect(catalog[0], layout()) {
-        for (std::size_t i = 0; i < pointers.size(); ++i) pointers[i] = raw(names()[i]);
+        for (std::size_t i = 0; i < pointers.size(); ++i) pointers[i] = source(names()[i]);
     }
     void prepareToPlay(double sampleRate, int) override { rate = sampleRate; equaliser.prepare(sampleRate); prepared = true; }
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
@@ -233,7 +260,7 @@ private:
         l.add(floatParameter(eq::output, "Output", {-12, 12, 0}, 0, dbFormat()));
         return l;
     }
-    std::array<std::atomic<float>*, 11> pointers{};
+    std::array<Source, 11> pointers{};
     dsp::ParametricEq equaliser;
 };
 
@@ -242,8 +269,8 @@ private:
 class CompressorEffect final : public Effect {
 public:
     CompressorEffect() : Effect(catalog[1], layout(), true) {
-        threshold = raw(comp::threshold); ratio = raw(comp::ratio); attack = raw(comp::attack); release = raw(comp::release);
-        knee = raw(comp::knee); makeup = raw(comp::makeup); mix = raw(comp::mix);
+        threshold = source(comp::threshold); ratio = source(comp::ratio); attack = source(comp::attack); release = source(comp::release);
+        knee = source(comp::knee); makeup = source(comp::makeup); mix = source(comp::mix);
     }
     void prepareToPlay(double sampleRate, int) override { rate = sampleRate; compressor.prepare(sampleRate); prepared = true; }
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
@@ -275,7 +302,7 @@ private:
         l.add(floatParameter(comp::mix, "Mix", {0, 1, 0}, 1, percentFormat()));
         return l;
     }
-    std::atomic<float> *threshold{}, *ratio{}, *attack{}, *release{}, *knee{}, *makeup{}, *mix{};
+    Source threshold, ratio, attack, release, knee, makeup, mix;
     std::atomic<float> reduction{0.0f};
     dsp::Compressor compressor;
 };
@@ -285,8 +312,8 @@ private:
 class GateEffect final : public Effect {
 public:
     GateEffect() : Effect(catalog[7], layout(), true) {
-        threshold = raw(gate::threshold); range = raw(gate::range); attack = raw(gate::attack);
-        hold = raw(gate::hold); release = raw(gate::release);
+        threshold = source(gate::threshold); range = source(gate::range); attack = source(gate::attack);
+        hold = source(gate::hold); release = source(gate::release);
     }
     void prepareToPlay(double sampleRate, int) override { rate = sampleRate; engine.prepare(sampleRate); prepared = true; }
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
@@ -316,7 +343,7 @@ private:
         l.add(floatParameter(gate::release, "Release", {5, 2000, 150}, 150, millisecondsFormat()));
         return l;
     }
-    std::atomic<float> *threshold{}, *range{}, *attack{}, *hold{}, *release{};
+    Source threshold, range, attack, hold, release;
     std::atomic<float> attenuation{0.0f};
     dsp::Gate engine;
 };
@@ -326,8 +353,8 @@ private:
 class SaturatorEffect final : public Effect {
 public:
     SaturatorEffect() : Effect(catalog[6], layout()) {
-        drive = raw(saturator::drive); character = raw(saturator::character); tone = raw(saturator::tone);
-        mix = raw(saturator::mix); output = raw(saturator::output);
+        drive = source(saturator::drive); character = source(saturator::character); tone = source(saturator::tone);
+        mix = source(saturator::mix); output = source(saturator::output);
         setLatencySamples(dsp::Saturator::latency); // fixed: the oversampling filters
     }
     void prepareToPlay(double sampleRate, int) override {
@@ -363,7 +390,7 @@ private:
         l.add(floatParameter(saturator::output, "Output", {-24, 12, 0}, 0, dbFormat()));
         return l;
     }
-    std::atomic<float> *drive{}, *character{}, *tone{}, *mix{}, *output{};
+    Source drive, character, tone, mix, output;
     dsp::Saturator engine;
 };
 
@@ -377,8 +404,8 @@ public:
     static constexpr float wetCalibration = 0.72f;
 
     ReverbEffect() : Effect(catalog[2], layout()) {
-        size = raw(reverb::size); damping = raw(reverb::damping); width = raw(reverb::width);
-        preDelay = raw(reverb::preDelay); mix = raw(reverb::mix);
+        size = source(reverb::size); damping = source(reverb::damping); width = source(reverb::width);
+        preDelay = source(reverb::preDelay); mix = source(reverb::mix);
     }
     void prepareToPlay(double sampleRate, int) override {
         rate = sampleRate;
@@ -440,7 +467,7 @@ private:
         l.add(floatParameter(reverb::mix, "Mix", {0, 1, 0}, 0.25f, percentFormat()));
         return l;
     }
-    std::atomic<float> *size{}, *damping{}, *width{}, *preDelay{}, *mix{};
+    Source size, damping, width, preDelay, mix;
     juce::Reverb engine;
     dsp::FractionalDelayLine preLeft, preRight;
     std::array<float, scratchSize> wetLeft{}, wetRight{};
@@ -451,8 +478,8 @@ private:
 class DelayEffect final : public Effect {
 public:
     DelayEffect() : Effect(catalog[3], layout()) {
-        time = raw(delay::time); sync = raw(delay::sync); division = raw(delay::division); feedback = raw(delay::feedback);
-        pingPong = raw(delay::pingPong); tone = raw(delay::tone); mix = raw(delay::mix);
+        time = source(delay::time); sync = source(delay::sync); division = source(delay::division); feedback = source(delay::feedback);
+        pingPong = source(delay::pingPong); tone = source(delay::tone); mix = source(delay::mix);
     }
     void prepareToPlay(double sampleRate, int) override { rate = sampleRate; engine.prepare(sampleRate); prepared = true; }
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
@@ -495,7 +522,7 @@ private:
         l.add(floatParameter(delay::mix, "Mix", {0, 1, 0}, 0.3f, percentFormat()));
         return l;
     }
-    std::atomic<float> *time{}, *sync{}, *division{}, *feedback{}, *pingPong{}, *tone{}, *mix{};
+    Source time, sync, division, feedback, pingPong, tone, mix;
     std::atomic<double> lastTimeMs{350.0};
     dsp::StereoDelay engine;
 };
@@ -505,7 +532,7 @@ private:
 class LimiterEffect final : public Effect {
 public:
     LimiterEffect() : Effect(catalog[4], layout()) {
-        gain = raw(limiter::gain); ceiling = raw(limiter::ceiling); release = raw(limiter::release);
+        gain = source(limiter::gain); ceiling = source(limiter::ceiling); release = source(limiter::release);
     }
     void prepareToPlay(double sampleRate, int) override {
         rate = sampleRate; engine.prepare(sampleRate);
@@ -533,7 +560,7 @@ private:
         l.add(floatParameter(limiter::release, "Release", {10, 1000, 100}, 100, millisecondsFormat()));
         return l;
     }
-    std::atomic<float> *gain{}, *ceiling{}, *release{};
+    Source gain, ceiling, release;
     std::atomic<float> reduction{0.0f};
     dsp::Limiter engine;
 };
@@ -543,8 +570,8 @@ private:
 class FilterEffect final : public Effect {
 public:
     FilterEffect() : Effect(catalog[5], layout()) {
-        mode = raw(filter::mode); slope = raw(filter::slope); cutoff = raw(filter::cutoff); resonance = raw(filter::resonance);
-        mix = raw(filter::mix); output = raw(filter::output);
+        mode = source(filter::mode); slope = source(filter::slope); cutoff = source(filter::cutoff); resonance = source(filter::resonance);
+        mix = source(filter::mix); output = source(filter::output);
     }
     void prepareToPlay(double sampleRate, int) override { rate = sampleRate; engine.prepare(sampleRate); prepared = true; }
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
@@ -579,14 +606,14 @@ private:
         l.add(floatParameter(filter::output, "Output", {-12, 12, 0}, 0, dbFormat()));
         return l;
     }
-    std::atomic<float> *mode{}, *slope{}, *cutoff{}, *resonance{}, *mix{}, *output{};
+    Source mode, slope, cutoff, resonance, mix, output;
     dsp::MultimodeFilter engine;
 };
 
 // ---- Chorus -------------------------------------------------------------------
 class ChorusEffect final : public Effect {
 public:
-    ChorusEffect() : Effect(catalog[8], layout()) { speed = raw(chorus::rate); depth = raw(chorus::depth); mix = raw(chorus::mix); }
+    ChorusEffect() : Effect(catalog[8], layout()) { speed = source(chorus::rate); depth = source(chorus::depth); mix = source(chorus::mix); }
     void prepareToPlay(double sampleRate, int) override { rate = sampleRate; engine.prepare(sampleRate); prepared = true; }
     void reset() override { engine.reset(); }
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
@@ -603,7 +630,7 @@ private:
         l.add(floatParameter(chorus::mix, "Mix", {0, 1, 0}, .35f, percentFormat()));
         return l;
     }
-    std::atomic<float> *speed{}, *depth{}, *mix{};
+    Source speed, depth, mix;
     dsp::StereoChorus engine;
 };
 
@@ -619,15 +646,6 @@ public:
         engine.process(buffer.getWritePointer(0), buffer.getWritePointer(1), buffer.getNumSamples(), settings());
     }
     dsp::StereoPhaser::Settings settings() const noexcept { return {speed->get(), depth->get(), feedback->get(), mix->get()}; }
-    // Host automation calls setValue without listeners on the audio thread.
-    // DSP reads each parameter's own atomic value. Snapshot current values into
-    // a private tree, so automation is saved without sending host edit events.
-    void getStateInformation(juce::MemoryBlock& destination) override {
-        auto state = parameters.copyState();
-        for (auto child : state) if (auto* p = parameters.getParameter(child.getProperty("id").toString()))
-            child.setProperty("value", p->convertFrom0to1(p->getValue()), nullptr);
-        if (auto xml = state.createXml()) copyXmlToBinary(*xml, destination);
-    }
     double getTailLengthSeconds() const override { return dsp::StereoPhaser::tailSeconds; }
 private:
     juce::AudioParameterFloat* parameter(const char* id) { return static_cast<juce::AudioParameterFloat*>(parameters.getParameter(id)); }
