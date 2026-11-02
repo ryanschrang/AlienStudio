@@ -641,40 +641,61 @@ static void checkPianoRollProcessing() {
     text = textBox->getCurrentTextEditor();
     require(text != nullptr, "numeric field opens for clipboard focus test");
     const auto previousTextClipboard = juce::SystemClipboard::getTextFromClipboard();
-    text->setText("12345");
+    // The OS clipboard is shared by every program on the machine, including another copy of this test running from
+    // a different build folder, and a program can hold it open for seconds. So the text is unique to this run, each
+    // check is retried for about two seconds, and if the clipboard cannot be written and read back at all, the two
+    // checks that need it are skipped (and say so) rather than failing. The checks that guard the piano roll, that
+    // its note shortcuts leave text-field Copy and Paste alone and that Paste never adds notes, always run.
+    const auto token = juce::String(10000 + juce::Random::getSystemRandom().nextInt(89999));
+    const auto retry = [](int attempts, auto&& attempt) {   // about 100 ms apart
+        for (int i = 0; i < attempts; ++i) {
+            if (attempt()) return true;
+            juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
+        }
+        return false;
+    };
+    const bool clipboardUsable = retry(60, [&] {
+        juce::SystemClipboard::copyTextToClipboard("probe " + token);
+        return juce::SystemClipboard::getTextFromClipboard() == "probe " + token;
+    });
+    text->setText(token);
     text->grabKeyboardFocus();
     const auto beforeTextClipboard = roll.getPattern();
     require(!roll.keyPressed(juce::KeyPress('c', juce::ModifierKeys::ctrlModifier, 'c'))
         && !roll.keyPressed(juce::KeyPress('v', juce::ModifierKeys::ctrlModifier, 'v'))
         && !roll.keyPressed(juce::KeyPress('d', juce::ModifierKeys::ctrlModifier, 'd')),
         "note actions must leave text-field Copy, Paste and Duplicate shortcuts unhandled");
-    // The OS clipboard is shared by every program on the machine (and by other test runs going on at the same
-    // time), so something else can write to it between this Copy and the read, or between setting it and Paste.
-    // Each check is tried a few times; it fails only if the text field never copies or pastes.
-    bool copied = false;
-    for (int attempt = 0; attempt < 5 && !copied; ++attempt) {
-        text->grabKeyboardFocus();
-        shortcut('a', juce::ModifierKeys::ctrlModifier);
-        shortcut('c', juce::ModifierKeys::ctrlModifier);
-        copied = juce::SystemClipboard::getTextFromClipboard() == "12345";
-        if (!copied) juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
-    }
-    require(copied, "numeric text Copy retains normal OS clipboard behavior");
-    bool pasted = false;
-    for (int attempt = 0; attempt < 5 && !pasted; ++attempt) {
-        if (juce::SystemClipboard::getTextFromClipboard() != "12345") juce::SystemClipboard::copyTextToClipboard("12345");
-        text->setText("0");
+    if (clipboardUsable) {
+        const bool copied = retry(20, [&] {
+            text->setText(token);
+            text->grabKeyboardFocus();
+            shortcut('a', juce::ModifierKeys::ctrlModifier);
+            shortcut('c', juce::ModifierKeys::ctrlModifier);
+            return juce::SystemClipboard::getTextFromClipboard() == token;
+        });
+        require(copied, "numeric text Copy retains normal OS clipboard behavior");
+        const bool pasted = retry(20, [&] {
+            if (juce::SystemClipboard::getTextFromClipboard() != token) juce::SystemClipboard::copyTextToClipboard(token);
+            text->setText("0");
+            text->grabKeyboardFocus();
+            shortcut('a', juce::ModifierKeys::ctrlModifier);
+            shortcut('v', juce::ModifierKeys::ctrlModifier);
+            return text->getText() == token;
+        });
+        require(pasted, "numeric text Paste retains normal OS clipboard behavior");
+    } else {
+        std::puts("SKIP: the Windows clipboard could not be written and read back for six seconds (another program holds it), "
+                  "so the text-field Copy and Paste checks were skipped");
         text->grabKeyboardFocus();
         shortcut('a', juce::ModifierKeys::ctrlModifier);
         shortcut('v', juce::ModifierKeys::ctrlModifier);
-        pasted = text->getText() == "12345";
-        if (!pasted) juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
     }
-    require(pasted && alien::samePianoRollPattern(beforeTextClipboard, roll.getPattern()),
-        "numeric text Paste must not insert piano-roll notes");
+    require(alien::samePianoRollPattern(beforeTextClipboard, roll.getPattern()), "numeric text Paste must not insert piano-roll notes");
     textBox->hideEditor(true);
     click("Cancel piano roll processing");
-    juce::SystemClipboard::copyTextToClipboard(previousTextClipboard);
+    // Put back what was there, unless something else has written to the clipboard since.
+    const auto now = juce::SystemClipboard::getTextFromClipboard();
+    if (now == token || now == "probe " + token) juce::SystemClipboard::copyTextToClipboard(previousTextClipboard);
     roll.setPattern(full);
     shortcut('v', juce::ModifierKeys::ctrlModifier);
     require(!roll.canUndo() && alien::samePianoRollPattern(roll.getPattern(), full), "capacity failure leaves all notes and history untouched");
