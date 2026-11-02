@@ -16,7 +16,7 @@ namespace alien::stock {
 inline constexpr const char* formatName = "AlienStock";
 
 struct Info { const char* id; const char* name; const char* summary; };
-inline constexpr std::array<Info, 8> catalog{{
+inline constexpr std::array<Info, 9> catalog{{
     {"eq", "Alien EQ", "Four-band equaliser with low and high shelves and two bells"},
     {"compressor", "Alien Compressor", "Stereo-linked compressor with soft knee and parallel mix"},
     {"reverb", "Alien Reverb", "Stereo room reverb with pre-delay"},
@@ -25,6 +25,7 @@ inline constexpr std::array<Info, 8> catalog{{
     {"filter", "Alien Filter", "Resonant low-pass, high-pass, band-pass and notch filter, 12 or 24 dB/oct"},
     {"saturator", "Alien Saturator", "Oversampled soft, warm or hard saturation with tone and mix"},
     {"gate", "Alien Gate", "Noise gate with hold and range; key it from another track for rhythmic gating"},
+    {"chorus", "Alien Chorus", "Stereo chorus with modulated delay, rate, depth and mix"},
 }};
 
 // Parameter identifiers, shared by the processors and their editors.
@@ -35,6 +36,9 @@ inline constexpr const char *lowFreq = "lowFreq", *lowGain = "lowGain", *m1Freq 
 namespace comp {
 inline constexpr const char *threshold = "threshold", *ratio = "ratio", *attack = "attack", *release = "release",
     *knee = "knee", *makeup = "makeup", *mix = "mix";
+}
+namespace chorus {
+inline constexpr const char *rate = "rate", *depth = "depth", *mix = "mix";
 }
 namespace gate {
 inline constexpr const char *threshold = "threshold", *range = "range", *attack = "attack", *hold = "hold", *release = "release";
@@ -575,6 +579,30 @@ private:
     dsp::MultimodeFilter engine;
 };
 
+// ---- Chorus -------------------------------------------------------------------
+class ChorusEffect final : public Effect {
+public:
+    ChorusEffect() : Effect(catalog[8], layout()) { speed = raw(chorus::rate); depth = raw(chorus::depth); mix = raw(chorus::mix); }
+    void prepareToPlay(double sampleRate, int) override { rate = sampleRate; engine.prepare(sampleRate); prepared = true; }
+    void reset() override { engine.reset(); }
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
+        juce::ScopedNoDenormals noDenormals;
+        if (!prepared || buffer.getNumChannels() < 2) return;
+        engine.process(buffer.getWritePointer(0), buffer.getWritePointer(1), buffer.getNumSamples(), {value(speed), value(depth), value(mix)});
+    }
+    double getTailLengthSeconds() const override { return dsp::StereoChorus::tailSeconds; }
+private:
+    static Layout layout() {
+        Layout l;
+        l.add(floatParameter(chorus::rate, "Rate", {.05f, 5, .8f}, .8f, plainFormat(" Hz")));
+        l.add(floatParameter(chorus::depth, "Depth", {0, 1, 0}, .5f, percentFormat()));
+        l.add(floatParameter(chorus::mix, "Mix", {0, 1, 0}, .35f, percentFormat()));
+        return l;
+    }
+    std::atomic<float> *speed{}, *depth{}, *mix{};
+    dsp::StereoChorus engine;
+};
+
 // ---- Catalogue and project-file identity -----------------------------------------
 
 inline std::unique_ptr<Effect> create(const juce::String& id) {
@@ -586,6 +614,7 @@ inline std::unique_ptr<Effect> create(const juce::String& id) {
     if (id == catalog[5].id) return std::make_unique<FilterEffect>();
     if (id == catalog[6].id) return std::make_unique<SaturatorEffect>();
     if (id == catalog[7].id) return std::make_unique<GateEffect>();
+    if (id == catalog[8].id) return std::make_unique<ChorusEffect>();
     return {};
 }
 
