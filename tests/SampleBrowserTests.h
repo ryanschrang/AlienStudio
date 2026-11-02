@@ -38,7 +38,7 @@ static void sampleBrowserChecks() {
         for (const juce::var bad : {juce::var(3), juce::var("alien-local-sample\nrelative.wav"), juce::var("alien-local-sample\nC:/sample.txt"), juce::var("alien-local-sample\nC:/one.wav\nC:/two.wav")})
             require(alien::sampledrag::decode(bad) == juce::File{}, "malformed sample payload refused");
         int dragViews = 0; browser.onDragStarted = [&](bool song) { require(song, "drag destination selector chooses Song"); ++dragViews; };
-        for (auto* child : browser.getChildren()) if (auto* combo = dynamic_cast<juce::ComboBox*>(child)) combo->setSelectedId(2);
+        for (auto* child : browser.getChildren()) if (auto* combo = dynamic_cast<juce::ComboBox*>(child); combo && child->getName() == "Sample drag destination") combo->setSelectedId(2);
         juce::SparseSet<int> rows; rows.addRange({0, 1});
         require(alien::sampledrag::decode(browser.getDragSourceDescription(rows)) == wav, "list model supplies sample drag description");
         pump(); require(dragViews == 1, "drag start asynchronously reveals selected destination");
@@ -64,6 +64,26 @@ static void sampleBrowserChecks() {
         preview->onClick(); browser.setProjectTempo(140); for (int i = 0; i < 10; ++i) pump(); require(previews == 3, "project tempo change cancels pending preview");
         sourceBpm->setValue(30, juce::dontSendNotification); sourceBpm->onValueChange(); require(!preview->isEnabled(), "unsupported BPM ratio disables preview");
         sync->setToggleState(false, juce::dontSendNotification); sync->onClick(); require(preview->isEnabled(), "original-tempo preview remains available");
+        juce::ToggleButton* matchKey = nullptr; juce::ComboBox* sourceKey = nullptr; juce::ComboBox* targetKey = nullptr;
+        for (auto* child : browser.getChildren()) {
+            if (child->getName() == "Match sample preview key") matchKey = dynamic_cast<juce::ToggleButton*>(child);
+            if (child->getName() == "Sample source key") sourceKey = dynamic_cast<juce::ComboBox*>(child);
+            if (child->getName() == "Sample preview target key") targetKey = dynamic_cast<juce::ComboBox*>(child);
+        }
+        require(matchKey && sourceKey && targetKey && sourceKey->getNumItems() == 12 && sourceKey->getSelectedId() == 1 && targetKey->getSelectedId() == 1, "source and target key controls available, both starting at C");
+        targetKey->setSelectedId(3, juce::sendNotificationSync); require(preview->isEnabled() && !matchKey->getToggleState(), "key controls change nothing until Match key is on");
+        matchKey->setToggleState(true, juce::dontSendNotification); matchKey->onClick();
+        browser.onPreview = [&](const alien::SessionAudioClip& sample) { require(sample.frames == 40000, "key-shifted preview keeps its length"); ++previews; };
+        preview->onClick(); for (int i = 0; i < 400 && previews == 3; ++i) pump(); require(previews == 4 && imports == 0, "key-shifted preview rendered without importing");
+        bool keyStatus = false;
+        for (auto* child : browser.getChildren()) if (auto* l = dynamic_cast<juce::Label*>(child); l && l->getText().contains("key C to D (+2 semitones)")) keyStatus = true;
+        require(keyStatus, "status line names the key shift");
+        sync->setToggleState(true, juce::dontSendNotification); sync->onClick(); sourceBpm->setValue(70, juce::dontSendNotification); sourceBpm->onValueChange();
+        require(preview->isEnabled(), "half-tempo preview shifted up stays in range");
+        targetKey->setSelectedId(11, juce::sendNotificationSync);
+        require(!preview->isEnabled() && preview->getTooltip().contains("key shift"), "half-tempo preview shifted down is refused with a reason");
+        matchKey->setToggleState(false, juce::dontSendNotification); matchKey->onClick(); require(preview->isEnabled(), "turning Match key off allows the tempo-only preview");
+        sync->setToggleState(false, juce::dontSendNotification); sync->onClick();
         browser.setImportEnabled(true, true); import->onClick(); require(imports == 1, "import requires explicit action");
         search->setText("no match", false); search->onTextChange(); require(browser.dragDescriptionFor(0).isVoid(), "empty filtered list has no stale drag payload"); require(browser.resultCount() == 0 && !import->isEnabled() && !preview->isEnabled(), "empty search clears stale actions");
     }

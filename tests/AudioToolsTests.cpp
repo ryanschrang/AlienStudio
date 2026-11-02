@@ -59,7 +59,22 @@ int main(){
     check(plain.clip && unity.clip && plain.clip->left == unity.clip->left, "equal-tempo preview is exact decoded bypass");
     check(!alien::renderSamplePreview(file, true, 30, 200, cancel).clip, "unsupported tempo ratio refuses preview");
     check(!alien::validPreviewTempoRatio(std::numeric_limits<double>::quiet_NaN(), 120), "nonfinite preview BPM refused");
+    check(alien::previewKeyShift(0, 2) == 2 && alien::previewKeyShift(0, 11) == -1 && alien::previewKeyShift(0, 6) == 6
+          && alien::previewKeyShift(0, 7) == -5 && alien::previewKeyShift(9, 0) == 3, "key shift takes the nearer way round");
+    struct KeyCase { bool sync; double bpm; int semitones; };
+    for (const auto c : {KeyCase{false, 120, 3}, KeyCase{false, 120, -5}, KeyCase{true, 180, 2}, KeyCase{true, 90, -2}, KeyCase{false, 120, 6}}) {
+        auto shifted = alien::renderSamplePreview(file, c.sync, c.bpm, 120, cancel, c.semitones);
+        check(shifted.clip && shifted.clip->valid() && shifted.clip->frames == static_cast<std::size_t>(std::ceil(48000 * (c.sync ? c.bpm / 120 : 1.0))), "key-shifted preview keeps the matched duration");
+        int crosses = 0; const auto& data = shifted.clip->left; const std::size_t begin = 4800, end = data.size() - 4800;
+        for (std::size_t i = begin; i < end; ++i) { if (data[i-1] <= 0 && data[i] > 0) ++crosses; check(std::abs(data[i] + shifted.clip->right[i]) < 1e-5, "key shift keeps stereo phase linked"); }
+        const double hz = crosses * 48000.0 / (end - begin), want = 440 * std::pow(2.0, c.semitones / 12.0);
+        check(std::abs(hz - want) < want * .015, "key shift moves the 440 Hz pitch by the requested semitones");
+    }
+    check(alien::validPreviewSettings(true, 60, 120, 1) && !alien::validPreviewSettings(true, 60, 120, -1) && !alien::validPreviewSettings(false, 120, 120, 7)
+          && !alien::validPreviewSettings(true, 240, 120, 1), "key shift and tempo ratio together stay inside the stretch range");
+    check(!alien::renderSamplePreview(file, true, 60, 120, cancel, -1).clip, "too-far combined stretch refuses preview");
     cancel.store(true); check(!alien::renderSamplePreview(file, true, 180, 120, cancel).clip, "cancelled preview returns no partial asset");
+    check(!alien::renderSamplePreview(file, false, 0, 0, cancel, 3).clip, "cancelled key-shifted preview returns no partial asset");
     file.loadFileAsData(after); check(before == after, "tempo preview preserves source file byte-for-byte"); file.deleteFile();
     cancel.store(false);auto unwritable=file.getChildFile("missing").getChildFile("take.wav");
     check(!alien::writeClipWav(unwritable,*take,cancel,error) && take->valid(),"failed write preserves take for retry");
