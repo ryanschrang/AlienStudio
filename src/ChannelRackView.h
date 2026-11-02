@@ -8,7 +8,10 @@
 // a name to hear it.
 // All changes go through ProjectController::editRack, so undo, saving and the
 // audio engine need nothing from this file.
+#include "MidiClipDrag.h"
 #include "ProjectController.h"
+#include "RackGrooveImport.h"
+#include "StarterPack.h"
 #include "StudioWidgets.h"
 #include <functional>
 #include <optional>
@@ -303,7 +306,7 @@ public:
                   cmdDuplicate = 100, cmdCopyRow, cmdPasteRow, cmdFill2, cmdFill4, cmdFill8,
                   cmdRotateLeft, cmdRotateRight, cmdReverseRow, cmdRepeat4, cmdRepeat8, cmdRepeat16, cmdPianoRoll,
                   synthBase = 200, builtinBase = 20, outputMaster = 40, outputBase = 41, chokeNone = 60, chokeBase = 61,
-                  cmdPluginEditor = 190, pluginBase = 1000 };
+                  cmdPluginEditor = 190, pluginBase = 1000, starterBase = 50000 };
 
     // The name in a plugin channel's saved description (what the instrument list shows).
     static juce::String pluginName(const rack::ChannelInfo& info) {
@@ -332,6 +335,7 @@ public:
             instruments.addItem(pluginBase + i, names[i], onChoosePlugin != nullptr, info.hasPlugin() && pluginName(info) == names[i]);
         if (names.isEmpty()) instruments.addItem(pluginBase - 1, "No VST3 instruments found (Plugins > Scan VST3)", false);
         sound.addSubMenu("VST3 instrument", instruments);
+        sound.addSubMenu("Starter Pack", starterMenu(info));
         sound.addSeparator();
         sound.addItem(cmdLoadSample, "Load sample file...");
         sound.addItem(cmdSilent, "Silent (no sound)", true, info.sample.empty() && !channel.isInstrument());
@@ -472,6 +476,10 @@ public:
         } else if (id == cmdSilent) { forEach(plural("Silence channel", rows), [](rack::Project& p, int r) { return p.setSample(r, ""); }); changed(); }
         else if (id == cmdLoadSample) chooseSample(row);
         else if (id == cmdPluginEditor) { if (onOpenPluginEditor) onOpenPluginEditor(row); }
+        else if (id >= starterBase) {
+            const auto index = static_cast<std::size_t>(id - starterBase);
+            if (index < starterSamples.size()) controller.loadRackSample(starterSamples[index].file, row);
+        }
         else if (id >= pluginBase) { if (onChoosePlugin) onChoosePlugin(row, id - pluginBase); changed(); }
         else if (id >= synthBase && id < synthBase + alien::presetCount) {
             const int preset = id - synthBase;
@@ -531,8 +539,30 @@ public:
             chooseSample(selected);
         }
     }
+    // Sound > Starter Pack: the drum one-shots that ship with Alien Studio, one submenu per category.
+    // The list is read when the menu is built, so a pack added or removed while running is noticed.
+    juce::PopupMenu starterMenu(const rack::ChannelInfo& info) const {
+        starterSamples = starterPack::drumSamples(starterFolder);
+        juce::PopupMenu menu, category;
+        juce::String current;
+        for (std::size_t i = 0; i < starterSamples.size(); ++i) {
+            const auto& sample = starterSamples[i];
+            if (sample.category != current) {
+                if (current.isNotEmpty()) menu.addSubMenu(current, category);
+                category = {}; current = sample.category;
+            }
+            category.addItem(starterBase + static_cast<int>(i), sample.file.getFileNameWithoutExtension(), true,
+                             info.sample == sample.file.getFullPathName().toStdString());
+        }
+        if (current.isNotEmpty()) menu.addSubMenu(current, category);
+        if (starterSamples.empty()) menu.addItem(starterBase - 1, "Starter Pack not found next to Alien Studio", false);
+        return menu;
+    }
+    // Where the Starter Pack is; tests point it at the source folder.
+    juce::File starterFolder = starterPack::folder();
     void chooseSample(int row) {
-        chooser = std::make_unique<juce::FileChooser>("Load a sample into this channel", juce::File{}, "*.wav;*.mp3");
+        const auto drums = starterFolder.getChildFile("Drums");
+        chooser = std::make_unique<juce::FileChooser>("Load a sample into this channel", drums.isDirectory() ? drums : juce::File{}, "*.wav;*.mp3");
         juce::Component::SafePointer<ChannelRackGrid> safe(this);
         chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
             [safe, row](const juce::FileChooser& result) {
@@ -1000,6 +1030,7 @@ private:
     juce::String strokeKey, knobKey;
     juce::Point<int> hover{-1, -1};
     std::unique_ptr<juce::FileChooser> chooser;
+    mutable std::vector<starterPack::DrumSample> starterSamples;   // what the last channel menu offered
 };
 
 // Draws one property of every step of the selected channel as bars lined up
@@ -1192,7 +1223,7 @@ private:
 };
 
 // The whole screen: pattern and swing controls on top, the rack, then the graph.
-class ChannelRackView final : public juce::Component, private juce::ScrollBar::Listener {
+class ChannelRackView final : public juce::Component, public juce::DragAndDropTarget, private juce::ScrollBar::Listener {
 public:
     static constexpr int toolbarHeight = 52, scrollBarHeight = 12, verticalBarWidth = 12;
 
@@ -1280,6 +1311,9 @@ public:
         menu.addItem(clonePattern, "Clone pattern");
         menu.addItem(renamePattern, "Rename pattern...");
         menu.addSeparator();
+        menu.addItem(importGroovePattern, "Import drum groove...");
+        menu.addSubMenu("Import groove from Starter Pack", starterGrooveMenu());
+        menu.addSeparator();
         menu.addItem(clearPattern, "Clear pattern");
         const bool used = controller.rackPatternInUse(controller.channelRack().selectedPattern);
         menu.addItem(deletePattern, used ? "Delete pattern (clear Session/Song uses first)" : "Delete pattern",
@@ -1343,13 +1377,20 @@ public:
     }
 
     // Pattern commands, shared by the buttons, the menu and the tests.
-    enum PatternCommand { newPattern = 1, clonePattern, renamePattern, clearPattern, deletePattern };
+    enum PatternCommand { newPattern = 1, clonePattern, renamePattern, clearPattern, deletePattern, importGroovePattern,
+                          starterGrooveBase = 1000 };
     void patternCommand(int id) {
         const int current = controller.channelRack().selectedPattern;
         if (id == newPattern) controller.editRack("New pattern", [](rack::Project& p) { return p.addPattern(); });
         else if (id == clonePattern) controller.editRack("Clone pattern", [&](rack::Project& p) { return p.addPattern(current); });
         else if (id == clearPattern) controller.editRack("Clear pattern", [](rack::Project& p) { return p.clearPattern(p.selectedPattern); });
         else if (id == deletePattern) controller.deleteRackPattern(current);
+        else if (id == importGroovePattern) { chooseGroove(); return; }
+        else if (id >= starterGrooveBase) {
+            const auto index = static_cast<std::size_t>(id - starterGrooveBase);
+            if (index < starterGrooves.size()) importGroove(starterGrooves[index].file);
+            return;
+        }
         else if (id == renamePattern) {
             const auto name = juce::String::fromUTF8(controller.channelRack().patternNames[static_cast<std::size_t>(current)].c_str());
             grid.askForName("Rename pattern", name, [this, current](const juce::String& text) {
@@ -1360,6 +1401,45 @@ public:
         }
         refresh();
     }
+
+    // Imports a General MIDI drum groove as a new pattern (RackGrooveImport.h): one undo step, and the hint line
+    // says which channels it played on. False when nothing was imported.
+    bool importGroove(const juce::File& file) {
+        const auto clip = midi_import::read(file);
+        const auto name = file.getFileNameWithoutExtension();
+        rack_groove::Report report;
+        juce::String message;
+        bool done = false;
+        if (!clip.ok()) message = "No changes: " + clip.error;
+        else if (!rack_groove::hasDrums(clip)) message = "No changes: " + name + " has no drum notes on MIDI channel 10. Import it in the piano roll instead.";
+        else {
+            done = controller.editRack("Import drum groove", [&](rack::Project& p) {
+                return rack_groove::importGroove(p, clip, name.toStdString(), &report);
+            });
+            message = done ? rack_groove::describe(controller.channelRack(), report, name, clip)
+                           : "No changes: the rack has no room for another pattern or the channels the groove needs.";
+        }
+        refresh();
+        hint.setText(message, juce::dontSendNotification);
+        return done;
+    }
+    juce::String hintText() const { return hint.getText(); }
+    // A MIDI clip dragged from the sample browser (MidiClipDrag.h) imports as a drum groove wherever it is dropped.
+    bool isInterestedInDragSource(const SourceDetails& details) override { return mididrag::decode(details.description) != juce::File{}; }
+    void itemDragEnter(const SourceDetails&) override { grooveDropping = true; repaint(); }
+    void itemDragExit(const SourceDetails&) override { grooveDropping = false; repaint(); }
+    void itemDropped(const SourceDetails& details) override {
+        itemDragExit(details);
+        if (const auto file = mididrag::decode(details.description); file != juce::File{}) importGroove(file);
+    }
+    bool isGrooveDropTarget() const noexcept { return grooveDropping; }
+    void paintOverChildren(juce::Graphics& g) override {
+        if (!grooveDropping) return;
+        g.setColour(ui::colours::accent);
+        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(2), 4, 2);
+    }
+    // Where the Starter Pack is; tests point it at the source folder.
+    juce::File starterFolder = starterPack::folder();
 
     void paint(juce::Graphics& g) override { g.fillAll(ui::colours::surface); }
 
@@ -1402,6 +1482,24 @@ public:
     }
 
 private:
+    juce::PopupMenu starterGrooveMenu() const {
+        starterGrooves.clear();
+        for (const auto& clip : starterPack::midiClips(starterFolder)) if (clip.isDrumGroove()) starterGrooves.push_back(clip);
+        juce::PopupMenu menu;
+        for (std::size_t i = 0; i < starterGrooves.size(); ++i)
+            menu.addItem(starterGrooveBase + static_cast<int>(i), starterGrooves[i].file.getFileNameWithoutExtension());
+        if (starterGrooves.empty()) menu.addItem(starterGrooveBase - 1, "Starter Pack not found next to Alien Studio", false);
+        return menu;
+    }
+    void chooseGroove() {
+        const auto grooves = starterFolder.getChildFile("MIDI").getChildFile("Drum Grooves");
+        grooveChooser = std::make_unique<juce::FileChooser>("Import a drum groove as a new pattern", grooves.isDirectory() ? grooves : juce::File{}, "*.mid;*.midi");
+        juce::Component::SafePointer<ChannelRackView> safe(this);
+        grooveChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+            [safe](const juce::FileChooser& chooser) {
+                if (safe != nullptr && chooser.getResult().existsAsFile()) safe->importGroove(chooser.getResult());
+            });
+    }
     void showMenu(juce::PopupMenu menu, juce::Component& target, std::function<void(int)> chosen) {
         juce::Component::SafePointer<ChannelRackView> safe(this);
         std::function<void(int)> done = [safe, chosen = std::move(chosen)](int id) { if (safe != nullptr && id != 0) chosen(id); };
@@ -1428,6 +1526,9 @@ private:
     juce::ScrollBar scrollBar, verticalBar;
     int laidOutChannels{-1}, laidOutNameWidth{-1};
     juce::Label patternLabel, lengthLabel, swingLabel, hint;
+    mutable std::vector<starterPack::MidiClip> starterGrooves;   // what the last Starter Pack groove menu offered
+    bool grooveDropping{};   // a MIDI clip is being dragged over the rack
+    std::unique_ptr<juce::FileChooser> grooveChooser;
     juce::ComboBox patternBox, lengthBox;
     juce::StringArray patternNames;
     juce::TextButton newPatternButton, patternMenuButton, addChannelButton;

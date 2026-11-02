@@ -1,7 +1,10 @@
 #pragma once
 #include "StudioWidgets.h"
+#include "AudioClipImport.h"
+#include "StarterPack.h"
 #include "SamplePreviewRender.h"
 #include "SampleDrag.h"
+#include "MidiClipDrag.h"
 #include <functional>
 
 namespace alien {
@@ -9,10 +12,10 @@ class SampleBrowser final : public juce::Component, private juce::ListBoxModel {
 public:
     SampleBrowser() {
         setName("Local sample browser");
-        for (auto* component : std::initializer_list<juce::Component*>{&folder, &search, &list, &preview, &stopButton, &session, &song, &status, &empty, &dragDestination, &matchTempo, &sourceTempo, &tempoLabel}) addAndMakeVisible(component);
+        for (auto* component : std::initializer_list<juce::Component*>{&folder, &starter, &search, &list, &preview, &stopButton, &session, &song, &status, &empty, &dragDestination, &matchTempo, &sourceTempo, &tempoLabel}) addAndMakeVisible(component);
         dragDestination.setName("Sample drag destination"); dragDestination.addItem("Drag into Session", 1); dragDestination.addItem("Drag into Song", 2); dragDestination.setSelectedId(1);
         dragDestination.setTooltip("Dragging a sample reveals this editor. Drop it onto an empty Session cell or a free Song lane position.");
-        list.setTooltip("Drag a sample to import it. Choose Session or Song above; the editor opens when dragging starts.");
+        list.setTooltip("Drag a sample to import it. Choose Session or Song above; the editor opens when dragging starts. Drag a MIDI clip into the piano roll, or a drum groove onto the Channel Rack.");
         matchTempo.setButtonText("Match project tempo"); matchTempo.setName("Match sample preview tempo");
         matchTempo.onClick = [this] { stop(); updateButtons(); };
         sourceTempo.setName("Sample source BPM"); sourceTempo.setRange(30, 300, .1); sourceTempo.setValue(120);
@@ -21,20 +24,26 @@ public:
         sourceTempo.onValueChange = [this] { stop(); updateButtons(); };
         tempoLabel.setText("Source BPM   |   Project: 120 BPM", juce::dontSendNotification); tempoLabel.setFont(ui::font(11));
         folder.setButtonText("Choose sample folder..."); folder.onClick = [this] { chooseFolder(); };
-        search.setName("Sample search"); search.setTextToShowWhenEmpty("Search WAV / MP3 names and folders", ui::colours::textFaint);
+        starter.setButtonText("Starter Pack"); starter.setTooltip("Drum sounds that come with Alien Studio");
+        starter.onClick = [this] { showStarterPack(); };
+        search.setName("Sample search"); search.setTextToShowWhenEmpty("Search WAV / MP3 / MIDI names and folders", ui::colours::textFaint);
         search.onTextChange = [this] { rebuild(); }; search.onReturnKey = [this] { audition(); }; search.onEscapeKey = [this] { stop(); };
         empty.setText("No matching samples", juce::dontSendNotification); empty.setInterceptsMouseClicks(false, false);
         list.setColour(juce::ListBox::backgroundColourId, ui::colours::inset);
         list.setName("Sample results"); list.setModel(this); list.setRowHeight(26);
         preview.setButtonText("Preview 5s"); preview.onClick = [this] { audition(); };
         stopButton.setButtonText("Stop"); stopButton.onClick = [this] { stop(); };
-        session.setButtonText("Import to empty Session cell"); session.onClick = [this] { if (canImport && selectedFile().existsAsFile() && onImport) { stop(); onImport(selectedFile(), false); } };
-        song.setButtonText("Import to Song cursor"); song.onClick = [this] { if (canImportSong && selectedFile().existsAsFile() && onImport) { stop(); onImport(selectedFile(), true); } };
+        session.setButtonText("Import to empty Session cell"); session.onClick = [this] { if (canImport && selectedIsSample() && onImport) { stop(); onImport(selectedFile(), false); } };
+        song.setButtonText("Import to Song cursor"); song.onClick = [this] { if (canImportSong && selectedIsSample() && onImport) { stop(); onImport(selectedFile(), true); } };
         status.setText("Choose a folder to browse local samples.", juce::dontSendNotification);
         updateButtons();
+        // Open on the Starter Pack, so there is something to browse before any folder is chosen.
+        if (starterFolder.isDirectory()) scan(starterFolder);
     }
     ~SampleBrowser() override { stop(); cancelled->store(true); pool.removeAllJobs(true, -1); list.setModel(nullptr); }
     std::function<void(bool)> onDragStarted;
+    // A MIDI clip started dragging: the owner shows where it can be dropped (the piano roll, or the Channel Rack for a groove).
+    std::function<void(const juce::File&)> onMidiDragStarted;
     std::function<void(const SessionAudioClip&)> onPreview;
     std::function<void()> onStop;
     std::function<void(const juce::File&, bool)> onImport;
@@ -46,15 +55,24 @@ public:
         updateButtons();
     }
     void focusSearch() { search.grabKeyboardFocus(); }
+    // Browses the Starter Pack that ships with Alien Studio; tests point it at another folder.
+    void setStarterFolder(const juce::File& root) { starterFolder = root; updateButtons(); }
+    void showStarterPack() { if (starterFolder.isDirectory()) scan(starterFolder); }
     void setImportEnabled(bool enabled, bool songEnabled) { canImport = enabled; canImportSong = songEnabled; updateButtons(); }
     juce::File selectedFile() const { const int row = list.getSelectedRow(); return row >= 0 && row < static_cast<int>(matches.size()) ? matches[static_cast<std::size_t>(row)] : juce::File{}; }
-    juce::var dragDescriptionFor(int row) const { return row >= 0 && row < static_cast<int>(matches.size()) ? sampledrag::encode(matches[static_cast<std::size_t>(row)]) : juce::var{}; }
+    juce::var dragDescriptionFor(int row) const {
+        if (row < 0 || row >= static_cast<int>(matches.size())) return {};
+        const auto& file = matches[static_cast<std::size_t>(row)];
+        return mididrag::supported(file) ? mididrag::encode(file) : sampledrag::encode(file);
+    }
+    // The selected row is an audio sample that can be previewed and imported; a MIDI clip is only dragged.
+    bool selectedIsSample() const { const auto file = selectedFile(); return file.existsAsFile() && !mididrag::supported(file); }
     int resultCount() const { return static_cast<int>(matches.size()); }
     void setStatus(const juce::String& text) { status.setText(text, juce::dontSendNotification); }
     void stop() { previewCancelled->store(true); ++previewGeneration; if (onStop) onStop(); }
     void visibilityChanged() override { if (!isShowing()) stop(); }
     void resized() override {
-        auto r = getLocalBounds(); folder.setBounds(r.removeFromTop(28)); r.removeFromTop(6); search.setBounds(r.removeFromTop(26)); r.removeFromTop(6); dragDestination.setBounds(r.removeFromTop(26)); r.removeFromTop(6);
+        auto r = getLocalBounds(); auto top = r.removeFromTop(28); starter.setBounds(top.removeFromRight(110)); top.removeFromRight(6); folder.setBounds(top); r.removeFromTop(6); search.setBounds(r.removeFromTop(26)); r.removeFromTop(6); dragDestination.setBounds(r.removeFromTop(26)); r.removeFromTop(6);
         tempoLabel.setBounds(r.removeFromTop(18)); auto tempo = r.removeFromTop(26); sourceTempo.setBounds(tempo.removeFromLeft(108)); tempo.removeFromLeft(6); matchTempo.setBounds(tempo); r.removeFromTop(6);
         status.setBounds(r.removeFromBottom(38)); song.setBounds(r.removeFromBottom(28)); r.removeFromBottom(4); session.setBounds(r.removeFromBottom(28)); r.removeFromBottom(6);
         auto buttons = r.removeFromBottom(28); preview.setBounds(buttons.removeFromLeft(100)); buttons.removeFromLeft(6); stopButton.setBounds(buttons.removeFromLeft(60)); r.removeFromBottom(6); list.setBounds(r); empty.setBounds(r.reduced(8));
@@ -75,11 +93,13 @@ public:
             juce::MessageManager::callAsync([safe, root, cancel, found = std::move(found)]() mutable {
                 if (!safe || cancel->load()) return;
                 safe->folderRoot = root; safe->files = std::move(found); safe->rebuild();
-                safe->setStatus(juce::String(static_cast<int>(safe->files.size())) + " samples (limit 5,000 files / 50,000 entries). Preview is isolated; set source BPM to match the project tempo.");
+                const auto clips = static_cast<int>(std::count_if(safe->files.begin(), safe->files.end(), [](const auto& f) { return mididrag::supported(f); }));
+                safe->setStatus(juce::String(static_cast<int>(safe->files.size()) - clips) + " samples" + (clips > 0 ? " and " + juce::String(clips) + " MIDI clips" : juce::String())
+                                + " (limit 5,000 files / 50,000 entries). Preview is isolated; set source BPM to match the project tempo.");
             });
         });
     }
-    static bool supported(const juce::File& file) { return file.hasFileExtension("wav;mp3"); }
+    static bool supported(const juce::File& file) { return file.hasFileExtension("wav;mp3") || mididrag::supported(file); }
 private:
     void chooseFolder() {
         chooser = std::make_unique<juce::FileChooser>("Choose sample folder", folderRoot);
@@ -98,10 +118,11 @@ private:
         if (!matches.empty()) { const auto found = std::find(matches.begin(), matches.end(), selected); list.selectRow(found == matches.end() ? 0 : static_cast<int>(found - matches.begin())); }
         updateButtons(); repaint();
     }
-    void updateButtons() { const bool selected = selectedFile() != juce::File{}; empty.setVisible(matches.empty()); preview.setEnabled(selected && (!matchTempo.getToggleState() || validPreviewTempoRatio(sourceTempo.getValue(), projectTempo)));
+    void updateButtons() { const bool selected = selectedIsSample(); starter.setEnabled(starterFolder.isDirectory()); empty.setVisible(matches.empty()); preview.setEnabled(selected && (!matchTempo.getToggleState() || validPreviewTempoRatio(sourceTempo.getValue(), projectTempo)));
         preview.setTooltip(matchTempo.getToggleState() && !validPreviewTempoRatio(sourceTempo.getValue(), projectTempo) ? "Use a source/project tempo ratio between 0.5 and 2." : "Preview up to five seconds without changing the project"); session.setEnabled(selected && canImport); song.setEnabled(selected && canImportSong); }
     void audition() {
         const auto file = selectedFile(); stop(); if (file == juce::File{}) return;
+        if (mididrag::supported(file)) { setStatus(midiHint); return; }
         previewCancelled = std::make_shared<std::atomic<bool>>(false); const auto cancel = previewCancelled;
         const bool sync = matchTempo.getToggleState(); const double sourceBpm = sourceTempo.getValue(), targetBpm = projectTempo;
         if (sync && !validPreviewTempoRatio(sourceBpm, targetBpm)) { setStatus("Use a source/project tempo ratio between 0.5 and 2."); return; }
@@ -125,13 +146,15 @@ public:
         if (!description.isVoid()) {
             stop(); const bool song = dragDestination.getSelectedId() == 2;
             juce::Component::SafePointer<SampleBrowser> safe(this);
-            juce::MessageManager::callAsync([safe, song] { if (safe && safe->onDragStarted) safe->onDragStarted(song); });
+            if (const auto clip = mididrag::decode(description); clip != juce::File{})
+                juce::MessageManager::callAsync([safe, clip] { if (safe && safe->onMidiDragStarted) safe->onMidiDragStarted(clip); });
+            else juce::MessageManager::callAsync([safe, song] { if (safe && safe->onDragStarted) safe->onDragStarted(song); });
         }
         return description;
     }
 private:
     int getNumRows() override { return resultCount(); }
-    void selectedRowsChanged(int) override { stop(); updateButtons(); }
+    void selectedRowsChanged(int) override { stop(); updateButtons(); if (mididrag::supported(selectedFile())) setStatus(midiHint); }
     void listBoxItemDoubleClicked(int, const juce::MouseEvent&) override { audition(); }
     void returnKeyPressed(int) override { audition(); }
     void paintListBoxItem(int row, juce::Graphics& g, int width, int height, bool selected) override {
@@ -139,12 +162,13 @@ private:
         if (selected) g.fillAll(ui::colours::accent.withAlpha(.2f));
         g.setColour(ui::colours::text); g.setFont(ui::font(12)); g.drawText(matches[static_cast<std::size_t>(row)].getRelativePathFrom(folderRoot), 6, 0, width - 12, height, juce::Justification::centredLeft);
     }
-    juce::TextButton folder, preview, stopButton, session, song;
+    juce::TextButton folder, starter, preview, stopButton, session, song;
     juce::ToggleButton matchTempo; juce::Slider sourceTempo; juce::Label tempoLabel;
     double projectTempo{120};
     juce::ComboBox dragDestination;
+    static constexpr const char* midiHint = "MIDI clip: drag it into the piano roll to add its notes at the drop point, or a drum groove onto the Channel Rack.";
     juce::TextEditor search; juce::ListBox list; juce::Label status, empty;
-    juce::File folderRoot; std::vector<juce::File> files, matches;
+    juce::File folderRoot, starterFolder{starterPack::folder()}; std::vector<juce::File> files, matches;
     std::unique_ptr<juce::FileChooser> chooser; juce::ThreadPool pool{1};
     std::shared_ptr<std::atomic<bool>> cancelled{std::make_shared<std::atomic<bool>>(false)};
     std::shared_ptr<std::atomic<bool>> previewCancelled{std::make_shared<std::atomic<bool>>(false)};

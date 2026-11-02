@@ -496,6 +496,67 @@ private:
     bool ready{}, initialised{};
 };
 
+// Six-stage stereo all-pass phaser. A sample-counted control clock keeps
+// coefficient updates independent of host block boundaries. Feedback is
+// soft-limited, and channel state is separate (no stereo crossfeed).
+class StereoPhaser {
+public:
+    struct Settings { double rateHz{.5}, depth{.7}, feedback{.3}, mix{.5}; };
+    static constexpr double tailSeconds = 2;
+    void prepare(double sampleRate) noexcept {
+        rate = std::isfinite(sampleRate) ? std::clamp(sampleRate, 8000.0, 192000.0) : 44100;
+        smoothing = 1 - std::exp(-1 / (.02 * rate)); ready = true; reset();
+    }
+    void reset() noexcept { channels = {}; phase = 0; clock = 0; initialised = false; }
+    void process(float* left, float* right, int count, const Settings& settings) noexcept {
+        if (!ready) return;
+        const auto bound = [](double v, double lo, double hi, double def) { return std::isfinite(v) ? std::clamp(v, lo, hi) : def; };
+        const double targetSpeed = bound(settings.rateHz, .05, 5, .5), targetDepth = bound(settings.depth, 0, 1, .7),
+            targetFeedback = bound(settings.feedback, 0, .85, .3), targetMix = bound(settings.mix, 0, 1, .5);
+        const bool first = !initialised;
+        if (first) { speed = targetSpeed; depth = targetDepth; feedback = targetFeedback; mix = targetMix; }
+        const auto smooth = [&](double& value, double target) { value += smoothing * (target - value); if (std::abs(value - target) < 1e-9) value = target; };
+        for (int i = 0; i < count; ++i) {
+            smooth(speed, targetSpeed); smooth(depth, targetDepth); smooth(feedback, targetFeedback); smooth(mix, targetMix);
+            if (clock == 0) {
+                constexpr std::array<double, 6> spread{.5, .75, 1, 1.5, 2, 3};
+                for (int c = 0; c < 2; ++c) {
+                    auto& channel = channels[static_cast<std::size_t>(c)];
+                    const double centre = 600 * std::pow(4.0, depth * (c == 0 ? std::sin(phase) : std::cos(phase)));
+                    for (std::size_t stage = 0; stage < spread.size(); ++stage) {
+                        const double hz = std::clamp(centre * spread[stage], 20.0, rate * .45);
+                        const double tangent = std::tan(pi * hz / rate), target = (1 - tangent) / (1 + tangent);
+                        if (!initialised) channel.coefficient[stage] = target;
+                        channel.step[stage] = (target - channel.coefficient[stage]) / 8;
+                    }
+                }
+                initialised = true; clock = 8;
+            }
+            for (int c = 0; c < 2; ++c) {
+                auto& channel = channels[static_cast<std::size_t>(c)]; float& output = c == 0 ? left[i] : right[i];
+                const double dry = finite(output) ? output : 0;
+                double wet = dry + feedback * std::tanh(channel.last);
+                for (std::size_t stage = 0; stage < channel.state.size(); ++stage) {
+                    const double a = channel.coefficient[stage] += channel.step[stage];
+                    const double y = channel.state[stage] - a * wet;
+                    channel.state[stage] = wet + a * y;
+                    if (std::abs(channel.state[stage]) < 1e-30) channel.state[stage] = 0;
+                    wet = y;
+                }
+                if (!std::isfinite(wet)) { channel.state = {}; wet = 0; }
+                channel.last = wet;
+                output = static_cast<float>(dry + mix * (wet - dry)); if (!finite(output)) output = 0;
+            }
+            --clock; phase += 2 * pi * speed / rate; if (phase >= 2 * pi) phase -= 2 * pi;
+        }
+    }
+private:
+    struct Channel { std::array<double, 6> state{}, coefficient{}, step{}; double last{}; };
+    std::array<Channel, 2> channels{};
+    double rate{44100}, smoothing{}, phase{}, speed{}, depth{}, feedback{}, mix{};
+    int clock{}; bool ready{}, initialised{};
+};
+
 class StereoDelay {
 public:
     struct Settings { double timeMs{350}, feedback{0.4}, toneHz{12000}, mix{0.3}; bool pingPong{false}; };

@@ -5,6 +5,7 @@
 // menus and the rename box go through test seams.
 #include "AudioFileWrite.h"
 #include "ChannelRackView.h"
+#include "SampleDrag.h"
 #include "RackChannelNotes.h"
 #include "TopBar.h"
 #include "StudioTheme.h"
@@ -841,7 +842,10 @@ static void patternBankAndToolbar() {
     v.menuLauncher = [&](juce::PopupMenu menu, std::function<void(int)> done) { shown.shown = true; shown.menu = std::move(menu); shown.done = std::move(done); };
     clickButton(*menuButton);
     auto items = entries(shown.menu);
-    require(shown.shown && items.size() == 5 && entry(items, ChannelRackView::deletePattern)->enabled, "the pattern menu offers its five commands");
+    require(shown.shown && entry(items, ChannelRackView::deletePattern)->enabled, "the pattern menu offers its commands");
+    for (const int id : {ChannelRackView::newPattern, ChannelRackView::clonePattern, ChannelRackView::renamePattern, ChannelRackView::clearPattern,
+                         ChannelRackView::importGroovePattern})
+        require(entry(items, id) != nullptr, "including new, clone, rename, clear and import drum groove");
     shown.done(ChannelRackView::newPattern);
     require(rig.rack().patternCount == 3, "and runs the one chosen");
     shown.reset();
@@ -1425,6 +1429,36 @@ static void pluginInstrumentMenu() {
     std::puts("PASS: VST3 instruments in the channel menu");
 }
 
+static void starterPackMenu() {
+    Rig rig;
+    auto& grid = rig.grid;
+    grid.starterFolder = juce::File(juce::String(ALIEN_STARTER_PACK_DIR));
+    const auto samples = alien::starterPack::drumSamples(grid.starterFolder);
+    require(!samples.empty(), "the source Starter Pack has drums");
+    auto menu = entries(grid.channelMenu(1));
+    int kick = -1;
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        const auto* item = entry(menu, ChannelRackGrid::starterBase + static_cast<int>(i));
+        require(item != nullptr && item->enabled && !item->ticked && item->text == samples[i].file.getFileNameWithoutExtension(),
+                "Sound > Starter Pack lists every drum sample by name");
+        if (samples[i].category == "Kicks" && kick < 0) kick = static_cast<int>(i);
+    }
+    require(kick >= 0, "the pack has a kick");
+    grid.runChannelCommand(1, ChannelRackGrid::starterBase + kick);
+    const auto path = samples[static_cast<std::size_t>(kick)].file.getFullPathName().toStdString();
+    for (int i = 0; i < 500 && rig.rack().info[1].sample != path; ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+    require(rig.rack().info[1].sample == path && rig.rack().info[1].name == samples[static_cast<std::size_t>(kick)].file.getFileNameWithoutExtension().toStdString(),
+            "choosing one loads it on that channel and names the channel after it");
+    require(entry(entries(grid.channelMenu(1)), ChannelRackGrid::starterBase + kick)->ticked, "the loaded sample is ticked");
+    require(rig.controller.undo() && rig.rack().info[1].sample != path, "loading it is one undoable edit");
+    grid.runChannelCommand(1, ChannelRackGrid::starterBase + 100000);
+    grid.starterFolder = grid.starterFolder.getChildFile("missing");
+    menu = entries(grid.channelMenu(1));
+    require(entry(menu, ChannelRackGrid::starterBase) == nullptr && !entry(menu, ChannelRackGrid::starterBase - 1)->enabled,
+            "without the pack, the menu says it is missing");
+    std::puts("PASS: Starter Pack drums in the channel menu");
+}
+
 static void synthChannelChecks() {
     Rig rig;
     auto& view = rig.view; auto& grid = rig.grid;
@@ -1467,11 +1501,78 @@ static void deferredTrackIdentityRename() {
     std::cout << "PASS: deferred rack rename resolves persistent identity and document scope\n";
 }
 
+// Pattern menu > Import groove from Starter Pack: a new pattern on the matching channels, one undo step.
+static void starterGrooveImport() {
+    Rig rig;
+    rig.view.starterFolder = juce::File(juce::String(ALIEN_STARTER_PACK_DIR));
+    std::vector<alien::starterPack::MidiClip> grooves;
+    for (const auto& clip : alien::starterPack::midiClips(rig.view.starterFolder)) if (clip.isDrumGroove()) grooves.push_back(clip);
+    require(!grooves.empty(), "the source Starter Pack has drum grooves");
+    const auto menu = entries(rig.view.patternMenu());
+    int funk = -1;
+    for (std::size_t i = 0; i < grooves.size(); ++i) {
+        const auto* item = entry(menu, ChannelRackView::starterGrooveBase + static_cast<int>(i));
+        require(item != nullptr && item->enabled && item->text == grooves[i].file.getFileNameWithoutExtension(), "the pattern menu lists every groove");
+        if (grooves[i].file.getFileName().startsWith("Funk")) funk = static_cast<int>(i);
+    }
+    require(funk >= 0 && entry(menu, ChannelRackView::importGroovePattern) != nullptr, "with Funk, and a file import item");
+    const auto before = rig.rack().pattern(0);
+    rig.view.patternCommand(ChannelRackView::starterGrooveBase + funk);
+    const auto& p = rig.rack();
+    require(p.patternCount == 2 && p.selectedPattern == 1 && p.patternNames[1] == "Funk 80 BPM" && p.pattern(1).length == 64,
+            "the groove becomes a new, selected four-bar pattern named after it");
+    require(p.pattern(0) == before, "the pattern that was open is untouched");
+    require(rig.onCount(0) > 4 && rig.onCount(3) > 4 && rig.onCount(2) > 8, "kick, snare and hat hits land on the Kick, Snare and Hat channels");
+    require(rig.controller.undoLabel() == "Import drum groove" && rig.view.hintText().contains("Funk 80 BPM"), "the hint says what was imported");
+    require(rig.controller.undo() && rig.rack().patternCount == 1 && rig.rack().channelCount == 4, "and the import is one undo step, added channels included");
+    rig.view.patternCommand(ChannelRackView::starterGrooveBase + 100000);
+    require(rig.rack().patternCount == 1, "a stale menu id does nothing");
+    // A chord progression has no drum-channel notes: refused, with a reason.
+    const auto chords = alien::starterPack::midiClips(rig.view.starterFolder).front();
+    require(!chords.isDrumGroove() && !rig.view.importGroove(chords.file) && rig.rack().patternCount == 1
+            && rig.view.hintText().contains("channel 10"), "a file with no drum notes is refused");
+    rig.view.starterFolder = rig.view.starterFolder.getChildFile("missing");
+    require(!entry(entries(rig.view.patternMenu()), ChannelRackView::starterGrooveBase - 1)->enabled, "without the pack, the menu says it is missing");
+    std::puts("PASS: Starter Pack drum grooves import into the Channel Rack");
+}
+
+// A MIDI clip dragged from the sample browser onto the rack imports as a groove, one undo step.
+static void grooveDrop() {
+    Rig rig;
+    rig.view.setSize(1100, 600);
+    const juce::File pack(juce::String(ALIEN_STARTER_PACK_DIR));
+    juce::File funk;
+    for (const auto& clip : alien::starterPack::midiClips(pack)) if (clip.file.getFileName().startsWith("Funk")) funk = clip.file;
+    require(funk.existsAsFile(), "the source Starter Pack has the Funk groove");
+    juce::Component source;
+    using Details = juce::DragAndDropTarget::SourceDetails;
+    const Details drag(alien::mididrag::encode(funk), &source, rig.view.getLocalBounds().getCentre());
+    require(rig.view.isInterestedInDragSource(drag), "the rack takes a dragged MIDI clip");
+    require(!rig.view.isInterestedInDragSource(Details(alien::sampledrag::encode(juce::File("C:/kick.wav")), &source, {})), "but not a sample drag");
+    rig.view.itemDragEnter(drag);
+    require(rig.view.isGrooveDropTarget(), "it highlights while a clip is over it");
+    rig.view.itemDragExit(drag);
+    require(!rig.view.isGrooveDropTarget(), "and stops when it leaves");
+    rig.view.itemDragEnter(drag);
+    rig.view.itemDropped(drag);
+    require(!rig.view.isGrooveDropTarget() && rig.rack().patternCount == 2 && rig.rack().patternNames[1] == "Funk 80 BPM"
+            && rig.controller.undoLabel() == "Import drum groove", "dropping imports the groove as a new pattern");
+    require(rig.controller.undo() && rig.rack().patternCount == 1, "one undo takes it back out");
+    // A chord progression is refused with a reason, as from the menu.
+    const auto chords = alien::starterPack::midiClips(pack).front().file;
+    rig.view.itemDropped(Details(alien::mididrag::encode(chords), &source, {}));
+    require(rig.rack().patternCount == 1 && rig.view.hintText().contains("channel 10"), "a dropped clip with no drum notes is refused");
+    std::puts("PASS: a MIDI clip dropped on the Channel Rack imports as a drum groove");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    starterGrooveImport();
+    grooveDrop();
     deferredTrackIdentityRename();
     synthChannelChecks();
     pluginInstrumentMenu();
+    starterPackMenu();
     nameColumnChecks();
     channelPianoRollChecks();
     multiSelectChecks();
