@@ -40,5 +40,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AlienStudio-Windows-Release
-          path: build/AlienStudio_artefacts/Release/*.exe
+          path: |
+            build/AlienStudio_artefacts/Release/*.exe
+            build/AlienStudio_artefacts/Release/Starter Pack/
           if-no-files-found: error
