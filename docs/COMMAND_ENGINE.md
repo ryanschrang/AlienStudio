@@ -247,5 +247,30 @@ live publication. Paste preserves selection and unrelated playback requests.
 
 All three menu actions use commands and refresh-only host callbacks. Stale
 track/scene/cell identities refuse; busy state, recording/count-in and frozen
-destinations refuse. No project format changes. Session cell movement, new audio
-imports and other clip creation/duplication wrappers remain follow-ups.
+destinations refuse. No project format changes. New audio imports and other clip creation/duplication wrappers remain follow-ups.
+
+## Session clip movement
+
+`MoveClip {track, scene, toTrack, toScene}` moves a Session cell into an empty
+cell and selects its destination. The Copy / link menu offers **Move clip to**,
+grouped by destination track and scene. MIDI (including explicitly empty clips),
+audio/offline audio and rack assignments retain the exact clip identity, linked
+content and media. The shared rack pattern is not copied or deleted. No project
+format change. Moves use the same pure reducer for Preview and live execution.
+Batch applies sequential moves as one Undo/Redo step, including before/after
+selection. A same-cell move is a no-op preserving redo.
+
+Occupied or invalid destinations, empty sources, frozen source/destination tracks,
+busy state and recording/count-in refuse. Moving does not rewrite Song: source
+or destination cell references in Song regions, takes or frozen originals refuse;
+make those placements independent first. Independent placement clips and rack
+placements keep their sources. The popup validates both captured source and
+destination track/scene/cell identities before applying its command.
+
+Moving never launches the destination automatically. An already-requested ordinary
+source is republished empty; an already-requested ordinary destination receives
+its moved content. Another scene's queued request or pending stop is preserved.
+Shared rack playback continues by source identity; moving an assignment does not
+transfer running rack voices between tracks. A requested ordinary destination
+receives a stop if its new assignment is rack content. Native listening and held
+notes still require manual Windows acceptance separate from automated tests.

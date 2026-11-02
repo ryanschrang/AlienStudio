@@ -439,10 +439,12 @@ static void continuousCommandTests() {
 #include "MidiClipCommandTests.h"
 #include "DeleteClipCommandTests.h"
 #include "ClipboardClipCommandTests.h"
+#include "MoveClipCommandTests.h"
 #include "SceneCommandTests.h"
 
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    moveClipCommandChecks();
     clipboardClipCommandChecks();
     deleteClipCommandChecks();
     sceneCommandChecks();

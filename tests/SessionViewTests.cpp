@@ -1165,6 +1165,27 @@ static void sceneMenuCommands() {
     c.setExternalBusy(false);
 }
 
+static void moveClipMenuCommands() {
+    Rig rig; auto& c = rig.controller; rig.fillClip(0,0); c.selectClip(0,0); c.markAsNewBaseline();
+    std::function<void(int)> choose;
+    rig.view.linkMenuLauncher = [&](juce::PopupMenu, std::function<void(int)> done) { choose = std::move(done); };
+    int selection = 0, refreshed = 0, legacy = 0;
+    rig.view.onSelectionChanged = [&] { ++selection; };
+    rig.view.onCellContentChanged = [&] { ++refreshed; };
+    rig.view.onEdited = [&](const juce::String&) { ++legacy; };
+    const auto source = c.document().cellClip(0,0);
+    rig.view.showLinkMenu(); choose(2000); // first empty cell: same track, next scene
+    require(!c.document().cellClip(0,0) && c.document().cellClip(0,1) == source && c.document().selectedScene == 1
+        && c.undoLabel() == "Move clip" && selection == 1 && refreshed == 1 && legacy == 0, "Move submenu executes command and refreshes without legacy commit");
+    require(c.undo() && !c.canUndo() && c.document().selectedScene == 0 && c.document().cellClip(0,0) == source, "menu move undoes once and restores selection");
+    rig.view.showLinkMenu(); rig.fillClip(0,1); const auto replacement = c.document(); choose(2000);
+    require(sameContent(replacement,c.document()) && refreshed == 1, "stale destination cannot overwrite newly inserted clip");
+    rig.view.showLinkMenu(); require(c.moveScene(2,1), "stale destination scene reorder fixture"); c.commit("Reorder fixture"); const auto reordered = c.document(); choose(2000);
+    require(sameContent(reordered,c.document()) && refreshed == 1, "stale destination scene identity refuses after reorder");
+    c.selectClip(0,0); rig.view.showLinkMenu(); rig.engine.recording.phase.store(RecordControls::countIn); const auto countIn = c.document(); choose(2000);
+    require(sameContent(countIn,c.document()) && legacy == 0, "queued move refuses during count-in"); rig.engine.recording.phase.store(RecordControls::idle);
+}
+
 static void clipboardMenuCommands() {
     Rig rig; auto& c = rig.controller; rig.fillClip(0, 0); c.selectClip(0, 0);
     std::function<void(int)> choose;
@@ -1221,6 +1242,7 @@ static void clearClipCommandButton() {
 
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    moveClipMenuCommands();
     clipboardMenuCommands();
     clearClipCommandButton();
     sampleDropChecks();

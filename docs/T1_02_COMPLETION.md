@@ -1,9 +1,10 @@
 # T1-02 completion audit
 
-CMD-01 is **not complete**. The Command Engine currently exposes 20 commands:
+CMD-01 is **not complete**. The Command Engine currently exposes 21 commands:
 five structural track commands, four Session track mix commands, three Session
 MIDI creation/duplication plus all-type independence, one Session clip delete
 command (claim #186), two clipboard paste commands (claim #189),
+one Session MoveClip command (claim #192),
 and five Session scene commands (claim #181).
 
 The existing roadmap examples are a target catalog, not proof that every
@@ -16,7 +17,7 @@ audition, and saving a file are separate lifecycle actions, not snapshot edits.
 | Command contract | Typed arguments, stable names, Execute, Preview, Batch, Undo/Redo, grouping, no-op/redo preservation | Cross-family acceptance with dirty plugin state, asynchronous work and runtime failure; document refusal must precede every live side effect |
 | Track structure | Create/delete/move/rename/colour; Session track menus | Audit other entry points for direct mutations and duplicate commits |
 | Session scenes | Create/duplicate/move/rename/delete and Session add/menu/name UI | Native interaction/acceptance; shared reducer remains a follow-up to remove controller/Preview duplication |
-| Session clips | Empty MIDI creation, independent MIDI duplication, MIDI make-independent; all-type Session cell delete/clear; PasteClip/PasteLinkedClip and all-type MakeClipUnique | Move and audio/rack create/duplicate command variants; asynchronous import needs an explicit plan/result boundary |
+| Session clips | Empty MIDI creation, independent MIDI duplication, MIDI make-independent; all-type Session cell delete/clear; PasteClip/PasteLinkedClip and all-type MakeClipUnique; identity-preserving MoveClip and destination menu | Audio/rack create/duplicate command variants; asynchronous import needs an explicit plan/result boundary |
 | Mixer parameters/routing | Session/Mixer track volume/pan/mute/solo | Master, bus, return and send parameters; create/rename/delete bus/return; track output, group membership and sidechain routing; UI adoption |
 | Devices | Existing host/controller operations and saved plugin instances | Insert/move/remove/bypass devices as commands; noncommitting controller adapters and runtime preparation/restore failure handling |
 | Automation/parameters | Existing saved send/plugin lanes and playback | Named lane/point edits and generic parameter targets; Preview must not instantiate or call plugins; account for the older stock-automation cache audit (#179) |
@@ -25,8 +26,8 @@ audition, and saving a file are separate lifecycle actions, not snapshot edits.
 
 ## Suggested implementation sequence
 
-1. Finish remaining Session clip operations and their UI entry points (move,
-   audio/rack creation/duplication).
+1. Finish remaining Session clip operations and their UI entry points
+   (audio/rack creation/duplication and asynchronous import planning).
 2. Add mixer parameter and routing families using pure document reducers and
    validated, noncommitting controller adapters.
 3. Add device/parameter/automation plans with explicit runtime failure behavior.
