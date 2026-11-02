@@ -1165,6 +1165,28 @@ static void sceneMenuCommands() {
     c.setExternalBusy(false);
 }
 
+static void clipboardMenuCommands() {
+    Rig rig; auto& c = rig.controller; rig.fillClip(0, 0); c.selectClip(0, 0);
+    std::function<void(int)> choose;
+    rig.view.linkMenuLauncher = [&](juce::PopupMenu, std::function<void(int)> done) { choose = std::move(done); };
+    int refresh = 0, legacy = 0;
+    rig.view.onCellContentChanged = [&] { ++refresh; };
+    rig.view.onEdited = [&](const juce::String&) { ++legacy; };
+    rig.view.showLinkMenu(); choose(1); c.selectClip(1, 1); c.markAsNewBaseline();
+    rig.view.showLinkMenu(); choose(2);
+    require(c.undoLabel() == "Paste clip" && c.document().cellClip(1, 1) && refresh == 1 && legacy == 0,
+        "Paste copy menu uses a command with refresh-only notification");
+    require(c.undo() && !c.canUndo() && !c.document().cellClip(1, 1), "menu paste has one undo step");
+    rig.view.showLinkMenu(); choose(3);
+    require(c.document().linkOf(1, 1) == c.document().linkOf(0, 0) && c.undoLabel() == "Paste linked clip", "linked menu uses named command");
+    rig.view.showLinkMenu(); choose(4);
+    require(c.document().linkOf(1, 1) != c.document().linkOf(0, 0) && c.undoLabel() == "Make clip independent", "menu independence uses named all-type command");
+    c.selectClip(2, 2); rig.view.showLinkMenu(); rig.fillClip(2, 2); const auto stale = c.document(); choose(2);
+    require(sameContent(stale, c.document()) && legacy == 0, "stale paste cannot overwrite replacement content");
+    rig.view.showLinkMenu(); const auto before = c.document(); rig.engine.recording.phase.store(RecordControls::countIn); choose(3);
+    require(sameContent(before, c.document()), "queued linked paste refuses during count-in"); rig.engine.recording.phase.store(RecordControls::idle);
+}
+
 static void clearClipCommandButton() {
     Rig rig; auto& c = rig.controller;
     juce::Button* clear = nullptr;
@@ -1199,6 +1221,7 @@ static void clearClipCommandButton() {
 
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    clipboardMenuCommands();
     clearClipCommandButton();
     sampleDropChecks();
     sceneMenuCommands();

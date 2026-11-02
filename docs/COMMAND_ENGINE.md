@@ -179,8 +179,8 @@ existing commands' focus behavior intact. Unique keeps selection and playing
 voices unchanged. The host refreshes without making another commit.
 
 Busy projects, recording/count-in, frozen destinations, invalid addresses and
-occupied destinations are refused. Audio/offline-audio and rack sources use their
-existing paths. A stale menu checks captured track/scene/clip identities before
+occupied destinations are refused. DuplicateClip remains MIDI-only; MakeClipUnique now supports audio/offline-audio
+and rack cells through the clipboard reducer described below. A stale menu checks captured track/scene/clip identities before
 acting. CommandEngineTests and SessionViewTests cover Preview/live agreement,
 sequential batches, atomic refusal, no-op/redo preservation, link independence,
 empty-clip persistence, focus and actual menu actions. Audio imports, Song
@@ -223,3 +223,29 @@ cell succeeds without a history entry or discarding redo. Invalid addresses,
 frozen tracks, busy state and recording/count-in refuse live deletion. No project
 format change. The host reloads its piano roll after success without emitting a
 second edit; the button also enables clearing allocated clips with zero notes.
+
+## Clipboard paste and all-type independence
+
+`PasteClip {track, scene}` and `PasteLinkedClip {track, scene}` replace a Session
+cell. They use the clipboard captured at the start of each Preview/Batch call;
+serialized arguments contain the destination address, not the clipboard or media.
+Replaying a parsed paste uses the current clipboard. Copy is a non-undoable
+clipboard action; it is not part of a command batch. Preview/live comparison
+requires unchanged clipboard/document input between calls. Pure `refusal` and
+`applyTo` accept an explicit Clipboard context; missing context refuses paste.
+
+PasteClip uses ordinary MIDI/audio content as it was when copied, even if the
+original cell was edited or removed. PasteLinkedClip resolves the remembered
+source identity in the sequential document and uses its current shared content;
+a deleted/pruned source refuses. Explicit empty clips and offline audio are kept.
+Rack paste retains existing behavior: it copies or links the current shared rack
+source by identity, rather than storing a rack-pattern snapshot in the clipboard.
+MakeClipUnique supports MIDI, audio and rack cells. Independent ordinary content
+is a no-op; rack independence creates a new rack source. Rack capacity and Song
+cell-binding failures roll back the pure reducer, so Preview refuses before any
+live publication. Paste preserves selection and unrelated playback requests.
+
+All three menu actions use commands and refresh-only host callbacks. Stale
+track/scene/cell identities refuse; busy state, recording/count-in and frozen
+destinations refuse. No project format changes. Session cell movement, new audio
+imports and other clip creation/duplication wrappers remain follow-ups.
