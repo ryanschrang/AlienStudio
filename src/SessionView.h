@@ -68,7 +68,7 @@ public:
         addSceneButton.setButtonText("Scene");
         addSceneButton.setName("Add scene");
         addSceneButton.setTooltip("Add a scene (up to " + juce::String(maxSessionScenes) + ")");
-        addSceneButton.onClick = [this] { if (controller.addScene()) structureChanged(true, "Add scene"); };
+        addSceneButton.onClick = [this] { executeTrackCommand(command::CreateScene{}); };
         addAndMakeVisible(rackClipsButton);
         rackClipsButton.setButtonText("Rack clips...");
         rackClipsButton.setName("Launch or edit a Channel Rack clip");
@@ -329,7 +329,8 @@ public:
     std::function<void(const juce::String&)> onEdited;  // a committed document edit, with an undo label
     // Optional presenter for deterministic UI tests and alternative menu hosts.
     // The native asynchronous popup remains the default.
-    std::function<void(juce::PopupMenu, std::function<void(int)>)> trackMenuLauncher;
+    std::function<void(juce::PopupMenu, std::function<void(int)>)> trackMenuLauncher, sceneMenuLauncher;
+    std::function<void(const juce::String&, const juce::String&, std::function<void(const juce::String&)>)> namePrompt;
     std::function<void(int, bool)> onTrackMixEdited;    // legacy host hook; Session controls now use commands
     std::function<void(int)> onTrackMixCommandExecuted; // mixer command already committed; refresh only
 
@@ -709,25 +710,28 @@ private:
     }
 
     void showSceneMenu(int scene) {
-        const auto& d = controller.document();
-        juce::PopupMenu menu;
-        menu.addSectionHeader(d.scenes[static_cast<std::size_t>(scene)].name);
-        menu.addItem(1, "Rename...");
-        menu.addItem(2, "Duplicate", d.canAddScene());
-        menu.addItem(3, "Move up", scene > 0);
-        menu.addItem(4, "Move down", scene < d.sceneCount() - 1);
-        menu.addSeparator();
-        menu.addItem(5, "Delete scene", d.sceneCount() > 1);
+        const auto& d = controller.document(); if (scene < 0 || scene >= d.sceneCount()) return;
+        const auto id = d.scenes[static_cast<std::size_t>(scene)].id, scope = d.identityScope;
+        const bool idle = controller.canEditMidiClips();
+        juce::PopupMenu menu; menu.addSectionHeader(d.scenes[static_cast<std::size_t>(scene)].name);
+        menu.addItem(1, "Rename...", idle);
+        menu.addItem(2, "Duplicate", idle && d.canAddScene());
+        menu.addItem(3, "Move up", idle && scene > 0);
+        menu.addItem(4, "Move down", idle && scene < d.sceneCount() - 1);
+        menu.addSeparator(); menu.addItem(5, "Delete scene", idle && scene_edit::refusal(d, {scene_edit::Kind::remove, scene}).isEmpty());
         juce::Component::SafePointer<SessionView> safe(this);
-        menu.showMenuAsync(juce::PopupMenu::Options().withMousePosition(), [safe, scene](int result) {
-            if (safe == nullptr) return;
-            auto& c = safe->controller;
+        std::function<void(int)> done = [safe, scene, id, scope](int result) {
+            if (!safe) return;
+            const auto& current = safe->controller.document();
+            if (current.identityScope != scope || scene >= current.sceneCount() || current.scenes[static_cast<std::size_t>(scene)].id != id) return;
             if (result == 1) safe->renameSceneAt(scene);
-            else if (result == 2 && c.duplicateScene(scene)) safe->structureChanged(true, "Duplicate scene");
-            else if (result == 3 && c.moveScene(scene, -1)) safe->structureChanged(true, "Move scene");
-            else if (result == 4 && c.moveScene(scene, 1)) safe->structureChanged(true, "Move scene");
-            else if (result == 5 && c.deleteScene(scene)) safe->structureChanged(true, "Delete scene");
-        });
+            else if (result == 2) safe->executeTrackCommand(command::DuplicateScene{scene});
+            else if (result == 3) safe->executeTrackCommand(command::MoveScene{scene, scene - 1});
+            else if (result == 4) safe->executeTrackCommand(command::MoveScene{scene, scene + 1});
+            else if (result == 5) safe->executeTrackCommand(command::DeleteScene{scene});
+        };
+        if (sceneMenuLauncher) { sceneMenuLauncher(std::move(menu), std::move(done)); return; }
+        menu.showMenuAsync(juce::PopupMenu::Options().withMousePosition(), std::move(done));
     }
 
     void renameTrackAt(int track) {
@@ -744,14 +748,20 @@ private:
     }
 
     void renameSceneAt(int scene) {
-        if (scene < 0 || scene >= controller.document().sceneCount()) return;
-        askForName("Rename scene", controller.document().scenes[static_cast<std::size_t>(scene)].name,
-            [this, scene](const juce::String& name) {
-                if (controller.renameScene(scene, name)) structureChanged(true, "Rename scene");
-            });
+        const auto& d = controller.document(); if (scene < 0 || scene >= d.sceneCount()) return;
+        const auto id = d.scenes[static_cast<std::size_t>(scene)].id, scope = d.identityScope;
+        juce::Component::SafePointer<SessionView> safe(this);
+        askForName("Rename scene", d.scenes[static_cast<std::size_t>(scene)].name, [safe, id, scope](const juce::String& name) {
+            if (!safe || safe->controller.document().identityScope != scope) return;
+            const auto& current = safe->controller.document();
+            for (int s = 0; s < current.sceneCount(); ++s) if (current.scenes[static_cast<std::size_t>(s)].id == id) {
+                safe->executeTrackCommand(command::RenameScene{s, name}); break;
+            }
+        });
     }
 
     void askForName(const juce::String& title, const juce::String& current, std::function<void(const juce::String&)> apply) {
+        if (namePrompt) { namePrompt(title, current, std::move(apply)); return; }
         auto* window = new juce::AlertWindow(title, {}, juce::MessageBoxIconType::NoIcon, this);
         window->addTextEditor("name", current);
         window->addButton("Rename", 1, juce::KeyPress(juce::KeyPress::returnKey));

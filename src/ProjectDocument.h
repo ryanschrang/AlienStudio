@@ -20,9 +20,23 @@ namespace alien {
 
 // Process-unique identity for tracks and scenes, so restoring an undo state
 // can tell a reorder (engine slots must be reset) from a content change.
+namespace object_ids {
+inline std::uint32_t& counter() { static std::uint32_t next = 0; return next; }
+inline thread_local std::uint32_t* previewCounter = nullptr;
+// Message-thread command previews allocate only in this local identity stream.
+// Nested previews leave their caller's stream unchanged too.
+class PreviewScope {
+public:
+    PreviewScope() : previous(previewCounter), local(previous ? *previous : counter()) { previewCounter = &local; }
+    ~PreviewScope() { previewCounter = previous; }
+    PreviewScope(const PreviewScope&) = delete;
+    PreviewScope& operator=(const PreviewScope&) = delete;
+private:
+    std::uint32_t* previous; std::uint32_t local;
+};
+}
 inline std::uint32_t newObjectId() {
-    static std::uint32_t next = 0;
-    return ++next;
+    return object_ids::previewCounter ? ++*object_ids::previewCounter : ++object_ids::counter();
 }
 
 inline const std::shared_ptr<const PianoRollPattern>& emptyPattern() {

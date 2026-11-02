@@ -437,9 +437,11 @@ static void continuousCommandTests() {
 }
 
 #include "MidiClipCommandTests.h"
+#include "SceneCommandTests.h"
 
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    sceneCommandChecks();
     midiClipCommandChecks();
     continuousCommandTests();
     nameTests();
