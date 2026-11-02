@@ -1,6 +1,7 @@
 #pragma once
 #include "ProjectDocument.h"
 #include "MidiClipCommands.h"
+#include "ClipboardClipCommands.h"
 #include "SessionClipCommands.h"
 #include "ViewModes.h"
 #include "ToneEngine.h"
@@ -954,24 +955,22 @@ public:
     }
     bool hasCopiedCell() const noexcept { return copiedContent.has_value(); }
     bool canPasteLinked() const { return copiedCell && doc.library.clip(copiedCell) != nullptr; }
-    bool pasteCell(int track, int scene, bool linked) {
-        if (busy || isRecording() || !doc.isValidCell(track, scene) || isTrackFrozen(track) || !copiedContent) return false;
-        if (copiedContent->rackClip != 0)
-            return linked ? assignRackClip(track, scene, copiedContent->rackClip) : copyRackToCell(track, scene, copiedContent->rackClip);
-        if (take.active && track == take.track && scene == take.scene) return false;
-        if (linked) {
-            if (!canPasteLinked()) return false;
-            const auto* source = doc.library.clip(copiedCell);
-            if (doc.linkOf(track, scene) == source->pattern.value) return false;   // already plays that content
-            doc.cells[static_cast<std::size_t>(scene)][static_cast<std::size_t>(track)] = doc.library.linkClip(copiedCell);
-            doc.prune();
-        } else {
-            doc.clearClip(track, scene);
-            doc.setClip(track, scene, *copiedContent, static_cast<bool>(copiedCell));
-        }
-        republishIfLive(track, scene);
-        commit(linked ? "Paste linked clip" : "Paste clip", track, scene);
+    clipboard_clip::Clipboard clipClipboard() const { return {copiedCell, copiedContent}; }
+    bool applyClipboardClipCommand(const clipboard_clip::Edit& edit, const clipboard_clip::Clipboard& clipboard) {
+        if (!canEditMidiClips()) return false;
+        const auto before = doc;
+        if (clipboard_clip::apply(doc, edit, &clipboard).isNotEmpty()) return false;
+        if (sameContent(before, doc)) return true;
+        if (doc.channelRack != before.channelRack) pushRackToEngine();
+        if (doc.clip(edit.track, edit.scene).rackClip) publishStop(static_cast<std::size_t>(edit.track));
+        else if (edit.kind != clipboard_clip::Kind::unique) republishIfLive(edit.track, edit.scene);
         return true;
+    }
+    bool pasteCell(int track, int scene, bool linked) {
+        const auto before = doc;
+        if (!applyClipboardClipCommand({linked ? clipboard_clip::Kind::link : clipboard_clip::Kind::paste, track, scene}, clipClipboard())
+            || sameContent(before, doc)) return false;
+        commit(linked ? "Paste linked clip" : "Paste clip", track, scene); return true;
     }
     // Non-committing command boundary. Only the addressed live cell is
     // republished; queued launches, transport and unrelated voices keep running.
@@ -984,12 +983,9 @@ public:
         return true;
     }
     bool makeCellUnique(int track, int scene) {
-        if (busy || isRecording() || !doc.isValidCell(track, scene) || isTrackFrozen(track)) return false;
-        if (doc.clip(track, scene).rackClip != 0) return copyRackToCell(track, scene, doc.clip(track, scene).rackClip);
-        const auto id = doc.cellClip(track, scene);
-        if (!id || !doc.library.makeClipUnique(id)) return false;
-        commit("Make clip unique", track, scene);
-        return true;
+        const auto before = doc;
+        if (!applyClipboardClipCommand({clipboard_clip::Kind::unique, track, scene}, clipClipboard()) || sameContent(before, doc)) return false;
+        commit("Make clip unique", track, scene); return true;
     }
     // Validated noncommitting adapter for the named command. Publish only a
     // changed cell; unrelated voices, launches and transport keep running.

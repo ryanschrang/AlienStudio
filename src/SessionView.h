@@ -277,12 +277,12 @@ public:
         for(int n=1;n<d.sceneCount();++n) {const int s=(scene+n)%d.sceneCount();if(!d.cellClip(track,s)){freeScene=s;break;}}
         juce::PopupMenu menu;
         menu.addItem(1, "Copy clip", d.cellClip(track, scene) ? true : false);
-        menu.addItem(2, "Paste a copy here", controller.hasCopiedCell());
-        menu.addItem(3, "Paste linked here", controller.canPasteLinked());
+        menu.addItem(2, "Paste a copy here", canEdit && controller.hasCopiedCell());
+        menu.addItem(3, "Paste linked here", canEdit && controller.canPasteLinked());
         menu.addItem(6,"New empty MIDI clip",!ownerClip && canEdit);
         menu.addItem(7,"Duplicate MIDI clip to free cell",midi && freeScene>=0 && canEdit);
         menu.addSeparator();
-        menu.addItem(4, linked > 1 ? "Make unique (linked with " + juce::String(linked - 1) + (linked == 2 ? " other cell)" : " other cells)") : juce::String("Make unique"), linked > 1 || d.selectedClip().rackClip != 0);
+        menu.addItem(4, linked > 1 ? "Make unique (linked with " + juce::String(linked - 1) + (linked == 2 ? " other cell)" : " other cells)") : juce::String("Make unique"), canEdit && (linked > 1 || d.selectedClip().rackClip != 0));
         std::vector<std::uint64_t> rackIds;
         juce::PopupMenu rackMenu;
         for (int p = 0; p < d.channelRack.patternCount; ++p) {
@@ -296,22 +296,23 @@ public:
             if (safe == nullptr || choice == 0) return;
             auto& c = safe->controller;
             bool changed = false;
+            if (choice == 1 || choice == 2 || choice == 3 || choice == 4 || choice == 6 || choice == 7) {
+                const auto& now = c.document();
+                if (!now.isValidCell(track, scene) || now.tracks[static_cast<std::size_t>(track)].id != ownerTrack
+                    || now.scenes[static_cast<std::size_t>(scene)].id != ownerScene || now.cellClip(track, scene) != ownerClip) {
+                    safe->setImportStatus("That cell changed while the menu was open. Open the menu again.", {}); return;
+                }
+            }
             if (choice == 1) { if (c.copyCell(track, scene)) safe->setImportStatus("Copied Track " + juce::String(track + 1) + ", Scene " + juce::String(scene + 1) + ". Select a cell and paste a copy or a linked clip.", {}); return; }
-            if (choice == 2) changed = c.pasteCell(track, scene, false);
-            if (choice == 3) changed = c.pasteCell(track, scene, true);
+            if (choice == 2) changed = command::CommandEngine(c).execute(command::PasteClip{track, scene}).changed;
+            if (choice == 3) changed = command::CommandEngine(c).execute(command::PasteLinkedClip{track, scene}).changed;
             if(choice==4 || choice==6 || choice==7) {
                 const auto& now=c.document();
-                if(!now.isValidCell(track,scene) || now.tracks[static_cast<std::size_t>(track)].id!=ownerTrack
-                    || now.scenes[static_cast<std::size_t>(scene)].id!=ownerScene || now.cellClip(track,scene)!=ownerClip) {
-                    safe->setImportStatus("That cell changed while the menu was open. Open the menu again.",{});return;
-                }
                 if(choice==6) changed=command::CommandEngine(c).execute(command::CreateClip{track,scene}).changed;
                 else if(choice==7) {
                     int target=-1;for(int n=1;n<now.sceneCount();++n){const int s=(scene+n)%now.sceneCount();if(!now.cellClip(track,s)){target=s;break;}}
                     if(target>=0)changed=command::CommandEngine(c).execute(command::DuplicateClip{track,scene,track,target}).changed;
-                } else if(!now.clip(track,scene).isAudioClip() && now.clip(track,scene).rackClip==0)
-                    changed=command::CommandEngine(c).execute(command::MakeClipUnique{track,scene}).changed;
-                else changed=c.makeCellUnique(track,scene); // existing audio/rack behavior
+                } else changed=command::CommandEngine(c).execute(command::MakeClipUnique{track,scene}).changed;
             }
             if (choice == 5) changed = c.placeRegion(track, scene, std::max<std::int64_t>(0, safe->engine.timelinePosition.load()));
             if (choice >= 1000 && choice < 1000 + static_cast<int>(rackIds.size()))

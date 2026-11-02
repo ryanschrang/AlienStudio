@@ -27,7 +27,7 @@ static void midiClipCommandChecks() {
     require(c.copyCell(0,0) && c.pasteCell(1,2,true),"linked fixture");c.markAsNewBaseline();
     const auto linked=c.document();engine->activePianoRollClip[1].store(2);engine->requestedPianoRollClip[1].store(2);engine->playing.store(true);
     require(commands.execute(cmd::MakeClipUnique{1,2}).changed && c.document().linkOf(1,2)!=c.document().linkOf(0,0)
-        && c.undoLabel()=="Make MIDI clip independent","make independent uses its named command");
+        && c.undoLabel()=="Make clip independent","make independent uses its named command");
     require(engine->playing.load() && engine->activePianoRollClip[1].load()==2 && engine->requestedPianoRollClip[1].load()==2,"independence preserves transport and queued playback");
     require(c.undo() && alien::sameContent(c.document(),linked) && !c.canUndo(),"one undo restores clip sharing");
     require(c.redo(),"redo independence");
@@ -44,7 +44,7 @@ static void midiClipCommandChecks() {
     auto frozen=unchanged;frozen.tracks[3].settings.freezeScene=0;
     require(!cmd::refusal(frozen,cmd::CreateClip{3,3}).isEmpty(),"frozen destination refuses");
     auto offline=unchanged;alien::SessionClip audio;audio.audioFilePath="missing.wav";offline.setClip(3,3,audio);
-    require(!cmd::refusal(offline,cmd::DuplicateClip{3,3,3,2}).isEmpty() && !cmd::refusal(offline,cmd::MakeClipUnique{3,3}).isEmpty(),"offline audio cannot enter MIDI-only clip commands");
+    require(!cmd::refusal(offline,cmd::DuplicateClip{3,3,3,2}).isEmpty() && cmd::refusal(offline,cmd::MakeClipUnique{3,3}).isEmpty(),"offline audio refuses MIDI duplication but supports all-type independence");
     auto rack=unchanged;require(rack.bindRackClip(3,3,rack.channelRack.clips[0]),"rack refusal fixture");
     require(!cmd::refusal(rack,cmd::DuplicateClip{3,3,3,2}).isEmpty(),"rack clips use their existing dedicated path");
     c.setExternalBusy(true);require(!commands.execute(cmd::CreateClip{3,3}).ok,"busy clip command refuses");c.setExternalBusy(false);
