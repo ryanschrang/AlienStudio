@@ -10,9 +10,13 @@
 #include "PianoRollProgression.h"
 #include "PianoRollScale.h"
 #include "PianoRollPitchRows.h"
+#include "PianoRollNoteInsert.h"
+#include "StarterPack.h"
 #include <bitset>
 #include <cmath>
 #include <functional>
+#include <map>
+#include <memory>
 #include <span>
 #include <utility>
 #include <vector>
@@ -37,6 +41,7 @@ public:
                     "Click the ruler to place the amber edit cursor; Edit > Split selected notes at cursor cuts crossing notes there. "
                     "Edit > Ghost notes shows other clips' notes, dimmed and read-only, behind this clip; "
                     "Edit them with this clip lets you edit those clips' notes too. "
+                    "Edit > Import MIDI clip adds a MIDI file's notes, or a Starter Pack clip's, at the amber cursor. "
                     "Alt C opens chord stamps; Alt L opens scale guides; Alt I inverts, Alt V reverses, and Alt A arpeggiates. Tab moves between controls.");
         setWantsKeyboardFocus(true);
         setMouseClickGrabsKeyboardFocus(true);
@@ -374,6 +379,31 @@ public:
     }
 
     const PianoRollPattern& getPattern() const noexcept { return pattern; }
+
+    // MIDI clip import (BROWSE-01). With this set, the Edit menu offers "Import MIDI clip..." and the Starter
+    // Pack's clips; the owner reads the chosen file (MidiClipImport.h) and answers with importNotes, so the
+    // editor itself never parses MIDI files.
+    std::function<void(const juce::File&)> onImportMidiFile;
+    juce::File starterFolder = starterPack::folder();   // where the Starter Pack's clips are; tests point it elsewhere
+    // Adds `notes` (timed from their own start) at the amber cursor, keeping the notes already there, as one
+    // undoable edit, and selects them. With `grow` the clip's loop first lengthens to hold them, in the same
+    // edit, so one undo restores both; without it notes past the clip's end are left out (see insertNotes).
+    NoteInsertResult importNotes(std::span<const PianoRollNote> notes, const LoopGrowth* grow = nullptr) {
+        if (locked) return {};
+        prepareClipboardAction();
+        beginEdit();
+        const auto result = insertNotes(pattern, notes, insertionStep, grow);
+        if (result.changed()) {
+            selection = result.selection;
+            activeId = selection.count != 0 ? selection.ids[0] : 0;
+            changed();
+        }
+        endEdit();
+        return result;
+    }
+    // A message for the status line, until the next edit replaces it.
+    void showStatus(const juce::String& text) { statusMessage = text; repaint(); }
+    juce::String getStatus() const { return statusMessage; }
 
     std::span<const std::uint32_t> getSelectedIds() const noexcept { return { selection.ids.data(), selection.count }; }
     void setSelection(std::span<const std::uint32_t> ids) {
@@ -1275,6 +1305,11 @@ private:
         menu.addSeparator();
         add(9, "Split selected notes at cursor", "", selection.count != 0);
         menu.addSeparator();
+        if (onImportMidiFile) {
+            add(50, "Import MIDI clip...", "", !locked);
+            menu.addSubMenu("Import from Starter Pack", starterClipMenu(), !locked);
+            menu.addSeparator();
+        }
         juce::PopupMenu labels;
         labels.addItem(30, "C notes only", true, keyLabels == KeyLabels::cNotes);
         labels.addItem(31, "All notes", true, keyLabels == KeyLabels::all);
@@ -1311,7 +1346,48 @@ private:
                 else if (action == 23) safe->setMultiClipEditing(!safe->multiClip);
                 else if (action == 30 || action == 31) safe->setKeyLabels(action == 30 ? KeyLabels::cNotes : KeyLabels::all);
                 else if (action >= 40 && action <= 42) safe->setPitchView(static_cast<PitchView>(action - 40));
+                else if (action == 50) safe->chooseMidiFile();
+                else if (action >= starterClipBase) safe->importStarterClip(static_cast<std::size_t>(action - starterClipBase));
                 if (action != 0) safe->grabKeyboardFocus();
+            });
+    }
+    static constexpr int starterClipBase = 1000;
+    // Edit > Import from Starter Pack: one submenu per folder ("Chord Progressions/Major" nests). The list is
+    // read when the menu opens, so a pack added or removed while running is noticed.
+    juce::PopupMenu starterClipMenu() {
+        starterClips = starterPack::midiClips(starterFolder);
+        juce::PopupMenu menu;
+        std::map<juce::String, juce::PopupMenu> folders;
+        juce::StringArray order;
+        for (std::size_t i = 0; i < starterClips.size(); ++i) {
+            const auto& clip = starterClips[i];
+            folders[clip.category].addItem(starterClipBase + static_cast<int>(i), clip.file.getFileNameWithoutExtension());
+            order.addIfNotAlreadyThere(clip.category);
+        }
+        // "Chord Progressions/Major" and ".../Minor" go under one "Chord Progressions" submenu.
+        std::map<juce::String, juce::PopupMenu> parents;
+        juce::StringArray top;
+        for (const auto& category : order) {
+            const auto parent = category.upToFirstOccurrenceOf("/", false, false);
+            if (category.contains("/")) parents[parent].addSubMenu(category.fromFirstOccurrenceOf("/", false, false), folders[category]);
+            else parents[parent] = folders[category];
+            top.addIfNotAlreadyThere(parent);
+        }
+        for (const auto& parent : top) menu.addSubMenu(parent, parents[parent]);
+        if (starterClips.empty()) menu.addItem(starterClipBase - 1, "Starter Pack not found next to Alien Studio", false);
+        return menu;
+    }
+    void importStarterClip(std::size_t index) {
+        if (index < starterClips.size() && onImportMidiFile) onImportMidiFile(starterClips[index].file);
+    }
+    void chooseMidiFile() {
+        const auto midi = starterFolder.getChildFile("MIDI");
+        midiChooser = std::make_unique<juce::FileChooser>("Import a MIDI clip at the cursor", midi.isDirectory() ? midi : juce::File{}, "*.mid;*.midi");
+        juce::Component::SafePointer<PianoRollEditor> safe(this);
+        midiChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+            [safe](const juce::FileChooser& chooser) {
+                if (safe != nullptr && chooser.getResult().existsAsFile() && safe->onImportMidiFile)
+                    safe->onImportMidiFile(chooser.getResult());
             });
     }
     void prepareClipboardAction() {
@@ -1736,6 +1812,8 @@ private:
     juce::ScrollBar pitchScroll { true };
     PianoRollSelection selection, marqueeBase;
     PianoRollClipboard clipboard;
+    std::vector<starterPack::MidiClip> starterClips;   // what the last Starter Pack menu offered
+    std::unique_ptr<juce::FileChooser> midiChooser;
     GhostNoteSource ghostSource { GhostNoteSource::off };
     bool multiClip{false};
     KeyLabels keyLabels{KeyLabels::cNotes};
