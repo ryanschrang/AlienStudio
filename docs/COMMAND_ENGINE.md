@@ -1,7 +1,7 @@
 # Command Engine
 
-Roadmap workstream T1-02, checklist ID CMD-01. This note covers structural tracks, volume/pan, mute/solo, Session MIDI clips and what later
-slices need.
+Roadmap workstream T1-02, checklist ID CMD-01. This note covers structural tracks, volume/pan, mute/solo, Session MIDI clips, Session scenes and what later
+slices need. See [T1_02_COMPLETION.md](T1_02_COMPLETION.md) for the completion audit; CMD-01 remains partial.
 
 ## Why
 
@@ -80,7 +80,7 @@ Only the addressed document field and live engine control change. Session's left
 mute light, right-click solo light and S button now execute these named commands. A
 successful command sends a refresh-only notification to the mixer, without a second
 legacy commit; busy refusal sends no edit notification. Session volume/pan gestures also use named commands (see below).
-The Mixer's own controls retain their existing direct editing paths.
+Master, bus, return and send controls retain their existing direct editing paths.
 
 CommandEngineTests covers true/false JSON round trips, strict types, side-effect-free
 preview, live controls, preserved mix/other solo states, busy/invalid-target refusal,
@@ -119,7 +119,7 @@ Exact build/test results belong in the PR; listening remains a manual check.
 
 - The Session track menu, rename box and add-track button use named commands. Commands own
   the undo commit; the view refreshes structure/title without invoking the legacy edit-commit callback.
-  Scene edits and the Mixer's own gestures retain their existing controller paths. SessionViewTests covers
+  Scene edits now use commands too. Master/bus/return/send controls retain their existing controller paths. SessionViewTests covers
   menu add/move/delete, one-step undo/redo, busy refusal and host refresh notifications.
 - `applyTo()` repeats the document half of the controller's track operations so a preview can run
   without an engine. The preview-equals-execute tests guard against drift. A later slice could
@@ -138,8 +138,8 @@ Exact build/test results belong in the PR; listening remains a manual check.
 | SetTrackVolume, SetTrackPan | Implemented: command setters write document then the addressed engine control | Session and Mixer track UI adopted; other parameter targets remain |
 | SetParameter (other targets) | Mixer edits via `trackSettingsEdited`, `returnSettingsEdited`, `masterGainEdited` with coalesced `commit` | Remaining targets need command wrappers |
 | AutomateParameter | `editTimeline` on `parameterLanes`, plugin automation targets | Command wrapper over lane edits |
-| CreateSend | Four fixed returns with per-track send level and pre/post (`TrackSettings`) | "Create" means new return tracks: T1-05 routing |
-| CreateBus, RouteTrack, CreateGroup, AddToGroup | None | T1-05 mixer routing (MIX-03, MIX-04, MIX-05) |
+| CreateSend | Up to eight dynamic returns with per-track send level and pre/post (`TrackSettings`) | Command wrappers for return creation and send settings |
+| CreateBus, RouteTrack, CreateGroup, AddToGroup | Existing group buses and track output routing (T1-05) | Pure Preview and noncommitting command/controller adapters; UI adoption |
 | InsertDevice, MoveDevice, RemoveDevice | `setPluginRacks` records rack edits after `PluginHost` changes the live instances | Plugin instances are runtime state; needs a host-side command path |
 | SetTempo | `setBpm` (whole BPM, unfreezes frozen tracks) | Tempo map (T1-01, TEMPO-01) |
 | SetChord | Piano roll chord stamping on clip notes only | Chord track |
@@ -185,3 +185,22 @@ acting. CommandEngineTests and SessionViewTests cover Preview/live agreement,
 sequential batches, atomic refusal, no-op/redo preservation, link independence,
 empty-clip persistence, focus and actual menu actions. Audio imports, Song
 placements, whole-scene copies and clipboard command wrappers remain later work.
+
+## Session scene commands
+
+`CreateScene {}`, `DuplicateScene {scene}`, `MoveScene {scene, to}`,
+`RenameScene {scene, name}` and `DeleteScene {scene}` use zero-based addresses.
+Move is an absolute destination. Duplication inserts an independent copy after
+its source, including audio/MIDI clips and independent Channel Rack sources.
+Scene limits, last-scene protection and frozen original references are checked
+before execution. Recording/count-in and busy state refuse the entire batch.
+
+Session's add-scene button, scene menu and rename prompt use the commands;
+notifications refresh the host without a second commit. Deferred menus reject
+replaced/reordered rows; a pending rename follows its captured scene identity.
+Previews allocate runtime object IDs only in a local scoped stream, including
+existing track-creation previews. They no longer consume global UI identities.
+
+The document reducer is in SceneCommands.h; live execution retains existing
+controller playback/structure handling. The completion audit records the
+remaining command families and UI migrations. No project-format change.

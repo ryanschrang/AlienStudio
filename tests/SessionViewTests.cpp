@@ -1143,9 +1143,32 @@ static void sampleDropChecks() {
     view.itemDragExit(drag);
 }
 
+static void sceneMenuCommands() {
+    Rig rig; auto& c = rig.controller; auto& view = rig.view;
+    int legacy = 0, refresh = 0; view.onEdited = [&](const juce::String& label) { ++legacy; c.commit(label); }; view.onStructureChanged = [&] { ++refresh; };
+    std::function<void(int)> choose; juce::PopupMenu menu;
+    view.sceneMenuLauncher = [&](juce::PopupMenu shown, std::function<void(int)> callback) { menu = std::move(shown); choose = std::move(callback); };
+    const auto open = [&](int scene) { view.sceneLauncher(scene)->onRightClick(); };
+    const int original = c.document().sceneCount(); open(0); choose(2);
+    require(c.document().sceneCount() == original + 1 && c.undoLabel() == "Duplicate scene" && legacy == 0 && refresh == 1, "scene menu owns one named command commit and refreshes host");
+    require(c.undo() && c.document().sceneCount() == original && !c.canUndo(), "one Undo removes scene duplicate without a legacy step"); view.rebuildGrid();
+    open(0); auto stale = choose; require(c.moveScene(0, 1), "stale menu fixture reorder"); c.commit("Fixture reorder");
+    stale(5); require(c.document().sceneCount() == original, "stale scene menu cannot delete replacement row"); view.rebuildGrid();
+    std::function<void(const juce::String&)> rename;
+    view.namePrompt = [&](const juce::String&, const juce::String&, std::function<void(const juce::String&)> done) { rename = std::move(done); };
+    open(0); choose(1); const auto renamedId = c.document().scenes[0].id;
+    require(c.moveScene(0, 1), "pending rename fixture reorder"); c.commit("Move fixture"); rename("My scene");
+    require(c.document().scenes[1].id == renamedId && c.document().scenes[1].name == "My scene" && legacy == 0, "deferred scene rename follows identity without extra commit");
+    c.setExternalBusy(true); view.rebuildGrid(); open(0);
+    for (juce::PopupMenu::MenuItemIterator item(menu); item.next();) if (item.getItem().itemID > 0) require(!item.getItem().isEnabled, "scene menu actions disabled while busy");
+    const auto label = c.undoLabel(); choose(2); require(c.undoLabel() == label && c.document().sceneCount() == original, "busy scene menu refuses queued action");
+    c.setExternalBusy(false);
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     sampleDropChecks();
+    sceneMenuCommands();
     midiClipMenuCommands();
     layoutChecks();
     wheelEvents();
