@@ -987,6 +987,20 @@ public:
         if (!applyClipboardClipCommand({clipboard_clip::Kind::unique, track, scene}, clipClipboard()) || sameContent(before, doc)) return false;
         commit("Make clip unique", track, scene); return true;
     }
+    bool applyMoveClipCommand(const session_clip::Move& edit) {
+        if (!canEditMidiClips() || session_clip::moveRefusal(doc, edit).isNotEmpty()) return false;
+        if (edit.track == edit.toTrack && edit.scene == edit.toScene) return true;
+        const auto sourceRequest = engine.requestedPianoRollClip[static_cast<std::size_t>(edit.track)].load();
+        const auto targetRequest = engine.requestedPianoRollClip[static_cast<std::size_t>(edit.toTrack)].load();
+        if (!session_clip::move(doc, edit)) return false;
+        // Do not replace another scene's queued request, including a pending stop.
+        if (sourceRequest == edit.scene) publishClip(edit.track, edit.scene);
+        if (targetRequest == edit.toScene) {
+            if (doc.clip(edit.toTrack, edit.toScene).rackClip) publishStop(static_cast<std::size_t>(edit.toTrack));
+            else publishClip(edit.toTrack, edit.toScene);
+        }
+        return true;
+    }
     // Validated noncommitting adapter for the named command. Publish only a
     // changed cell; unrelated voices, launches and transport keep running.
     bool applyDeleteClipCommand(int track, int scene) {
