@@ -437,6 +437,13 @@ Not yet run on hardware. Record commit, device/driver, sample rate and buffer si
 - Save, close and reopen: the instrument comes back with the sound you set in its editor. Duplicate the channel and change the copy's sound: the original is unchanged. Undo the instrument choice: the channel's old sound returns.
 - Export WAV and stems, and freeze a track the channel plays on: the instrument is in the result. With a plugin that crashes, it is switched off with a message naming the channel, and the rest keeps playing.
 
+## Latency compensation for rack instruments (T1-09 part 4)
+NOT RUN. Needs a VST3 instrument that reports latency (many samplers and some synths do when a lookahead or oversampling option is on; the instrument's manual or the `Latency and tail` line of `AlienPluginCheck check` says what it reports).
+- Put the latent instrument on a rack channel and a short click or rimshot sample on another channel, both on step 1 of every beat. Pan them apart and play: the two hits sound as one (no flam), at 48 kHz with 128, 512 and 1024-sample buffers. Route the instrument's channel to a track and the sample to the master, then swap: still no flam.
+- Add a latent instrument on a second channel with a different latency setting (or a non-latent one): all hits still sound together.
+- Export WAV with the latent instrument on step 1: in the file, the first hit starts at the song start (no silence added at the front) and lines up with the sample channel.
+- Turn the instrument's lookahead or oversampling off while stopped, play again: still in time. Remove the instrument: the rest of the mix stays in time.
+
 ## Plugin parameter automation (T1-09 part 3)
 - Put a VST3 effect (a filter or EQ) and a stock effect on a track. Song > Automation: choose the track, then the effect's submenu and a parameter. Draw a ramp over a bar and play: the parameter moves in the plugin's editor and you hear it, smoothly at 48 kHz with 128, 512 and 1024-sample buffers. Read off: the parameter stays where you set it by hand.
 - Move the effect up or down the rack, undo, save and reopen: the lane still drives the same effect. Remove the effect: playback carries on and the lane does nothing; undo brings both back.
