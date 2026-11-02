@@ -79,7 +79,7 @@ static bool allFinite(const std::vector<float>& x) { for (float v : x) if (!dsp:
 
 // ---------------------------------------------------------------------------
 static void catalogueTests() {
-    check(stock::catalog.size() == 9, "nine stock effects");
+    check(stock::catalog.size() == 10, "ten stock effects");
     std::set<juce::String> names, ids;
     for (const auto& info : stock::catalog) {
         auto e = stock::create(info.id);
@@ -96,7 +96,7 @@ static void catalogueTests() {
         check(PluginState{xml->toString(), {}, false}.valid(), std::string("description is a valid rack entry: ") + info.id);
         check(e->hasEditor(), std::string("has an editor: ") + info.id);
     }
-    check(names.size() == 9 && ids.size() == 9, "names and ids are unique");
+    check(names.size() == 10 && ids.size() == 10, "names and ids are unique");
     check(stock::create("nonsense") == nullptr && stock::create("") == nullptr, "unknown ids create nothing");
     juce::PluginDescription vst; vst.pluginFormatName = "VST3";
     check(!stock::isStock(vst), "a VST3 is not a stock effect");
@@ -502,6 +502,34 @@ static void chorusHostTests() {
     master.effects = {saved}; racks[0].effects.clear(); check(host.restore(racks, master, 48000).isEmpty(), "chorus can move to master rack with identity and state");
 }
 
+static void phaserHostTests() {
+    auto runtime = std::make_unique<PluginRuntime>(); runtime->prepare(48000); PluginHost host(*runtime);
+    std::vector<PluginRackState> racks(1); PluginRackState master; racks[0].effects = {stockState("phaser")};
+    check(host.restore(racks, master, 48000).isEmpty(), "phaser restores in track rack");
+    const auto instance = racks[0].effects[0].instanceId; const auto bindings = host.parameterBindings();
+    std::vector<automation::ParameterLane> lanes;
+    for (const char* id : {stock::phaser::rate, stock::phaser::depth, stock::phaser::feedback, stock::phaser::mix}) {
+        check(automation::resolve({instance, id}, bindings) != nullptr, "phaser exposes persistent automation target");
+        automation::ParameterLane lane; lane.target = {instance, id}; lane.points = {{0, .75f, automation::Curve::hold}}; lanes.push_back(std::move(lane));
+    }
+    host.changed.store(false);
+    const auto before = allocations; const int changed = runtime->applyParameterAutomation(lanes, 0); const bool allocated = allocations != before;
+    check(changed == 4 && !allocated, "phaser automation applies all controls without allocating");
+    auto* effect = dynamic_cast<stock::PhaserEffect*>(runtime->racks[0].effects[0].processor.get());
+    check(effect && effect->getLatencySamples() == 0 && effect->getTailLengthSeconds() >= 2, "phaser reports zero dry latency and conservative feedback tail");
+    for (const char* id : {stock::phaser::rate, stock::phaser::depth, stock::phaser::feedback, stock::phaser::mix}) checkNear(effect->parameters.getParameter(id)->getValue(), .75, 1e-6, "phaser receives runtime automation");
+    checkNear(effect->settings().depth, .75, 1e-6, "phaser DSP sees automated depth rather than stale APVTS cache");
+    checkNear(effect->settings().feedback, .75 * .85, 1e-6, "phaser DSP sees automated feedback");
+    std::unique_ptr<juce::AudioProcessorEditor> editor(effect->createEditorIfNeeded());
+    auto* panel = dynamic_cast<stock::PhaserEditor*>(editor.get()); check(panel != nullptr, "phaser custom editor available");
+    if (panel) { panel->tick(); checkNear(panel->knob(1).slider.getValue(), .75, 1e-6, "phaser editor follows host automation on message thread"); }
+    editor.reset();
+    host.snapshot(racks, master); check(!host.changed.load(), "phaser automation/editor refresh/snapshot do not emit user edit events"); master.effects = racks[0].effects; racks[0].effects.clear();
+    check(host.restore(racks, master, 48000).isEmpty(), "phaser moves to master with saved state");
+    effect = dynamic_cast<stock::PhaserEffect*>(runtime->racks[PluginRuntime::masterIndex].effects[0].processor.get());
+    check(effect && std::abs(effect->parameters.getParameter(stock::phaser::feedback)->getValue() - .75f) < 1e-6, "phaser state survives host snapshot/restore");
+}
+
 static void hostTests() {
     // instantiatePlugin
     {
@@ -741,6 +769,7 @@ int main() {
     filterEffectTests();
     saturatorEffectTests();
     stateTests();
+    phaserHostTests();
     chorusHostTests();
     hostTests();
     editorTests();

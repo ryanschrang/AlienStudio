@@ -753,7 +753,39 @@ static void chorusTests() {
     }
 }
 
+static void phaserTests() {
+    const auto input = sine(440, .3, 48000);
+    const auto run = [&](int block, bool dry) {
+        StereoPhaser effect; effect.prepare(rate); auto l = input, r = input;
+        for (int at = 0; at < 48000;) {
+            const int count = std::min({block, 48000 - at, at < 24000 ? 24000 - at : 48000 - at});
+            const StereoPhaser::Settings s = at < 24000 ? StereoPhaser::Settings{.5, .7, .3, dry ? 0. : .5} : StereoPhaser::Settings{3, 1, .8, dry ? 0. : .7};
+            effect.process(l.data() + at, r.data() + at, count, s); at += count;
+        }
+        return std::pair{l, r};
+    };
+    const auto dry = run(37, true); check(dry.first == input && dry.second == input, "phaser zero mix is exact dry pass-through");
+    const auto reference = run(48000, false); double stereo = 0, changed = 0;
+    for (int i = 2000; i < 48000; ++i) { stereo += std::abs(reference.first[i] - reference.second[i]); changed += std::abs(reference.first[i] - input[i]); }
+    check(stereo > 100 && changed > 100, "phaser sweeps phase and widens mono input");
+    for (int block : {1, 37, 512}) check(run(block, false) == reference, "phaser modulation and parameter smoothing independent of host block size");
+    StereoPhaser effect; effect.prepare(rate); std::vector<float> l(48000), r(48000); l[0] = 1;
+    effect.process(l.data(), r.data(), 48000, {.5, 0, 0, 1}); double energy = 0;
+    for (int i = 0; i < 48000; ++i) { energy += l[i] * l[i]; check(r[i] == 0, "phaser has no channel crossfeed"); }
+    near(energy, 1, 1e-5, "static zero-feedback wet phaser is all-pass");
+    check(std::abs(l[0] - 1) > .1, "all-pass changes phase rather than returning dry signal");
+    effect.reset(); l = input; r = input; effect.process(l.data(), r.data(), 48000, {.5, 0, 0, 1}); const auto first = l;
+    effect.reset(); l = input; r = input; effect.process(l.data(), r.data(), 48000, {.5, 0, 0, 1}); check(l == first, "phaser reset clears filters, feedback and LFO state");
+    for (double sr : {8000., 44100., 96000., 192000.}) {
+        effect.prepare(sr); const int samples = static_cast<int>(sr * 2.1); l.assign(samples, 0); r.assign(samples, 0); l[0] = r[0] = .1f;
+        effect.process(l.data(), r.data(), samples, {5, 1, .85, 1}); bool valid = true; double tail = 0;
+        for (int i = 0; i < samples; ++i) { valid = valid && finite(l[i]) && finite(r[i]) && std::abs(l[i]) < 10 && std::abs(r[i]) < 10; if (i >= static_cast<int>(sr * StereoPhaser::tailSeconds)) tail = std::max({tail, static_cast<double>(std::abs(l[i])), static_cast<double>(std::abs(r[i]))}); }
+        check(valid && tail < 1e-5, "maximum phaser feedback stays bounded and decays within declared tail at supported sample rates");
+    }
+}
+
 int main() {
+    phaserTests();
     chorusTests();
     smootherTests();
     biquadTests();
