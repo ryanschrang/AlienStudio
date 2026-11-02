@@ -647,7 +647,11 @@ private:
                 pianoRoll.grabKeyboardFocus();
             }
         };
-        sessionView.onClearClip = [this] { clearSelectedClip(); };
+        sessionView.onClearClip = [this] {
+            rollTarget = {};
+            loadSelectedClip(false); // refresh only this cell, without publishing an editor edit
+            refreshExtraViews();
+        };
         sessionView.onCellContentChanged = [this] {
             if (!rollTarget.rack && rollTarget.placement == 0) loadSelectedClip();
             sessionView.refreshFromDocument();
@@ -922,23 +926,6 @@ private:
             [safe](const juce::FileChooser& chooser) {
                 if (safe && chooser.getResult().isDirectory()) safe->controller.relinkMissingAudio(chooser.getResult());
             });
-    }
-
-    void clearSelectedClip() {
-        if (rollTarget.rack || rollTarget.placement != 0) { rollTarget = {}; loadSelectedClip(); }   // "Clear clip" is about the Session clip
-        const auto& d = controller.document();
-        const int track = d.selectedTrack, scene = d.selectedScene;
-        if(controller.isTrackFrozen(track)){timelineView.setStatus("Unfreeze the track before editing its source clips.");return;}
-        if (multiClip.active()) loadSelectedClip(false);   // "Clear clip" clears this clip, not every clip being edited with it
-        controller.clearCell(track, scene);   // only this cell: content it shares stays with the others
-        // The selected clip is the one loaded in the piano roll, so this clears
-        // it and republishes it through onChange; one undo step covers both.
-        suppressPianoRollCommit = true;
-        pianoRoll.clearAllNotes();
-        suppressPianoRollCommit = false;
-        controller.commit("Clear clip", track, scene);
-        sessionView.setImportStatus("Cleared Track " + juce::String(track + 1) + ", Scene " + juce::String(scene + 1), {});
-        sessionView.refreshSelectedClip();
     }
 
     // The engine plays what the view shows; the piano roll editing a rack channel plays the rack's pattern.

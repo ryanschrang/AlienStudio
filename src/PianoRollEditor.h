@@ -508,8 +508,8 @@ public:
         changed();
     }
 
-    // Removes every note as one undoable edit (the toolbar Clear button and
-    // the Session "Clear clip" action share this).
+    // Removes every note as one undoable piano-roll edit (the toolbar Clear button).
+    // Session cell deletion reloads the editor through setPattern instead.
     void clearAllNotes() {
         if (pattern.count == 0) return;
         releaseAudition();

@@ -1,8 +1,9 @@
 # T1-02 completion audit
 
-CMD-01 is **not complete**. The Command Engine currently exposes 17 commands:
+CMD-01 is **not complete**. The Command Engine currently exposes 18 commands:
 five structural track commands, four Session track mix commands, three Session
-MIDI clip commands, and five Session scene commands (claim #181).
+MIDI clip commands, one all-type Session clip delete command (claim #186),
+and five Session scene commands (claim #181).
 
 The existing roadmap examples are a target catalog, not proof that every
 operation already has a command. Completion requires both a validated command
@@ -14,7 +15,7 @@ audition, and saving a file are separate lifecycle actions, not snapshot edits.
 | Command contract | Typed arguments, stable names, Execute, Preview, Batch, Undo/Redo, grouping, no-op/redo preservation | Cross-family acceptance with dirty plugin state, asynchronous work and runtime failure; document refusal must precede every live side effect |
 | Track structure | Create/delete/move/rename/colour; Session track menus | Audit other entry points for direct mutations and duplicate commits |
 | Session scenes | Create/duplicate/move/rename/delete and Session add/menu/name UI | Native interaction/acceptance; shared reducer remains a follow-up to remove controller/Preview duplication |
-| Session clips | Empty MIDI creation, independent MIDI duplication, MIDI make-independent | Delete/clear, move, clipboard/link operations, audio and rack variants; asynchronous import needs an explicit plan/result boundary |
+| Session clips | Empty MIDI creation, independent MIDI duplication, MIDI make-independent; all-type Session cell delete/clear | Move, clipboard/link operations, audio and rack create/duplicate/unique variants; asynchronous import needs an explicit plan/result boundary |
 | Mixer parameters/routing | Session/Mixer track volume/pan/mute/solo | Master, bus, return and send parameters; create/rename/delete bus/return; track output, group membership and sidechain routing; UI adoption |
 | Devices | Existing host/controller operations and saved plugin instances | Insert/move/remove/bypass devices as commands; noncommitting controller adapters and runtime preparation/restore failure handling |
 | Automation/parameters | Existing saved send/plugin lanes and playback | Named lane/point edits and generic parameter targets; Preview must not instantiate or call plugins; account for the older stock-automation cache audit (#179) |
@@ -23,7 +24,8 @@ audition, and saving a file are separate lifecycle actions, not snapshot edits.
 
 ## Suggested implementation sequence
 
-1. Finish Session clip operations and their UI entry points.
+1. Finish remaining Session clip operations and their UI entry points (move,
+   clipboard/link and audio/rack creation/duplication/independence).
 2. Add mixer parameter and routing families using pure document reducers and
    validated, noncommitting controller adapters.
 3. Add device/parameter/automation plans with explicit runtime failure behavior.
@@ -56,3 +58,16 @@ recording/count-in and busy guards, no-op/redo preservation, strict argument
 roundtrips, frozen/last-scene protection and scene limits. SessionViewTests
 drives menu actions, one-step Undo, refresh-only host notifications, stale menu
 refusal and deferred rename identity. Exact build/test results belong in the PR.
+
+## Session delete acceptance
+
+`DeleteClip {track, scene}` removes one Session cell with shared pure document
+validation and reduction. The Clear clip button executes it, then asks the host
+to reload the editor without publishing a piano-roll edit or another commit.
+MIDI/audio/rack assignments and explicitly allocated empty clips are supported;
+an absent cell is a no-op that preserves redo. Linked cells and shared rack
+patterns retain their content. Existing cell-based Song placements fall silent;
+independent placement clips and rack-pattern placements retain their sources.
+Frozen tracks, busy state and recording/count-in refuse before live edits.
+CommandEngineTests and SessionViewTests cover the command and actual Clear button;
+exact build/test results belong in the PR. Native listening remains separate.

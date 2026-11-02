@@ -1165,8 +1165,41 @@ static void sceneMenuCommands() {
     c.setExternalBusy(false);
 }
 
+static void clearClipCommandButton() {
+    Rig rig; auto& c = rig.controller;
+    juce::Button* clear = nullptr;
+    for (auto* child : rig.view.getChildren())
+        if (child->getName() == "Clear selected Session clip") clear = dynamic_cast<juce::Button*>(child);
+    require(clear != nullptr, "Session clear button exists");
+    int refreshed = 0, legacy = 0;
+    rig.view.onClearClip = [&] { ++refreshed; };
+    rig.view.onEdited = [&](const juce::String&) { ++legacy; };
+    rig.fillClip(0, 0); c.selectClip(0, 0); c.markAsNewBaseline(); rig.view.refreshSelectedClip();
+    clickButton(*clear);
+    require(!c.document().cellClip(0, 0) && c.undoLabel() == "Clear clip" && refreshed == 1 && legacy == 0 && !clear->isEnabled(),
+        "real clear control commits the command and only notifies its host to refresh");
+    require(c.undo() && !c.canUndo() && c.document().clip(0, 0).notes().count == 1,
+        "button clear has exactly one undo step");
+    rig.view.refreshSelectedClip();
+    rig.engine.recording.phase.store(RecordControls::countIn); clickButton(*clear);
+    require(c.document().cellClip(0, 0) && refreshed == 1 && c.canRedo(), "queued button clear refuses during count-in without consuming redo");
+    rig.engine.recording.phase.store(RecordControls::idle);
+    c.setExternalBusy(true); clickButton(*clear); c.setExternalBusy(false);
+    require(c.document().cellClip(0, 0) && refreshed == 1, "busy clear leaves the editor and cell intact");
+    require(c.redo(), "redo clear"); rig.view.refreshSelectedClip();
+    require(!clear->isEnabled(), "absent cell disables clear");
+    require(command::CommandEngine(c).execute(command::CreateClip{0, 0}).changed, "empty MIDI cell fixture");
+    rig.view.refreshSelectedClip(); require(clear->isEnabled(), "explicit empty MIDI identity can be cleared");
+    clickButton(*clear); require(!c.document().cellClip(0, 0) && refreshed == 2, "empty MIDI clear removes its cell identity");
+    require(c.assignRackClip(0, 0, c.channelRack().clips[0]), "rack button fixture");
+    rig.view.refreshSelectedClip(); clickButton(*clear);
+    require(!c.document().cellClip(0, 0) && c.channelRack().patternCount > 0 && refreshed == 3,
+        "button clears rack assignment without deleting rack pattern");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    clearClipCommandButton();
     sampleDropChecks();
     sceneMenuCommands();
     midiClipMenuCommands();
