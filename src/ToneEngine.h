@@ -743,7 +743,6 @@ private:
             rackPlayer.processLaunched(*rackSnapshot, rackSamples, running, bpm.load(), activeTracks.load(), samples, left.data(), right.data(),
                                       rackRequestInBlock, launchQuantizationSteps.load(), startSelected,
                                       startSelected ? nullptr : rackLaunchTicks.data(), rackLaunchTickCount, rackSceneDue, rackSceneSample, &rackTrackRequests, &rackTrackSceneDue);
-        renderRackPlugins(samples, left.data(), right.data());
         activeRackClip.store(timelineRunning ? 0 : rackPlayer.playingClip(), std::memory_order_relaxed);
         queuedRackClip.store(timelineRunning ? alien::rack::RackPlayer::noLaunchRequest : rackPlayer.waitingClip(), std::memory_order_relaxed);
         if (!timelineRunning && synchronizedScenePending && synchronizedRackSource != alien::rack::RackPlayer::noLaunchRequest)
@@ -762,11 +761,14 @@ private:
         }
         plugins->live.addFrom(0, 0, left[alien::rack::RackPlayer::masterBus], samples);
         plugins->live.addFrom(1, 0, right[alien::rack::RackPlayer::masterBus], samples);
+        // Everything so far waits for the rack's plugin instruments, which then join it in time (T1-09).
+        plugins->alignToRackChannels(samples);
+        renderRackPlugins(samples);
     }
     // The Channel Rack's plugin instruments (T1-09): each plays this block's notes for its channel, and its output
-    // joins the channel's bus with the channel's fader and pan (silent while muted or soloed out), gliding across
-    // the block so a fader move never steps.
-    void renderRackPlugins(int samples, float* const* left, float* const* right) noexcept {
+    // joins the channel's bus (its track, or `live` for the master) with the channel's fader and pan (silent while
+    // muted or soloed out), gliding across the block so a fader move never steps.
+    void renderRackPlugins(int samples) noexcept {
         const auto* notes = rackPlayer.midiNotes();
         const int noteCount = rackPlayer.midiNoteCount();
         const auto& snap = *rackSnapshot;
@@ -782,8 +784,10 @@ private:
             const float angle = (std::clamp(rackPlayer.channelPan(c), -1.0f, 1.0f) + 1.0f) * 0.78539816339744830962f;
             const std::array<float, 2> target{std::cos(angle) * level, std::sin(angle) * level};
             const auto bus = static_cast<std::size_t>(alien::rack::RackPlayer::busFor(channel.output, activeTracks.load()));
+            if (bus < sessionTracks && plugins->racks[bus].frozen) continue;   // its sound is in the frozen audio
+            auto& into = bus < sessionTracks ? plugins->tracks[bus] : plugins->live;
             const float* in[]{out->getReadPointer(0), out->getReadPointer(1)};
-            float* dest[]{left[bus], right[bus]};
+            float* dest[]{into.getWritePointer(0), into.getWritePointer(1)};
             for (std::size_t side = 0; side < 2; ++side) {
                 const float step = (target[side] - previous[side]) / static_cast<float>(samples);
                 float g = previous[side];
