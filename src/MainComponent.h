@@ -707,6 +707,12 @@ private:
         devicesView.samples().onDragStarted = [this](bool song) {
             if (isDragAndDropActive()) showView(song ? 5 : 2);
         };
+        // A dragged MIDI clip opens where it can land: a drum groove the Channel Rack, anything else the piano roll.
+        devicesView.samples().onMidiDragStarted = [this](const juce::File& file) {
+            if (!isDragAndDropActive()) return;
+            const auto clip = alien::midi_import::read(file);
+            showView(clip.ok() && clip.drums() ? 8 : 1);
+        };
         devicesView.samples().onPreview = [this](const alien::SessionAudioClip& clip) {
             engine.factoryPresetPreview.stop();
             if (!engine.samplePreview.request(clip.left.data(), clip.channels == 2 ? clip.right.data() : nullptr, static_cast<int>(clip.frames), clip.sampleRate))

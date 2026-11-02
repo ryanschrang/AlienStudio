@@ -11,6 +11,13 @@ static void sampleBrowserChecks() {
     require(alien::writeClipWav(wav, clip, cancel, error), "write browser audio fixture");
     root.getChildFile("ignore.txt").replaceWithText("ignored");
     require(alien::SampleBrowser::supported(juce::File("C:/Snare.MP3")) && !alien::SampleBrowser::supported(root.getChildFile("ignore.txt")), "WAV and MP3 extension filtering");
+    require(alien::SampleBrowser::supported(juce::File("C:/Groove.MID")) && alien::SampleBrowser::supported(juce::File("C:/Chords.midi")), "MIDI clips are listed too");
+    require(alien::mididrag::decode(alien::mididrag::encode(juce::File("C:/My Clips/Groove.mid"))) == juce::File("C:/My Clips/Groove.mid"), "a MIDI drag keeps its full path");
+    for (const juce::var bad : {juce::var(3), juce::var("alien-midi-clip\nrelative.mid"), juce::var("alien-midi-clip\nC:/song.wav"), juce::var("alien-local-sample\nC:/clip.mid"),
+                                juce::var("alien-midi-clip\nC:/one.mid\nC:/two.mid")})
+        require(alien::mididrag::decode(bad) == juce::File{}, "malformed MIDI clip payload refused");
+    require(alien::sampledrag::encode(juce::File("C:/clip.mid")).isVoid() && alien::sampledrag::decode(alien::mididrag::encode(juce::File("C:/clip.mid"))) == juce::File{},
+            "a MIDI clip is never a sample drag, so Session and Song ignore it");
     {
         alien::SampleBrowser browser; browser.setSize(360, 400); browser.addToDesktop(0); browser.setVisible(true); browser.scan(root);
         auto pump = [] { juce::MessageManager::getInstance()->runDispatchLoopUntil(10); };
@@ -61,12 +68,37 @@ static void sampleBrowserChecks() {
         search->setText("no match", false); search->onTextChange(); require(browser.dragDescriptionFor(0).isVoid(), "empty filtered list has no stale drag payload"); require(browser.resultCount() == 0 && !import->isEnabled() && !preview->isEnabled(), "empty search clears stale actions");
     }
     {
-        // The Starter Pack: shown at once from its button, with only its samples (not its MIDI clips).
+        // The Starter Pack: shown at once from its button, with its samples and its MIDI clips.
         alien::SampleBrowser browser; browser.setSize(360, 400); browser.addToDesktop(0); browser.setVisible(true);
         const juce::File pack{juce::String(ALIEN_STARTER_PACK_DIR)};
         browser.setStarterFolder(pack); browser.showStarterPack();
         for (int i = 0; i < 400 && browser.resultCount() == 0; ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
-        require(browser.resultCount() == static_cast<int>(alien::starterPack::drumSamples(pack).size()), "the Starter Pack button browses the pack's samples");
+        const auto clips = alien::starterPack::midiClips(pack);
+        require(browser.resultCount() == static_cast<int>(alien::starterPack::drumSamples(pack).size() + clips.size()), "the Starter Pack button browses the pack's samples and MIDI clips");
+        // A MIDI clip row drags as a MIDI clip; it cannot be previewed or imported as audio.
+        int midiRow = -1;
+        for (int row = 0; row < browser.resultCount() && midiRow < 0; ++row)
+            if (alien::mididrag::decode(browser.dragDescriptionFor(row)) == clips.back().file) midiRow = row;
+        require(midiRow >= 0, "the last Starter Pack clip is a MIDI drag source");
+        juce::ListBox* list = nullptr; juce::Button* preview = nullptr; juce::Button* import = nullptr; juce::Label* status = nullptr;
+        for (auto* c : browser.getChildren()) {
+            if (auto* l = dynamic_cast<juce::ListBox*>(c)) list = l;
+            if (auto* b = dynamic_cast<juce::Button*>(c); b && b->getButtonText() == "Preview 5s") preview = b;
+            if (auto* b = dynamic_cast<juce::Button*>(c); b && b->getButtonText() == "Import to empty Session cell") import = b;
+            if (auto* l = dynamic_cast<juce::Label*>(c); l && l->getText().contains("samples and")) status = l;
+        }
+        require(list && preview && import && status, "the status line counts samples and MIDI clips");
+        browser.setImportEnabled(true, true);
+        list->selectRow(midiRow);
+        require(!preview->isEnabled() && !import->isEnabled() && !browser.selectedIsSample(), "a MIDI clip cannot be previewed or imported as audio");
+        require(status->getText().startsWith("MIDI clip: drag it into the piano roll"), "and the status line says how to use it");
+        juce::File dragged; int sampleDrags = 0;
+        browser.onMidiDragStarted = [&](const juce::File& file) { dragged = file; };
+        browser.onDragStarted = [&](bool) { ++sampleDrags; };
+        juce::SparseSet<int> rows; rows.addRange({midiRow, midiRow + 1});
+        require(alien::mididrag::decode(browser.getDragSourceDescription(rows)) == clips.back().file, "the list supplies the MIDI drag");
+        for (int i = 0; i < 5; ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+        require(dragged == clips.back().file && sampleDrags == 0, "dragging a MIDI clip asks the owner to show where it can land, not the sample destination");
         juce::Button* starter = nullptr;
         for (auto* c : browser.getChildren()) if (auto* b = dynamic_cast<juce::Button*>(c); b && b->getButtonText() == "Starter Pack") starter = b;
         require(starter && starter->isEnabled(), "the Starter Pack button is offered");
