@@ -19,15 +19,21 @@ int main(int argc, char** argv) {
     const juce::String bundle = argv[2];
     const juce::File output(argv[3]);
     const auto name = juce::File(bundle).getFileName();
+    // Deterministic fixture for a deadline expiring before the first protocol
+    // marker/heartbeat. Real Windows process startup can take this long too.
+    if (name.startsWith("slowhang")) std::this_thread::sleep_for(std::chrono::seconds(2));
     alien::scan::redirectOutputToFile(output);
     alien::scan::writeStage(output, "start");
     alien::scan::writeStage(output, "load");
     if (name.startsWith("crash")) { *reinterpret_cast<volatile int*>(zeroAddress) = 1; }
     if (name.startsWith("abort")) std::abort();
-    if (name.startsWith("hang")) {
+    if (name.startsWith("hang") || name.startsWith("slowhang")) {
         // Leaves a heartbeat so a test can tell whether this process is still alive after the parent gave up on it.
         const auto beat = output.getSiblingFile(output.getFileName() + ".beat");
-        for (int i = 0; i < 72000; ++i) { beat.replaceWithText(juce::String(i)); std::this_thread::sleep_for(std::chrono::milliseconds(50)); }
+        for (int i = 0; i < 72000; ++i) {
+            if (!beat.replaceWithText(juce::String(i))) { std::fprintf(stderr, "Cannot write scanner fixture heartbeat.\n"); return alien::scan::exitOutputFailed; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
         return 0;
     }
     if (name.startsWith("none")) return alien::scan::exitNoPlugins;

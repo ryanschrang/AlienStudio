@@ -347,7 +347,7 @@ static void realProcessTests(const juce::File& tmp) {
     const auto run = [&](const juce::String& name, int timeoutMs = 30000) {
         auto bundle = folder.getChildFile(name + ".vst3"); bundle.replaceWithText("x");
         ChildRequest request; request.executable = exe; request.bundle = bundle.getFullPathName(); request.timeoutMs = timeoutMs;
-        request.output = tmp.getNonexistentChildFile("realscan", ".xml", false);
+        request.output = uniqueOutput(tmp, "realscan");
         lastOutput = request.output;
         const auto r = runChildProcess(request);
         juce::KnownPluginList types; if (auto xml = juce::parseXML(r.xml)) types.recreateFromXml(*xml);
@@ -356,15 +356,21 @@ static void realProcessTests(const juce::File& tmp) {
     { auto [r, v] = run("ok_synth"); check(v.status == Status::ok && r.stage == "done" && r.xml.isNotEmpty(), "a well-behaved child scans fine: " + v.detail); }
     { auto [r, v] = run("crash_now"); check(v.status == Status::crashed && v.detail.contains("loading"), "a child that really crashes is reported as crashed, not as an empty scan: " + v.detail); }
     { auto [r, v] = run("abort_now"); check(v.status == Status::crashed, "so is one that aborts: " + v.detail); }
-    // The limit leaves the child time to start (a busy CI runner can take seconds just to load it) before it hangs,
-    // so the heartbeat below shows it really ran; 2 s was sometimes over before its first beat.
-    { auto [r, v] = run("hang_now", 8000); check(v.status == Status::timedOut && r.milliseconds < 20000, "a child that hangs is stopped at the time limit: " + v.detail + " (" + juce::String(r.milliseconds) + " ms)");
-      // "Stopped" means the process is gone, not merely that the parent stopped waiting: its heartbeat must have ended.
+    // The production deadline includes OS/GUI startup. A busy runner may
+    // consume the budget before this helper publishes any protocol files.
+    { auto [r, v] = run("hang_now", 8000);
+      check(v.status == Status::timedOut && r.milliseconds >= 8000 && r.milliseconds < 20000,
+            "a hanging or still-starting child is stopped at the unchanged deadline: " + v.detail + " (" + juce::String(r.milliseconds) + " ms)");
       const auto beat = lastOutput.getSiblingFile(lastOutput.getFileName() + ".beat");
-      const auto before = beat.loadFileAsString();
-      juce::Thread::sleep(600);
-      check(before.isNotEmpty(), "the hanging child was really running (it left a heartbeat)");
-      check(beat.loadFileAsString() == before, "a child that timed out has been killed, not left running (heartbeat " + before + " -> " + beat.loadFileAsString() + ")"); }
+      const auto before = beat.loadFileAsString(); juce::Thread::sleep(600);
+      check(beat.loadFileAsString() == before, "a timed-out child cannot keep updating its heartbeat"); }
+    { auto [r, v] = run("slowhang_startup", 100);
+      check(v.status == Status::timedOut && r.milliseconds >= 100 && r.milliseconds < 15000,
+            "deadline bounds a delayed scanner startup");
+      const auto beat = lastOutput.getSiblingFile(lastOutput.getFileName() + ".beat");
+      check(r.stage.isEmpty() && !beat.existsAsFile(), "startup can time out before any protocol marker or heartbeat");
+      juce::Thread::sleep(2300);
+      check(!beat.existsAsFile(), "timed-out startup cannot later begin emitting heartbeats"); }
     { auto [r, v] = run("none_here"); check(v.status == Status::noPlugins, "exit code 2 means no plugins"); }
     { auto [r, v] = run("lib_missing"); check(v.status == Status::incompatible && v.detail.contains("error 126"), "the child's explanation reaches the verdict: " + v.detail); }
     { auto [r, v] = run("exit9_now"); check(v.status == Status::failed && v.detail.contains("code 9"), "an odd exit code is reported"); }
@@ -373,15 +379,25 @@ static void realProcessTests(const juce::File& tmp) {
         auto bundle = folder.getChildFile("hang_cancel.vst3"); bundle.replaceWithText("x");
         std::atomic<bool> stop{false};
         ChildRequest request; request.executable = exe; request.bundle = bundle.getFullPathName(); request.timeoutMs = 60000; request.cancel = &stop;
-        request.output = tmp.getNonexistentChildFile("cancelscan", ".xml", false);
-        std::thread canceller([&] { juce::Thread::sleep(700); stop.store(true); });
-        const auto r = runChildProcess(request);
-        canceller.join();
-        check(r.outcome == ChildResult::Outcome::cancelled && r.milliseconds < 15000, "cancelling a scan of a hung plugin returns promptly instead of waiting for the time limit (" + juce::String(r.milliseconds) + " ms)");
-        check(classify(r, 0, 60000).status != Status::timedOut, "and is not mistaken for the plugin timing out");
+        request.output = uniqueOutput(tmp, "cancelscan");
         const auto beat = request.output.getSiblingFile(request.output.getFileName() + ".beat");
+        std::atomic<bool> ready{false}, finished{false}; std::atomic<juce::uint32> cancelledAt{0};
+        std::thread canceller([&] {
+            const auto started = juce::Time::getMillisecondCounter();
+            while (!finished.load() && beat.loadFileAsString().isEmpty()
+                && juce::Time::getMillisecondCounter() - started < 30000) juce::Thread::sleep(20);
+            if (finished.load()) return;
+            ready.store(beat.loadFileAsString().isNotEmpty());
+            cancelledAt.store(juce::Time::getMillisecondCounter()); stop.store(true);
+        });
+        const auto r = runChildProcess(request); finished.store(true); canceller.join();
+        const auto sinceCancel = juce::Time::getMillisecondCounter() - cancelledAt.load();
+        check(ready.load(), "cancellation fixture confirms the hanging child was running before cancellation");
+        check(r.outcome == ChildResult::Outcome::cancelled && cancelledAt.load() != 0 && sinceCancel < 15000 && r.milliseconds < 45000,
+            "cancelling a confirmed running child returns promptly without counting startup as cancellation latency");
+        check(classify(r, 0, 60000).status != Status::timedOut, "and is not mistaken for the plugin timing out");
         const auto before = beat.loadFileAsString(); juce::Thread::sleep(600);
-        check(before.isNotEmpty() && beat.loadFileAsString() == before, "the child was really running and is killed once cancelled");
+        check(before.isNotEmpty() && beat.loadFileAsString() == before, "the confirmed running child is killed once cancelled");
     }
     {   // The same, through the whole scan as the application runs it: the cancel flag must reach the child.
         auto hung = makeBundle(folder, "hang_whole_scan");
