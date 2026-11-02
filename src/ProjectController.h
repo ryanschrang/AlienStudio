@@ -1,6 +1,7 @@
 #pragma once
 #include "ProjectDocument.h"
 #include "MidiClipCommands.h"
+#include "SessionClipCommands.h"
 #include "ViewModes.h"
 #include "ToneEngine.h"
 #include "AudioClipImport.h"
@@ -990,14 +991,19 @@ public:
         commit("Make clip unique", track, scene);
         return true;
     }
+    // Validated noncommitting adapter for the named command. Publish only a
+    // changed cell; unrelated voices, launches and transport keep running.
+    bool applyDeleteClipCommand(int track, int scene) {
+        if (!canEditMidiClips() || session_clip::deleteRefusal(doc, track, scene).isNotEmpty()) return false;
+        const bool present = static_cast<bool>(doc.cellClip(track, scene));
+        if (!session_clip::remove(doc, track, scene)) return false;
+        if (present) republishIfLive(track, scene);
+        return true;
+    }
     // Empties one cell. Content other cells share stays theirs; Song regions on the cell fall silent.
     bool clearCell(int track, int scene) {
-        if (busy || !doc.isValidCell(track, scene) || isTrackFrozen(track)) return false;
-        if (take.active && track == take.track && scene == take.scene) return false;
-        if (!doc.cellClip(track, scene)) return false;
-        doc.clearClip(track, scene);
-        republishIfLive(track, scene);
-        return true;
+        return doc.isValidCell(track, scene) && doc.cellClip(track, scene)
+            && applyDeleteClipCommand(track, scene);
     }
     // Whether a Song placement shares what it plays with something else: another placement of the same
     // cell or placement clip, or a linked cell.

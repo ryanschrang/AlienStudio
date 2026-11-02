@@ -196,7 +196,17 @@ public:
         clearClip.setGlyph(ui::Glyph::close);
         clearClip.setName("Clear selected Session clip");
         clearClip.setTooltip("Remove all notes and audio from the selected clip");
-        clearClip.onClick = [this] { if (onClearClip) onClearClip(); };
+        clearClip.onClick = [this] {
+            const auto& d = controller.document();
+            const auto result = command::CommandEngine(controller).execute(command::DeleteClip{d.selectedTrack, d.selectedScene});
+            if (!result.ok) { setImportStatus(result.error, {}); return; }
+            if (!result.changed) return;
+            if (onClearClip) onClearClip(); // refresh only; command already committed
+            refreshSelectedClip();
+            refreshClips();
+            if (onTitleChanged) onTitleChanged();
+            setImportStatus("Cleared the selected Session clip.", {});
+        };
         addAndMakeVisible(linkClip);
         linkClip.setButtonText("Copy / link");
         linkClip.setGlyph(ui::Glyph::chevronDown);
@@ -322,7 +332,7 @@ public:
     // A clip or scene was launched; `started` says whether that started the stopped transport (it does not
     // while the Song or a count-in is what plays).
     std::function<void(bool started)> onLaunched;
-    std::function<void()> onClearClip;                  // clear the selected clip
+    std::function<void()> onClearClip;                  // refresh after the selected clip was cleared (already committed)
     std::function<void()> onRelinkAudio;                // choose a folder to search for missing audio
     std::function<void()> onTitleChanged;               // header subtitle text changed
     std::function<void()> onStructureChanged;           // tracks/scenes added, removed, renamed or moved
@@ -385,7 +395,7 @@ public:
     void refreshSelectedClip() {
         const auto& d = controller.document();
         const auto& clip = d.selectedClip();
-        clearClip.setEnabled(!clip.isEmpty());
+        clearClip.setEnabled(static_cast<bool>(d.cellClip(d.selectedTrack, d.selectedScene)));
         removeAudio.setEnabled(clip.isAudioClip());
         audioWaveform.setClip(clip.audio.get(), clip.audioFileName, clip.audioFilePath,
             controller.currentFile(), clip.audioOffline());

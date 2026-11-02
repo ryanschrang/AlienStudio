@@ -33,18 +33,20 @@ struct CreateClip { int track{-1}, scene{-1}; };
 struct DuplicateClip { int track{-1}, scene{-1}, toTrack{-1}, toScene{-1}; };
 struct MakeClipUnique { int track{-1}, scene{-1}; };
 
+struct DeleteClip { int track{-1}, scene{-1}; }; // remove one Session cell, any clip type
+
 struct CreateScene {};
 struct DuplicateScene { int scene{-1}; };
 struct MoveScene { int scene{-1}, to{-1}; };
 struct RenameScene { int scene{-1}; juce::String name; };
 struct DeleteScene { int scene{-1}; };
 
-using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene>;
+using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip>;
 
 namespace detail {
 // Indexed like Command's alternatives.
-inline constexpr std::array<const char*, 17> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene"};
-inline constexpr std::array<const char*, 17> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate MIDI clip", "Make MIDI clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene"};
+inline constexpr std::array<const char*, 18> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip"};
+inline constexpr std::array<const char*, 18> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate MIDI clip", "Make MIDI clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip"};
 static_assert(names.size() == std::variant_size_v<Command> && labels.size() == names.size());
 
 // The name the controller stores for `name` (it trims and caps track names).
@@ -90,6 +92,7 @@ inline std::optional<scene_edit::Edit> sceneEdit(const Command& command) {
 
 // Why `command` cannot be applied to `d`, or an empty string when it can.
 inline juce::String refusal(const ProjectDocument& d, const Command& command) {
+    if (const auto* c = std::get_if<DeleteClip>(&command)) return session_clip::deleteRefusal(d, c->track, c->scene);
     if (const auto edit = sceneEdit(command)) return scene_edit::refusal(d, *edit);
     if(const auto edit=midiEdit(command)) return midi_clip::refusal(d,*edit);
     auto track = [&](int t) -> juce::String {
@@ -132,6 +135,7 @@ inline juce::String refusal(const ProjectDocument& d, const Command& command) {
 
 // One line saying what `command` does to `d` (call before applying it).
 inline juce::String describe(const ProjectDocument& d, const Command& command) {
+    if (const auto* c = std::get_if<DeleteClip>(&command)) return "Clear Session clip at track " + juce::String(c->track + 1) + ", scene " + juce::String(c->scene + 1);
     if (const auto edit = sceneEdit(command)) {
         if (edit->kind == scene_edit::Kind::create) return "Add scene " + juce::String(d.sceneCount() + 1);
         return label(command) + " " + juce::String(edit->scene + 1) + " (" + d.scenes[static_cast<std::size_t>(edit->scene)].name + ")";
@@ -159,6 +163,7 @@ inline juce::String describe(const ProjectDocument& d, const Command& command) {
 // refusal, or an empty string when it was applied.
 inline juce::String applyTo(ProjectDocument& d, const Command& command) {
     if (const auto why = refusal(d, command); why.isNotEmpty()) return why;
+    if (const auto* c = std::get_if<DeleteClip>(&command)) return session_clip::remove(d, c->track, c->scene) ? juce::String{} : "The Session clip could not be deleted.";
     if (const auto edit = sceneEdit(command)) return scene_edit::apply(d, *edit);
     if(const auto edit=midiEdit(command)) return midi_clip::apply(d,*edit)?juce::String{}:"The MIDI clip edit could not be applied.";
     if (std::holds_alternative<CreateTrack>(command)) {
@@ -198,6 +203,9 @@ inline juce::String applyTo(ProjectDocument& d, const Command& command) {
 inline juce::var arguments(const Command& command) {
     auto* object = new juce::DynamicObject();
     juce::var result(object);
+    if (const auto* c = std::get_if<DeleteClip>(&command)) {
+        object->setProperty("track", c->track); object->setProperty("scene", c->scene); return result;
+    }
     if (const auto edit = sceneEdit(command)) {
         if (edit->kind != scene_edit::Kind::create) object->setProperty("scene", edit->scene);
         if (edit->kind == scene_edit::Kind::move) object->setProperty("to", edit->to);
@@ -230,13 +238,13 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
     std::size_t index = 0;
     while (index < detail::names.size() && commandName != detail::names[index]) ++index;
     if (index >= detail::names.size()) { error = "Unknown command \"" + commandName + "\"."; return std::nullopt; }
-    static const std::array<juce::StringArray, 17> allowed{
+    static const std::array<juce::StringArray, 18> allowed{
         juce::StringArray{}, juce::StringArray{"track"}, juce::StringArray{"track", "to"},
         juce::StringArray{"track", "name"}, juce::StringArray{"track", "colour"},
         juce::StringArray{"track", "gain"}, juce::StringArray{"track", "pan"},
         juce::StringArray{"track", "muted"}, juce::StringArray{"track", "soloed"},
         juce::StringArray{"track","scene"},juce::StringArray{"track","scene","toTrack","toScene"},juce::StringArray{"track","scene"},
-        juce::StringArray{},juce::StringArray{"scene"},juce::StringArray{"scene","to"},juce::StringArray{"scene","name"},juce::StringArray{"scene"}};
+        juce::StringArray{},juce::StringArray{"scene"},juce::StringArray{"scene","to"},juce::StringArray{"scene","name"},juce::StringArray{"scene"},juce::StringArray{"track","scene"}};
     const auto* object = args.getDynamicObject();
     if (object == nullptr && !args.isVoid()) { error = commandName + " takes an object of arguments."; return std::nullopt; }
     if (object != nullptr)
@@ -298,6 +306,7 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
         case 14: { const int s = integer("scene"); command = MoveScene{s, integer("to")}; break; }
         case 15: { const int s = integer("scene"); command = RenameScene{s, text("name")}; break; }
         case 16: command = DeleteScene{integer("scene")}; break;
+        case 17: { const int t = integer("track"), s = integer("scene"); command = DeleteClip{t, s}; break; }
     }
     if (!ok) return std::nullopt;
     return command;
@@ -356,6 +365,7 @@ public:
         if (controller.isBusy()) return refused("The project is busy; try again when it has finished.");
         if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return sceneEdit(c).has_value(); })) return refused("Stop recording before editing scenes.");
         if(!controller.canEditMidiClips() && std::any_of(commands.begin(),commands.end(),[](const auto& c){return midiEdit(c).has_value();})) return refused("Stop recording before editing MIDI clips.");
+        if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return std::holds_alternative<DeleteClip>(c); })) return refused("Stop recording before deleting Session clips.");
         Result result = preview(commands);
         if (!result.ok || !result.changed) return result;
         const ProjectDocument before = controller.document();
@@ -390,6 +400,7 @@ private:
             for (int s = c->scene; s != c->to; s += delta) if (!controller.moveScene(s, delta)) return false;
             return true;
         }
+        if (const auto* c = std::get_if<DeleteClip>(&command)) return controller.applyDeleteClipCommand(c->track, c->scene);
         if(const auto edit=midiEdit(command)) return controller.applyMidiClipCommand(*edit);
         if (std::holds_alternative<CreateTrack>(command)) return controller.addTrack();
         if (const auto* c = std::get_if<DeleteTrack>(&command)) return controller.deleteTrack(c->track);

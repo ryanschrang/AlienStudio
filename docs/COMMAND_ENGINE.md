@@ -204,3 +204,22 @@ existing track-creation previews. They no longer consume global UI identities.
 The document reducer is in SceneCommands.h; live execution retains existing
 controller playback/structure handling. The completion audit records the
 remaining command families and UI migrations. No project-format change.
+
+## Session clip deletion
+
+`DeleteClip {track, scene}` uses zero-based Session cell addresses. The existing
+**Clear clip** button invokes this command for MIDI, online/offline audio, rack
+assignments and explicitly empty MIDI clips. It removes the addressed cell, not
+the shared content of linked cells or the rack pattern. Existing cell-based Song
+placements become silent; independent placement/rack sources are preserved.
+Selection and unrelated queued launches/transport remain unchanged. The addressed
+live ordinary cell receives an empty launch through the existing mailbox. Clearing
+a rack assignment does not stop the shared rack source already playing.
+
+Preview and execution share SessionClipCommands.h; Preview has no engine/history
+side effects. Batch validates every command before live effects and records one
+Undo/Redo step. Undo restores clip identities, links and immutable media. An absent
+cell succeeds without a history entry or discarding redo. Invalid addresses,
+frozen tracks, busy state and recording/count-in refuse live deletion. No project
+format change. The host reloads its piano roll after success without emitting a
+second edit; the button also enables clearing allocated clips with zero notes.
