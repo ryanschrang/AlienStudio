@@ -351,3 +351,25 @@ shared pattern would be edited, frozen linked tracks also refuse before mutation
 Only affected currently requested cells are republished; other queued launches,
 pending stops and transport are preserved. No project format change. Asynchronous
 imports still need a separate prepared-result boundary and remain unfinished.
+
+## Prepared Session audio import results
+
+`SessionAudioImportPlan.h` provides a pure destination plan and decoded-result
+boundary for the existing Session file importer (claim #205). Planning records
+project scope, stable track/scene IDs, the addressed cell identity, immutable
+library content and prior media reference. It does no file I/O and touches no
+engine/history. Decoding stays on the controller worker pool.
+
+Completion resolves the stable destination and validates its current content
+before retaining media or publishing anything live. It follows track/scene reorder
+and ignores current selection; project replacement, removed targets or edits to
+shared content invalidate the plan. Invalid decoded assets, frozen targets/linked
+content, rack assignments and recording/count-in/busy states refuse. A pure
+`apply` builds a candidate document; the controller retains only a validated asset,
+installs that candidate and records one Import audio undo step. Other queued
+launches and pending stops remain unchanged; affected requested links refresh.
+
+The plan holds runtime immutable pointers and is not a persisted/JSON command.
+A named import command consuming prepared results, browser import and processed
+Audio Tools entry points remain unfinished. They must reuse this validation model
+rather than decode or call plugins from Preview. No project format change.
