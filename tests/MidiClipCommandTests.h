@@ -44,9 +44,9 @@ static void midiClipCommandChecks() {
     auto frozen=unchanged;frozen.tracks[3].settings.freezeScene=0;
     require(!cmd::refusal(frozen,cmd::CreateClip{3,3}).isEmpty(),"frozen destination refuses");
     auto offline=unchanged;alien::SessionClip audio;audio.audioFilePath="missing.wav";offline.setClip(3,3,audio);
-    require(!cmd::refusal(offline,cmd::DuplicateClip{3,3,3,2}).isEmpty() && cmd::refusal(offline,cmd::MakeClipUnique{3,3}).isEmpty(),"offline audio refuses MIDI duplication but supports all-type independence");
+    require(cmd::refusal(offline,cmd::DuplicateClip{3,3,3,2}).isEmpty() && cmd::refusal(offline,cmd::MakeClipUnique{3,3}).isEmpty(),"offline audio supports duplication and independence");
     auto rack=unchanged;require(rack.bindRackClip(3,3,rack.channelRack.clips[0]),"rack refusal fixture");
-    require(!cmd::refusal(rack,cmd::DuplicateClip{3,3,3,2}).isEmpty(),"rack clips use their existing dedicated path");
+    require(cmd::refusal(rack,cmd::DuplicateClip{3,3,3,2}).isEmpty(),"rack clips support named duplication");
     c.setExternalBusy(true);require(!commands.execute(cmd::CreateClip{3,3}).ok,"busy clip command refuses");c.setExternalBusy(false);
     engine->recording.phase.store(alien::RecordControls::countIn);
     require(!commands.batch({cmd::RenameTrack{0,"Wrong"},cmd::CreateClip{3,3}},"Recording batch").ok

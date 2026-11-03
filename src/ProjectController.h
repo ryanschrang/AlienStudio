@@ -987,6 +987,18 @@ public:
         if (!applyClipboardClipCommand({clipboard_clip::Kind::unique, track, scene}, clipClipboard()) || sameContent(before, doc)) return false;
         commit("Make clip unique", track, scene); return true;
     }
+    bool applyDuplicateClipCommand(const session_clip::Duplicate& edit) {
+        if (!canEditMidiClips()) return false;
+        const auto rackBefore = doc.channelRack;
+        if (session_clip::duplicate(doc, edit).isNotEmpty()) return false;
+        if (doc.channelRack != rackBefore) pushRackToEngine();
+        const auto index = static_cast<std::size_t>(edit.toTrack);
+        if (engine.requestedPianoRollClip[index].load() == edit.toScene) {
+            if (doc.clip(edit.toTrack, edit.toScene).rackClip) publishStop(index);
+            else publishClip(edit.toTrack, edit.toScene);
+        }
+        return true;
+    }
     bool applyMoveClipCommand(const session_clip::Move& edit) {
         if (!canEditMidiClips() || session_clip::moveRefusal(doc, edit).isNotEmpty()) return false;
         if (edit.track == edit.toTrack && edit.scene == edit.toScene) return true;
