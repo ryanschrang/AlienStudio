@@ -84,6 +84,18 @@ to say why, the report keeps every step that finished before it and names the st
 | --- | --- | --- | --- | --- | --- |
 | **Valhalla Supermassive** (Valhalla DSP) | Stereo FX, reverb/delay | not recorded | none | **NOT RUN** | Needs `AlienPluginCheck check --name Supermassive` on Windows, then the in-app checklist below. |
 
+### Valhalla Supermassive placements (T1-09)
+
+Run as steps 2 to 9 of "Real-plugin sign-off for T1-09" in docs/WINDOWS_AUDIO_CHECKLIST.md. Record the Supermassive version,
+the Alien Studio commit, the audio device, sample rate and buffer size for each row.
+
+| Placement | Plays and shows its editor | Automated from Song | Latency and tail | Export and freeze match live |
+| --- | --- | --- | --- | --- |
+| Track FX | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
+| Return FX (pre and post-fader sends) | NOT RUN | NOT RUN | NOT RUN | NOT RUN (export only; returns are not frozen) |
+| Group bus FX, next to a latent effect | NOT RUN | NOT RUN | NOT RUN | NOT RUN (export only) |
+| Master FX, before a latent effect | NOT RUN | NOT RUN | NOT RUN | NOT RUN (export only) |
+
 Add rows from `plugin-check-report.txt`. A representative set should cover each of these, using whatever you have installed:
 
 | Coverage | NOT RUN |

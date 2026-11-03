@@ -459,6 +459,41 @@ NOT RUN. Needs a VST3 instrument that reports latency (many samplers and some sy
 - Export the song to WAV and stems, and freeze the track: the automation is in the result. Loop playback over the ramp: the parameter jumps back at the loop start.
 - NOT RUN (T1-09 part 7, export/freeze against live): on one track put a VST3 instrument and Valhalla Supermassive (or another VST3 effect), automate a Supermassive parameter, put a latent plugin (a look-ahead limiter or linear-phase EQ) on the master and a VST3 instrument on a Channel Rack channel. Export WAV, then record the live output (or play both in another DAW): the file lines up with what you hear live, starts on the first note with no added silence, and has the same automation moves and tails. Freeze the track, play: no change in timing or sound; unfreeze: the same. Repeat at 44.1 and 96 kHz device rates (export is always 48 kHz).
 
+## Real-plugin sign-off for T1-09 (part 8)
+NOT RUN. This is the one list to run on Windows 11 before T1-09 can be called verified with real plugins. It gathers the
+manual checks from parts 2 to 7 above into one session; record each result in docs/PLUGIN_COMPATIBILITY.md
+("Valhalla Supermassive placements" and "Coverage") with the plugin versions, the Alien Studio commit and the audio device.
+Needs: Valhalla Supermassive, one VST3 instrument (ideally one that reports latency, see part 4), one latent VST3 effect
+(a look-ahead limiter or linear-phase EQ), a USB MIDI keyboard with a sustain pedal, and headphones or monitors.
+1. **Check tool first.** Run `AlienPluginCheck.exe check --name Supermassive` and the same for the instrument and the latent
+   effect (docs/PLUGIN_COMPATIBILITY.md, "Running the check on Windows"). A crash, hang or latency mismatch there is a
+   finding; stop and report it before going on.
+2. **Supermassive on a track.** Plugins > destination: a track playing a short, dry sound (a rimshot clip). Add Supermassive
+   as FX, open its editor, choose a long preset and play: you hear it, the meters move, closing and reopening the editor works.
+   Stop: nothing keeps sounding once the tail has faded; note whether stop cuts the tail or lets it ring.
+3. **Supermassive on a return.** Bypass it on the track, add a second one to "Return A FX", turn the track's send A up: the dry hit
+   and the reverb start together (the return is delay-compensated), with pre and post-fader sends. Mute the return: the
+   reverb stops; solo the track: the return still plays.
+4. **Supermassive on a group bus.** Route two tracks to a group bus, add Supermassive to "<bus> FX (bus)": both tracks are
+   processed, and a third track not in the group is not. Add the latent effect to the bus as well: the group's tracks stay
+   in time with the third track (no flam).
+5. **Supermassive on the master.** Add it to "Master FX", then the latent effect after it: the whole mix is processed, and
+   playback stays in time with what you saw before adding them.
+6. **Rack instrument.** Put the VST3 instrument on a Channel Rack channel next to a sample channel (part 2 and part 4):
+   steps and piano-roll notes play on time with no flam at 128, 512 and 1024-sample buffers; stop, pattern change and device
+   change leave nothing sounding.
+7. **Automation.** Song > Automation: draw a ramp for a Supermassive parameter (Mix or Feedback) once on the track, once on
+   "Master", once on the return and once on the bus, and one for the rack instrument under "Channel Rack" (part 3 and
+   part 5). Play: you hear each move and the plugin's editor follows it; loop playback jumps back at the loop start.
+8. **Live MIDI.** Plugins > Live MIDI destination: the rack instrument. Play the keyboard with velocity, sustain pedal and
+   pitch bend; change the destination, stop and unplug the keyboard while holding notes: nothing sticks (part 6).
+9. **Export and freeze against live.** With the session from steps 2 to 7, export WAV and record the live output (part 7):
+   the file starts on the first note with no added silence, lines up with live playback, and has the same automation moves
+   and tails. Freeze the Supermassive track (not one the rack plays on, which Alien Studio refuses), play, unfreeze: no
+   change. Repeat the export at 44.1 and 96 kHz device rates.
+10. **Save and reopen** the project: every plugin, its editor settings, and the automation lanes
+    come back. Look at `%APPDATA%\Alien Studio\Logs\plugin-host.log`: anything unexpected is a finding.
+
 ## Starter Pack
 - Build and start Alien Studio: a `Starter Pack` folder sits next to `Alien Studio.exe`. Open the sample browser: it lists the pack's 38 drum sounds without choosing a folder. Preview a kick, a hat and a crash: each starts at once, sounds clean (no clicks at the start or end) and is about as loud as the others.
 - Right-click a Channel Rack channel > Sound > Starter Pack > Snares > Snare: the channel plays it and is renamed. Undo restores the old sound. Save, reopen: the sample is still loaded. Load sample file... opens in the pack's Drums folder.
