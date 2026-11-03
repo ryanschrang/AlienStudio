@@ -129,6 +129,16 @@ int main() {
     check(liveRoute==0,"live input selects track zero");
     boxes[2]->setSelectedId(1,juce::dontSendNotification); boxes[2]->onChange();
     check(liveRoute==-1,"live input returns to standalone synth");
+    // Channel Rack instruments as live MIDI destinations (T1-09).
+    int liveRack=-99;
+    panel.onLiveRackInput=[&](int channel){liveRack=channel;};
+    panel.refreshLiveInput(tracks,0,{{0,"Keys"},{3,"Pad"}},3);
+    check(boxes[2]->getNumItems()==5 && boxes[2]->getItemText(4)=="Live MIDI: Channel Rack 4: Pad","rack instruments are listed after the tracks");
+    check(boxes[2]->getSelectedId()==PluginPanel::liveRackBase+3 && liveRack==-99,"the chosen rack instrument is shown, silently");
+    boxes[2]->setSelectedId(PluginPanel::liveRackBase,juce::dontSendNotification); boxes[2]->onChange();
+    check(liveRack==0 && liveRoute==-1,"choosing a rack instrument reports its channel, not a track");
+    panel.refreshLiveInput(tracks,1,{{0,"Keys"}},3);
+    check(boxes[2]->getSelectedId()==3,"a rack choice that is no longer listed shows the track route");
     PluginRackState rack; rack.instrument = vst3("Big Synth"); rack.effects = {vst3("Verb"), vst3("Comp", true), vst3("Delay")};
     juce::KnownPluginList list;
 

@@ -66,7 +66,7 @@ public:
         drumPanel.onLoad = [this](int t, int p, const juce::File& f) { controller.loadDrum(f, t, p); };
         drumPanel.onClear = [this](int t, int p) { controller.clearDrum(t, p); refreshExtraViews(); };
         drumPanel.onHit = [this](int t, int p) { engine.drumAuditions[t].push(alien::drumBaseNote + p, 0.8f); };
-        drumPanel.onRoute = [this](int t) { releaseNotes(); engine.liveDrumTrack.store(t); refreshPlugins(); };
+        drumPanel.onRoute = [this](int t) { releaseNotes(); liveRackInstance = 0; engine.liveRackChannel.store(-1); engine.liveDrumTrack.store(t); refreshPlugins(); };
         wireTimeline();
         audioTools.onRecord = [this] { chooseRecording(); };
         audioTools.onSettings = [this] { showAudioSettings(); };
@@ -130,7 +130,18 @@ public:
             return d.pluginFormatName == "VST3" && blocklist.isBlocked(juce::File(d.fileOrIdentifier));
         };
         scanDatabase.load(alien::scan::ScanDatabase::defaultFile());
-        pluginPanel.onLiveInput = [this](int track) { releaseNotes(); engine.liveDrumTrack.store(track); drumPanel.setLiveInput(track); };
+        pluginPanel.onLiveInput = [this](int track) {
+            releaseNotes(); liveRackInstance = 0; engine.liveRackChannel.store(-1);
+            engine.liveDrumTrack.store(track); drumPanel.setLiveInput(track);
+        };
+        // A Channel Rack channel's plugin instrument as the live MIDI destination (T1-09), followed by its identity.
+        pluginPanel.onLiveRackInput = [this](int channel) {
+            releaseNotes();
+            const auto& rack = controller.document().channelRack;
+            liveRackInstance = channel >= 0 && channel < rack.channelCount ? rack.info[static_cast<std::size_t>(channel)].pluginInstance() : 0;
+            engine.liveDrumTrack.store(-1); drumPanel.setLiveInput(-1);
+            engine.liveRackChannel.store(rack.channelWithPlugin(liveRackInstance));
+        };
         pluginPanel.onTarget = [this](int) { refreshPlugins(); };
         pluginPanel.onAdd = [this](bool instrument, int choice) { addPlugin(instrument,choice); };
         pluginPanel.onAction = [this](int op,int slot) { pluginAction(op,slot); };
@@ -1518,7 +1529,16 @@ private:
     }
     void refreshPlugins() {
         juce::StringArray names; for(const auto& t:controller.document().tracks) names.add(t.name);
-        pluginPanel.refreshLiveInput(names,engine.liveDrumTrack.load());
+        // The rack channels with a plugin instrument; a chosen one follows its instrument when channels move, and
+        // the destination falls back to the synth when the instrument is gone.
+        const auto& rack=controller.document().channelRack;
+        std::vector<std::pair<int,juce::String>> rackChannels;
+        for(int c=0;c<rack.channelCount;++c)
+            if(rack.channels[static_cast<std::size_t>(c)].plugin) rackChannels.push_back({c,juce::String(rack.info[static_cast<std::size_t>(c)].name)});
+        const int liveRack=rack.channelWithPlugin(liveRackInstance);
+        if(liveRack<0) liveRackInstance=0;
+        if(engine.liveRackChannel.exchange(liveRack)!=liveRack) releaseNotes();
+        pluginPanel.refreshLiveInput(names,engine.liveDrumTrack.load(),rackChannels,liveRack);
         drumPanel.setLiveInput(engine.liveDrumTrack.load());
         const auto& d=controller.document();
         std::array<juce::String,alien::maxBuses> busNames;
@@ -1860,6 +1880,7 @@ private:
     juce::MidiKeyboardState keyboardState;
     alien::ProjectController controller{engine};
     alien::PluginHost pluginHost{*engine.plugins, alien::DiagnosticLog::defaultFile("plugin-host.log")};
+    std::uint64_t liveRackInstance{};   // the rack instrument chosen as the live MIDI destination, or 0
     alien::PluginPanel pluginPanel;
     juce::KnownPluginList knownPlugins;
     alien::scan::ScanDatabase scanDatabase;       // what has been scanned, and what happened to each file

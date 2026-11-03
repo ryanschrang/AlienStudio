@@ -44,6 +44,9 @@ struct TestInstrument final : juce::AudioProcessor {
             if (m.isNoteOn()) { ++held; if (events.size() < events.capacity()) events.push_back({rendered + meta.samplePosition, m.getNoteNumber(), m.getFloatVelocity()}); }
             else if (m.isNoteOff()) { held = std::max(0, held - 1); if (events.size() < events.capacity()) events.push_back({rendered + meta.samplePosition, m.getNoteNumber(), 0.0f}); }
             else if (m.isAllNotesOff() || m.isAllSoundOff()) held = 0;
+            else if (m.isPitchWheel()) pitch = m.getPitchWheelValue();
+            else if (m.isController()) controllers[static_cast<std::size_t>(m.getControllerNumber())] = m.getControllerValue();
+            if (m.getChannel() > 1) ++otherChannels;
         }
         for (; next < buffer.getNumSamples(); ++next) fill(buffer, next);
         rendered += buffer.getNumSamples();
@@ -65,7 +68,8 @@ struct TestInstrument final : juce::AudioProcessor {
     void setStateInformation(const void*, int) override {}
     std::vector<Event> events;
     std::int64_t rendered{};
-    int held{};
+    int held{}, pitch{8192}, otherChannels{};
+    std::array<int, 128> controllers{};
     bool crash{};
 };
 
@@ -354,6 +358,112 @@ static void latency() {
     std::puts("PASS: a latent rack instrument stays in time with the rest of the mix, to the sample");
 }
 
+// Live MIDI into a rack instrument (T1-09): the hardware input (and the typing piano) can play a Channel Rack
+// channel's plugin instrument, with velocity, sustain, controllers and pitch bend, and never leaves a note held
+// when the destination changes, the transport stops, the device resets or the instrument goes.
+static void liveInput() {
+    Rig rig;
+    rig.project.setPlugin(0, description("first").toStdString(), 31);
+    rig.project.setPlugin(1, description("second").toStdString(), 32);
+    std::vector<PluginState> channels(2);
+    channels[0].descriptionXml = description("first"); channels[0].instanceId = 31;
+    channels[1].descriptionXml = description("second"); channels[1].instanceId = 32;
+    require(rig.host.restoreRackChannels(channels, 48000).isEmpty(), "two rack instruments load");
+    rig.engine.rackMailbox.publish(rig.project.snapshot());
+    rig.engine.patternMode.store(3);
+    auto& first = *dynamic_cast<TestInstrument*>(rig.engine.plugins->rackChannels[0].processor.get());
+    auto& second = *dynamic_cast<TestInstrument*>(rig.engine.plugins->rackChannels[1].processor.get());
+    require(rig.project.channelWithPlugin(32) == 1 && rig.project.channelWithPlugin(99) == -1 && rig.project.channelWithPlugin(0) == -1,
+            "a rack instrument is found by its identity");
+
+    rig.engine.liveRackChannel.store(0);
+    auto token = rig.engine.midi.beginSession();
+    rig.render(2);
+    const auto before = allocations;
+    rig.engine.midi.push(token, 0x90, 60, 100);
+    rig.render(1);
+    require(first.held == 1 && !first.events.empty() && first.events.back().note == 60 && std::abs(first.events.back().velocity - 100.0f / 127.0f) < 1e-4f,
+            "a key pressed on the MIDI keyboard plays the chosen rack instrument, with its velocity");
+    require(second.events.empty(), "and only that one");
+    rig.engine.midi.push(token, 0x80, 60, 0);
+    rig.render(1);
+    require(first.held == 0 && first.events.back().velocity == 0.0f, "letting go ends the note");
+
+    // Sustain: the pedal holds a released note until it comes up (and reaches the plugin as CC 64).
+    rig.engine.midi.push(token, 0xB0, 64, 127);
+    rig.engine.midi.push(token, 0x90, 62, 90);
+    rig.engine.midi.push(token, 0x80, 62, 0);
+    rig.render(1);
+    require(first.held == 1 && first.controllers[64] == 127, "the sustain pedal holds a released note");
+    rig.engine.midi.push(token, 0xB0, 64, 0);
+    rig.render(1);
+    require(first.held == 0 && first.controllers[64] == 0, "and lifting it ends the note");
+    rig.engine.midi.push(token, 0xE0, 0, 80);
+    rig.engine.midi.push(token, 0xB0, 1, 77);
+    rig.engine.midi.push(token, 0x91, 67, 64);   // MIDI channel 2
+    rig.render(1);
+    require(first.pitch == 80 << 7 && first.controllers[1] == 77, "pitch bend and the mod wheel reach it");
+    require(first.held == 1 && first.otherChannels > 0, "a note on another MIDI channel keeps its channel");
+    require(allocations == before, "playing a rack instrument live does not allocate");
+
+    // Changing the destination ends what the old one was playing, and its controllers go back to rest.
+    rig.engine.liveRackChannel.store(1);
+    rig.render(1);
+    require(first.held == 0 && first.pitch == 8192 && first.controllers[1] == 0, "choosing another destination releases the old one");
+    rig.engine.midi.push(token, 0x90, 64, 100);
+    rig.render(1);
+    require(second.held == 1 && first.held == 0, "and the new one plays");
+    // The typing piano follows the same destination.
+    rig.engine.notes.push(65, 0.7f);
+    rig.render(1);
+    require(second.held == 2 && second.events.back().note == 65, "the typing piano plays it too");
+    rig.engine.notes.push(65, 0.0f);
+    rig.render(1);
+    require(second.held == 1, "and lets go of its note");
+
+    // Stopping the transport ends every live note, the typing piano's too.
+    rig.engine.playing.store(true);
+    rig.engine.notes.push(66, 0.7f);
+    rig.render(2);
+    require(second.held == 2, "a keyboard note and a typed note are held");
+    rig.engine.playing.store(false);
+    rig.render(2);
+    require(second.held == 0, "stopping leaves no live note held");
+    // So does a device reset (the input reopens), and the old device's late messages are ignored.
+    rig.engine.midi.push(token, 0x90, 69, 100);
+    rig.render(1);
+    require(second.held == 1, "a note before the device resets");
+    const auto old = token;
+    token = rig.engine.midi.beginSession();
+    rig.render(1);
+    require(second.held == 0 && !rig.engine.midi.push(old, 0x90, 70, 100), "a device reset leaves no note held");
+    // A track destination takes precedence over the rack.
+    rig.engine.liveDrumTrack.store(0);
+    rig.render(1);
+    const auto heard = second.events.size();
+    rig.engine.midi.push(token, 0x90, 71, 100);
+    rig.render(1);
+    require(second.events.size() == heard, "a track chosen for live MIDI wins over the rack channel");
+    rig.engine.midi.push(token, 0x80, 71, 0);
+    rig.engine.liveDrumTrack.store(-1);
+    rig.render(1);
+
+    // The instrument is removed while a key is held: nothing reaches anyone else, and nothing breaks.
+    rig.engine.midi.push(token, 0x90, 72, 100);
+    rig.render(1);
+    require(second.held == 1, "a held note before the instrument goes");
+    std::vector<PluginState> onlyFirst(1);
+    onlyFirst[0] = channels[0];
+    require(rig.host.restoreRackChannels(onlyFirst, 48000).isEmpty(), "the second instrument is removed");
+    auto& reloaded = *dynamic_cast<TestInstrument*>(rig.engine.plugins->rackChannels[0].processor.get());
+    rig.engine.midi.push(token, 0x80, 72, 0);
+    rig.engine.midi.push(token, 0x90, 73, 100);
+    rig.render(2);
+    require(reloaded.events.empty() && rig.engine.plugins->rackChannels[1].processor == nullptr,
+            "live notes for a channel without an instrument go nowhere");
+    std::puts("PASS: live MIDI plays a rack instrument with sustain, controllers and pitch bend, and leaves nothing held");
+}
+
 static void controller() {
     ToneEngine engine;
     ProjectController c(engine);
@@ -388,6 +498,7 @@ int main() {
     engine();
     crashing();
     latency();
+    liveInput();
     controller();
     return 0;
 }
