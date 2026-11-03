@@ -300,7 +300,8 @@ public:
         juce::PopupMenu rackMenu;
         for (int p = 0; p < d.channelRack.patternCount; ++p) {
             rackIds.push_back(d.channelRack.clips[static_cast<std::size_t>(p)]);
-            rackMenu.addItem(1000 + p, juce::String::fromUTF8(d.channelRack.patternNames[static_cast<std::size_t>(p)].c_str()));
+            rackMenu.addItem(1000 + p, juce::String::fromUTF8(d.channelRack.patternNames[static_cast<std::size_t>(p)].c_str()),
+                canEdit && command::refusal(d, command::AssignRackClip{track, scene, rackIds.back()}).isEmpty());
         }
         menu.addSubMenu("Assign rack clip (linked)", rackMenu);
         menu.addItem(5, "Place rack clip at Song playhead", d.selectedClip().rackClip != 0);
@@ -310,7 +311,7 @@ public:
             auto& c = safe->controller;
             bool changed = false;
             const bool moving = choice >= 2000 && choice < 2000 + static_cast<int>(moveTargets.size());
-            if (moving || choice == 1 || choice == 2 || choice == 3 || choice == 4 || choice == 6 || choice == 7) {
+            if (moving || choice == 1 || choice == 2 || choice == 3 || choice == 4 || choice == 6 || choice == 7 || (choice >= 1000 && choice < 1000 + static_cast<int>(rackIds.size()))) {
                 const auto& now = c.document();
                 if (!now.isValidCell(track, scene) || now.tracks[static_cast<std::size_t>(track)].id != ownerTrack
                     || now.scenes[static_cast<std::size_t>(scene)].id != ownerScene || now.cellClip(track, scene) != ownerClip) {
@@ -340,7 +341,7 @@ public:
             }
             if (choice == 5) changed = c.placeRegion(track, scene, std::max<std::int64_t>(0, safe->engine.timelinePosition.load()));
             if (choice >= 1000 && choice < 1000 + static_cast<int>(rackIds.size()))
-                changed = c.assignRackClip(track, scene, rackIds[static_cast<std::size_t>(choice - 1000)]);
+                changed = command::CommandEngine(c).execute(command::AssignRackClip{track, scene, rackIds[static_cast<std::size_t>(choice - 1000)]}).changed;
             if (!changed) { safe->setImportStatus("Nothing changed: that cell cannot take it (it may be frozen, recording or already linked).", {}); return; }
             safe->setImportStatus(moving ? "Moved the Session clip to its new cell." : choice >= 1000 ? "Assigned a shared rack source. One rack source can launch per scene; its channels keep their routing."
                                   : choice == 5 ? "Placed the shared rack source in Song."

@@ -3,6 +3,7 @@
 #include "MidiClipCommands.h"
 #include "ClipboardClipCommands.h"
 #include "SessionClipCommands.h"
+#include "RackCommands.h"
 #include "ViewModes.h"
 #include "ToneEngine.h"
 #include "AudioClipImport.h"
@@ -921,12 +922,19 @@ public:
     }
 
     // ---- linked clips (T1-03): Session cells that share one clip's content ----------------------
-    bool assignRackClip(int track, int scene, std::uint64_t clip) {
-        if (busy || isRecording() || !doc.isValidCell(track, scene) || isTrackFrozen(track)) return false;
-        if (!doc.bindRackClip(track, scene, clip)) return false;
-        publishStop(static_cast<std::size_t>(track));
-        commit("Assign rack clip", track, scene);
+    bool applyRackCommand(const rack_command::Edit& edit) {
+        if (!canEditMidiClips()) return false;
+        const auto before = doc;
+        if (rack_command::apply(doc, edit).isNotEmpty()) return false;
+        if (sameContent(before, doc)) return true;
+        if (edit.kind == rack_command::Kind::create) pushRackToEngine();
+        else publishStop(static_cast<std::size_t>(edit.track)); // preserve existing assignment playback semantics
         return true;
+    }
+    bool assignRackClip(int track, int scene, std::uint64_t clip) {
+        const auto before = doc;
+        if (!applyRackCommand({rack_command::Kind::assign, track, scene, clip}) || sameContent(before, doc)) return false;
+        commit("Assign rack clip", track, scene); return true;
     }
     bool copyRackToCell(int track, int scene, std::uint64_t clip) {
         if (busy || isRecording() || !doc.isValidCell(track, scene) || isTrackFrozen(track)) return false;
