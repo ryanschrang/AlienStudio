@@ -621,6 +621,14 @@ struct Project {
         for (int c = 0; c < channelCount; ++c) ids[static_cast<std::size_t>(c)] = info[static_cast<std::size_t>(c)].pluginInstance();
         return ids;
     }
+    // The channel played by the plugin instrument with this identity, or -1 (it was removed, or its sound changed).
+    // Follows the instrument when channels move.
+    int channelWithPlugin(std::uint64_t instance) const noexcept {
+        if (instance == 0) return -1;
+        for (int c = 0; c < channelCount; ++c)
+            if (channels[static_cast<std::size_t>(c)].plugin && info[static_cast<std::size_t>(c)].pluginInstance() == instance) return c;
+        return -1;
+    }
     std::shared_ptr<const Snapshot> snapshot() const {
         auto s = std::make_shared<Snapshot>();
         s->channelCount = channelCount; s->channels = channels; s->selectedPattern = selectedPattern; s->swing = swing;

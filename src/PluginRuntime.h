@@ -257,6 +257,8 @@ public:
         auto& messages = channelMidi[static_cast<std::size_t>(channel)];
         messages.clear();
         if (channelPanic) for (int ch = 1; ch <= 16; ++ch) { messages.addEvent(juce::MidiMessage::allSoundOff(ch), 0); messages.addEvent(juce::MidiMessage::allNotesOff(ch), 0); }
+        for (int e = 0; e < liveCount; ++e)
+            if (const auto& live = liveEvents[static_cast<std::size_t>(e)]; live.channel == channel) messages.addEvent(live.message, 0);
         int count = 0;
         notes([&](int sample, int note, float velocity) {
             if (++count > 512) return;   // bounded by the preallocated MIDI storage
@@ -286,7 +288,22 @@ public:
         sourceDelays[maxSessionTracks].process(live, samples, channelStage);
     }
     // After the rack channels have been played this block.
-    void rackChannelsDone() noexcept { channelPanic = false; }
+    // Live MIDI for a rack channel's instrument (T1-09): the hardware input and the typing and on-screen pianos.
+    // Audio thread, before the rack channels play: the message reaches that channel's instrument at the start of
+    // this block. Each message keeps its channel, so a note-off queued for one instrument never reaches another;
+    // a channel without a working instrument drops its messages. Bounded storage, no allocation.
+    void liveRack(int channel, const juce::MidiMessage& message) noexcept {
+        if (channel < 0 || channel >= maxRackChannels) return;
+        // Full: every rack instrument is told all notes off this block, so a dropped note-off cannot leave one stuck.
+        if (liveCount == static_cast<int>(liveEvents.size())) { channelPanic = true; return; }
+        liveEvents[static_cast<std::size_t>(liveCount++)] = {channel, message};
+    }
+    // Ends every note a rack channel's instrument is playing from live input (on all MIDI channels).
+    void silenceLiveRack(int channel) noexcept {
+        for (int ch = 1; ch <= 16; ++ch) { liveRack(channel, juce::MidiMessage::allNotesOff(ch)); liveRack(channel, juce::MidiMessage::allSoundOff(ch)); }
+    }
+    // After the rack channels have been played this block.
+    void rackChannelsDone() noexcept { channelPanic = false; liveCount = 0; }
     bool hasRackChannel(int channel) const noexcept {
         return channel >= 0 && channel < maxRackChannels && rackChannels[static_cast<std::size_t>(channel)].processor != nullptr;
     }
@@ -495,6 +512,9 @@ private:
     std::array<juce::MidiBuffer, maxRackChannels> channelMidi;
     juce::AudioBuffer<float> channelScratch;
     bool channelPanic{true};   // the rack's instruments are told all notes off on their first block after a prepare
+    struct LiveEvent { int channel{-1}; juce::MidiMessage message; };
+    std::array<LiveEvent, 256> liveEvents{};   // this block's live MIDI for the rack's instruments (liveRack)
+    int liveCount{};
     double rate{44100};
     juce::int64 renderedSamples{};
     int currentSamples{};
