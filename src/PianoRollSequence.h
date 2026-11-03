@@ -324,6 +324,15 @@ public:
         quantizationPhase = 0;
         activeClip = -1;
     }
+    // Ends every note and forgets the loaded clip and any queued one, so playing again starts nothing
+    // (a track slot that leaves use, T1-04 C).
+    template<class Send>
+    void unload(Send&& send) noexcept {
+        stop(send);
+        pattern.clear(); loadedClip = -1; pending = false; synchronizedPending = false;
+        active.fill(false); held.fill(0);
+        rebuildEvents();
+    }
     int currentStep() const noexcept { return step; }
     int activeClipIndex() const noexcept { return activeClip; }
     double positionStep() const noexcept { return step < 0 ? -1.0 : samplePosition(); }

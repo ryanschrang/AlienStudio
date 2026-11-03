@@ -183,6 +183,16 @@ public:
             for (int ch = 1; ch <= 16; ++ch) { m.addEvent(juce::MidiMessage::allSoundOff(ch),0); m.addEvent(juce::MidiMessage::allNotesOff(ch),0); }
     }
     bool hasInstrument(std::size_t track) const noexcept { return racks[track].instrumentAssigned; }
+    // Track slots processed this block (T1-04 C), after begin(): slots 0..n-1. A slot leaving use stops keying
+    // sidechains and its delay lines forget what they hold, so it never plays again; a slot coming into use tells
+    // its instrument to end every note. Slots out of use cost nothing in instruments(), effectsAndAlign() or alignment.
+    void useTracks(std::size_t n) noexcept {
+        n = std::clamp<std::size_t>(n, 1, tracks.size());
+        for (auto t = n; t < inUse; ++t) { keys[t] = {}; postKeys[t] = {}; delays[t].forget(); sourceDelays[t].forget(); }
+        for (auto t = inUse; t < n; ++t) silence(t);
+        inUse = n;
+    }
+    std::size_t tracksInUse() const noexcept { return inUse; }
     // The mixer hands over the keys it makes, sample by sample: each track after its fader and pan,
     // each bus after its strip, each return after its strip (MIX-04).
     void keyPostFader(std::size_t track, int i, float left, float right) noexcept { store(postKeys, track, i, left, right); }
@@ -284,7 +294,7 @@ public:
     void alignToRackChannels(int samples) noexcept {
         samples = std::min(samples, blockSize);
         channelStage = rackChannelLatency();
-        for (std::size_t t = 0; t < tracks.size(); ++t) sourceDelays[t].process(tracks[t], samples, channelStage);
+        for (std::size_t t = 0; t < inUse; ++t) sourceDelays[t].process(tracks[t], samples, channelStage);
         sourceDelays[maxSessionTracks].process(live, samples, channelStage);
     }
     // After the rack channels have been played this block.
@@ -310,7 +320,7 @@ public:
     // Instrument replaces built-in synth/drum audio. A bypassed instrument is
     // silent; FX bypass passes audio through. Imported clips are added after it.
     void instruments(int samples) {
-        for (std::size_t t = 0; t < tracks.size(); ++t) {
+        for (std::size_t t = 0; t < inUse; ++t) {
             auto& slot = racks[t].instrument;
             if (!racks[t].instrumentAssigned || racks[t].frozen) continue;
             tracks[t].clear();
@@ -320,15 +330,15 @@ public:
     void effectsAndAlign(int samples) {
         // What each track plays before its own FX: the key any sidechain hears this block.
         samples = std::min(samples, blockSize);
-        for (std::size_t t = 0; t < tracks.size(); ++t)
+        for (std::size_t t = 0; t < inUse; ++t)
             for (int c = 0; c < 2; ++c) std::memcpy(keys[t][static_cast<std::size_t>(c)].data(), tracks[t].getReadPointer(c), sizeof(float) * static_cast<std::size_t>(samples));
         int maximum = 0;
-        for (std::size_t t = 0; t < tracks.size(); ++t) {
+        for (std::size_t t = 0; t < inUse; ++t) {
             auto& rack = racks[t];
             if(!rack.frozen)for (int i = 0; i < rack.effectCount; ++i) { emptyMidi.clear(); process(rack.effects[i],static_cast<int>(t),i,tracks[t],emptyMidi,samples); }
             maximum = std::max(maximum,rackLatency(rack));
         }
-        for (std::size_t t = 0; t < tracks.size(); ++t) delays[t].process(tracks[t],samples,maximum-rackLatency(racks[t]));
+        for (std::size_t t = 0; t < inUse; ++t) delays[t].process(tracks[t],samples,maximum-rackLatency(racks[t]));
         delays[maxSessionTracks].process(live,samples,maximum);
     }
     // Runs each group bus's FX, then lines everything up at the bus stage: every bus waits for the
@@ -435,13 +445,18 @@ private:
     struct Delay {
         std::vector<float> left,right;
         int position{};
-        void prepare() { left.assign(maxDelay+1,0); right.assign(maxDelay+1,0); position=0; }
-        void clear() noexcept { std::fill(left.begin(),left.end(),0.0f); std::fill(right.begin(),right.end(),0.0f); position=0; }
+        int written{maxDelay+1};   // samples written since forget(), up to the line's length; older ones read as silence
+        void prepare() { left.assign(maxDelay+1,0); right.assign(maxDelay+1,0); position=0; written=maxDelay+1; }
+        void clear() noexcept { std::fill(left.begin(),left.end(),0.0f); std::fill(right.begin(),right.end(),0.0f); position=0; written=maxDelay+1; }
+        // Like clear(), in constant time: a whole 96000-sample line per track is too much to zero in one callback.
+        void forget() noexcept { written=0; }
         void process(juce::AudioBuffer<float>& buffer,int samples,int count) noexcept {
             for (int i=0;i<samples;++i) {
                 left[position]=buffer.getSample(0,i); right[position]=buffer.getSample(1,i);
+                if (written<=maxDelay) ++written;
                 const int read=(position-count+maxDelay+1)%(maxDelay+1);
-                buffer.setSample(0,i,left[read]); buffer.setSample(1,i,right[read]);
+                const bool fresh=count<written;
+                buffer.setSample(0,i,fresh?left[read]:0.0f); buffer.setSample(1,i,fresh?right[read]:0.0f);
                 position=(position+1)%(maxDelay+1);
             }
         }
@@ -504,6 +519,7 @@ private:
     std::array<Delay,maxBuses> busDelays;
     std::array<Delay,maxReturns> sendDelays;   // what the tracks send, waiting for the bus stage
     std::array<Delay,maxSessionTracks+1> sourceDelays;   // the tracks and `live`, waiting for the rack's instruments
+    std::size_t inUse{maxSessionTracks};                 // audio thread: useTracks
     std::array<Delay,maxRackChannels> channelDelays;     // each rack instrument, waiting for the slowest (while loaded)
     int channelStage{};                                  // this block's rackChannelLatency (audio thread)
     std::array<bool,maxReturns> returnLive = [] { std::array<bool,maxReturns> live{}; live.fill(true); return live; }();   // audio thread: setReturnActive
