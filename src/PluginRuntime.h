@@ -224,9 +224,11 @@ public:
         for (const auto& lane : lanes) {
             if (!lane.enabled || lane.points.empty()) continue;
             const auto* binding = automation::findSorted(lane.target, parameterBindings);
-            if (binding == nullptr || binding->rack >= rackCount) continue;
-            auto& rack = racks[static_cast<std::size_t>(binding->rack)];
-            auto& slot = binding->slot < 0 ? rack.instrument : rack.effects[static_cast<std::size_t>(binding->slot)];
+            if (binding == nullptr || binding->rack < 0 || (binding->rack >= rackCount && !isRackChannel(binding->rack))) continue;
+            // A Channel Rack channel's instrument (T1-09) or a slot of a mixer rack.
+            auto& slot = isRackChannel(binding->rack) ? rackChannels[static_cast<std::size_t>(binding->rack - channelBase)]
+                       : binding->slot < 0 ? racks[static_cast<std::size_t>(binding->rack)].instrument
+                       : racks[static_cast<std::size_t>(binding->rack)].effects[static_cast<std::size_t>(binding->slot)];
             if (!slot.processor || slot.faulted.get() || slot.instanceId != binding->instance) continue;
             fault::Fault fault;
             const bool completed = fault::guarded([&] {

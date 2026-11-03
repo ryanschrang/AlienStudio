@@ -2382,8 +2382,14 @@ class TrackAutomationEditor final : public juce::Component {
 public:
     struct PluginParameter { automation::ParameterTarget target; juce::String plugin, parameter; };
     // The automatable parameters of the plugins on a track (its instrument, then its FX), or none.
+    // `track` is a track index, or the rack number of one of pluginTargets' entries.
     std::function<std::vector<PluginParameter>(int track)> pluginParameters;
+    // Where else plugins sit (T1-09): the master, returns, buses and the Channel Rack, by rack number and name. They
+    // are offered after the tracks, with their plugins' parameters only (they have no volume, pan or send lanes here).
+    std::function<std::vector<std::pair<int, juce::String>>()> pluginTargets;
     static constexpr int pluginBase = 1000;   // parameter chooser ids of plugin parameters
+    static constexpr int targetBase = 10000;  // target chooser ids of pluginTargets' entries (plus the rack number)
+    static constexpr int noParameter = 999;   // the greyed-out item shown where a target has no plugin parameters
 
     explicit TrackAutomationEditor(ProjectController& owner) : controller(owner) {
         setName("Track automation");
@@ -2425,7 +2431,13 @@ public:
         const int previous = trackBox.getSelectedId();
         trackBox.clear(juce::dontSendNotification);
         for (int t = 0; t < d.trackCount(); ++t) trackBox.addItem("Track " + juce::String(t + 1), t + 1);
-        trackBox.setSelectedId(juce::jlimit(1, d.trackCount(), previous > 0 ? previous : 1), juce::dontSendNotification);
+        bool keep = false;
+        if (pluginTargets) for (const auto& [rack, name] : pluginTargets()) {
+            trackBox.addItem(name, targetBase + rack);
+            keep = keep || previous == targetBase + rack;
+        }
+        // A target that has gone (a removed return or bus) falls back to track 1.
+        trackBox.setSelectedId(keep ? previous : juce::jlimit(1, d.trackCount(), previous > 0 && previous < targetBase ? previous : 1), juce::dontSendNotification);
         refreshParameters();
         bool found = false, enabled = false;
         withLane(controller.timeline(), [&](const auto& lane) { found = true; enabled = lane.enabled; });
@@ -2482,22 +2494,26 @@ public:
     void mouseDrag(const juce::MouseEvent& e) override { if (preview && !e.mods.isPopupMenu()) { updatePoint(e.position); repaint(); } }
     void mouseUp(const juce::MouseEvent&) override { if (preview) finish("Edit automation point"); }
 private:
+    bool trackChosen() const { return trackBox.getSelectedId() < targetBase; }
     int selectedTrack() const { return std::max(0, trackBox.getSelectedId() - 1); }
+    // What pluginParameters is asked about: the track, or the chosen entry's rack number.
+    int selectedRack() const { return trackChosen() ? selectedTrack() : trackBox.getSelectedId() - targetBase; }
     // Volume, pan, one "Send" item per return that exists (its slot's lane; a removed return's choice falls back
     // to Volume), then the track's plugins' parameters, one submenu per plugin.
     void refreshParameters() {
-        juce::StringArray items{"Volume", "Pan"};
-        juce::Array<int> ids{1, 2};
+        juce::StringArray items;
+        juce::Array<int> ids;
+        if (trackChosen()) { items.add("Volume"); items.add("Pan"); ids.add(1); ids.add(2); }
         const auto& returns = controller.document().returns;
-        for (int r = 0; r < maxReturns; ++r) {
+        for (int r = 0; r < maxReturns && trackChosen(); ++r) {
             const auto& ret = returns[static_cast<std::size_t>(r)];
             if (!ret.used) continue;
             const auto letter = juce::String::charToString(static_cast<juce::juce_wchar>('A' + r));
             items.add("Send " + letter + (ret.name != defaultReturnName(r) ? " (" + ret.name + ")" : juce::String{}));
             ids.add(3 + r);
         }
-        auto plugins = pluginParameters ? pluginParameters(selectedTrack()) : std::vector<PluginParameter>{};
-        juce::String signature = items.joinIntoString("|");
+        auto plugins = pluginParameters ? pluginParameters(selectedRack()) : std::vector<PluginParameter>{};
+        juce::String signature = juce::String(trackBox.getSelectedId()) + "|" + items.joinIntoString("|");
         for (const auto& p : plugins) signature << "|" << p.plugin << ":" << p.parameter << ":" << juce::String(p.target.instance) << ":" << p.target.parameterId;
         if (signature == shownSignature) return;
         shownSignature = signature;
@@ -2515,8 +2531,15 @@ private:
             if (chosenPlugin && p.target == *chosenPlugin) restored = id;
         }
         flush();
-        // A plugin parameter stays chosen while it is still there (found by its target); otherwise back to Volume.
+        // A plugin parameter stays chosen while it is still there (found by its target); otherwise back to Volume, or
+        // (where there is no Volume) to the first plugin parameter.
         if (restored != 0) parameterBox.setSelectedId(restored, juce::dontSendNotification);
+        else if (!trackChosen()) {
+            if (pluginChoices.empty()) { parameterBox.addItem("No plugin parameters", noParameter); parameterBox.setItemEnabled(noParameter, false); }
+            parameterBox.setSelectedId(pluginChoices.empty() ? noParameter : pluginBase, juce::dontSendNotification);
+            const auto* first = selectedPlugin();
+            chosenPlugin = first != nullptr ? std::optional<automation::ParameterTarget>(first->target) : std::nullopt;
+        }
         else { chosenPlugin.reset(); parameterBox.setSelectedId(selected > 0 && selected < pluginBase && ids.contains(selected) ? selected : 1, juce::dontSendNotification); }
         resized();
     }
@@ -2533,6 +2556,7 @@ private:
             for (const auto& lane : t.parameterLanes) if (lane.target == plugin->target) { f(lane); return; }
             return;
         }
+        if (!trackChosen()) return;
         for (const auto& lane : t.automationLanes) if (lane.track == selectedTrack() && lane.parameter == selectedParameter()) { f(lane); return; }
     }
     // Calls f with the chosen lane, adding it first if it does not exist yet.
@@ -2542,6 +2566,7 @@ private:
             t.parameterLanes.push_back({plugin->target, true, {}});
             f(t.parameterLanes.back()); return;
         }
+        if (!trackChosen()) return;   // nothing to draw where there is no plugin parameter
         for (auto& lane : t.automationLanes) if (lane.track == selectedTrack() && lane.parameter == selectedParameter()) { f(lane); return; }
         t.automationLanes.push_back({selectedTrack(), selectedParameter(), true, {}});
         f(t.automationLanes.back());

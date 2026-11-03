@@ -161,13 +161,17 @@ public:
     }
     // What the automation editor offers for one rack: every automatable parameter with a persistent ID, by
     // plugin. Message thread; the calls into the plugins are contained.
+    // `rack` is a mixer rack (a track, the master, a return or a bus), or channelRackChoices for every Channel Rack
+    // channel's plugin instrument (T1-09), one submenu per channel.
     struct ParameterChoice { automation::ParameterTarget target; juce::String plugin, parameter; };
+    static constexpr int channelRackChoices = PluginRuntime::channelBase + PluginRuntime::maxRackChannels;
     std::vector<ParameterChoice> parameterChoices(int rack) {
         std::vector<ParameterChoice> choices;
-        if (rack < 0 || rack >= PluginRuntime::rackCount) return choices;
-        auto collect = [&](PluginRuntime::Slot& slot, int index) {
+        if ((rack < 0 || rack >= PluginRuntime::rackCount) && rack != channelRackChoices) return choices;
+        auto collect = [&](PluginRuntime::Slot& slot, int index, int at = -1) {
             if (!slot.processor || slot.faulted.get() || slot.instanceId == 0) return;
-            const auto plugin = (index < 0 ? juce::String("Instrument: ") : "FX " + juce::String(index + 1) + ": ") + slot.name;
+            const auto plugin = (at >= 0 ? "Channel " + juce::String(at + 1) + ": "
+                                 : index < 0 ? juce::String("Instrument: ") : "FX " + juce::String(index + 1) + ": ") + slot.name;
             std::vector<ParameterChoice> found;
             fault::Fault fault;
             if (!fault::guarded([&] {
@@ -177,13 +181,30 @@ public:
                     automation::ParameterTarget target{slot.instanceId, hosted->getParameterID().toStdString()};
                     if (target.valid()) found.push_back({std::move(target), plugin, hosted->getName(64)});
                 }
-            }, fault)) { runtime.markFaulted(slot, rack, index, PluginPhase::query, fault); return; }
+            }, fault)) { runtime.markFaulted(slot, at >= 0 ? PluginRuntime::channelBase + at : rack, index, PluginPhase::query, fault); return; }
             choices.insert(choices.end(), std::make_move_iterator(found.begin()), std::make_move_iterator(found.end()));
         };
+        if (rack == channelRackChoices) {
+            for (int c = 0; c < PluginRuntime::maxRackChannels; ++c) collect(runtime.rackChannels[static_cast<std::size_t>(c)], -1, c);
+            return choices;
+        }
         auto& r = runtime.racks[static_cast<std::size_t>(rack)];
         collect(r.instrument, -1);
         for (int i = 0; i < r.effectCount; ++i) collect(r.effects[static_cast<std::size_t>(i)], i);
         return choices;
+    }
+    // The places besides the tracks whose plugins the automation editor offers (T1-09), by rack number for
+    // parameterChoices, with a name: the master, each return and group bus in use, and the Channel Rack.
+    template <class Document>
+    static std::vector<std::pair<int, juce::String>> automationTargets(const Document& d) {
+        std::vector<std::pair<int, juce::String>> targets{{PluginRuntime::masterIndex, "Master"}};
+        for (int r = 0; r < maxReturns; ++r)
+            if (const auto& ret = d.returns[static_cast<std::size_t>(r)]; ret.used) targets.push_back({PluginRuntime::returnIndex(r), ret.name});
+        for (int b = 0; b < maxBuses; ++b)
+            if (const auto& bus = d.buses[static_cast<std::size_t>(b)]; bus.used)
+                targets.push_back({PluginRuntime::busIndex(b), bus.name.isNotEmpty() ? bus.name : "Bus " + juce::String(b + 1)});
+        targets.push_back({channelRackChoices, "Channel Rack"});
+        return targets;
     }
     // Message thread only; callers detach audio, as for restore/snapshot. Never
     // invent an index-based ID for plugins without persistent parameter IDs.
@@ -210,6 +231,8 @@ public:
             collect(rack.instrument, r, -1);
             for (int i = 0; i < rack.effectCount; ++i) collect(rack.effects[static_cast<std::size_t>(i)], r, i);
         }
+        for (int c = 0; c < PluginRuntime::maxRackChannels; ++c)
+            collect(runtime.rackChannels[static_cast<std::size_t>(c)], PluginRuntime::channelBase + c, -1);
         return bindings;
     }
     // The Channel Rack's plugin instruments (T1-09), by channel: loaded like a track's instrument (the safety
@@ -224,6 +247,9 @@ public:
             loadProblems.erase({PluginRuntime::channelBase+c,-1});
             if (c<static_cast<int>(channels.size())) loadSlot(slot,channels[static_cast<std::size_t>(c)],true,rate,errors,PluginRuntime::channelBase+c,-1);
         }
+        // The rack's instruments can be automated too, so automation looks them up again.
+        runtime.parameterBindings = parameterBindings();
+        automation::sortBindings(runtime.parameterBindings);
         drain(errors);
         return errors;
     }

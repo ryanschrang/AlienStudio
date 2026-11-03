@@ -63,6 +63,16 @@ static PluginState effect(const char* id) {
     juce::PluginDescription d; d.name = id; d.pluginFormatName = "VST3"; d.fileOrIdentifier = id; d.isInstrument = false;
     return PluginState(d.createXml()->toString(), {});
 }
+// The same plugin as a Channel Rack channel's instrument, with an identity of its own.
+static PluginState instrument(const char* id, std::uint64_t instance) {
+    juce::PluginDescription d; d.name = id; d.pluginFormatName = "VST3"; d.fileOrIdentifier = id; d.isInstrument = true;
+    PluginState state(d.createXml()->toString(), {});
+    state.instanceId = instance;
+    return state;
+}
+static TestEffect& channelAt(PluginRuntime& runtime, int channel) {
+    return *dynamic_cast<TestEffect*>(runtime.rackChannels[static_cast<std::size_t>(channel)].processor.get());
+}
 static PluginFactory factory() {
     return [](const juce::PluginDescription& d, double, int, juce::String&) -> std::unique_ptr<juce::AudioProcessor> {
         return std::make_unique<TestEffect>(d.fileOrIdentifier == "broken");
@@ -171,6 +181,74 @@ static void engine() {
     std::puts("PASS: a Song lane sweeps its plugin parameter while the song plays");
 }
 
+// T1-09 part 5: the Channel Rack's plugin instruments and the master's, returns' and buses' plugins are automated the
+// same way: bound by identity after either kind of restore, driven without allocation, contained when they crash,
+// and offered to the editor by place.
+static void rackAndMaster() {
+    auto engine = std::make_unique<ToneEngine>();
+    engine->prepare(48000);
+    PluginHost host(*engine->plugins, {}, factory());
+    auto& rt = *engine->plugins;
+    std::vector<PluginRackState> racks(1); PluginRackState master;
+    master.effects = {effect("limiter")};
+    require(host.restore(racks, master, 48000).isEmpty(), "a master FX loads");
+    require(host.restoreRackChannels({instrument("keys", 501), instrument("broken", 502)}, 48000).isEmpty(), "two rack instruments load");
+    require(rt.parameterBindings.size() == 2 + 2 + 3, "restoring the rack binds its instruments' parameters too, next to the master's");
+    // The mixer restored again (as after a plugin change) keeps the rack's instruments bound.
+    require(host.restore(racks, master, 48000).isEmpty() && rt.parameterBindings.size() == 7, "and a mixer restore keeps them");
+    const auto masterFx = master.effects[0].instanceId;
+
+    std::vector<automation::ParameterLane> lanes{ramp(501, "cutoff", 1000), ramp(masterFx, "mix", 1000)};
+    const auto before = allocations;
+    require(rt.applyParameterAutomation(lanes, 250.0) == 2, "a rack instrument's lane and a master FX lane both play");
+    require(allocations == before, "without allocating");
+    require(std::abs(channelAt(rt, 0).cutoff->get() - 0.25f) < 1e-6f && std::abs(effectAt(rt, PluginRuntime::masterIndex, 0).mix->get() - 0.25f) < 1e-6f,
+            "each drives its own plugin");
+    rt.applyParameterAutomation(lanes, 900.0);
+    require(std::abs(channelAt(rt, 0).cutoff->get() - 0.9f) < 1e-6f && channelAt(rt, 1).cutoff->get() == 0.5f,
+            "the other rack instrument is left alone");
+
+    // A rack instrument that crashes while receiving automation is switched off and reported by its channel.
+    std::vector<automation::ParameterLane> crashing{ramp(502, "broken", 1000)};
+    rt.applyParameterAutomation(crashing, 100.0);
+    PluginFault fault;
+    require(rt.rackChannels[1].faulted.get() && rt.faults.pop(fault) && fault.phase == PluginPhase::automation
+            && fault.rack == PluginRuntime::channelBase + 1, "a crash while receiving automation switches the rack instrument off");
+    require(rt.applyParameterAutomation(crashing, 200.0) == 0, "and it is not called again");
+
+    // Through the engine: a Song lane sweeps the rack instrument's parameter while the song plays.
+    auto song = std::make_unique<ArrangementPlayback>();
+    song->timeline.setLengthBars(1);
+    song->timeline.parameterLanes.push_back(ramp(501, "mix", timeline::ticksPerBar));
+    require(engine->arrangementMailbox.publish(*song), "the song is accepted");
+    std::array<float, 512> left{}, right{};
+    float* outputs[]{left.data(), right.data()};
+    engine->patternMode.store(2);
+    engine->playing.store(true);
+    const auto playing = allocations;
+    for (int b = 0; b < 24; ++b) engine->audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
+    require(allocations == playing, "playing rack-instrument automation does not allocate");
+    require(channelAt(rt, 0).mix->get() > 0.1f && channelAt(rt, 0).mix->get() < 0.5f, "the song sweeps the rack instrument's parameter");
+    engine->playing.store(false);
+
+    // What the editor is offered.
+    const auto rackChoices = host.parameterChoices(PluginHost::channelRackChoices);
+    require(rackChoices.size() == 2 && rackChoices[0].plugin == "Channel 1: keys" && rackChoices[0].target == automation::ParameterTarget{501, "cutoff"},
+            "the Channel Rack offers each working instrument's parameters, by channel");
+    const auto masterChoices = host.parameterChoices(PluginRuntime::masterIndex);
+    require(masterChoices.size() == 2 && masterChoices[0].plugin == "FX 1: limiter", "the master offers its FX's parameters");
+    ToneEngine other;
+    ProjectController controller(other);
+    const auto targets = PluginHost::automationTargets(controller.document());
+    int returnsInUse = 0;
+    for (const auto& ret : controller.document().returns) returnsInUse += ret.used ? 1 : 0;
+    require(targets.front() == std::pair<int, juce::String>{PluginRuntime::masterIndex, "Master"}
+            && targets.back() == std::pair<int, juce::String>{PluginHost::channelRackChoices, "Channel Rack"}
+            && static_cast<int>(targets.size()) == 2 + returnsInUse && targets[1].first == PluginRuntime::returnIndex(0),
+            "the editor's other places: the master, each return in use, then the Channel Rack");
+    std::puts("PASS: rack instruments and master FX are automated like track plugins");
+}
+
 static juce::MouseEvent mouse(juce::Component& c, juce::Point<float> p, bool right = false) {
     const auto now = juce::Time::getCurrentTime();
     return juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(), p,
@@ -223,6 +301,34 @@ static void editor() {
     require(parameter->getSelectedId() == TrackAutomationEditor::pluginBase + 1, "the parameter stays chosen across a refresh");
     track->setSelectedId(2, juce::sendNotificationSync);
     require(parameter->getSelectedId() == 1 && parameter->getNumItems() == 2 + 4, "a track without plugins offers its own lanes only");
+
+    // The master and the Channel Rack (T1-09 part 5): only their plugins' parameters, and no track lane is ever made.
+    editor.pluginTargets = [] { return std::vector<std::pair<int, juce::String>>{{16, "Master"}, {1064, "Channel Rack"}}; };
+    editor.pluginParameters = [](int rack) {
+        std::vector<TrackAutomationEditor::PluginParameter> list;
+        if (rack == 1064) list.push_back({{501, "cutoff"}, "Channel 1: Keys", "Cutoff"});
+        return list;
+    };
+    editor.refresh();
+    require(track->getItemText(track->getNumItems() - 2) == "Master" && track->getItemText(track->getNumItems() - 1) == "Channel Rack",
+            "the master and the Channel Rack are offered after the tracks");
+    track->setSelectedId(TrackAutomationEditor::targetBase + 1064, juce::sendNotificationSync);
+    require(parameter->getNumItems() == 1 && parameter->getSelectedId() == TrackAutomationEditor::pluginBase,
+            "the Channel Rack offers its instruments' parameters only, the first one chosen");
+    const auto lanesBefore = c.timeline().parameterLanes.size();
+    editor.mouseDown(mouse(editor, {450, 100}));
+    editor.mouseUp(mouse(editor, {450, 100}));
+    require(c.timeline().parameterLanes.size() == lanesBefore + 1 && c.timeline().parameterLanes.back().target == automation::ParameterTarget{501, "cutoff"}
+            && c.timeline().automationLanes.empty(), "drawing there makes the instrument's lane");
+    track->setSelectedId(TrackAutomationEditor::targetBase + 16, juce::sendNotificationSync);
+    require(parameter->getNumItems() == 1 && parameter->getSelectedId() == TrackAutomationEditor::noParameter, "a place without plugins says so");
+    const auto snapshot = c.timeline();
+    editor.mouseDown(mouse(editor, {450, 100}));
+    editor.mouseUp(mouse(editor, {450, 100}));
+    require(c.timeline() == snapshot, "and drawing there changes nothing");
+    editor.pluginTargets = [] { return std::vector<std::pair<int, juce::String>>{}; };
+    editor.refresh();
+    require(track->getSelectedId() == 1, "a place that has gone falls back to track 1");
     std::puts("PASS: the automation editor offers and draws plugin parameter lanes");
 }
 
@@ -231,6 +337,7 @@ int main() {
     lookups();
     runtime();
     engine();
+    rackAndMaster();
     editor();
     return 0;
 }
