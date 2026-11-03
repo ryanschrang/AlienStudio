@@ -741,9 +741,8 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
             || !(audioOffset.isDouble() || audioOffset.isInt()) || !muted.isBool() || !group.isInt()) {
             error = "A timeline region is missing values."; return false;
         }
-        // Formats 8-31 never wrote "lane"; one there is refused rather than guessed at.
         const auto lane = r->getProperty("lane");
-        if (!lane.isVoid() && (legacyRows || !lane.isInt() || static_cast<int>(lane) < 0)) { error = "A timeline region has an invalid lane."; return false; }
+        if (!lane.isVoid() && (!lane.isInt() || static_cast<int>(lane) < 0)) { error = "A timeline region has an invalid lane."; return false; }
         timeline::Region region;
         region.id = timeline::newId();
         region.row = timeline::rowFromSaved(static_cast<int>(row), lane.isVoid() ? -1 : static_cast<int>(lane), legacyRows);

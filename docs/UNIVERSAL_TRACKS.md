@@ -232,9 +232,8 @@ so a saved row never depends on the compiled track limit (`timeline::savedRow`, 
 `rowFromSaved` in `Timeline.h`).
 
 - Formats 8-31 still load: a saved row of 16-19 becomes lane 0-3.
-- A format 32 row past the tracks without a lane, a lane out of range or not an integer, a row
-  other than -1 with a lane, and a `"lane"` in a format 8-31 file are all refused, and the loaded
-  project is kept.
+- A format 32 row past the tracks without a lane, a lane out of range or not an integer, and a
+  row other than -1 with a lane are all refused, and the loaded project is kept.
 - Takes and frozen originals are saved by the same code, so they follow the same rule.
 - Readers older than format 32 refuse format 32 projects, as for every format bump.
 

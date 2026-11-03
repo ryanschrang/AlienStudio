@@ -515,14 +515,6 @@ static void songRowFormatTests() {
     bool legacyLaneFound = false, legacyTrackFound = false;
     for (const auto& r : loaded.timeline.regions) { legacyLaneFound |= r.row == rackRowBase + 1; legacyTrackFound |= r.row == 2; }
     require(legacyLaneFound && legacyTrackFound, "format 31 row 17 is lane 1 and track rows are unchanged");
-    {
-        auto future = juce::JSON::parse(juce::JSON::toString(legacy));
-        for (auto& r : *future.getProperty("timeline", {}).getProperty("regions", {}).getArray())
-            if (static_cast<int>(r.getProperty("row", 0)) >= legacySavedRackRowBase) { r.getDynamicObject()->setProperty("row", -1); r.getDynamicObject()->setProperty("lane", 1); }
-        const auto before = loaded.timeline;
-        require(!alien::parseSessionProject(juce::JSON::toString(future), loaded, error) && loaded.timeline == before,
-            "a format 31 project never carries a lane, so one there is refused");
-    }
 
     // Malformed rows are refused without replacing what is loaded.
     const auto prior = loaded.timeline;
