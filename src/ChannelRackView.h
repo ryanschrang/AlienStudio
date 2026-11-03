@@ -6,10 +6,11 @@
 // "selected" lamp, and raised step buttons in groups of four that light up in
 // the channel's colour. Click or drag to paint steps, right-drag to erase, click
 // a name to hear it.
-// All changes go through ProjectController::editRack, so undo, saving and the
+// Changes go through controller operations and named commands, so undo, saving and the
 // audio engine need nothing from this file.
 #include "MidiClipDrag.h"
 #include "ProjectController.h"
+#include "CommandEngine.h"
 #include "RackGrooveImport.h"
 #include "StarterPack.h"
 #include "StudioWidgets.h"
@@ -1307,7 +1308,7 @@ public:
     enum AddChannelId { addSampler = 99, addSoundBase = 100, addSynthBase = 200 };
     juce::PopupMenu patternMenu() const {
         juce::PopupMenu menu;
-        menu.addItem(newPattern, "New pattern");
+        menu.addItem(newPattern, "New pattern", controller.canEditMidiClips() && command::refusal(controller.document(), command::CreateRackPattern{}).isEmpty());
         menu.addItem(clonePattern, "Clone pattern");
         menu.addItem(renamePattern, "Rename pattern...");
         menu.addSeparator();
@@ -1381,7 +1382,7 @@ public:
                           starterGrooveBase = 1000 };
     void patternCommand(int id) {
         const int current = controller.channelRack().selectedPattern;
-        if (id == newPattern) controller.editRack("New pattern", [](rack::Project& p) { return p.addPattern(); });
+        if (id == newPattern) command::CommandEngine(controller).execute(command::CreateRackPattern{});
         else if (id == clonePattern) controller.editRack("Clone pattern", [&](rack::Project& p) { return p.addPattern(current); });
         else if (id == clearPattern) controller.editRack("Clear pattern", [](rack::Project& p) { return p.clearPattern(p.selectedPattern); });
         else if (id == deletePattern) controller.deleteRackPattern(current);

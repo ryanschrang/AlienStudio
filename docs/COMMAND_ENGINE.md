@@ -185,7 +185,7 @@ and rack cells; duplication is described below and independence uses the clipboa
 acting. CommandEngineTests and SessionViewTests cover Preview/live agreement,
 sequential batches, atomic refusal, no-op/redo preservation, link independence,
 empty-clip persistence, focus and actual menu actions. Audio imports, Song
-placement command wrappers and rack creation/assignment remain later work.
+placement command wrappers and remaining rack/channel edits remain later work.
 
 ## Session scene commands
 
@@ -248,7 +248,7 @@ live publication. Paste preserves selection and unrelated playback requests.
 
 All three menu actions use commands and refresh-only host callbacks. Stale
 track/scene/cell identities refuse; busy state, recording/count-in and frozen
-destinations refuse. No project format changes. New audio imports and rack creation/assignment wrappers remain follow-ups.
+destinations refuse. No project format changes. New audio imports and remaining rack/channel edit wrappers remain follow-ups.
 
 ## Session clip movement
 
@@ -302,3 +302,34 @@ CommandEngineTests and SessionViewTests cover pure/live identity agreement,
 clipboard isolation, media sharing, offline copies, rack capacity, selection and
 history, stale source menus, guards and actual audio/rack duplicate menu actions.
 Manual Windows listening and streamed-media acceptance remain separate from CI.
+
+## Rack pattern creation and Session assignment
+
+`CreateRackPattern {}` appends and selects an empty Channel Rack pattern.
+The Channel Rack New pattern button/menu invokes this named command. It keeps
+Session selection and channel/plugin routing unchanged. It does not instantiate
+plugins, issue a rack-launch request or add a Session cell.
+
+`AssignRackClip {track, scene, clip}` binds an existing rack source to a Session
+cell, replacing its old cell reference without rewriting other linked cells.
+The Copy / link assignment submenu invokes the command with a stable source ID,
+so a missing source refuses instead of resolving another pattern by slot. JSON
+`clip` is a positive canonical decimal **string**, including for small identities,
+to preserve all 64 bits in scripts. Numeric, signed, padded and overflowing values
+refuse parsing. Source existence is validated against the sequential document.
+
+Both commands share RackCommands.h for pure Preview and live execution. Batch
+validates all commands before live effects and records one Undo/Redo step.
+Preview neither consumes live IDs nor creates plugin instances. Assignment to
+the same source is a no-op preserving redo. Assign preserves Session selection
+and clipboard; it stops only the addressed ordinary track as the existing UI
+assignment did. Shared rack voices are not launched or transferred automatically.
+The source and destination popup identities are revalidated before assignment.
+
+Busy projects and recording/count-in refuse both commands. Creation refuses at
+the rack pattern limit or when a rack channel routes to a frozen track, retaining
+the existing editRack protection. Assignment refuses frozen/missing destinations,
+missing source IDs and cell-based Song/take/frozen-original references. Undo
+restores the pattern bank, editor pattern selection and replaced cell content.
+No project format change. Clone/rename/delete/step/channel command migration and
+asynchronous audio import plans remain unfinished; T1-02 is still partial.

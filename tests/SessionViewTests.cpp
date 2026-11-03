@@ -1165,6 +1165,20 @@ static void sceneMenuCommands() {
     c.setExternalBusy(false);
 }
 
+static void rackAssignmentCommandMenu() {
+    Rig rig; auto& c = rig.controller; rig.fillClip(0,0); c.selectClip(0,0); c.markAsNewBaseline();
+    std::function<void(int)> choose;
+    rig.view.linkMenuLauncher = [&](juce::PopupMenu, std::function<void(int)> done) { choose = std::move(done); };
+    int refresh = 0, legacy = 0; rig.view.onCellContentChanged = [&] { ++refresh; }; rig.view.onEdited = [&](const juce::String&) { ++legacy; };
+    const auto before = c.document(); rig.view.showLinkMenu(); choose(1000);
+    require(c.document().clip(0,0).rackClip == c.channelRack().clips[0] && c.undoLabel() == "Assign rack clip" && refresh == 1 && legacy == 0,
+        "Session assignment uses command and refresh-only host notification");
+    require(c.undo() && !c.canUndo() && sameContent(before,c.document()), "rack assignment menu Undo restores replaced MIDI in one step");
+    rig.view.showLinkMenu(); rig.fillClip(1,0); require(c.moveTrack(0,1), "stale rack assignment row fixture"); c.commit("Move fixture");
+    const auto moved = c.document(); choose(1000);
+    require(sameContent(moved,c.document()) && refresh == 1, "stale rack assignment cannot replace a different track");
+}
+
 static void allTypeDuplicateMenu() {
     Rig rig; auto& c = rig.controller;
     std::function<void(int)> choose; juce::PopupMenu shown;
@@ -1265,6 +1279,7 @@ static void clearClipCommandButton() {
 
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    rackAssignmentCommandMenu();
     allTypeDuplicateMenu();
     moveClipMenuCommands();
     clipboardMenuCommands();

@@ -752,6 +752,17 @@ static void graphEditor() {
 }
 
 // ---- pattern bank and toolbar ----------------------------------------------------------
+static void createPatternCommandHistory() {
+    Rig rig; auto& c = rig.controller; c.markAsNewBaseline(); const auto before = c.document();
+    rig.view.patternCommand(ChannelRackView::newPattern);
+    require(c.channelRack().patternCount == before.channelRack.patternCount + 1 && c.undoLabel() == "New pattern", "rack New pattern uses named command");
+    require(c.undo() && !c.canUndo() && sameContent(before,c.document()), "rack New pattern has exactly one Undo step");
+    const auto redo = c.redoLabel(); c.setExternalBusy(true); rig.view.patternCommand(ChannelRackView::newPattern); c.setExternalBusy(false);
+    require(sameContent(before,c.document()) && c.redoLabel() == redo, "busy rack New pattern preserves document and redo");
+    rig.engine.recording.phase.store(RecordControls::countIn); rig.view.patternCommand(ChannelRackView::newPattern);
+    require(sameContent(before,c.document()), "rack New pattern refuses during count-in"); rig.engine.recording.phase.store(RecordControls::idle);
+}
+
 static void patternBankAndToolbar() {
     Rig rig;
     auto& v = rig.view;
@@ -1585,6 +1596,7 @@ int main() {
     paintAndEraseStrokes();
     headerControls();
     graphEditor();
+    createPatternCommandHistory();
     patternBankAndToolbar();
     topBarButton();
     paintedPatternPlays();
