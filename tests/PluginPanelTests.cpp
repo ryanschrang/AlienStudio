@@ -23,6 +23,9 @@ static PluginState vst3(const juce::String& name, bool bypass = false) {
 }
 static juce::StringArray slotTexts(juce::ComboBox& box) { juce::StringArray t; for (int i = 0; i < box.getNumItems(); ++i) t.add(box.getItemText(i)); return t; }
 
+static juce::String statusText(juce::Component& panel) {
+    juce::String text; for (auto* c : panel.getChildren()) if (auto* l = dynamic_cast<juce::Label*>(c)) text = l->getText(); return text;
+}
 static juce::PluginDescription described(const juce::String& name, const juce::String& maker, const juce::String& category, bool instrument) {
     juce::PluginDescription d; d.name = name; d.manufacturerName = maker; d.category = category; d.isInstrument = instrument;
     d.pluginFormatName = "VST3"; d.fileOrIdentifier = "C:/VST3/" + name + ".vst3"; d.uniqueId = d.deprecatedUid = name.hashCode();
@@ -80,11 +83,17 @@ static void browserTests() {
     combos(panel)[0]->setSelectedId(maxSessionTracks + 1, juce::dontSendNotification); combos(panel)[0]->onChange();
     check(!useInstrument->isEnabled(), "Use instrument is off for Master FX");
     browser.choose(); check(added.size() == 2, "an instrument is not added to an effects-only rack");
+    check(statusText(panel).contains("effects only"), "and the status says why: " + statusText(panel));
     combos(panel)[0]->setSelectedId(1, juce::dontSendNotification); combos(panel)[0]->onChange();
 
     browser.setQuery("crashy");
     check(browser.selectedChoice() == idOf("Crashy Comp") && !addFx->isEnabled() && !useInstrument->isEnabled(), "a blocked plugin cannot be added");
     browser.choose(); check(added.size() == 2, "not even by double-click");
+    check(statusText(panel).contains("Crashy Comp is blocked"), "and the status says it is blocked: " + statusText(panel));
+    juce::ListBox* results = nullptr;
+    for (auto* c : browser.getChildren()) if (auto* l = dynamic_cast<juce::ListBox*>(c)) results = l;
+    check(results != nullptr && results->getModel() != nullptr && results->getModel()->getNameForRow(0) == "Crashy Comp, blocked, Flaky Ltd",
+          "screen readers hear the plugin, its kind and maker rather than a row number");
 
     browser.setQuery("verb"); browser.setKind(PluginBrowser::Kind::effects);
     check(browser.resultCount() == 2, "search and the Effects filter combine (Alien Reverb and Zeta Verb)");
@@ -98,6 +107,11 @@ static void browserTests() {
     PluginPanel narrow; narrow.setSize(900, 700); narrow.refresh({"Track 1"}, rack, known);
     check(narrow.pluginBrowser().getWidth() > 0 && narrow.pluginBrowser().getRight() <= narrow.getWidth()
           && narrow.pluginBrowser().getBottom() < button(narrow, "Use instrument")->getY(), "a narrow panel shows the browser above the add buttons");
+    // The stacked browser takes the spare height, leaving three lines of status under the slot buttons.
+    const int spare = narrow.getHeight() - 20 - (button(narrow, "Remove")->getBottom() + 16);
+    check(spare >= 72 && spare < 80 && narrow.pluginBrowser().getHeight() > 300,
+          "a tall narrow panel grows the browser, not the empty space below the status (" + juce::String(spare) + " px left, list "
+          + juce::String(narrow.pluginBrowser().getHeight()) + " px)");
 }
 
 int main() {

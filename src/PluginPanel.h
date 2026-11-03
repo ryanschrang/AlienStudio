@@ -33,7 +33,12 @@ public:
         addEffect.onClick=[this]{if(onAdd)onAdd(false,browser.selectedChoice());};
         // Double-click or Enter in the browser adds the row where it belongs, if the destination takes it.
         browser.onChoose=[this](int choice,bool instrument){
-            if(!(instrument?addInstrument:addEffect).isEnabled())return;
+            if(!(instrument?addInstrument:addEffect).isEnabled()){
+                const auto* chosen=browser.selected();
+                setStatus(chosen!=nullptr && chosen->blocked?chosen->name+" is blocked because it crashed earlier. Allow it again from Scan VST3 > Blocked plugins."
+                         :"Master FX, returns and buses take effects only. Choose a track to use an instrument.");
+                return;
+            }
             if(onAdd)onAdd(instrument,choice);
         };
         browser.onSelectionChanged=[this]{updateAddButtons();};
@@ -220,7 +225,7 @@ public:
         auto row=r.removeFromTop(32);
         target.setBounds(row.removeFromLeft(190)); row.removeFromLeft(12); scan.setBounds(row.removeFromLeft(140)); row.removeFromLeft(8); cancelScan.setBounds(row.removeFromLeft(130));
         r.removeFromTop(12);liveInput.setBounds(r.removeFromTop(30));
-        if(!beside){r.removeFromTop(12);browser.setBounds(r.removeFromTop(juce::jmax(120,r.getHeight()-306)));}  // 306: the rows below it
+        if(!beside){r.removeFromTop(12);browser.setBounds(r.removeFromTop(juce::jmax(120,r.getHeight()-belowStackedBrowser)));}
         r.removeFromTop(12);row=r.removeFromTop(32);
         addInstrument.setBounds(row.removeFromLeft(150));row.removeFromLeft(10);addEffect.setBounds(row.removeFromLeft(120));
         r.removeFromTop(20);slot.setBounds(r.removeFromTop(30));r.removeFromTop(12);row=r.removeFromTop(32);
@@ -248,6 +253,9 @@ private:
         addEffect.setEnabled(usable && !chosen->instrument);
     }
     static constexpr int controlsWidth=780;
+    // Under a stacked browser: the add row (12+32), slot (20+30), slot buttons (12+32), and a gap (16)
+    // with three lines of status (72). The browser grows into everything else.
+    static constexpr int belowStackedBrowser=12+32+20+30+12+32+16+72;
     juce::ComboBox target,slot,liveInput;
     PluginBrowser browser;
     juce::TextButton scan,cancelScan,addInstrument,addEffect,open,bypass,sidechain,up,down,remove;

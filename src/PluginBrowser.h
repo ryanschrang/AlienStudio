@@ -59,15 +59,15 @@ public:
 
     PluginBrowser() {
         setName("Plugin browser");
-        addAndMakeVisible(search); search.setName("Plugin search");
+        addAndMakeVisible(search); search.setName("Plugin search"); search.setTitle("Search plugins");
         search.setTextToShowWhenEmpty("Search plugins (name, maker, category, instrument or FX)", ui::colours::textFaint);
         search.onTextChange = [this] { rebuild(); };
         search.onReturnKey = [this] { choose(); };
-        addAndMakeVisible(kind); kind.setName("Plugin kind");
+        addAndMakeVisible(kind); kind.setName("Plugin kind"); kind.setTitle("Show all plugins, instruments or effects");
         kind.addItem("All", 1); kind.addItem("Instruments", 2); kind.addItem("Effects", 3);
         kind.setSelectedId(1, juce::dontSendNotification);
         kind.onChange = [this] { rebuild(); };
-        addAndMakeVisible(list); list.setName("Plugin results"); list.setModel(this); list.setRowHeight(34);
+        addAndMakeVisible(list); list.setName("Plugin results"); list.setTitle("Plugins"); list.setModel(this); list.setRowHeight(34);
         list.setTooltip("Double-click or press Enter to add to the selected destination: an instrument to its instrument slot, an effect to its FX rack.");
         list.setColour(juce::ListBox::backgroundColourId, ui::colours::inset);
         addAndMakeVisible(empty); empty.setText("No matching plugins", juce::dontSendNotification); empty.setInterceptsMouseClicks(false, false);
@@ -147,6 +147,12 @@ private:
         g.setColour(ui::colours::textFaint);
         g.setFont(ui::font(10.5f));
         g.drawText(details.joinIntoString("  -  "), area, juce::Justification::centredLeft, true);
+    }
+    // What a screen reader announces for a row.
+    juce::String getNameForRow(int row) override {
+        if (row < 0 || row >= resultCount()) return {};
+        const auto& e = result(row);
+        return e.name + ", " + (e.blocked ? "blocked" : e.stock ? "stock effect" : e.instrument ? "instrument" : "effect") + (e.maker.isNotEmpty() ? ", " + e.maker : juce::String());
     }
     void selectedRowsChanged(int) override { if (onSelectionChanged) onSelectionChanged(); }
     void listBoxItemDoubleClicked(int, const juce::MouseEvent&) override { choose(); }
