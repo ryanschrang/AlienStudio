@@ -1,12 +1,12 @@
 # T1-02 completion audit
 
-CMD-01 is **not complete**. The Command Engine currently exposes 23 commands:
+CMD-01 is **not complete**. The Command Engine currently exposes 24 commands:
 five structural track commands, four Session track mix commands, three Session
 MIDI creation plus all-type duplication/independence, one Session clip delete
 command (claim #186), two clipboard paste commands (claim #189),
 one Session MoveClip command (claim #192),
 five Session scene commands (claim #181), and CreateRackPattern/AssignRackClip
-(claim #198).
+(claim #198), plus RemoveClipAudio (claim #203).
 
 The existing roadmap examples are a target catalog, not proof that every
 operation already has a command. Completion requires both a validated command
@@ -18,7 +18,7 @@ audition, and saving a file are separate lifecycle actions, not snapshot edits.
 | Command contract | Typed arguments, stable names, Execute, Preview, Batch, Undo/Redo, grouping, no-op/redo preservation | Cross-family acceptance with dirty plugin state, asynchronous work and runtime failure; document refusal must precede every live side effect |
 | Track structure | Create/delete/move/rename/colour; Session track menus | Audit other entry points for direct mutations and duplicate commits |
 | Session scenes | Create/duplicate/move/rename/delete and Session add/menu/name UI | Native interaction/acceptance; shared reducer remains a follow-up to remove controller/Preview duplication |
-| Session clips | Empty MIDI creation, all-type independent duplication (claim #196), MIDI make-independent; all-type Session cell delete/clear; PasteClip/PasteLinkedClip and all-type MakeClipUnique; identity-preserving MoveClip and destination menu; CreateRackPattern/AssignRackClip and existing UI adoption (claim #198) | Audio import commands; other rack/channel edit wrappers; asynchronous import needs an explicit plan/result boundary |
+| Session clips | Empty MIDI creation, all-type independent duplication (claim #196), MIDI make-independent; all-type Session cell delete/clear; PasteClip/PasteLinkedClip and all-type MakeClipUnique; identity-preserving MoveClip and destination menu; CreateRackPattern/AssignRackClip and existing UI adoption (claim #198); RemoveClipAudio and Remove audio button (claim #203) | Audio import commands; other rack/channel edit wrappers; asynchronous import needs an explicit plan/result boundary |
 | Mixer parameters/routing | Session/Mixer track volume/pan/mute/solo | Master, bus, return and send parameters; create/rename/delete bus/return; track output, group membership and sidechain routing; UI adoption |
 | Devices | Existing host/controller operations and saved plugin instances | Insert/move/remove/bypass devices as commands; noncommitting controller adapters and runtime preparation/restore failure handling |
 | Automation/parameters | Existing saved send/plugin lanes and playback | Named lane/point edits and generic parameter targets; Preview must not instantiate or call plugins; account for the older stock-automation cache audit (#179) |

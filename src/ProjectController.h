@@ -1227,17 +1227,19 @@ public:
         return -1;
     }
 
-    bool removeAudio(int track, int scene) {
-        if (!doc.isValidCell(track, scene) || isTrackFrozen(track)) return false;
-        auto clip = doc.clip(track, scene);
-        if (!clip.isAudioClip()) return false; // a loaded clip, or an offline reference
-        clip.audio.reset();
-        clip.audioFileName.clear();
-        clip.audioFilePath.clear();
-        doc.setClip(track, scene, clip);
-        republishIfLive(track, scene);
-        republishLinked(track, scene);
+    bool applyRemoveClipAudioCommand(int track, int scene) {
+        if (!canEditMidiClips() || session_clip::removeAudioRefusal(doc,track,scene).isNotEmpty()) return false;
+        if (!doc.clip(track,scene).isAudioClip()) return true;
+        const auto link = doc.linkOf(track,scene);
+        if (!session_clip::removeAudio(doc,track,scene)) return false;
+        const bool shared = doc.linkOf(track,scene) == link;
+        for (int s = 0; s < doc.sceneCount(); ++s) for (int t = 0; t < doc.trackCount(); ++t)
+            if (((t == track && s == scene) || (shared && doc.linkOf(t,s) == link))
+                && engine.requestedPianoRollClip[static_cast<std::size_t>(t)].load() == s) publishClip(t,s);
         return true;
+    }
+    bool removeAudio(int track, int scene) {
+        return doc.isValidCell(track,scene) && doc.clip(track,scene).isAudioClip() && applyRemoveClipAudioCommand(track,scene);
     }
 
     // Files -----------------------------------------------------------------
