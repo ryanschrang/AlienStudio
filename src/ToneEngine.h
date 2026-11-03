@@ -103,6 +103,7 @@ public:
     using RackSources = alien::rack::RackPlayer::LaunchSources;
     static_assert(alien::rack::RackPlayer::timelineSlots == alien::timeline::rackLanes);
     static_assert(alien::PluginRuntime::maxRackChannels == alien::rack::maxChannels, "one plugin slot per rack channel");
+    static_assert(alien::DiskAudioStreamService::voiceCount >= 4 * sessionTracks, "two clip and two crossfade stream voices per track slot");
     std::array<std::atomic<std::uint64_t>, sessionTracks> requestedTrackRackClip{}, sceneTrackRackClip{}, activeTrackRackClip{}, queuedTrackRackClip{};
     std::atomic<int> launchQuantizationSteps{16}; // One bar by default (16 sixteenth-note steps).
     // Channel Rack. The project is published as an immutable snapshot; each
@@ -227,6 +228,12 @@ public:
 private:
     void renderBlock(float* const* outputs, int channels, int samples, int outputOffset) {
         handleRecording();
+        // Track slots this block (T1-04 C): the project's tracks, not the compiled limit. A slot leaving use plays
+        // one more block with its notes ended and its clips stopped, and is then skipped; one coming into use
+        // starts from silence. Everything per track below runs for blockTracks slots.
+        const auto inUse = static_cast<std::size_t>(std::clamp(activeTracks.load(), 1, static_cast<int>(sessionTracks)));
+        const auto entering = tracksInUse;
+        blockTracks = std::max(inUse, tracksInUse);
         bool playNow = playing.load();
         if (arrangementPreparing.load(std::memory_order_acquire)) { playing.store(false); playNow = false; }
         const int modeNow = patternMode.load();
@@ -237,6 +244,10 @@ private:
                            static_cast<double>(bar.start) / alien::timeline::ticksPerBeat);
         }
         else plugins->begin(samples, bpm.load(), playNow, transportBeat);
+        plugins->useTracks(blockTracks);
+        for (auto t = inUse; t < tracksInUse; ++t) releaseTrackSlot(t);
+        for (auto t = entering; t < inUse; ++t) tracks[t].peak.store(0.0f, std::memory_order_relaxed);
+        tracksInUse = inUse;
         for (auto& b : clipBuffers) b.clear();
         if (stemCapture) stemCapture->clear();
         // A new snapshot is only a pointer swap. While the song plays, an edit
@@ -293,7 +304,7 @@ private:
         synth.setPatch(alien::presets[static_cast<std::size_t>(juce::jlimit(0, alien::presetCount - 1, preset.load()))]);
         // Where each track goes this block (a missing bus means the master), and who solo leaves audible.
         soloState = {};
-        for (std::size_t t = 0; t < sessionTracks; ++t) {
+        for (std::size_t t = 0; t < blockTracks; ++t) {
             const int output = tracks[t].output.load();
             trackOutputs[t] = output >= 0 && output < alien::maxBuses && buses[static_cast<std::size_t>(output)].active.load() ? output : -1;
             soloState.addTrack(trackOutputs[t], tracks[t].solo.load());
@@ -307,7 +318,7 @@ private:
             soloState.addBus(b, buses[static_cast<std::size_t>(b)].active.load() && buses[static_cast<std::size_t>(b)].solo.load());
         const bool anySolo = soloState.any;
         std::array<float, sessionTracks> peaks{};
-        for (std::size_t t = 0; t < sessionTracks; ++t) {
+        for (std::size_t t = 0; t < blockTracks; ++t) {
             auto settings = tracks[t].snapshot();
             settings.solo = soloState.trackHeard(trackOutputs[t], settings.solo);
             auto& rack=plugins->racks[t];
@@ -358,7 +369,7 @@ private:
             NoteQueue::Event preview{};
             for (int n = 0; n < 64 && trackAuditions.pop(preview); ++n) {
                 const int track = preview.note >> 8, note = preview.note & 0x7f;
-                if (!panic && track >= 0 && track < static_cast<int>(sessionTracks))
+                if (!panic && track >= 0 && track < static_cast<int>(blockTracks))
                     routeToTrack(static_cast<std::size_t>(track), note, preview.velocity, auditionSource);
             }
             if (trackAuditions.panic.exchange(false))
@@ -390,7 +401,7 @@ private:
         for (std::size_t t = 0; t < sessionTracks; ++t) {
             NoteQueue::Event hit{};
             for (int n = 0; n < 256 && drumAuditions[t].pop(hit); ++n)
-                if (!panic && !plugins->racks[t].frozen && instrumentModes[t] == 1) drumSamplers[t].noteOn(hit.note, hit.velocity, 1);
+                if (!panic && t < blockTracks && !plugins->racks[t].frozen && instrumentModes[t] == 1) drumSamplers[t].noteOn(hit.note, hit.velocity, 1);
             if (drumAuditions[t].panic.exchange(false)) drumSamplers[t].stop(1);
         }
         midi.process([this](int n, float v, int ch) { sendMidi(n, v, ch); },
@@ -404,7 +415,7 @@ private:
                     if (action >= 0) controllerActions.push(action);
                 }
             });
-        for (std::size_t track = 0; track < sessionTracks; ++track) {
+        for (std::size_t track = 0; track < blockTracks; ++track) {
             auto& requestedClip = *launchScratch;
             if (modeNow != 2 && pianoRollLaunches[track].consume(requestedClip)) {
                 const int quantization = synchronizedScenePending
@@ -415,7 +426,7 @@ private:
                     synchronizedScenePending, quantization);
                 audioPlayers[track].queue(requestedClip.audio, quantization);
                 if (synchronizedScenePending)
-                    synchronizedSceneTracksQueued |= (1u << track);
+                    synchronizedSceneTracksQueued |= std::uint64_t{1} << track;
             }
             if (modeNow == 2)
                 rolls[track].setTiming(sampleRate, songTempo().tempoAt(timelineTick));   // the timeline starts and stops each clip itself
@@ -500,11 +511,10 @@ private:
                 }
             }
             if (playNow && modeNow == 1) {
-                const unsigned allSessionTracks = (1u << static_cast<unsigned>(std::clamp(activeTracks.load(), 1,
-                    static_cast<int>(sessionTracks)))) - 1u;
+                const std::uint64_t allSessionTracks = inUse >= 64 ? ~std::uint64_t{0} : (std::uint64_t{1} << inUse) - 1u;
                 bool synchronizedAudioReady = true;
                 if (synchronizedScenePending)
-                    for (std::size_t track = 0; track < sessionTracks; ++track)
+                    for (std::size_t track = 0; track < blockTracks; ++track)
                         synchronizedAudioReady = synchronizedAudioReady && (!audioPlayers[track].pendingIsAudio()
                             || audioPlayers[track].pendingReady() || audioPlayers[track].pendingFailed());
                 if (synchronizedScenePending && synchronizedAudioReady
@@ -514,11 +524,11 @@ private:
                     rackTrackSceneDue = synchronizedTrackRackSources; rackTrackSceneDue[0] = rackSceneDue;
                     synchronizedTrackRackSources = alien::rack::RackPlayer::noRequests();
                     synchronizedRackSource = alien::rack::RackPlayer::noLaunchRequest;
-                    for (std::size_t track = 0; track < sessionTracks; ++track)
+                    for (std::size_t track = 0; track < blockTracks; ++track)
                         rolls[track].launchPendingNow([this, track](int n, float v, bool on) {
                             sendPattern(track, n, v, on);
                         });
-                    for (std::size_t track = 0; track < sessionTracks; ++track) {
+                    for (std::size_t track = 0; track < blockTracks; ++track) {
                         const bool isAudioClip = audioPlayers[track].pendingIsAudio();
                         if (audioPlayers[track].launchPendingNow(sampleRate))
                             audioClipMode[track] = isAudioClip;
@@ -526,7 +536,7 @@ private:
                     synchronizedScenePending = false;
                     synchronizedSceneTracksQueued = 0;
                 }
-                for (std::size_t track = 0; track < sessionTracks; ++track) {
+                for (std::size_t track = 0; track < blockTracks; ++track) {
                     if (!synchronizedScenePending && audioPlayers[track].hasPending()
                         && rolls[track].launchBoundaryDue(audioPlayers[track].pendingQuantizationSteps())) {
                         const bool isAudioClip = audioPlayers[track].pendingIsAudio();
@@ -541,7 +551,7 @@ private:
             }
             const float value = synth.nextSample();
             plugins->live.setSample(0,i,value); plugins->live.setSample(1,i,value);
-            for (std::size_t track = 0; track < sessionTracks; ++track) {
+            for (std::size_t track = 0; track < blockTracks; ++track) {
                 const float voice = plugins->racks[track].frozen ? 0.0f : trackSynths[track].nextSample();
                 const auto drum = plugins->racks[track].frozen ? std::array<float,2>{} : drumSamplers[track].nextSample();
                 plugins->tracks[track].setSample(0,i,voice + drum[0]);
@@ -576,7 +586,7 @@ private:
                     break;
                 }
         plugins->instruments(samples);
-        for (std::size_t t = 0; t < sessionTracks; ++t)
+        for (std::size_t t = 0; t < blockTracks; ++t)
             for (int c = 0; c < 2; ++c) plugins->tracks[t].addFrom(c,0,clipBuffers[t],c,0,samples);
         addTrackInputs(samples, outputOffset);
         if (modeNow == 2) captureSongTake(samples, outputOffset);
@@ -587,7 +597,7 @@ private:
         // Skip idle manual sends, but keep tracks with send automation active even
         // when their manual knobs are off and a curve starts at zero.
         std::array<bool, sessionTracks> sending{};
-        for (std::size_t t = 0; t < sessionTracks; ++t)
+        for (std::size_t t = 0; t < blockTracks; ++t)
             for (const auto& ramp : sendRamps[t]) sending[t] = sending[t] || !ramp.idle();
         if (modeNow == 2) for (const auto& lane : song->timeline.automationLanes)
             if (lane.enabled && !lane.points.empty() && alien::automation::sendIndex(lane.parameter) >= 0
@@ -598,7 +608,7 @@ private:
                 stemCapture->buses[alien::StemCapture::directBus].setSample(0,i,left);
                 stemCapture->buses[alien::StemCapture::directBus].setSample(1,i,right);
             }
-            for (std::size_t t = 0; t < sessionTracks; ++t) {
+            for (std::size_t t = 0; t < blockTracks; ++t) {
                 float l = plugins->tracks[t].getSample(0,i), r = plugins->tracks[t].getSample(1,i);
                 const float preLeft = l, preRight = r;
                 auto settings = tracks[t].snapshot();
@@ -688,7 +698,7 @@ private:
             timelinePosition.store(playNow && modeNow == 2 ? static_cast<std::int64_t>(shown) : -1, std::memory_order_relaxed);
         }
         pianoRollPosition.store(static_cast<int>(rolls[0].positionStep() * 1000.0));
-        for (std::size_t track = 0; track < sessionTracks; ++track) {
+        for (std::size_t track = 0; track < blockTracks; ++track) {
             tracks[track].peak.store(peaks[track]);
             sessionTrackPositions[track].store(static_cast<int>(rolls[track].positionStep() * 1000.0));
             activePianoRollClip[track].store(audioClipMode[track] && !audioPlayers[track].isPlaying()
@@ -744,10 +754,10 @@ private:
             left[b] = buses.left[b].data(); right[b] = buses.right[b].data();
         }
         if (timelineRunning)
-            rackPlayer.processTimeline(*rackSnapshot, rackSamples, true, rackHits.raw(), rackHitCount, songTempo().tempoAt(timelineTick), activeTracks.load(),
+            rackPlayer.processTimeline(*rackSnapshot, rackSamples, true, rackHits.raw(), rackHitCount, songTempo().tempoAt(timelineTick), static_cast<int>(tracksInUse),
                                        samples, left.data(), right.data());
         else
-            rackPlayer.processLaunched(*rackSnapshot, rackSamples, running, bpm.load(), activeTracks.load(), samples, left.data(), right.data(),
+            rackPlayer.processLaunched(*rackSnapshot, rackSamples, running, bpm.load(), static_cast<int>(tracksInUse), samples, left.data(), right.data(),
                                       rackRequestInBlock, launchQuantizationSteps.load(), startSelected,
                                       startSelected ? nullptr : rackLaunchTicks.data(), rackLaunchTickCount, rackSceneDue, rackSceneSample, &rackTrackRequests, &rackTrackSceneDue);
         activeRackClip.store(timelineRunning ? 0 : rackPlayer.playingClip(), std::memory_order_relaxed);
@@ -761,7 +771,7 @@ private:
             queuedTrackRackClip[t].store(timelineRunning ? alien::rack::RackPlayer::noLaunchRequest : queued, std::memory_order_relaxed);
         }
         rackStep.store(running ? rackPlayer.currentStep() : -1, std::memory_order_relaxed);
-        for (std::size_t t = 0; t < sessionTracks; ++t) {
+        for (std::size_t t = 0; t < blockTracks; ++t) {
             if(plugins->racks[t].frozen)continue;
             plugins->tracks[t].addFrom(0, 0, left[t], samples);
             plugins->tracks[t].addFrom(1, 0, right[t], samples);
@@ -790,7 +800,7 @@ private:
             const float level = snap.audible(c) ? rackPlayer.channelGain(c) : 0.0f;
             const float angle = (std::clamp(rackPlayer.channelPan(c), -1.0f, 1.0f) + 1.0f) * 0.78539816339744830962f;
             const std::array<float, 2> target{std::cos(angle) * level, std::sin(angle) * level};
-            const auto bus = static_cast<std::size_t>(alien::rack::RackPlayer::busFor(channel.output, activeTracks.load()));
+            const auto bus = static_cast<std::size_t>(alien::rack::RackPlayer::busFor(channel.output, static_cast<int>(tracksInUse)))   // this block's tracks, as renderBlock read them;
             if (bus < sessionTracks && plugins->racks[bus].frozen) continue;   // its sound is in the frozen audio
             auto& into = bus < sessionTracks ? plugins->tracks[bus] : plugins->live;
             const float* in[]{out->getReadPointer(0), out->getReadPointer(1)};
@@ -812,7 +822,7 @@ private:
         return deviceInputs != nullptr && index >= 0 && index < deviceInputCount ? deviceInputs[index] : nullptr;
     }
     void addTrackInputs(int samples, int offset) noexcept {
-        for (std::size_t t = 0; t < sessionTracks; ++t) {
+        for (std::size_t t = 0; t < blockTracks; ++t) {
             auto& controls = tracks[t];
             if(plugins->racks[t].frozen)continue;
             const bool armed = controls.armed.load(std::memory_order_relaxed);
@@ -874,7 +884,7 @@ private:
         if (first >= 0) {
             const int count = last - first + 1;
             if (!started) take.firstTick.store(automationTicks[static_cast<std::size_t>(first)], std::memory_order_relaxed);
-            for (std::size_t t = 0; t < sessionTracks; ++t) {
+            for (std::size_t t = 0; t < blockTracks; ++t) {
                 auto* sink = take.sinks[t].load(std::memory_order_acquire);
                 if (sink == nullptr) continue;
                 const int input = tracks[t].input.load(std::memory_order_relaxed);
@@ -1026,6 +1036,18 @@ private:
         const double boundary = trackLanes[track].boundary;
         trackLanes[track] = {};
         trackLanes[track].boundary = boundary;
+    }
+    // A track slot leaving use (T1-04 C), in the last block it is processed: its notes end, its clips and rack
+    // occurrence stop, and its voices are cut.
+    void releaseTrackSlot(std::size_t track) noexcept {
+        rolls[track].unload([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
+        endTail(track, true); audioPlayers[track].stop(); audioClipMode[track] = false; trackLanes[track] = {};
+        trackSynths[track].allSoundOff(); drumSamplers[track].stop();
+        if (plugins->hasInstrument(track)) plugins->silence(track);
+        const int slot = static_cast<int>(track + 1);   // its rack occurrence stops at the next launch boundary
+        if (rackPlayer.playingClip(slot) != 0 || rackPlayer.waitingClip(slot) != alien::rack::RackPlayer::noLaunchRequest)
+            requestedTrackRackClip[track].store(0);
+        sceneTrackRackClip[track].store(alien::rack::RackPlayer::noLaunchRequest);
     }
     void startTrackRegion(std::size_t track, const alien::timeline::Region& region) noexcept {
         auto send = [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); };
@@ -1265,17 +1287,17 @@ private:
         if (timelineTick + tickEpsilon >= std::min(static_cast<double>(tl.length()), timelineStopAt)) return false;
         automationTicks[static_cast<std::size_t>(sample)] = timelineTick;
         const double at = timelineTick + tickEpsilon;
-        for (std::size_t t = 0; t < sessionTracks; ++t)
+        for (std::size_t t = 0; t < blockTracks; ++t)
             if (at >= trackLanes[t].boundary) syncTrack(t);
         for (int l = 0; l < alien::timeline::rackLanes; ++l)
             if (at >= rackLaneState[static_cast<std::size_t>(l)].boundary) syncRackLane(l);
-        for (std::size_t t = 0; t < sessionTracks; ++t) {
+        for (std::size_t t = 0; t < blockTracks; ++t) {
             auto& lane = trackLanes[t];
             if (lane.audioWaiting) launchWaiting(t);
             advanceTail(t, at);
             if (lane.nextAudio != nullptr && !lane.prefetched && at >= lane.prefetchAt) prefetchNext(t);
         }
-        for (std::size_t t = 0; t < sessionTracks; ++t)
+        for (std::size_t t = 0; t < blockTracks; ++t)
             if (trackLanes[t].midi) rolls[t].nextSample([this, t](int n, float v, bool on) { sendPattern(t, n, v, on); });
         fireRackSteps(sample);
         // The playhead is a base plus a whole number of samples at the current rate, not a running
@@ -1683,8 +1705,9 @@ private:
     bool wasPlaying{};
     int wasMode{};
     bool synchronizedScenePending{};
-    unsigned synchronizedSceneTracksQueued{};
-    static_assert(sessionTracks <= 32, "Scene launch tracking uses a 32-bit mask");
+    std::uint64_t synchronizedSceneTracksQueued{};   // a bit per track slot
+    std::size_t tracksInUse{sessionTracks}, blockTracks{sessionTracks};   // audio thread: renderBlock
+    static_assert(sessionTracks <= 64, "Scene launch tracking uses a 64-bit mask");
     int synchronizedSceneQuantizationSteps{16};
     int activeStepPitch{-1};
 };
