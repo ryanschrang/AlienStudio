@@ -800,7 +800,7 @@ private:
             const float level = snap.audible(c) ? rackPlayer.channelGain(c) : 0.0f;
             const float angle = (std::clamp(rackPlayer.channelPan(c), -1.0f, 1.0f) + 1.0f) * 0.78539816339744830962f;
             const std::array<float, 2> target{std::cos(angle) * level, std::sin(angle) * level};
-            const auto bus = static_cast<std::size_t>(alien::rack::RackPlayer::busFor(channel.output, static_cast<int>(tracksInUse)))   // this block's tracks, as renderBlock read them;
+            const auto bus = static_cast<std::size_t>(alien::rack::RackPlayer::busFor(channel.output, static_cast<int>(tracksInUse)));   // this block's tracks, as renderBlock read them
             if (bus < sessionTracks && plugins->racks[bus].frozen) continue;   // its sound is in the frozen audio
             auto& into = bus < sessionTracks ? plugins->tracks[bus] : plugins->live;
             const float* in[]{out->getReadPointer(0), out->getReadPointer(1)};
