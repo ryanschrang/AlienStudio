@@ -445,6 +445,7 @@ NOT RUN. Needs a VST3 instrument that reports latency (many samplers and some sy
 - Turn the instrument's lookahead or oversampling off while stopped, play again: still in time. Remove the instrument: the rest of the mix stays in time.
 
 ## Plugin parameter automation (T1-09 part 3)
+- NOT RUN (T1-09 part 5): put a VST3 instrument on a Channel Rack channel. Song > Automation: choose "Channel Rack", then "Channel N: <instrument>" and a parameter (a filter cutoff), draw a ramp, place the rack pattern in the Song and play: the sound and the instrument's editor follow the lane. Do the same with Valhalla Supermassive (or another VST3 effect) on the master, on a return and on a group bus, choosing "Master", the return's name or the bus's name. A place with no plugins says "No plugin parameters". Remove the return: the editor falls back to track 1.
 - Put a VST3 effect (a filter or EQ) and a stock effect on a track. Song > Automation: choose the track, then the effect's submenu and a parameter. Draw a ramp over a bar and play: the parameter moves in the plugin's editor and you hear it, smoothly at 48 kHz with 128, 512 and 1024-sample buffers. Read off: the parameter stays where you set it by hand.
 - Move the effect up or down the rack, undo, save and reopen: the lane still drives the same effect. Remove the effect: playback carries on and the lane does nothing; undo brings both back.
 - Export the song to WAV and stems, and freeze the track: the automation is in the result. Loop playback over the ramp: the parameter jumps back at the loop start.

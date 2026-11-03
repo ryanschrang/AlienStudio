@@ -462,6 +462,8 @@ private:
             for (auto& choice : pluginHost.parameterChoices(track)) list.push_back({std::move(choice.target), choice.plugin, choice.parameter});
             return list;
         };
+        // ...and on the master, the returns and buses in use, and the Channel Rack's instruments.
+        timelineView.trackAutomation().pluginTargets = [this] { return alien::PluginHost::automationTargets(controller.document()); };
         timelineView.onUnfreezeTrack=[this](int track){if(controller.unfreezeTrack(track)){refreshExtraViews();timelineView.setStatus("Track unfrozen; original clips and saved settings restored.");}};
         timelineView.onTitleChanged = [this] { if (tabs.getCurrentTabIndex() == 5) updateEditorTitle(); };
         auto& canvas = timelineView.timelineCanvas();
