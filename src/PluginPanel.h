@@ -26,7 +26,11 @@ public:
         target.setName("Plugin destination track, return or master"); slot.setName("Instrument or FX slot");
         liveInput.setName("Live MIDI destination");
         liveInput.setTooltip("Hardware MIDI, typing keyboard and on-screen piano. Recording uses its armed track.");
-        liveInput.onChange=[this]{if(onLiveInput)onLiveInput(liveInput.getSelectedId()-2);};
+        liveInput.onChange=[this]{
+            const int id=liveInput.getSelectedId();
+            if(id>=liveRackBase){if(onLiveRackInput)onLiveRackInput(id-liveRackBase);}
+            else if(onLiveInput)onLiveInput(id-2);
+        };
         target.onChange=[this]{updateAddButtons();if(onTarget)onTarget(target.getSelectedId()-1);};
         scan.onClick=[this]{showScanMenu();}; cancelScan.onClick=[this]{if(onCancelScan)onCancelScan();};
         addInstrument.onClick=[this]{if(onAdd)onAdd(true,browser.selectedChoice());};
@@ -55,12 +59,22 @@ public:
     // Arguments: destination (a track index, maxSessionTracks for Master FX, or a return's rack index after it) and slot (-1 instrument, 0.. FX).
     std::function<juce::String(int,int)> health;
     std::function<void(int)> onTarget;
-    std::function<void(int)> onLiveInput;
-    void refreshLiveInput(const juce::StringArray& names, int selected) {
+    std::function<void(int)> onLiveInput;       // a track index, or -1 for the standalone synth
+    std::function<void(int)> onLiveRackInput;   // a Channel Rack channel whose plugin instrument plays live (T1-09)
+    static constexpr int liveRackBase=1000;     // destination ids of rack channels (plus the channel)
+    // `rackChannels` are the rack channels played by a plugin instrument, with their names; `selectedRack` wins over
+    // `selected` when it is one of them.
+    void refreshLiveInput(const juce::StringArray& names, int selected,
+                          const std::vector<std::pair<int,juce::String>>& rackChannels={}, int selectedRack=-1) {
         liveInput.clear(juce::dontSendNotification);
         liveInput.addItem("Live MIDI: standalone synth",1);
         for(int i=0;i<names.size();++i) liveInput.addItem("Live MIDI: "+names[i],i+2);
-        liveInput.setSelectedId(selected>=0 && selected<names.size()?selected+2:1,juce::dontSendNotification);
+        bool rackChosen=false;
+        for(const auto& [channel,name]:rackChannels) {
+            liveInput.addItem("Live MIDI: Channel Rack "+juce::String(channel+1)+": "+name,liveRackBase+channel);
+            rackChosen=rackChosen||channel==selectedRack;
+        }
+        liveInput.setSelectedId(rackChosen?liveRackBase+selectedRack:selected>=0 && selected<names.size()?selected+2:1,juce::dontSendNotification);
     }
     std::function<void(bool,int)> onAdd;
     // Whether a scanned plugin is blocked after crashing while hosted (T1-09); the browser marks it and it cannot be added.

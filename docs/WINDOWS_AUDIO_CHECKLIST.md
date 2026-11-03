@@ -437,6 +437,14 @@ Not yet run on hardware. Record commit, device/driver, sample rate and buffer si
 - Save, close and reopen: the instrument comes back with the sound you set in its editor. Duplicate the channel and change the copy's sound: the original is unchanged. Undo the instrument choice: the channel's old sound returns.
 - Export WAV and stems, and freeze a track the channel plays on: the instrument is in the result. With a plugin that crashes, it is switched off with a message naming the channel, and the rest keeps playing.
 
+## Live MIDI into rack instruments (T1-09 part 6)
+NOT RUN. Needs a USB MIDI keyboard with a sustain pedal, pitch wheel and mod wheel, and a VST3 instrument on a Channel Rack channel.
+- Plugins > Live MIDI destination: choose "Live MIDI: Channel Rack N: <instrument>". Play soft and hard: the instrument follows velocity. Hold the sustain pedal, play and release keys: notes ring until the pedal comes up. Move the pitch wheel and mod wheel: the instrument follows, and the instrument's editor shows it.
+- Play with the typing keyboard and the on-screen piano: the same instrument sounds.
+- While holding keys (and with the pedal down): choose another destination, stop the transport, unplug the keyboard, change the audio device. Nothing is left sounding, and pitch bend is back at the centre afterwards.
+- Move the channel up or down the rack: the destination follows the instrument. Change the channel's sound to a sample or remove the channel: the destination falls back to the standalone synth.
+- Arm a track and record: the armed track hears the keyboard, not the rack instrument; disarm: the rack instrument plays again.
+
 ## Latency compensation for rack instruments (T1-09 part 4)
 NOT RUN. Needs a VST3 instrument that reports latency (many samplers and some synths do when a lookahead or oversampling option is on; the instrument's manual or the `Latency and tail` line of `AlienPluginCheck check` says what it reports).
 - Put the latent instrument on a rack channel and a short click or rimshot sample on another channel, both on step 1 of every beat. Pan them apart and play: the two hits sound as one (no flam), at 48 kHz with 128, 512 and 1024-sample buffers. Route the instrument's channel to a track and the sample to the master, then swap: still no flam.

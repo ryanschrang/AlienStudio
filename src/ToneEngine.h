@@ -72,6 +72,9 @@ public:
     std::array<alien::DrumKitControls, sessionTracks> drumKits;
     std::array<NoteQueue, sessionTracks> drumAuditions;
     std::atomic<int> liveDrumTrack{-1};
+    // A Channel Rack channel whose plugin instrument plays the live MIDI (T1-09), or -1. A track in liveDrumTrack,
+    // and an armed track while recording, take precedence.
+    std::atomic<int> liveRackChannel{-1};
     alien::ArrangementMailbox arrangementMailbox;
     // The arrangement timeline. The GUI asks for a position with timelineSeek (the
     // song starts there when playback starts, or jumps there if it is playing) and
@@ -330,14 +333,18 @@ private:
         }
         const int requestedRoute = std::clamp(liveDrumTrack.load(), -1, static_cast<int>(sessionTracks) - 1);
         const int route = requestedRoute;
-        if (route != currentLiveDrumTrack) {
+        const int rackRoute = route >= 0 ? -1 : std::clamp(liveRackChannel.load(), -1, alien::PluginRuntime::maxRackChannels - 1);
+        if (route != currentLiveDrumTrack || rackRoute != currentLiveRackChannel) {
+            // The old destination hears its note-offs (and controller resets) before the new one takes over.
             resetMidiControllers();
             midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); });
             stopMidiDrums();
             if (currentLiveDrumTrack >= 0) releaseMonitor(static_cast<std::size_t>(currentLiveDrumTrack));
+            if (currentLiveRackChannel >= 0) plugins->silenceLiveRack(currentLiveRackChannel);
             synth.allSoundOff(0);
             for (int channel = 1; channel <= 16; ++channel) synth.allSoundOff(channel + 8);
             currentLiveDrumTrack = route;
+            currentLiveRackChannel = rackRoute;
         }
         updateMonitorRoute();
         NoteQueue::Event event{};
@@ -1444,6 +1451,7 @@ private:
         midi.resetAudio([this](int n, float v, int ch) { sendMidi(n, v, ch); }); // releases through the old route
         if (monitorTrack >= 0) releaseMonitor(static_cast<std::size_t>(monitorTrack));
         else if (currentLiveDrumTrack >= 0) releaseMonitor(static_cast<std::size_t>(currentLiveDrumTrack));
+        else if (currentLiveRackChannel >= 0) plugins->silenceLiveRack(currentLiveRackChannel);
         else synth.allSoundOff(0);
         monitorTrack = wanted;
     }
@@ -1472,6 +1480,7 @@ private:
         captureNote(note, velocity);
         if (monitorTrack >= 0) { routeToTrack(static_cast<std::size_t>(monitorTrack), note, velocity, 64); return; }
         if (currentLiveDrumTrack >= 0) { routeToTrack(static_cast<std::size_t>(currentLiveDrumTrack), note, velocity, 64); return; }
+        if (currentLiveRackChannel >= 0) { liveRackNote(note, velocity, 1); return; }
         if (velocity > 0) synth.noteOn(note, velocity);
         else synth.noteOff(note);
     }
@@ -1495,6 +1504,13 @@ private:
             else routeToTrack(track, note, velocity, 64 + channel);
             return;
         }
+        if (currentLiveRackChannel >= 0) {
+            if (note < 0) {   // a hard silence on that MIDI channel (CC 120)
+                plugins->liveRack(currentLiveRackChannel, juce::MidiMessage::allNotesOff(channel));
+                plugins->liveRack(currentLiveRackChannel, juce::MidiMessage::allSoundOff(channel));
+            } else liveRackNote(note, velocity, channel);
+            return;
+        }
         const int source = channel + 8; // Reserve source channels 2..5 for four Session tracks.
         if (note < 0) synth.allSoundOff(source);
         else if (velocity > 0) synth.noteOn(note, velocity, source);
@@ -1513,6 +1529,12 @@ private:
         };
         if(monitorTrack>=0) {apply(static_cast<std::size_t>(monitorTrack));return;}
         if(currentLiveDrumTrack>=0) {apply(static_cast<std::size_t>(currentLiveDrumTrack));return;}
+        if(currentLiveRackChannel>=0) {
+            if(midiChannel<1||midiChannel>16) return;
+            if(controller==128) plugins->liveRack(currentLiveRackChannel,juce::MidiMessage::pitchWheel(midiChannel,std::clamp(value,0,16383)));
+            else if(controller>=0&&controller<128&&value>=0&&value<128) plugins->liveRack(currentLiveRackChannel,juce::MidiMessage::controllerEvent(midiChannel,controller,value));
+            return;
+        }
         if(controller==128) synth.setPitchWheel(channel+9,value);
         else if(controller==1) synth.setModulation(channel+9,value);
     }
@@ -1529,6 +1551,15 @@ private:
                 }
             }
         }
+        if(currentLiveRackChannel>=0) for(int channel=1;channel<=16;++channel) {
+            plugins->liveRack(currentLiveRackChannel,juce::MidiMessage::pitchWheel(channel,8192));
+            plugins->liveRack(currentLiveRackChannel,juce::MidiMessage::controllerEvent(channel,1,0));
+            plugins->liveRack(currentLiveRackChannel,juce::MidiMessage::controllerEvent(channel,64,0));
+        }
+    }
+    void liveRackNote(int note, float velocity, int channel) noexcept {
+        if (note < 0 || note > 127 || channel < 1 || channel > 16) return;
+        plugins->liveRack(currentLiveRackChannel, velocity > 0.0f ? juce::MidiMessage::noteOn(channel, note, velocity) : juce::MidiMessage::noteOff(channel, note));
     }
     void sendPattern(std::size_t track, int note, float velocity, bool on) noexcept {
         if(plugins->racks[track].frozen)return;
@@ -1548,6 +1579,7 @@ private:
 
         for (std::size_t t=0;t<sessionTracks;++t) if (plugins->hasInstrument(t))
             plugins->silence(t);
+        if (currentLiveRackChannel >= 0) plugins->silenceLiveRack(currentLiveRackChannel);   // notes played into it live
         for (auto& voice : trackSynths) voice.allSoundOff();
         for (auto& sampler : drumSamplers) sampler.stop();
         for (auto& track : tracks) track.peak.store(0.0f);
@@ -1620,6 +1652,7 @@ private:
     FixedHeapArray<alien::DrumSampler, sessionTracks> drumSamplers;
     std::array<int, sessionTracks> instrumentModes{};
     int currentLiveDrumTrack{-1};
+    int currentLiveRackChannel{-1};   // audio thread: liveRackChannel as applied
     alien::MetronomeClick click;
     std::array<float, alien::PluginRuntime::blockSize> clickBuffer{};
     std::array<double, alien::PluginRuntime::blockSize> automationTicks{};
