@@ -18,7 +18,7 @@ audition, and saving a file are separate lifecycle actions, not snapshot edits.
 | Command contract | Typed arguments, stable names, Execute, Preview, Batch, Undo/Redo, grouping, no-op/redo preservation | Cross-family acceptance with dirty plugin state, asynchronous work and runtime failure; document refusal must precede every live side effect |
 | Track structure | Create/delete/move/rename/colour; Session track menus | Audit other entry points for direct mutations and duplicate commits |
 | Session scenes | Create/duplicate/move/rename/delete and Session add/menu/name UI | Native interaction/acceptance; shared reducer remains a follow-up to remove controller/Preview duplication |
-| Session clips | Empty MIDI creation, all-type independent duplication (claim #196), MIDI make-independent; all-type Session cell delete/clear; PasteClip/PasteLinkedClip and all-type MakeClipUnique; identity-preserving MoveClip and destination menu; CreateRackPattern/AssignRackClip and existing UI adoption (claim #198); RemoveClipAudio and Remove audio button (claim #203) | Audio import commands; other rack/channel edit wrappers; asynchronous import needs an explicit plan/result boundary |
+| Session clips | Empty MIDI creation, all-type independent duplication (claim #196), MIDI make-independent; all-type Session cell delete/clear; PasteClip/PasteLinkedClip and all-type MakeClipUnique; identity-preserving MoveClip and destination menu; CreateRackPattern/AssignRackClip and existing UI adoption (claim #198); RemoveClipAudio and Remove audio button (claim #203) | Named audio import commands and other entry points; other rack/channel edit wrappers (Session import plan/result boundary implemented, claim #205) |
 | Mixer parameters/routing | Session/Mixer track volume/pan/mute/solo | Master, bus, return and send parameters; create/rename/delete bus/return; track output, group membership and sidechain routing; UI adoption |
 | Devices | Existing host/controller operations and saved plugin instances | Insert/move/remove/bypass devices as commands; noncommitting controller adapters and runtime preparation/restore failure handling |
 | Automation/parameters | Existing saved send/plugin lanes and playback | Named lane/point edits and generic parameter targets; Preview must not instantiate or call plugins; account for the older stock-automation cache audit (#179) |
@@ -28,7 +28,8 @@ audition, and saving a file are separate lifecycle actions, not snapshot edits.
 ## Suggested implementation sequence
 
 1. Finish remaining Session clip operations and their UI entry points
-   (audio import commands and asynchronous import planning).
+   (named audio import commands consuming prepared results, and adoption by other
+   browser/processed-audio entry points).
 2. Add mixer parameter and routing families using pure document reducers and
    validated, noncommitting controller adapters.
 3. Add device/parameter/automation plans with explicit runtime failure behavior.
@@ -74,3 +75,16 @@ independent placement clips and rack-pattern placements retain their sources.
 Frozen tracks, busy state and recording/count-in refuse before live edits.
 CommandEngineTests and SessionViewTests cover the command and actual Clear button;
 exact build/test results belong in the PR. Native listening remains separate.
+
+## Prepared Session audio import boundary
+
+The Session file importer now captures project scope, track/scene identity, cell
+identity and immutable content/media before worker decoding. Completion resolves
+that same destination after reorder and refuses changed content, deleted targets,
+project replacement, frozen linked content, rack assignments, busy state and
+recording/count-in before media retention, engine publication or history edits.
+Selection changes do not redirect the result. The prepared reducer can build a
+pure candidate for future command Preview. The current importer installs a
+validated candidate as one existing Import audio undo step. This completes the
+plan/result preparation boundary, not the named import command family. Browser,
+processed-audio and synchronous legacy install paths remain separate follow-ups.

@@ -1204,8 +1204,11 @@ static void phaserHistoryTests() {
     require(reopened.tracks[0].plugins.effects[0].instanceId == state.instanceId && std::abs(depthOf(reopened.tracks[0].plugins.effects[0]) - .8f) < 1e-6, "save/reopen retains phaser identity and parameters");
 }
 
+#include "AudioImportPlanTests.h"
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    audioImportPlanChecks();
     phaserHistoryTests();
     chorusHistoryTests();
     browserImportTests();

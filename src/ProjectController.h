@@ -7,6 +7,7 @@
 #include "ViewModes.h"
 #include "ToneEngine.h"
 #include "AudioClipImport.h"
+#include "SessionAudioImportPlan.h"
 #include "ArrangementWarp.h"
 #include "AudioRelink.h"
 #include "PortableProject.h"
@@ -1379,16 +1380,36 @@ public:
         pool.addJob(std::move(job));
     }
 
+    std::optional<session_audio_import::Plan> prepareAudioImport(const juce::File& file,int track,int scene) const {
+        if(!canEditMidiClips())return {};
+        return session_audio_import::prepare(doc,file,track,scene);
+    }
+    bool completeAudioImport(const session_audio_import::Prepared& prepared) {
+        if(!canEditMidiClips()){importStatus("Finish busy work and stop recording before installing audio.",{});return false;}
+        auto candidate=doc;
+        if(const auto why=session_audio_import::apply(candidate,prepared);why.isNotEmpty()){importStatus(why,{});return false;}
+        if(!retain(prepared.decoded.clip)){importStatus("Session audio storage is full (512 MiB limit)",{});return false;}
+        const auto [track,scene]=session_audio_import::resolve(doc,prepared.plan);
+        doc=std::move(candidate);
+        const auto link=doc.linkOf(track,scene);
+        for(int s=0;s<doc.sceneCount();++s)for(int t=0;t<doc.trackCount();++t)
+            if(((t==track && s==scene) || (link && doc.linkOf(t,s)==link))
+                && engine.requestedPianoRollClip[static_cast<std::size_t>(t)].load()==s)publishClip(t,s);
+        commit("Import audio",track,scene);
+        importStatus("Imported "+prepared.plan.file.getFileName(),prepared.plan.file.getFullPathName());
+        if(onClipContentChanged)onClipContentChanged(track,scene);
+        return true;
+    }
     void importAudio(const juce::File& file, int track, int scene) {
-        if(isTrackFrozen(track)){importStatus("Unfreeze the track before replacing its audio.",{});return;}
-        if (busy || !doc.isValidCell(track, scene)) return;
+        const auto plan=prepareAudioImport(file,track,scene);
+        if(!plan){importStatus("Choose an editable Session cell and stop recording before importing audio.",{});return;}
         setBusy(true);
-        importStatus(ui8("Loading audio\xe2\x80\xa6"), file.getFullPathName());
-        std::weak_ptr<int> token = alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, file, track, scene] {
-            auto result = std::make_shared<AudioClipImportResult>(importSessionAudioClip(file));
-            juce::MessageManager::callAsync([this, token, file, track, scene, result] {
-                if (token.lock() != nullptr) { setBusy(false); finishImport(file, track, scene, *result); }
+        importStatus(ui8("Loading audio\xe2\x80\xa6"),file.getFullPathName());
+        std::weak_ptr<int> token=alive;
+        std::function<juce::ThreadPoolJob::JobStatus()> job=[this,token,plan=*plan] {
+            auto prepared=std::make_shared<session_audio_import::Prepared>(session_audio_import::Prepared{plan,importSessionAudioClip(plan.file)});
+            juce::MessageManager::callAsync([this,token,prepared] {
+                if(token.lock()){setBusy(false);completeAudioImport(*prepared);}
             });
             return juce::ThreadPoolJob::jobHasFinished;
         };
