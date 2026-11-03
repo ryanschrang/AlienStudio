@@ -185,11 +185,12 @@ public:
         removeAudio.setTooltip("Remove the audio file from the selected clip");
         removeAudio.onClick = [this] {
             const auto& d = controller.document();
-            if (controller.removeAudio(d.selectedTrack, d.selectedScene)) {
-                setImportStatus("Audio removed from selected clip", {});
-                refreshSelectedClip();
-                if (onEdited) onEdited("Remove audio");
-            }
+            const auto result = command::CommandEngine(controller).execute(command::RemoveClipAudio{d.selectedTrack,d.selectedScene});
+            if (!result.ok) { setImportStatus(result.error, {}); return; }
+            if (!result.changed) return;
+            if (onCellContentChanged) onCellContentChanged();
+            refreshSelectedClip(); refreshClips();
+            setImportStatus("Audio removed from selected clip", {});
         };
         addAndMakeVisible(clearClip);
         clearClip.setButtonText("Clear clip");

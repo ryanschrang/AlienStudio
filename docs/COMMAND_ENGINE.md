@@ -333,3 +333,21 @@ missing source IDs and cell-based Song/take/frozen-original references. Undo
 restores the pattern bank, editor pattern selection and replaced cell content.
 No project format change. Clone/rename/delete/step/channel command migration and
 asynchronous audio import plans remain unfinished; T1-02 is still partial.
+
+## Remove Session clip audio
+
+`RemoveClipAudio {track, scene}` migrates the existing Session **Remove audio**
+button to the Command Engine. Preview uses the same pure document edit as live
+execution; sequential Batch is one Undo/Redo step and missing audio is a no-op
+preserving redo. Online and offline audio use the same path without decoding or
+file access. Host notifications refresh the piano roll/UI without another commit.
+
+Existing linked behavior is preserved: remaining MIDI notes/custom loop content
+edits the shared clip pattern, removing audio from its links while retaining notes
+and identities. A default empty remainder instead clears only the addressed cell;
+other linked audio cells keep their content. Undo restores exact media references
+and sharing. Invalid/frozen cells and busy/recording/count-in edits refuse. If a
+shared pattern would be edited, frozen linked tracks also refuse before mutation.
+Only affected currently requested cells are republished; other queued launches,
+pending stops and transport are preserved. No project format change. Asynchronous
+imports still need a separate prepared-result boundary and remain unfinished.

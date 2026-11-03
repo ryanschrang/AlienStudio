@@ -1165,6 +1165,20 @@ static void sceneMenuCommands() {
     c.setExternalBusy(false);
 }
 
+static void removeAudioCommandButton() {
+    Rig rig; auto& c=rig.controller; juce::Button* remove=nullptr;
+    for(auto* child:rig.view.getChildren())if(child->getName()=="Remove audio from selected Session clip")remove=dynamic_cast<juce::Button*>(child);
+    require(remove!=nullptr,"Remove audio button exists");
+    auto audio=std::make_shared<SessionAudioClip>();audio->sampleRate=8000;audio->channels=1;audio->frames=80;audio->left.assign(80,.2f);audio->buildWaveform();
+    require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("remove-button.wav"),0,0,audio),"remove button fixture");
+    c.selectClip(0,0);c.markAsNewBaseline();rig.view.refreshSelectedClip();int refresh=0,legacy=0;
+    rig.view.onCellContentChanged=[&]{++refresh;};rig.view.onEdited=[&](const juce::String&){++legacy;};clickButton(*remove);
+    require(!c.document().clip(0,0).isAudioClip() && c.undoLabel()=="Remove audio" && refresh==1 && legacy==0 && !remove->isEnabled(),"remove button uses command and refresh-only notification");
+    require(c.undo() && !c.canUndo() && c.document().clip(0,0).audio==audio,"remove button Undo restores audio in one step");
+    rig.view.refreshSelectedClip();rig.engine.recording.phase.store(RecordControls::countIn);clickButton(*remove);
+    require(c.document().clip(0,0).audio==audio && refresh==1 && c.canRedo(),"queued remove button refuses during count-in and preserves redo");rig.engine.recording.phase.store(RecordControls::idle);
+}
+
 static void rackAssignmentCommandMenu() {
     Rig rig; auto& c = rig.controller; rig.fillClip(0,0); c.selectClip(0,0); c.markAsNewBaseline();
     std::function<void(int)> choose;
@@ -1279,6 +1293,7 @@ static void clearClipCommandButton() {
 
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    removeAudioCommandButton();
     rackAssignmentCommandMenu();
     allTypeDuplicateMenu();
     moveClipMenuCommands();

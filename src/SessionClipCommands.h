@@ -3,6 +3,27 @@
 #include "ClipboardClipCommands.h"
 
 namespace alien::session_clip {
+inline juce::String removeAudioRefusal(const ProjectDocument& d, int track, int scene) {
+    if (!d.isValidCell(track, scene)) return "The Session cell does not exist.";
+    if (d.tracks[static_cast<std::size_t>(track)].settings.frozen()) return "Unfreeze the track before removing clip audio.";
+    const auto clip = d.clip(track, scene);
+    if (!clip.isAudioClip()) return {};
+    // setClip clears only this cell when the remaining notes/loop are default
+    // empty; otherwise it edits the shared pattern, including linked cells.
+    const auto& blank = *emptyPattern();
+    const bool clears = !clip.pattern || (clip.pattern->count == 0 && clip.pattern->loopSteps == blank.loopSteps);
+    if (!clears) for (int s = 0; s < d.sceneCount(); ++s) for (int t = 0; t < d.trackCount(); ++t)
+        if (d.linkOf(t,s) == d.linkOf(track,scene) && d.tracks[static_cast<std::size_t>(t)].settings.frozen())
+            return "Unfreeze linked tracks before changing their shared clip audio.";
+    return {};
+}
+inline bool removeAudio(ProjectDocument& d, int track, int scene) {
+    if (removeAudioRefusal(d, track, scene).isNotEmpty()) return false;
+    auto clip = d.clip(track, scene);
+    if (!clip.isAudioClip()) return true;
+    clip.audio.reset(); clip.audioFileName.clear(); clip.audioFilePath.clear();
+    d.setClip(track, scene, clip); return true;
+}
 struct Duplicate { int track{-1}, scene{-1}, toTrack{-1}, toScene{-1}; };
 inline juce::String duplicateRefusal(const ProjectDocument& d, const Duplicate& e) {
     if (!d.isValidCell(e.track, e.scene) || !d.isValidCell(e.toTrack, e.toScene)) return "The source or destination Session cell does not exist.";
