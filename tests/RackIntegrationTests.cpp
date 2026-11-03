@@ -14,11 +14,14 @@
 #include <iostream>
 #include <limits>
 #include <new>
+#if defined(_MSC_VER)
+#include <malloc.h>
+#endif
 #include <vector>
 
-static thread_local std::size_t allocationCount = 0;
+static thread_local std::size_t allocationCount = 0, allocatedBytes = 0;
 void* operator new(std::size_t size) {
-    ++allocationCount;
+    ++allocationCount; allocatedBytes += size;
     if (auto* pointer = std::malloc(size == 0 ? 1 : size)) return pointer;
     throw std::bad_alloc();
 }
@@ -27,6 +30,30 @@ void operator delete(void* pointer) noexcept { std::free(pointer); }
 void operator delete[](void* pointer) noexcept { std::free(pointer); }
 void operator delete(void* pointer, std::size_t) noexcept { std::free(pointer); }
 void operator delete[](void* pointer, std::size_t) noexcept { std::free(pointer); }
+// Over-aligned types (the stream rings' cache-line counters) use these; count them too.
+static void* alignedAllocate(std::size_t size, std::align_val_t alignment) {
+    ++allocationCount; allocatedBytes += size;
+    const auto align = static_cast<std::size_t>(alignment);
+#if defined(_MSC_VER)
+    if (auto* pointer = _aligned_malloc(size == 0 ? 1 : size, align)) return pointer;
+#else
+    if (auto* pointer = std::aligned_alloc(align, ((size == 0 ? 1 : size) + align - 1) / align * align)) return pointer;
+#endif
+    throw std::bad_alloc();
+}
+static void alignedFree(void* pointer) noexcept {
+#if defined(_MSC_VER)
+    _aligned_free(pointer);
+#else
+    std::free(pointer);
+#endif
+}
+void* operator new(std::size_t size, std::align_val_t alignment) { return alignedAllocate(size, alignment); }
+void* operator new[](std::size_t size, std::align_val_t alignment) { return alignedAllocate(size, alignment); }
+void operator delete(void* pointer, std::align_val_t) noexcept { alignedFree(pointer); }
+void operator delete[](void* pointer, std::align_val_t) noexcept { alignedFree(pointer); }
+void operator delete(void* pointer, std::size_t, std::align_val_t) noexcept { alignedFree(pointer); }
+void operator delete[](void* pointer, std::size_t, std::align_val_t) noexcept { alignedFree(pointer); }
 
 static void require(bool ok, const char* message) {
     if (!ok) { std::cerr << "FAIL: " << message << '\n'; std::exit(1); }
@@ -596,26 +623,49 @@ static void stableSongBindingAcrossBankReorder() {
 // Opt-in diagnostic: fixed workloads, warm-up, then individual real callback
 // durations. Timing has no pass threshold; allocation and finite-output checks do.
 static void capacityReport() {
+    const int full = alien::maxSessionTracks;
+    {
+        const auto before = allocatedBytes;
+        auto engine = std::make_unique<ToneEngine>();
+        const auto constructed = allocatedBytes - before;
+        engine->prepare(48000.0);
+        const auto prepared = allocatedBytes - before;
+        std::cout << "# Shared playback capacity\n\n"
+            << "Compiled limits: " << full << " Session tracks, " << alien::maxSessionScenes << " scenes.\n\n"
+            << "| Engine heap (C++ new, cumulative) | Bytes | MiB |\n| --- | ---: | ---: |\n" << std::fixed << std::setprecision(3)
+            << "| Constructed ToneEngine (incl. object) | " << constructed << " | " << constructed / 1048576.0 << " |\n"
+            << "| After prepare(48 kHz) | " << prepared << " | " << prepared / 1048576.0 << " |\n\n"
+            << "Cumulative bytes requested from operator new; frees and std::vector growth during prepare are not subtracted.\n"
+            << "Excludes plugins, media, Song/rack snapshots, document/history, UI and allocator overhead.\n\n";
+    }
     std::cout << "# Shared playback callback baseline\n\n"
         << "48 kHz, 120 BPM; stock synth preset 9; no plugins, device or disk I/O.\n"
-        << "All 16 mixer tracks active; default four returns; warm-up 32 blocks, measured 256 blocks.\n"
+        << "Tracks in use are stated per row; default four returns; warm-up 32 blocks, measured 256 blocks.\n"
         << "Session rack cases use three held notes per occurrence (loop 16 steps).\n"
         << "Song case uses four overlapping lanes of that same source.\n"
         << "Times include the whole callback; p95/max are observations, not real-time guarantees.\n\n"
-        << "| Workload | Block frames | p50 us | p95 us | max us | p95 / block budget % | Callback allocations |\n"
-        << "| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n" << std::fixed << std::setprecision(2);
-    for (int workload = 0; workload < 5; ++workload) for (int frames : {64, 256, 1024}) {
+        << "| Workload | Tracks in use | Block frames | p50 us | p95 us | max us | p95 / block budget % | Callback allocations |\n"
+        << "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n" << std::fixed << std::setprecision(2);
+    struct Case { const char* name; int kind, tracks, occurrences; };
+    std::vector<Case> cases{{"Transport, no clips", 0, 1, 0}, {"Transport, no clips", 0, 16, 0}, {"1 Session rack occurrence", 1, 16, 1},
+        {"16 Session rack occurrences", 1, 16, 16}, {"4 Song rack occurrences", 3, 16, 0}, {"16 Session MIDI tracks", 4, 16, 16}};
+    if (full > 16) {
+        cases.push_back({"Transport, no clips", 0, full, 0});
+        cases.push_back({"All Session rack occurrences", 1, full, full});
+        cases.push_back({"All Session MIDI tracks", 4, full, full});
+    }
+    for (const auto& c : cases) for (int frames : {64, 256, 1024}) {
         auto rig = std::make_unique<Rig>();
-        rig->engine.activeTracks.store(alien::maxSessionTracks);
+        rig->engine.activeTracks.store(c.tracks);
         rig->project.clips[0] = 101;
         rig->project.setInstrumentPreset(0, 9);
         alien::PianoRollPattern chord; chord.loopSteps = 16;
         for (int pitch : {60, 64, 67}) chord.add(pitch, 0, 16);
         require(rig->project.setChannelNotes(0, 0, chord), "capacity source notes");
         rig->publish(); rig->engine.patternMode.store(alien::sessionMode);
-        const int instances = workload == 1 ? 1 : workload == 2 ? 16 : 0;
+        const int instances = c.kind == 1 ? c.occurrences : 0;
         for (int t = 0; t < instances; ++t) rig->engine.requestedTrackRackClip[static_cast<std::size_t>(t)].store(101);
-        if (workload == 3) {
+        if (c.kind == 3) {
             auto song = std::make_shared<alien::ArrangementPlayback>(); song->timeline.setLengthBars(64);
             for (int lane = 0; lane < alien::timeline::rackLanes; ++lane) {
                 alien::timeline::Region r; r.row = alien::timeline::rackRowBase + lane;
@@ -625,7 +675,7 @@ static void capacityReport() {
             require(rig->engine.arrangementMailbox.publish(song), "capacity Song publication");
             rig->engine.patternMode.store(alien::songMode);
         }
-        if (workload == 4) for (int t = 0; t < alien::maxSessionTracks; ++t) {
+        if (c.kind == 4) for (int t = 0; t < c.occurrences; ++t) {
             alien::SessionClipLaunch launch; launch.pattern = chord; launch.clipIndex = 0;
             require(rig->engine.pianoRollLaunches[static_cast<std::size_t>(t)].publish(launch), "capacity Session launch");
         }
@@ -645,12 +695,11 @@ static void capacityReport() {
         }
         const auto allocations = allocationCount - before;
         require(allocations == 0, "capacity callbacks allocate nothing");
-        require(workload == 0 || energy > 0, "capacity workload is audible");
-        if (instances != 0) for (int t = 0; t < instances; ++t)
-            require(rig->engine.activeTrackRackClip[t].load() == 101, "capacity occurrences remain active");
+        require(c.kind == 0 || energy > 0, "capacity workload is audible");
+        for (int t = 0; t < instances; ++t)
+            require(rig->engine.activeTrackRackClip[static_cast<std::size_t>(t)].load() == 101, "capacity occurrences remain active");
         std::sort(times.begin(), times.end());
-        const char* names[]{"Transport, no clips", "1 Session rack occurrence", "16 Session rack occurrences", "4 Song rack occurrences", "16 Session MIDI tracks"};
-        std::cout << "| " << names[workload] << " | " << frames << " | " << times[128] << " | " << times[243]
+        std::cout << "| " << c.name << " | " << c.tracks << " | " << frames << " | " << times[128] << " | " << times[243]
             << " | " << times.back() << " | " << times[243] / (frames * 1.0e6 / 48000.0) * 100.0 << " | " << allocations << " |\n";
     }
 }

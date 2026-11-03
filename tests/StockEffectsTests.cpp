@@ -564,6 +564,7 @@ static void silentAutomationTests() {
         const auto instance = racks[0].effects[0].instanceId;
         std::vector<automation::ParameterLane> lanes;
         const auto& params = automated->getParameters();
+        const int paramCount = params.size();   // restoring below replaces `automated`, and `params` with it
         for (int i = 0; i < params.size(); ++i) {
             const auto* ranged = dynamic_cast<juce::RangedAudioParameter*>(params[i]);
             const float target = params[i]->getDefaultValue() < .5f ? .8f : .2f;
@@ -607,7 +608,7 @@ static void silentAutomationTests() {
         auto* restored = dynamic_cast<stock::Effect*>(runtime->racks[0].effects[0].processor.get());
         // Plain values: a switch set to 0.8 reports 0.8 until it is saved, and "on" after.
         const auto plainAt = [](stock::Effect& e, int i) { return stock::plainValue(*dynamic_cast<juce::RangedAudioParameter*>(e.getParameters()[i])); };
-        for (int i = 0; restored != nullptr && i < params.size(); ++i) {
+        for (int i = 0; restored != nullptr && i < paramCount; ++i) {
             const double expected = plainAt(*reference, i);
             checkNear(plainAt(*restored, i), expected, 1e-5 * std::max(1.0, std::abs(expected)),
                       name + " saves the automated value of parameter " + std::to_string(i));

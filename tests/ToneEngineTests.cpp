@@ -177,6 +177,7 @@ static void activeEditingTests() {
 static void sessionClipLaunchTests() {
     OfflineEngine offline;
     auto& engine = offline.engine;
+    engine.activeTracks.store(static_cast<int>(ToneEngine::sessionTracks));   // every slot plays a clip
     engine.patternMode.store(1);
     engine.playing.store(true);
     for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track) {

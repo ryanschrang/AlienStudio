@@ -97,6 +97,19 @@ int main(){
     auto runtime=std::make_unique<alien::PluginRuntime>();runtime->racks[0].effectCount=1;runtime->racks[0].effects[0].processor=std::make_unique<TestProcessor>(false,1,4);runtime->prepare(48000);
     runtime->begin(16,120,true,0);runtime->tracks[0].setSample(0,0,1);runtime->tracks[0].setSample(1,0,1);runtime->tracks[1].setSample(0,0,1);runtime->tracks[1].setSample(1,0,1);runtime->effectsAndAlign(16);
     require(runtime->tracks[0].getSample(0,4)==1 && runtime->tracks[1].getSample(0,4)==1 && runtime->tracks[1].getSample(0,0)==0,"track latency compensation failed");
+    // T1-04 C: a slot that leaves use forgets the audio its alignment delay holds. Track 1 waits 4 samples for
+    // track 0; an impulse at sample 14 is still in its delay when the slot leaves, and must not play when it returns.
+    {
+        auto pdc=std::make_unique<alien::PluginRuntime>();pdc->racks[0].effectCount=1;pdc->racks[0].effects[0].processor=std::make_unique<TestProcessor>(false,1,4);pdc->prepare(48000);
+        pdc->begin(16,120,true,0);pdc->useTracks(2);pdc->tracks[1].setSample(0,14,1);pdc->tracks[1].setSample(1,14,1);pdc->effectsAndAlign(16);
+        require(pdc->tracks[1].getSample(0,14)==0,"the impulse waits in the alignment delay");
+        pdc->begin(16,120,true,0);pdc->useTracks(1);pdc->effectsAndAlign(16);   // the second track is deleted
+        pdc->begin(16,120,true,0);pdc->useTracks(2);pdc->effectsAndAlign(16);   // and a new one takes its slot
+        bool silent=true;for(int i=0;i<16;++i)silent=silent&&pdc->tracks[1].getSample(0,i)==0&&pdc->tracks[1].getSample(1,i)==0;
+        require(silent && pdc->tracksInUse()==2,"a reused track slot played audio from before it left use");
+        pdc->begin(16,120,true,0);pdc->tracks[1].setSample(0,0,1);pdc->effectsAndAlign(16);
+        require(pdc->tracks[1].getSample(0,4)==1,"a reused slot still aligns its new audio");
+    }
     runtime->racks[0].effects[0].bypass=true;runtime->begin(16,120,true,0);runtime->tracks[0].setSample(0,0,0.25f);runtime->effectsAndAlign(16);require(runtime->tracks[0].getSample(0,0)==0.25f,"FX bypass altered audio");
     alien::SessionProjectData project;juce::PluginDescription desc;desc.name="Missing instrument";desc.pluginFormatName="VST3";desc.fileOrIdentifier="/missing/original.vst3";desc.isInstrument=true;
     project.plugins[0].instrument={desc.createXml()->toString(),"YWJj",true};project.plugins[1].effects.push_back({desc.createXml()->toString(),{},false});
