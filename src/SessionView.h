@@ -271,16 +271,15 @@ public:
         const auto ownerTrack=d.tracks[static_cast<std::size_t>(track)].id;
         const auto ownerScene=d.scenes[static_cast<std::size_t>(scene)].id;
         const auto ownerClip=d.cellClip(track,scene);
-        const bool midi=ownerClip && !d.selectedClip().isAudioClip() && d.selectedClip().rackClip==0;
         const bool canEdit=controller.canEditMidiClips() && !d.tracks[static_cast<std::size_t>(track)].settings.frozen();
         int freeScene=-1;
-        for(int n=1;n<d.sceneCount();++n) {const int s=(scene+n)%d.sceneCount();if(!d.cellClip(track,s)){freeScene=s;break;}}
+        for(int n=1;n<d.sceneCount();++n) {const int s=(scene+n)%d.sceneCount();if(!d.cellClip(track,s) && command::refusal(d, command::DuplicateClip{track,scene,track,s}).isEmpty()){freeScene=s;break;}}
         juce::PopupMenu menu;
         menu.addItem(1, "Copy clip", d.cellClip(track, scene) ? true : false);
         menu.addItem(2, "Paste a copy here", canEdit && controller.hasCopiedCell());
         menu.addItem(3, "Paste linked here", canEdit && controller.canPasteLinked());
         menu.addItem(6,"New empty MIDI clip",!ownerClip && canEdit);
-        menu.addItem(7,"Duplicate MIDI clip to free cell",midi && freeScene>=0 && canEdit);
+        menu.addItem(7,"Duplicate clip to free cell",ownerClip && freeScene>=0 && canEdit);
         menu.addSeparator();
         menu.addItem(4, linked > 1 ? "Make unique (linked with " + juce::String(linked - 1) + (linked == 2 ? " other cell)" : " other cells)") : juce::String("Make unique"), canEdit && (linked > 1 || d.selectedClip().rackClip != 0));
         struct MoveTarget { int track, scene; std::uint32_t trackId, sceneId; };
@@ -335,7 +334,7 @@ public:
                 const auto& now=c.document();
                 if(choice==6) changed=command::CommandEngine(c).execute(command::CreateClip{track,scene}).changed;
                 else if(choice==7) {
-                    int target=-1;for(int n=1;n<now.sceneCount();++n){const int s=(scene+n)%now.sceneCount();if(!now.cellClip(track,s)){target=s;break;}}
+                    int target=-1;for(int n=1;n<now.sceneCount();++n){const int s=(scene+n)%now.sceneCount();if(!now.cellClip(track,s) && command::refusal(now, command::DuplicateClip{track,scene,track,s}).isEmpty()){target=s;break;}}
                     if(target>=0)changed=command::CommandEngine(c).execute(command::DuplicateClip{track,scene,track,target}).changed;
                 } else changed=command::CommandEngine(c).execute(command::MakeClipUnique{track,scene}).changed;
             }
@@ -345,7 +344,7 @@ public:
             if (!changed) { safe->setImportStatus("Nothing changed: that cell cannot take it (it may be frozen, recording or already linked).", {}); return; }
             safe->setImportStatus(moving ? "Moved the Session clip to its new cell." : choice >= 1000 ? "Assigned a shared rack source. One rack source can launch per scene; its channels keep their routing."
                                   : choice == 5 ? "Placed the shared rack source in Song."
-                                  : choice == 6 ? "Created an empty MIDI clip." : choice == 7 ? "Duplicated MIDI clip into a free cell; its edits are independent."
+                                  : choice == 6 ? "Created an empty MIDI clip." : choice == 7 ? "Duplicated clip into a free cell; its edits are independent."
                                   : choice == 2 ? "Pasted an independent copy." : choice == 3 ? "Pasted a linked clip: editing it edits every linked cell."
                                   : "The clip is unique again: its edits are its own.", {});
             if (moving && safe->onSelectionChanged) safe->onSelectionChanged();

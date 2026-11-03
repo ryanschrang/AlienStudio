@@ -1,6 +1,6 @@
 # Command Engine
 
-Roadmap workstream T1-02, checklist ID CMD-01. This note covers structural tracks, volume/pan, mute/solo, Session MIDI clips, Session scenes and what later
+Roadmap workstream T1-02, checklist ID CMD-01. This note covers structural tracks, volume/pan, mute/solo, Session clips, Session scenes and what later
 slices need. See [T1_02_COMPLETION.md](T1_02_COMPLETION.md) for the completion audit; CMD-01 remains partial.
 
 ## Why
@@ -133,8 +133,8 @@ Exact build/test results belong in the PR; listening remains a manual check.
 | --- | --- | --- |
 | CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack | Done in this slice | - |
 | CreateClip | Implemented for an empty Session MIDI cell | Song placement creation and asynchronous audio import remain |
-| DuplicateClip | Implemented for independent Session MIDI copies with explicit source/destination cells | Song placement and whole-scene duplication remain |
-| MakeClipUnique | Implemented for linked Session MIDI content | Audio/rack and Song placement command wrappers remain |
+| DuplicateClip | Implemented for independent MIDI/audio/offline/rack Session copies with explicit source/destination cells | Song placement command duplication remains |
+| MakeClipUnique | Implemented for MIDI/audio/offline/rack Session content | Song placement command wrappers remain |
 | SetTrackVolume, SetTrackPan | Implemented: command setters write document then the addressed engine control | Session and Mixer track UI adopted; other parameter targets remain |
 | SetParameter (other targets) | Mixer edits via `trackSettingsEdited`, `returnSettingsEdited`, `masterGainEdited` with coalesced `commit` | Remaining targets need command wrappers |
 | AutomateParameter | `editTimeline` on `parameterLanes`, plugin automation targets | Command wrapper over lane edits |
@@ -155,11 +155,11 @@ other view. Busy projects refuse these edits, and queued events from a strip
 whose track identity no longer matches its row are ignored. Instrument, send,
 master, return and bus controls retain their existing edit paths.
 
-## Session MIDI clip commands
+## Session clip creation and duplication commands
 
-Use the Session **Copy / link** menu to create an empty MIDI clip, duplicate it
+Use the Session **Copy / link** menu to create an empty MIDI clip, duplicate an existing MIDI/audio/rack clip
 into the next free cell on its track (wrapping through existing scenes), or make
-linked MIDI content independent. A full track needs a free cell/new scene before
+linked content independent. A full track needs a free cell/new scene before
 duplicating; these actions never overwrite occupied cells or silently add scenes.
 Allocated empty MIDI clips are displayed as clips and survive save/reopen and
 clipboard copying through the existing saved pattern-identity field. No project
@@ -168,23 +168,24 @@ format version changes. Ordinary unallocated empty cells remain empty.
 | Name | Arguments (zero-based) | Behavior |
 | --- | --- | --- |
 | CreateClip | `track`, `scene` | Allocate a default-length, empty MIDI clip in an unused cell |
-| DuplicateClip | `track`, `scene`, `toTrack`, `toScene` | Independent copy of the source's current immutable MIDI content into an unused cell |
-| MakeClipUnique | `track`, `scene` | Detach shared MIDI content; already-independent content is a no-op |
+| DuplicateClip | `track`, `scene`, `toTrack`, `toScene` | Independent copy of the current MIDI/audio/rack source into an unused cell |
+| MakeClipUnique | `track`, `scene` | Detach shared MIDI/audio content (already-independent is a no-op), or copy a rack source |
 
-Preview and execution use the same pure document operations in MidiClipCommands.h.
+Preview and execution use pure document operations in MidiClipCommands.h (creation)
+and SessionClipCommands.h (all-type duplication).
 Previews do not consume live identities. Create/duplicate select the destination;
 Undo restores the selection before the batch, while Redo selects the final
 destination. The history step has optional separate Undo focus, leaving all
-existing commands' focus behavior intact. Unique keeps selection and playing
-voices unchanged. The host refreshes without making another commit.
+existing commands' focus behavior intact. Ordinary independence keeps selection and
+playing voices unchanged. The host refreshes without making another commit.
 
 Busy projects, recording/count-in, frozen destinations, invalid addresses and
-occupied destinations are refused. DuplicateClip remains MIDI-only; MakeClipUnique now supports audio/offline-audio
-and rack cells through the clipboard reducer described below. A stale menu checks captured track/scene/clip identities before
+occupied destinations are refused. DuplicateClip and MakeClipUnique support audio/offline-audio
+and rack cells; duplication is described below and independence uses the clipboard reducer. A stale menu checks captured track/scene/clip identities before
 acting. CommandEngineTests and SessionViewTests cover Preview/live agreement,
 sequential batches, atomic refusal, no-op/redo preservation, link independence,
 empty-clip persistence, focus and actual menu actions. Audio imports, Song
-placements, whole-scene copies and clipboard command wrappers remain later work.
+placement command wrappers and rack creation/assignment remain later work.
 
 ## Session scene commands
 
@@ -247,7 +248,7 @@ live publication. Paste preserves selection and unrelated playback requests.
 
 All three menu actions use commands and refresh-only host callbacks. Stale
 track/scene/cell identities refuse; busy state, recording/count-in and frozen
-destinations refuse. No project format changes. New audio imports and other clip creation/duplication wrappers remain follow-ups.
+destinations refuse. No project format changes. New audio imports and rack creation/assignment wrappers remain follow-ups.
 
 ## Session clip movement
 
@@ -274,3 +275,30 @@ Shared rack playback continues by source identity; moving an assignment does not
 transfer running rack voices between tracks. A requested ordinary destination
 receives a stop if its new assignment is rack content. Native listening and held
 notes still require manual Windows acceptance separate from automated tests.
+
+## All-type DuplicateClip
+
+`DuplicateClip {track, scene, toTrack, toScene}` keeps its stable arguments and now
+supports audio/offline audio and rack clips as well as MIDI. **Duplicate clip to
+free cell** in Copy / link chooses the next eligible empty cell on the same track,
+wrapping through existing scenes. It does not add scenes, overwrite cells, launch
+the copy or change the clipboard. The destination is selected. Undo restores the
+prior selection; Redo selects the final destination of a batch.
+
+Ordinary audio/MIDI copies get independent library clip/pattern identities and
+preserve clip metadata, while immutable decoded/streamed media is shared. Rack
+copies allocate a new independent pattern/source while retaining current rack
+editor selection and channel routing. The pure reducer is shared by Preview and
+execution. Sequential batches check rack capacity before live effects, and
+invalid later commands refuse the whole batch. Rack destinations referenced by
+cell-based Song regions/takes/frozen originals refuse (as rack assignment does).
+Occupied/invalid/frozen destinations, missing sources, busy and recording/count-in
+states refuse. Reading a frozen source into another unfrozen track is allowed.
+No project format change. Another scene's queued request and pending stops remain
+untouched; an already-requested destination receives its new ordinary content or
+an ordinary stop for a rack assignment. Rack playback does not start automatically.
+
+CommandEngineTests and SessionViewTests cover pure/live identity agreement,
+clipboard isolation, media sharing, offline copies, rack capacity, selection and
+history, stale source menus, guards and actual audio/rack duplicate menu actions.
+Manual Windows listening and streamed-media acceptance remain separate from CI.

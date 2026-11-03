@@ -1113,7 +1113,7 @@ static void midiClipMenuCommands() {
     require(c.document().cellClip(0,0) && c.undoLabel()=="Create MIDI clip" && notifications==1,"menu creation uses one command-owned edit");
     rig->view.showLinkMenu();require(!enabled(6) && enabled(7),"explicit empty MIDI clip is occupied and can be duplicated");choose(7);
     require(c.document().selectedScene==1 && c.document().cellClip(0,1) && c.document().linkOf(0,0)!=c.document().linkOf(0,1)
-        && c.undoLabel()=="Duplicate MIDI clip" && notifications==2,"menu duplication selects a free cell and independent content");
+        && c.undoLabel()=="Duplicate clip" && notifications==2,"menu duplication selects a free cell and independent content");
     require(c.undo() && !c.document().cellClip(0,1) && c.document().selectedScene==0,"one undo removes the menu duplicate and restores selection");
     require(c.undo() && !c.document().cellClip(0,0) && !c.canUndo(),"no legacy host commit duplicates clip history");
     require(c.redo() && c.redo(),"redo both menu clip commands");
@@ -1163,6 +1163,29 @@ static void sceneMenuCommands() {
     for (juce::PopupMenu::MenuItemIterator item(menu); item.next();) if (item.getItem().itemID > 0) require(!item.getItem().isEnabled, "scene menu actions disabled while busy");
     const auto label = c.undoLabel(); choose(2); require(c.undoLabel() == label && c.document().sceneCount() == original, "busy scene menu refuses queued action");
     c.setExternalBusy(false);
+}
+
+static void allTypeDuplicateMenu() {
+    Rig rig; auto& c = rig.controller;
+    std::function<void(int)> choose; juce::PopupMenu shown;
+    rig.view.linkMenuLauncher = [&](juce::PopupMenu menu, std::function<void(int)> done) { shown = std::move(menu); choose = std::move(done); };
+    int notifications = 0, legacy = 0;
+    rig.view.onCellContentChanged = [&] { ++notifications; };
+    rig.view.onEdited = [&](const juce::String&) { ++legacy; };
+    auto audio = std::make_shared<SessionAudioClip>(); audio->sampleRate = 8000; audio->channels = 1;
+    audio->frames = 80; audio->left.assign(80,.2f); audio->buildWaveform();
+    require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("menu-duplicate.wav"),0,0,audio), "audio menu fixture");
+    c.selectClip(0,0); c.markAsNewBaseline(); rig.view.showLinkMenu(); choose(7);
+    require(c.document().clip(0,1).audio == audio && c.document().selectedScene == 1 && c.undoLabel() == "Duplicate clip" && notifications == 1 && legacy == 0,
+        "audio duplicate menu uses one command and selects independent destination");
+    require(c.undo() && !c.canUndo() && !c.document().cellClip(0,1), "audio menu Undo has no legacy second commit");
+    require(c.assignRackClip(1,0,c.channelRack().clips[0]), "rack menu fixture"); c.selectClip(1,0); c.markAsNewBaseline();
+    rig.view.showLinkMenu(); choose(7);
+    require(c.document().clip(1,1).rackClip && c.document().clip(1,1).rackClip != c.document().clip(1,0).rackClip && notifications == 2 && legacy == 0,
+        "rack duplicate menu allocates independent pattern");
+    require(c.undo() && !c.canUndo(), "rack menu undo is one step");
+    rig.view.showLinkMenu(); require(c.moveTrack(1,1), "stale all-type duplicate fixture"); c.commit("Move row fixture"); const auto moved = c.document(); choose(7);
+    require(sameContent(moved,c.document()) && notifications == 2, "stale duplicate source identity refuses after row reorder");
 }
 
 static void moveClipMenuCommands() {
@@ -1242,6 +1265,7 @@ static void clearClipCommandButton() {
 
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    allTypeDuplicateMenu();
     moveClipMenuCommands();
     clipboardMenuCommands();
     clearClipCommandButton();

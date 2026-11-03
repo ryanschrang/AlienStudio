@@ -1,7 +1,35 @@
 #pragma once
 #include "ProjectDocument.h"
+#include "ClipboardClipCommands.h"
 
 namespace alien::session_clip {
+struct Duplicate { int track{-1}, scene{-1}, toTrack{-1}, toScene{-1}; };
+inline juce::String duplicateRefusal(const ProjectDocument& d, const Duplicate& e) {
+    if (!d.isValidCell(e.track, e.scene) || !d.isValidCell(e.toTrack, e.toScene)) return "The source or destination Session cell does not exist.";
+    if (!d.cellClip(e.track, e.scene) || !d.library.clip(d.cellClip(e.track, e.scene))) return "Choose an existing Session clip to duplicate.";
+    if (d.tracks[static_cast<std::size_t>(e.toTrack)].settings.frozen()) return "Unfreeze the destination track before duplicating clips.";
+    if (d.cellClip(e.toTrack, e.toScene)) return "The destination cell already contains a clip.";
+    if (d.clip(e.track, e.scene).rackClip) {
+        if (d.channelRack.patternCount >= rack::maxPatterns) return "The Channel Rack has no room for another independent pattern.";
+        for (const auto* list : {&d.timeline.regions, &d.timeline.takes, &d.timeline.frozenOriginals})
+            for (const auto& r : *list) if (r.playsCell() && r.row == e.toTrack && r.source == e.toScene)
+                return "Choose a rack destination without cell-based Song placements.";
+    }
+    return {};
+}
+inline juce::String duplicate(ProjectDocument& d, const Duplicate& e) {
+    if (const auto why = duplicateRefusal(d, e); why.isNotEmpty()) return why;
+    if (d.clip(e.track, e.scene).rackClip) {
+        const clipboard_clip::Clipboard source{d.cellClip(e.track, e.scene), d.clip(e.track, e.scene)};
+        if (const auto why = clipboard_clip::apply(d, {clipboard_clip::Kind::paste, e.toTrack, e.toScene}, &source); why.isNotEmpty()) return why;
+    } else {
+        const auto id = d.library.duplicateClip(d.cellClip(e.track, e.scene));
+        if (!id) return "The independent Session clip could not be allocated.";
+        d.cells[static_cast<std::size_t>(e.toScene)][static_cast<std::size_t>(e.toTrack)] = id;
+    }
+    d.selectedTrack = e.toTrack; d.selectedScene = e.toScene;
+    return {};
+}
 struct Move { int track{-1}, scene{-1}, toTrack{-1}, toScene{-1}; };
 inline juce::String moveRefusal(const ProjectDocument& d, const Move& e) {
     if (!d.isValidCell(e.track, e.scene) || !d.isValidCell(e.toTrack, e.toScene)) return "The source or destination Session cell does not exist.";
