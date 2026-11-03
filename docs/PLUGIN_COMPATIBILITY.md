@@ -98,6 +98,7 @@ Add rows from `plugin-check-report.txt`. A representative set should cover each 
 | A plugin reporting latency (lookahead limiter or linear-phase EQ) | NOT RUN |
 | An instrument reporting latency, on a Channel Rack channel next to a sample channel (no flam; docs/WINDOWS_AUDIO_CHECKLIST.md, T1-09 part 4) | NOT RUN |
 | Song automation of a rack instrument's parameter and of Supermassive on the master, a return and a bus (docs/WINDOWS_AUDIO_CHECKLIST.md, T1-09 part 5) | NOT RUN |
+| Export WAV and freeze with Supermassive automated on a track, a latent master plugin and a rack instrument, compared with live playback (docs/WINDOWS_AUDIO_CHECKLIST.md, T1-09 part 7) | NOT RUN |
 
 Record for every row: plugin name and version, Alien Studio commit, Windows version, the verdict, and anything unexpected.
 

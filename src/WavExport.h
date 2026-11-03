@@ -124,6 +124,8 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         if(project.trackSettings[t].frozen() || (freezing && static_cast<int>(t)!=options.freezeTrack))continue;
         const auto& rack=project.plugins[t];hasPlugins=hasPlugins || !rack.instrument.descriptionXml.isEmpty() || !rack.effects.empty();
     }
+    // The Channel Rack's plugin instruments (T1-09) also need instances prepared on the message thread.
+    for (int c=0;c<project.channelRack.channelCount;++c) hasPlugins=hasPlugins || project.channelRack.info[static_cast<std::size_t>(c)].hasPlugin();
     if (hasPlugins && !preparedEngine) {
         error="Prepare plugin instances on the message thread before export"; return false;
     }
@@ -170,6 +172,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         for (auto& slot : rack.effects)
             if (slot.processor) slot.processor->setNonRealtime(true);
     }
+    for (auto& slot : engine->plugins->rackChannels) if (slot.processor && !slot.faulted.get()) slot.processor->setNonRealtime(true);
     engine->activeTracks.store(project.trackCount());
     engine->bpm.store(project.bpm);
     engine->patternMode.store(2);
