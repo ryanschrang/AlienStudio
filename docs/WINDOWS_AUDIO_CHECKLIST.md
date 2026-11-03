@@ -435,7 +435,7 @@ Not yet run on hardware. Record commit, device/driver, sample rate and buffer si
 - Draw steps (with velocity, pitch, gate, ratchets, nudge and swing) and piano-roll notes for the channel and play the pattern, then the Song: notes start and end on time at 48 kHz with 128, 512 and 1024-sample buffers. Turn the channel's volume and pan: no clicks. Mute and solo: it stops at once. Route it to a track: it plays through the track's strip and FX.
 - Stop the transport while long notes play, switch patterns, delete or move the channel, change the audio device: nothing is left sounding.
 - Save, close and reopen: the instrument comes back with the sound you set in its editor. Duplicate the channel and change the copy's sound: the original is unchanged. Undo the instrument choice: the channel's old sound returns.
-- Export WAV and stems, and freeze a track the channel plays on: the instrument is in the result. With a plugin that crashes, it is switched off with a message naming the channel, and the rest keeps playing.
+- Export WAV and stems: the instrument is in the result. Try to freeze a track the channel plays on: Alien Studio refuses and says to reroute the channel first. With a plugin that crashes, it is switched off with a message naming the channel, and the rest keeps playing.
 
 ## Live MIDI into rack instruments (T1-09 part 6)
 NOT RUN. Needs a USB MIDI keyboard with a sustain pedal, pitch wheel and mod wheel, and a VST3 instrument on a Channel Rack channel.
@@ -457,6 +457,7 @@ NOT RUN. Needs a VST3 instrument that reports latency (many samplers and some sy
 - Put a VST3 effect (a filter or EQ) and a stock effect on a track. Song > Automation: choose the track, then the effect's submenu and a parameter. Draw a ramp over a bar and play: the parameter moves in the plugin's editor and you hear it, smoothly at 48 kHz with 128, 512 and 1024-sample buffers. Read off: the parameter stays where you set it by hand.
 - Move the effect up or down the rack, undo, save and reopen: the lane still drives the same effect. Remove the effect: playback carries on and the lane does nothing; undo brings both back.
 - Export the song to WAV and stems, and freeze the track: the automation is in the result. Loop playback over the ramp: the parameter jumps back at the loop start.
+- NOT RUN (T1-09 part 7, export/freeze against live): on one track put a VST3 instrument and Valhalla Supermassive (or another VST3 effect), automate a Supermassive parameter, put a latent plugin (a look-ahead limiter or linear-phase EQ) on the master and a VST3 instrument on a Channel Rack channel. Export WAV, then record the live output (or play both in another DAW): the file lines up with what you hear live, starts on the first note with no added silence, and has the same automation moves and tails. Freeze the track, play: no change in timing or sound; unfreeze: the same. Repeat at 44.1 and 96 kHz device rates (export is always 48 kHz).
 
 ## Starter Pack
 - Build and start Alien Studio: a `Starter Pack` folder sits next to `Alien Studio.exe`. Open the sample browser: it lists the pack's 38 drum sounds without choosing a folder. Preview a kick, a hat and a crash: each starts at once, sounds clean (no clicks at the start or end) and is about as loud as the others.
