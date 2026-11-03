@@ -4,6 +4,7 @@
 // scrolling, what the tiles and headers look like (checked pixel by pixel), tooltips, and screenshots.
 // No audio device or window is needed.
 #include "SessionView.h"
+#include "TrackMixerPanel.h"
 #include "StudioTheme.h"
 #include <algorithm>
 #include <array>
@@ -1165,6 +1166,33 @@ static void sceneMenuCommands() {
     c.setExternalBusy(false);
 }
 
+static void masterFaderCommandHistory() {
+    Rig rig;auto& c=rig.controller;TrackMixerPanel panel(c,rig.engine.tracks,rig.engine.returns,rig.engine.masterControls,rig.engine.buses);
+    juce::Slider* gain=nullptr;
+    for(auto* child:panel.getChildren())if(auto* master=dynamic_cast<MasterChannelStrip*>(child))
+        for(auto* control:master->getChildren())if(control->getName()=="Master volume")gain=dynamic_cast<juce::Slider*>(control);
+    require(gain!=nullptr,"master fader is present");int refresh=0;panel.onMasterCommandExecuted=[&]{++refresh;};c.selectClip(2,2);c.markAsNewBaseline();
+    gain->onDragStart();gain->setValue(75,juce::sendNotificationSync);
+    juce::Thread::sleep(DocumentHistory::coalesceMilliseconds+20);gain->setValue(50,juce::sendNotificationSync);gain->onDragEnd();
+    require(c.document().masterGain==.5f && rig.engine.masterControls.gain.load()==.5f && c.undoLabel()=="Set master volume" && refresh==2,"real master fader updates command-owned document/engine/history");
+    require(c.undo() && !c.canUndo() && c.document().masterGain==1 && rig.engine.masterControls.gain.load()==1,"paused master drag undoes in one step");
+    require(c.redo() && c.document().masterGain==.5f,"master drag redo restores final value");panel.refreshSettings();
+    gain->onDragStart();gain->setValue(60,juce::sendNotificationSync);gain->onDragEnd();
+    require(c.undo() && c.document().masterGain==.5f && c.canUndo(),"a second master drag is a distinct undo step");panel.refreshSettings();
+    const auto notifications=refresh;gain->onDragStart();gain->onValueChange();gain->onDragEnd();
+    require(c.canRedo() && refresh==notifications,"master no-op drag preserves redo and avoids host notifications");
+    c.setExternalBusy(true);gain->setValue(20,juce::sendNotificationSync);c.setExternalBusy(false);
+    require(c.document().masterGain==.5f && rig.engine.masterControls.gain.load()==.5f && gain->getValue()==50 && c.canRedo(),"busy master fader refuses and refreshes visible value");
+    gain->setValue(30,juce::sendNotificationSync);gain->setValue(40,juce::sendNotificationSync);
+    require(c.undo() && c.document().masterGain==.5f,"non-drag master edits group by timed key");panel.refreshSettings();
+    gain->onDragStart();c.newProject();const auto fresh=c.document();const auto count=refresh;
+    gain->setValue(10,juce::sendNotificationSync);gain->setValue(20,juce::sendNotificationSync);gain->onDragEnd();
+    require(sameContent(fresh,c.document()) && rig.engine.masterControls.gain.load()==1 && refresh==count,"stale master drag cannot mutate replacement project on repeated queued updates");
+    gain->onDragStart();gain->setValue(125,juce::sendNotificationSync);gain->onDragEnd();
+    require(c.document().masterGain==1.25f && c.undo() && c.document().masterGain==1,"fresh master gesture works after project replacement");
+    panel.refreshSettings();require(gain->getValue()==100 && gain->getDoubleClickReturnValue()==100,"master refresh and unity reset stay consistent");
+}
+
 static void removeAudioCommandButton() {
     Rig rig; auto& c=rig.controller; juce::Button* remove=nullptr;
     for(auto* child:rig.view.getChildren())if(child->getName()=="Remove audio from selected Session clip")remove=dynamic_cast<juce::Button*>(child);
@@ -1293,6 +1321,7 @@ static void clearClipCommandButton() {
 
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    masterFaderCommandHistory();
     removeAudioCommandButton();
     rackAssignmentCommandMenu();
     allTypeDuplicateMenu();

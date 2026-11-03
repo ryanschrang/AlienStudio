@@ -690,10 +690,7 @@ private:
             refreshExtraViews();
             loadSelectedClip();
         };
-        mixerPanel.onMasterEdited = [this](bool committed) {
-            controller.masterGainEdited();
-            if (committed) controller.commit("Change master volume", -1, -1, "master-volume");
-        };
+        mixerPanel.onMasterCommandExecuted = [this] { updateEditorTitle(); };
         mixerPanel.onReturnEdited = [this](int r, bool committed) {
             controller.returnSettingsEdited(r);
             if (committed) controller.commit("Change " + controller.document().returns[static_cast<std::size_t>(r)].name + " mix", -1, -1, "return-" + juce::String(r));
