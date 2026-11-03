@@ -1,8 +1,10 @@
 # T1-04: universal tracks and capacity foundation
 
-Status: design/baseline (A) and identity/document adapters (B) implemented.
-Playback/routing adapter retirement (C), resource budgets (D), and higher
-supported limits (E) remain pending. B uses project format 29.
+Status: design/baseline (A) and identity/document adapters (B, format 29)
+implemented. Playback adapters (C) are in progress: C1 (the callback processes
+only the track slots in use) is implemented; C2 (Song rack lanes saved apart
+from track rows, format 32) and C3 (a measured larger profile) are pending, as
+are resource budgets (D) and higher supported limits (E).
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
 Dependency: [T1-03 shared clip/pattern design, PR #102](https://github.com/ryanschrang/AlienStudio/pull/102).
@@ -222,3 +224,51 @@ identity persistence, legacy import, routing, reorder/duplicate/delete, undo/red
 ID issuance after undo and malformed-file atomicity; rack UI tests cover deferred
 rename across reorder, deletion and document replacement. Windows physical-device
 listening, commercial plugins and multi-monitor/DPI checks remain separate.
+
+## Increment C1: the callback processes only the track slots in use
+
+No project format or limit change. The engine still prepares one bounded slot
+per configured Session track at construction; slot `t` is the track at view
+position `t`, and the controller still publishes `activeTracks` after every
+structural edit (B). C1 changes what the callback does with that count:
+
+- **Only slots in use are processed.** Each block reads `activeTracks` once.
+  Per-track work in `ToneEngine` (launches and schedulers, synth/drum render,
+  clips, rack buses, inputs, mixer, solo, sends, Song lanes, take capture) and in
+  `PluginRuntime` (instruments, FX, sidechain keys, latency alignment) runs for
+  those slots only. Rack routing uses the same per-block count, so a rack
+  channel whose output names a slot out of use goes to the master, as before.
+- **A slot leaving use** is processed one more block: its scheduler unloads its
+  clip and ends every note, its streamed clip and crossfade tail stop, its synth
+  and drum voices are cut, a plugin instrument gets all-notes-off and a playing
+  rack occurrence is asked to stop at its next launch boundary (as deleting a
+  track already did). Afterwards it is skipped, its sidechain keys are zeroed
+  and its alignment delay lines *forget* their contents in constant time
+  (samples written before the forget read as silence), so no callback zeroes a
+  96,001-frame line.
+- **A slot coming into use** starts from silence: its instrument gets
+  all-notes-off and its meter restarts at zero. A launch published for a slot
+  out of use waits in its mailbox and plays once a track uses the slot.
+- **Bounds tied to 16 tracks are derived from the limit:** the synchronized
+  scene-launch mask is 64-bit (`maxSessionTracks <= 64` is asserted), and stream
+  voices are four per slot (`voiceCount = 4 * maxSessionTracks`, asserted in
+  `ToneEngine`). On main the fixed 48 voices left Session tracks 9-16 without
+  crossfade-tail voices (their binding index ran past the pool); at 16 tracks
+  the pool is now 64 voices.
+
+Nothing is allocated, freed, locked or logged on the audio thread for a slot
+entering or leaving use.
+
+Tests: TrackCapacityTests (new) runs the controller at the compiled limits (every
+track launching the last scene, each strip audible, steady playback allocating
+nothing, stop leaving every slot silent), a slot leaving use going silent from
+its next block and bringing nothing back when reused, a launch waiting for its
+slot, and device restarts (including one while the slot set shrinks) leaving no
+note sounding. PluginRuntimeTests checks that a reused slot never plays audio
+left in its alignment delay and still aligns new audio. RackIntegrationTests
+`--capacity-report` prints the prepared engine heap (now counting over-aligned
+allocations) and callback times with the number of tracks in use per row.
+
+C1 does not change identity, persistence or limits. C2 replaces the `16 + lane`
+Song rack-lane rows with saved lane numbers (format 32), so a saved row no longer
+depends on the compiled track count; C3 measures and adopts a larger profile.

@@ -1,4 +1,5 @@
 #pragma once
+#include "SessionCapacity.h"
 #include "StreamingAudioRing.h"
 #include <algorithm>
 #include <array>
@@ -37,7 +38,8 @@ struct DiskAudioFile {
 // allocation-free audio-side operations. Registration and destruction are not.
 class DiskAudioStreamService {
 public:
-    static constexpr std::size_t voiceCount = 48;   // per Session track: two for its clips, two for a crossfade's outgoing clip
+    // Per Session track slot: two for its clips, two for a crossfade's outgoing clip (ToneEngine binds them by slot).
+    static constexpr std::size_t voiceCount = 4 * static_cast<std::size_t>(maxSessionTracks);
     static constexpr std::size_t ringFrames = 8192;
     static constexpr std::size_t prebufferFrames = 2048;
     struct Frame {
