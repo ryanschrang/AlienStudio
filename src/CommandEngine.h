@@ -6,7 +6,9 @@
 #include <charconv>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <optional>
+#include <tuple>
 #include <variant>
 #include <vector>
 
@@ -36,6 +38,10 @@ struct DuplicateClip { int track{-1}, scene{-1}, toTrack{-1}, toScene{-1}; };
 struct MakeClipUnique { int track{-1}, scene{-1}; };
 
 struct RemoveClipAudio { int track{-1}, scene{-1}; };
+// Installs audio that has already been decoded, at the destination captured before
+// decoding (see importAudioFile below). It does no file I/O, so Preview and Batch are
+// pure; a decoded clip cannot be written as arguments, so parse() refuses this one.
+struct ImportClipAudio { std::shared_ptr<const session_audio_import::Prepared> prepared; };
 struct CreateRackPattern {};
 struct AssignRackClip { int track{-1}, scene{-1}; std::uint64_t clip{}; };
 struct MoveClip { int track{-1}, scene{-1}, toTrack{-1}, toScene{-1}; };
@@ -49,12 +55,12 @@ struct MoveScene { int scene{-1}, to{-1}; };
 struct RenameScene { int scene{-1}; juce::String name; };
 struct DeleteScene { int scene{-1}; };
 
-using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume>;
+using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume, ImportClipAudio>;
 
 namespace detail {
 // Indexed like Command's alternatives.
-inline constexpr std::array<const char*, 25> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume"};
-inline constexpr std::array<const char*, 25> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume"};
+inline constexpr std::array<const char*, 26> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume", "ImportClipAudio"};
+inline constexpr std::array<const char*, 26> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume", "Import audio"};
 static_assert(names.size() == std::variant_size_v<Command> && labels.size() == names.size());
 
 // The name the controller stores for `name` (it trims and caps track names).
@@ -122,6 +128,7 @@ inline std::optional<scene_edit::Edit> sceneEdit(const Command& command) {
 
 // Why `command` cannot be applied to `d`, or an empty string when it can.
 inline juce::String refusal(const ProjectDocument& d, const Command& command, const clipboard_clip::Clipboard* clipboard = nullptr) {
+    if (const auto* c = std::get_if<ImportClipAudio>(&command)) return c->prepared ? session_audio_import::refusal(d, *c->prepared) : juce::String("There is no decoded audio to import.");
     if (const auto* c = std::get_if<RemoveClipAudio>(&command)) return session_clip::removeAudioRefusal(d, c->track, c->scene);
     if (const auto edit = rackEdit(command)) return rack_command::refusal(d, *edit);
     if (const auto edit = duplicateEdit(command)) return session_clip::duplicateRefusal(d, *edit);
@@ -172,6 +179,10 @@ inline juce::String refusal(const ProjectDocument& d, const Command& command, co
 // One line saying what `command` does to `d` (call before applying it).
 inline juce::String describe(const ProjectDocument& d, const Command& command) {
     if (const auto* c = std::get_if<SetMasterVolume>(&command)) return "Set master volume to linear gain " + juce::String(c->gain,6);
+    if (const auto* c = std::get_if<ImportClipAudio>(&command)) {
+        const auto [track, scene] = session_audio_import::resolve(d, c->prepared->plan);
+        return "Import " + c->prepared->plan.file.getFileName() + " into Session track " + juce::String(track + 1) + ", scene " + juce::String(scene + 1);
+    }
     if (const auto* c = std::get_if<RemoveClipAudio>(&command)) return "Remove audio from Session track " + juce::String(c->track + 1) + ", scene " + juce::String(c->scene + 1);
     if (const auto edit = rackEdit(command)) {
         if (edit->kind == rack_command::Kind::create) return "Create empty rack pattern " + juce::String(d.channelRack.patternCount + 1);
@@ -209,6 +220,7 @@ inline juce::String describe(const ProjectDocument& d, const Command& command) {
 inline juce::String applyTo(ProjectDocument& d, const Command& command, const clipboard_clip::Clipboard* clipboard = nullptr) {
     if (const auto why = refusal(d, command, clipboard); why.isNotEmpty()) return why;
     if (const auto* c = std::get_if<SetMasterVolume>(&command)) { d.masterGain=static_cast<float>(c->gain); return {}; }
+    if (const auto* c = std::get_if<ImportClipAudio>(&command)) return session_audio_import::apply(d, *c->prepared);
     if (const auto* c = std::get_if<RemoveClipAudio>(&command)) return session_clip::removeAudio(d, c->track, c->scene) ? juce::String{} : "Clip audio could not be removed.";
     if (const auto edit = rackEdit(command)) return rack_command::apply(d, *edit);
     if (const auto edit = duplicateEdit(command)) return session_clip::duplicate(d, *edit);
@@ -255,6 +267,10 @@ inline juce::var arguments(const Command& command) {
     auto* object = new juce::DynamicObject();
     juce::var result(object);
     if (const auto* c = std::get_if<SetMasterVolume>(&command)) { object->setProperty("gain",c->gain); return result; }
+    if (const auto* c = std::get_if<ImportClipAudio>(&command)) {
+        if (c->prepared) object->setProperty("file", c->prepared->plan.file.getFullPathName());
+        return result;
+    }
     if (const auto* c = std::get_if<RemoveClipAudio>(&command)) {
         object->setProperty("track", c->track); object->setProperty("scene", c->scene); return result;
     }
@@ -311,13 +327,14 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
     std::size_t index = 0;
     while (index < detail::names.size() && commandName != detail::names[index]) ++index;
     if (index >= detail::names.size()) { error = "Unknown command \"" + commandName + "\"."; return std::nullopt; }
-    static const std::array<juce::StringArray, 25> allowed{
+    if (index == 25) { error = "ImportClipAudio takes decoded audio, which cannot be written as arguments."; return std::nullopt; }
+    static const std::array<juce::StringArray, 26> allowed{
         juce::StringArray{}, juce::StringArray{"track"}, juce::StringArray{"track", "to"},
         juce::StringArray{"track", "name"}, juce::StringArray{"track", "colour"},
         juce::StringArray{"track", "gain"}, juce::StringArray{"track", "pan"},
         juce::StringArray{"track", "muted"}, juce::StringArray{"track", "soloed"},
         juce::StringArray{"track","scene"},juce::StringArray{"track","scene","toTrack","toScene"},juce::StringArray{"track","scene"},
-        juce::StringArray{},juce::StringArray{"scene"},juce::StringArray{"scene","to"},juce::StringArray{"scene","name"},juce::StringArray{"scene"},juce::StringArray{"track","scene"},juce::StringArray{"track","scene"},juce::StringArray{"track","scene"},juce::StringArray{"track","scene","toTrack","toScene"},juce::StringArray{},juce::StringArray{"track","scene","clip"},juce::StringArray{"track","scene"},juce::StringArray{"gain"}};
+        juce::StringArray{},juce::StringArray{"scene"},juce::StringArray{"scene","to"},juce::StringArray{"scene","name"},juce::StringArray{"scene"},juce::StringArray{"track","scene"},juce::StringArray{"track","scene"},juce::StringArray{"track","scene"},juce::StringArray{"track","scene","toTrack","toScene"},juce::StringArray{},juce::StringArray{"track","scene","clip"},juce::StringArray{"track","scene"},juce::StringArray{"gain"},juce::StringArray{}};
     const auto* object = args.getDynamicObject();
     if (object == nullptr && !args.isVoid()) { error = commandName + " takes an object of arguments."; return std::nullopt; }
     if (object != nullptr)
@@ -461,9 +478,14 @@ public:
         if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return duplicateEdit(c).has_value(); })) return refused("Stop recording before duplicating Session clips.");
         if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return rackEdit(c).has_value(); })) return refused("Stop recording before creating or assigning rack patterns.");
         if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return std::holds_alternative<RemoveClipAudio>(c); })) return refused("Stop recording before removing Session clip audio.");
+        if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return std::holds_alternative<ImportClipAudio>(c); })) return refused("Stop recording before importing Session clip audio.");
         const auto clipboard = controller.clipClipboard();
         Result result = preview(commands, &clipboard);
         if (!result.ok || !result.changed) return result;
+        std::size_t audioBytes = 0;
+        for (const auto& command : commands)
+            if (const auto* c = std::get_if<ImportClipAudio>(&command)) audioBytes += c->prepared->decoded.clip->decodedBytes();
+        if (audioBytes > controller.availableAudioBytes()) return refused("Session audio storage is full (512 MiB limit)");
         const ProjectDocument before = controller.document();
         for (std::size_t i = 0; i < commands.size(); ++i)
             if (!run(commands[i], clipboard)) {
@@ -474,8 +496,12 @@ public:
                 return failed;
             }
         const bool selects=std::any_of(commands.begin(),commands.end(),[](const auto& c){const auto edit=midiEdit(c);return duplicateEdit(c).has_value() || moveEdit(c).has_value() || (edit && edit->kind!=midi_clip::Kind::makeUnique);});
+        // An import leaves the selection alone, but Undo still shows the clip it changed.
+        int focusTrack = selects ? controller.document().selectedTrack : -1, focusScene = selects ? controller.document().selectedScene : -1;
+        if (const auto* c = commands.size() == 1 ? std::get_if<ImportClipAudio>(&commands[0]) : nullptr)
+            std::tie(focusTrack, focusScene) = session_audio_import::resolve(controller.document(), c->prepared->plan);
         controller.commit(undoLabel.isNotEmpty() ? undoLabel : juce::String("Edit tracks"),
-            selects?controller.document().selectedTrack:-1,selects?controller.document().selectedScene:-1,coalesceKey,continuous,
+            focusTrack,focusScene,coalesceKey,continuous,
             selects?before.selectedTrack:-1,selects?before.selectedScene:-1);
         return result;
     }
@@ -488,6 +514,7 @@ private:
 
     bool run(const Command& command, const clipboard_clip::Clipboard& clipboard) {
         if (const auto* c = std::get_if<SetMasterVolume>(&command)) return controller.setMasterVolume(c->gain);
+        if (const auto* c = std::get_if<ImportClipAudio>(&command)) return controller.applyImportAudioCommand(*c->prepared);
         if (const auto* c = std::get_if<RemoveClipAudio>(&command)) return controller.applyRemoveClipAudioCommand(c->track,c->scene);
         if (const auto edit = rackEdit(command)) return controller.applyRackCommand(*edit);
         if (const auto edit = duplicateEdit(command)) return controller.applyDuplicateClipCommand(*edit);
@@ -522,5 +549,48 @@ private:
 
     ProjectController& controller;
 };
+
+// The entry points for audio bound for a Session cell. Each ends in ImportClipAudio,
+// so there is one set of checks, one reducer and one Undo step.
+
+// Installs a finished decode and tells the person what happened.
+inline Result importPreparedAudio(ProjectController& controller, session_audio_import::Prepared prepared) {
+    const auto shared = std::make_shared<const session_audio_import::Prepared>(std::move(prepared));
+    const auto result = CommandEngine(controller).execute(ImportClipAudio{shared});
+    controller.audioImportFinished(*shared, result.error);
+    return result;
+}
+
+namespace detail {
+inline void decodeThenImport(ProjectController& controller, session_audio_import::Plan plan) {
+    controller.decodeAudioImport(std::move(plan), [&controller](const session_audio_import::Prepared& prepared) { importPreparedAudio(controller, prepared); });
+}
+} // namespace detail
+
+// A file for a Session cell, replacing any audio it holds (the Import audio button).
+inline void importAudioFile(ProjectController& controller, const juce::File& file, int track, int scene) {
+    auto plan = controller.prepareAudioImport(file, track, scene);
+    if (!plan) { controller.reportAudioImportRefusal("Choose an editable Session cell and stop recording before importing audio.", file); return; }
+    detail::decodeThenImport(controller, std::move(*plan));
+}
+
+// A file dropped from the sample browser or Explorer: only an empty cell takes it.
+inline void importSampleToCell(ProjectController& controller, const juce::File& file, int track, int scene) {
+    if (!controller.canEditMidiClips()) return;
+    auto plan = controller.prepareAudioImport(file, track, scene, true);
+    if (!plan) { controller.reportAudioImportRefusal("Choose an empty, unfrozen Session cell.", file); return; }
+    detail::decodeThenImport(controller, std::move(*plan));
+}
+
+// Audio that was decoded elsewhere: a finished take or a tempo render.
+inline Result installDecodedAudio(ProjectController& controller, const juce::File& file, int track, int scene, std::shared_ptr<SessionAudioClip> clip) {
+    const auto plan = controller.prepareAudioImport(file, track, scene);
+    if (!plan) {
+        Result refused; refused.error = "That Session cell cannot take audio right now.";
+        controller.reportAudioImportRefusal(refused.error, file);
+        return refused;
+    }
+    return importPreparedAudio(controller, {*plan, {std::move(clip), {}}});
+}
 
 } // namespace alien::command

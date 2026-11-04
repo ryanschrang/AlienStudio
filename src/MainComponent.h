@@ -742,7 +742,8 @@ private:
         devicesView.samples().onImport = [this](const juce::File& file, bool song) {
             const auto& d = controller.document();
             if (projectBusy || controller.isBusy() || controller.isRecording() || activeCapture || (!song && d.cellClip(d.selectedTrack, d.selectedScene)) || controller.isTrackFrozen(d.selectedTrack)) return;
-            controller.importBrowserSample(file, d.selectedTrack, d.selectedScene, song ? timelineView.timelineCanvas().cursorTick() : -1);
+            if (song) controller.importSampleToSong(file, d.selectedTrack, d.selectedScene, timelineView.timelineCanvas().cursorTick());
+            else alien::command::importSampleToCell(controller, file, d.selectedTrack, d.selectedScene);
         };
         devicesView.presets().onAudition = [this](int preset) { if (workspace.isDeviceView()) { devicesView.samples().stop(); engine.factoryPresetPreview.request(preset); } };
         devicesView.presets().onStop = [this] { engine.factoryPresetPreview.stop(); };
@@ -1296,7 +1297,7 @@ private:
     void recordingFinished(const alien::RecordingResult& result,const alien::AudioClipImportResult& decoded,int track,int scene) {
         setProjectBusy(false);audioTools.setBusy(false);
         if(result.file.existsAsFile()) {
-            const bool installed=decoded.clip && controller.installAudio(result.file,track,scene,decoded.clip);
+            const bool installed=decoded.clip && alien::command::installDecodedAudio(controller,result.file,track,scene,decoded.clip).ok;
             juce::String message="Saved take: "+result.file.getFullPathName();
             if(!installed)message+=". Kept on disk; this take could not be loaded into the RAM-based Session player.";
             if(result.error.isNotEmpty())message+=" "+result.error;
@@ -1372,7 +1373,7 @@ private:
             juce::MessageManager::callAsync([safe,track,scene,result,decoded]{if(!safe)return;
                 safe->audioWorkCancellation.reset();safe->setProjectBusy(false);safe->audioTools.setBusy(false);
                 if(result->file.existsAsFile()) {
-                    const bool installed=decoded->clip && safe->controller.installAudio(result->file,track,scene,decoded->clip);
+                    const bool installed=decoded->clip && alien::command::installDecodedAudio(safe->controller,result->file,track,scene,decoded->clip).ok;
                     safe->audioTools.setStatus("Tempo match saved: "+result->file.getFullPathName()+". Source preserved."+
                         (installed?juce::String{}:juce::String(" Kept on disk; could not load into the RAM-based Session player.")));
                 } else safe->audioTools.setStatus(result->error);
@@ -1385,9 +1386,6 @@ private:
         controller.setExternalBusy(busy);
         topBar.setBusy(busy); sessionView.setBusy(busy); drumPanel.setBusy(busy);
         mixerPanel.setEnabled(!busy);   // the Arrangement stays usable (playing, scrolling); the controller refuses edits while busy
-    }
-    void finishAudioImport(const juce::File& file, int track, int scene, const alien::AudioClipImportResult& result) {
-        if (!controller.installAudio(file, track, scene, result.clip)) audioTools.setStatus("Audio could not be installed: session memory limit reached.");
     }
     void refreshExtraViews() {
         const auto& d = controller.document();

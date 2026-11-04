@@ -171,7 +171,9 @@ public:
         importAudio.setGlyph(ui::Glyph::waveform);
         importAudio.setName("Import audio file to selected Session clip");
         importAudio.setTooltip("Decode a WAV or MP3 off the audio thread and add it to the selected clip");
-        importAudio.onClick = [this] { controller.chooseAudioFile(); };
+        importAudio.onClick = [this] {
+            controller.chooseAudioFile([&c = controller](const juce::File& file) { command::importAudioFile(c, file, c.document().selectedTrack, c.document().selectedScene); });
+        };
         addAndMakeVisible(relinkAudio);
         relinkAudio.setButtonText("Relink audio");
         relinkAudio.setGlyph(ui::Glyph::open);
@@ -495,7 +497,7 @@ public:
         const auto cell = sampleDropCell(details.localPosition); itemDragExit(details);
         if (file == juce::File{}) return;
         if (cell.first < 0) { setImportStatus("Drop onto an empty, unfrozen Session cell.", {}); return; }
-        controller.importBrowserSample(file, cell.first, cell.second);
+        command::importSampleToCell(controller, file, cell.first, cell.second);
     }
     // A file dragged in from Explorer takes the same route as one from the sample browser.
     bool isInterestedInFileDrag(const juce::StringArray& files) override { return filedrop::anySample(files); }

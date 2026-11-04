@@ -370,9 +370,29 @@ installs that candidate and records one Import audio undo step. Other queued
 launches and pending stops remain unchanged; affected requested links refresh.
 
 The plan holds runtime immutable pointers and is not a persisted/JSON command.
-A named import command consuming prepared results, browser import and processed
-Audio Tools entry points remain unfinished. They must reuse this validation model
-rather than decode or call plugins from Preview. No project format change.
+No project format change.
+
+## Session audio import command
+
+`ImportClipAudio {prepared}` installs a decoded result through the boundary above.
+Its argument is an immutable prepared plan and decoded clip, so `parse` refuses it:
+decoded audio cannot be written as arguments. Preview and Execute never decode.
+Callers decode first through the free functions in `CommandEngine.h`:
+
+- `importAudioFile` replaces audio in a cell (the Session Import audio button).
+- `importSampleToCell` only fills an empty cell (browser and Explorer drops), and
+  refuses if something arrives there while decoding.
+- `installDecodedAudio` installs a finished take or tempo render.
+
+Preview is pure: it retains no audio and publishes nothing. Execute is one Import
+audio undo step, follows the track and scene identities in the plan, and leaves the
+selection alone. It refuses during recording or count-in, while busy, when the clip
+changed during decoding, and before retaining audio over the 512 MiB storage limit.
+A linked cell shares the new audio. In a Batch, later commands see earlier imports.
+
+Sample imports placed on the Song timeline use `importSampleToSong` and are not this
+command. Any later processed-audio entry point must reuse this validation model
+rather than decode or call plugins from Preview.
 
 ## Master volume command
 

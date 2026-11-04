@@ -861,7 +861,7 @@ public:
         if (!plan.valid) { say(plan.message.isNotEmpty() ? plan.message : "That cannot be placed there."); return; }
         const auto file = sampledrag::decode(details.description);
         if (file != juce::File{}) {
-            controller.importBrowserSample(file, plan.row, controller.document().selectedScene, plan.tick, true);
+            controller.importSampleToSong(file, plan.row, controller.document().selectedScene, plan.tick, true);
             return;
         }
         if (place(plan.row, plan.source, plan.tick)) say("Placed on " + laneName(plan.row) + " at bar " + barBeat(plan.tick).upToFirstOccurrenceOf(".", false, false) + ".");

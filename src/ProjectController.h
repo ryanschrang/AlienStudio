@@ -1284,14 +1284,14 @@ public:
             });
     }
 
-    void chooseAudioFile() {
+    void chooseAudioFile(std::function<void(const juce::File&)> chosen) {
         audioFileChooser = std::make_unique<juce::FileChooser>("Import audio clip", juce::File{}, "*.wav;*.mp3");
         std::weak_ptr<int> token = alive;
         audioFileChooser->launchAsync(juce::FileBrowserComponent::openMode
             | juce::FileBrowserComponent::canSelectFiles,
-            [this, token](const juce::FileChooser& chooser) {
+            [token, chosen = std::move(chosen)](const juce::FileChooser& chooser) {
                 if (token.lock() != nullptr && chooser.getResult().existsAsFile())
-                    importAudio(chooser.getResult(), doc.selectedTrack, doc.selectedScene);
+                    chosen(chooser.getResult());
             });
     }
 
@@ -1386,41 +1386,47 @@ public:
         pool.addJob(std::move(job));
     }
 
-    std::optional<session_audio_import::Plan> prepareAudioImport(const juce::File& file,int track,int scene) const {
+    // Session audio arrives through command::ImportClipAudio: capture the
+    // destination, decode off the message thread, then run the command on the result.
+    std::optional<session_audio_import::Plan> prepareAudioImport(const juce::File& file,int track,int scene,bool emptyOnly=false) const {
         if(!canEditMidiClips())return {};
-        return session_audio_import::prepare(doc,file,track,scene);
+        return session_audio_import::prepare(doc,file,track,scene,emptyOnly);
     }
-    bool completeAudioImport(const session_audio_import::Prepared& prepared) {
-        if(!canEditMidiClips()){importStatus("Finish busy work and stop recording before installing audio.",{});return false;}
+    // The command's live half: no history entry, and refused before any live change.
+    bool applyImportAudioCommand(const session_audio_import::Prepared& prepared) {
+        if(!canEditMidiClips())return false;
         auto candidate=doc;
-        if(const auto why=session_audio_import::apply(candidate,prepared);why.isNotEmpty()){importStatus(why,{});return false;}
-        if(!retain(prepared.decoded.clip)){importStatus("Session audio storage is full (512 MiB limit)",{});return false;}
+        if(session_audio_import::apply(candidate,prepared).isNotEmpty() || !retain(prepared.decoded.clip))return false;
         const auto [track,scene]=session_audio_import::resolve(doc,prepared.plan);
         doc=std::move(candidate);
         const auto link=doc.linkOf(track,scene);
         for(int s=0;s<doc.sceneCount();++s)for(int t=0;t<doc.trackCount();++t)
             if(((t==track && s==scene) || (link && doc.linkOf(t,s)==link))
                 && engine.requestedPianoRollClip[static_cast<std::size_t>(t)].load()==s)publishClip(t,s);
-        commit("Import audio",track,scene);
-        importStatus("Imported "+prepared.plan.file.getFileName(),prepared.plan.file.getFullPathName());
-        if(onClipContentChanged)onClipContentChanged(track,scene);
         return true;
     }
-    void importAudio(const juce::File& file, int track, int scene) {
-        const auto plan=prepareAudioImport(file,track,scene);
-        if(!plan){importStatus("Choose an editable Session cell and stop recording before importing audio.",{});return;}
+    void decodeAudioImport(session_audio_import::Plan plan,std::function<void(const session_audio_import::Prepared&)> done) {
         setBusy(true);
-        importStatus(ui8("Loading audio\xe2\x80\xa6"),file.getFullPathName());
+        importStatus(ui8("Loading audio\xe2\x80\xa6"),plan.file.getFullPathName());
         std::weak_ptr<int> token=alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job=[this,token,plan=*plan] {
+        std::function<juce::ThreadPoolJob::JobStatus()> job=[this,token,plan=std::move(plan),done=std::move(done)] {
             auto prepared=std::make_shared<session_audio_import::Prepared>(session_audio_import::Prepared{plan,importSessionAudioClip(plan.file)});
-            juce::MessageManager::callAsync([this,token,prepared] {
-                if(token.lock()){setBusy(false);completeAudioImport(*prepared);}
+            juce::MessageManager::callAsync([this,token,prepared,done] {
+                if(token.lock()){setBusy(false);done(*prepared);}
             });
             return juce::ThreadPoolJob::jobHasFinished;
         };
         pool.addJob(std::move(job));
     }
+    // What the person sees once the command has run or been refused.
+    void audioImportFinished(const session_audio_import::Prepared& prepared,const juce::String& refused) {
+        const auto path=prepared.plan.file.getFullPathName();
+        if(refused.isNotEmpty()){importStatus(refused,path);return;}
+        importStatus("Imported "+prepared.plan.file.getFileName(),path);
+        const auto [track,scene]=session_audio_import::resolve(doc,prepared.plan);
+        if(onClipContentChanged)onClipContentChanged(track,scene);
+    }
+    void reportAudioImportRefusal(const juce::String& why,const juce::File& file) { importStatus(why,file.getFullPathName()); }
 
     // Browser import captures the destination before decoding. Busy state prevents
     // structural edits while the worker runs; recheck the destination before install.
@@ -1428,9 +1434,9 @@ public:
         return !busy && !isRecording() && engine.recording.phase.load() == RecordControls::idle
             && doc.isValidCell(track, scene) && !isTrackFrozen(track) && (song || !doc.cellClip(track, scene));
     }
-    void importBrowserSample(const juce::File& file, int track, int scene, std::int64_t songTick = -1, bool preserveSong = false) {
+    // A sample placed on the Song. A sample for a Session cell takes command::importSampleToCell.
+    void importSampleToSong(const juce::File& file, int track, int scene, std::int64_t songTick, bool preserveSong = false) {
         if (busy || isRecording() || engine.recording.phase.load() != RecordControls::idle || !doc.isValidCell(track, scene) || isTrackFrozen(track)) return;
-        if (songTick < 0 && doc.cellClip(track, scene)) { importStatus("Choose an empty Session cell.", {}); return; }
         setBusy(true); importStatus("Loading sample...", file.getFullPathName());
         std::weak_ptr<int> token = alive;
         pool.addJob([this, token, file, track, scene, songTick, preserveSong] {
@@ -1440,21 +1446,16 @@ public:
                 setBusy(false);
                 if (!result->clip) { importStatus(result->error, file.getFullPathName()); return; }
                 if (!doc.isValidCell(track, scene) || isTrackFrozen(track)) return;
-                if (songTick < 0) {
-                    if (doc.cellClip(track, scene)) { importStatus("Destination is no longer empty.", {}); return; }
-                    finishImport(file, track, scene, *result);
-                } else {
-                    const auto end = timeline::TempoMap{doc.timeline.tempoChanges, static_cast<double>(doc.bpm)}.tickAfter(static_cast<double>(songTick), result->clip->frames / result->clip->sampleRate);
-                    if (end > timeline::maxLength || end <= songTick) { importStatus("Sample does not fit in the Song.", {}); return; }
-                    if (preserveSong && std::any_of(doc.timeline.regions.begin(), doc.timeline.regions.end(), [&](const auto& region) {
-                        return region.row == track && region.start < static_cast<std::int64_t>(std::ceil(end)) && region.start + region.length > songTick;
-                    })) { importStatus("Drop onto a free Song range; existing clips were preserved.", {}); return; }
-                    RecordedTake take; take.track = track; take.file = file; take.clip = result->clip;
-                    take.placement = {true, songTick, std::max<std::int64_t>(1, static_cast<std::int64_t>(std::ceil(end)) - songTick), 0};
-                    if (addRecordedTakes({take}, "Import sample to Song") != 1) { importStatus("Sample could not be placed in the Song.", {}); return; }
-                    importStatus("Imported " + file.getFileName() + " to Song", file.getFullPathName());
-                    if (onDocumentRestored) onDocumentRestored();
-                }
+                const auto end = timeline::TempoMap{doc.timeline.tempoChanges, static_cast<double>(doc.bpm)}.tickAfter(static_cast<double>(songTick), result->clip->frames / result->clip->sampleRate);
+                if (end > timeline::maxLength || end <= songTick) { importStatus("Sample does not fit in the Song.", {}); return; }
+                if (preserveSong && std::any_of(doc.timeline.regions.begin(), doc.timeline.regions.end(), [&](const auto& region) {
+                    return region.row == track && region.start < static_cast<std::int64_t>(std::ceil(end)) && region.start + region.length > songTick;
+                })) { importStatus("Drop onto a free Song range; existing clips were preserved.", {}); return; }
+                RecordedTake take; take.track = track; take.file = file; take.clip = result->clip;
+                take.placement = {true, songTick, std::max<std::int64_t>(1, static_cast<std::int64_t>(std::ceil(end)) - songTick), 0};
+                if (addRecordedTakes({take}, "Import sample to Song") != 1) { importStatus("Sample could not be placed in the Song.", {}); return; }
+                importStatus("Imported " + file.getFileName() + " to Song", file.getFullPathName());
+                if (onDocumentRestored) onDocumentRestored();
             });
         });
     }
@@ -2085,11 +2086,14 @@ public:
         return info.isFile() && rackAudio.find(info.sample) == rackAudio.end();
     }
 
+    // Test fixtures only: product code uses command::installDecodedAudio. Same checks and reducer as the command.
     bool installAudio(const juce::File& file, int track, int scene, std::shared_ptr<SessionAudioClip> clip) {
-        if (!doc.isValidCell(track, scene) || !clip || isTrackFrozen(track)) return false;
-        const auto bytes = clip->decodedBytes();
-        if (bytes > maxSessionAudioBytes - retainedBytes) return false;
-        finishImport(file, track, scene, {clip, {}});
+        const auto plan=prepareAudioImport(file,track,scene);
+        if(!plan)return false;
+        const session_audio_import::Prepared prepared{*plan,{std::move(clip),{}}};
+        if(!applyImportAudioCommand(prepared))return false;
+        commit("Import audio",track,scene);
+        audioImportFinished(prepared,{});
         return true;
     }
     std::size_t availableAudioBytes() const noexcept { return maxSessionAudioBytes - retainedBytes; }
@@ -2492,24 +2496,6 @@ private:
         if (recovered) status("Recovered unsaved work" + (projectFile != juce::File{} ? " for " + projectFile.getFileName() : juce::String{})
                               + juce::String(juce::CharPointer_UTF8(" \xe2\x80\x94 save to keep it")) + offline, offlineDetail);
         else status("Opened " + file.getFileName() + offline, result.missing.empty() ? file.getFullPathName() : offlineDetail);
-    }
-
-    void finishImport(const juce::File& file, int track, int scene, const AudioClipImportResult& result) {
-        if (!result.clip) { importStatus(result.error, result.error); return; }
-        if (!doc.isValidCell(track, scene) || isTrackFrozen(track)) return;
-        if (!retain(result.clip)) {
-            importStatus("Session audio storage is full (512 MiB limit)", "Session audio storage is full (512 MiB limit)");
-            return;
-        }
-        auto clip = doc.clip(track, scene);
-        clip.audio = result.clip;
-        clip.audioFileName = file.getFileName();
-        clip.audioFilePath = file.getFullPathName();
-        doc.setClip(track, scene, clip);
-        republishIfLive(track, scene);
-        commit("Import audio", track, scene);
-        importStatus("Imported " + file.getFileName(), file.getFullPathName());
-        if (onClipContentChanged) onClipContentChanged(track, scene);
     }
 
     // Apply an undo/redo state and bring the engine in line with it.

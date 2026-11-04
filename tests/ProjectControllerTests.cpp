@@ -1,4 +1,4 @@
-#include "ProjectController.h"
+#include "CommandEngine.h"
 #include "StockEffects.h"
 #include "AudioFileWrite.h"
 #include <algorithm>
@@ -496,7 +496,7 @@ static void timelineIntegrationTests() {
         const auto wav = root.getChildFile("busy.wav");
         require(alien::writeClipWav(wav, *makeClip(8000, 80), cancel, error), "write a sample");
         ToneEngine engine; alien::ProjectController c(engine); c.pushDocumentToEngine();
-        c.importAudio(wav, 0, 0);
+        alien::command::importAudioFile(c, wav, 0, 0);
         require(c.isBusy(), "an import is under way");
         require(!c.placeRegion(0, 0, 0) && c.timeline().regions.empty(), "the timeline cannot be edited while a file is loading");
         waitIdle(c);
@@ -1147,14 +1147,14 @@ static void browserImportTests() {
     ToneEngine engine; alien::ProjectController c(engine); c.pushDocumentToEngine();
     auto wait = [&] { for (int i = 0; i < 400 && c.isBusy(); ++i) pump(10); require(!c.isBusy(), "browser import completes"); };
     c.setClipPattern(0, 0, patternWith(62), false); c.commit("Fixture");
-    const auto before = c.undoLabel(); c.importBrowserSample(wav, 0, 0); require(!c.isBusy() && c.undoLabel() == before && !c.document().clip(0, 0).isAudioClip(), "browser refuses occupied Session destination");
-    c.importBrowserSample(wav, 0, 1); require(c.isBusy(), "browser decode runs asynchronously"); wait();
+    const auto before = c.undoLabel(); alien::command::importSampleToCell(c, wav, 0, 0); require(!c.isBusy() && c.undoLabel() == before && !c.document().clip(0, 0).isAudioClip(), "browser refuses occupied Session destination");
+    alien::command::importSampleToCell(c, wav, 0, 1); require(c.isBusy(), "browser decode runs asynchronously"); wait();
     require(c.document().clip(0, 1).isAudioClip(), "browser imports into empty cell");
     c.undo(); require(!c.document().cellClip(0, 1), "one undo removes Session import"); c.redo();
-    c.importBrowserSample(wav, 0, 1, 3840); wait();
+    c.importSampleToSong(wav, 0, 1, 3840); wait();
     require(c.timeline().regions.size() == 1 && c.timeline().regions[0].start == 3840 && c.timeline().regions[0].source != 0 && c.timeline().regions[0].source != 1, "Song import uses independent empty source and requested cursor");
     c.undo(); require(c.timeline().regions.empty() && c.document().clip(0, 1).isAudioClip(), "one undo removes only Song import");
-    const auto label = c.undoLabel(); c.importBrowserSample(root.getChildFile("missing.wav"), 1, 1); wait(); require(c.undoLabel() == label, "failed decode has no history changes");
+    const auto label = c.undoLabel(); alien::command::importSampleToCell(c, root.getChildFile("missing.wav"), 1, 1); wait(); require(c.undoLabel() == label, "failed decode has no history changes");
     require(root.deleteRecursively(), "remove import fixtures");
 }
 
