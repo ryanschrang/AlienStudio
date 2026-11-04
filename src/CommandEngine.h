@@ -38,6 +38,18 @@ struct SetTrackSendMode { int track{-1}, returnSlot{-1}; bool preFader{}; };
 struct CreateReturn {};                                        // takes the first free slot
 struct RenameReturn { int returnSlot{-1}; juce::String name; };
 struct DeleteReturn { int returnSlot{-1}; };                   // also drops its sends, automation and FX
+struct SetReturnVolume { int returnSlot{-1}; double gain{1.0}; }; // linear gain, 0..2 (1 is unity)
+struct SetReturnPan { int returnSlot{-1}; double pan{}; };        // -1 left, 0 centre, 1 right
+struct SetReturnMute { int returnSlot{-1}; bool muted{}; };
+
+// Group buses, addressed by bus slot. Slots never move.
+struct CreateBus {};                                 // takes the first free slot
+struct RenameBus { int bus{-1}; juce::String name; };
+struct DeleteBus { int bus{-1}; };                   // its tracks go to the master; drops its FX
+struct SetBusVolume { int bus{-1}; double gain{1.0}; }; // linear gain, 0..2 (1 is unity)
+struct SetBusPan { int bus{-1}; double pan{}; };        // -1 left, 0 centre, 1 right
+struct SetBusMute { int bus{-1}; bool muted{}; };
+struct SetBusSolo { int bus{-1}; bool soloed{}; };
 
 // Session cells, zero-based. CreateClip is MIDI-only; duplication supports all types.
 struct CreateClip { int track{-1}, scene{-1}; };
@@ -62,12 +74,12 @@ struct MoveScene { int scene{-1}, to{-1}; };
 struct RenameScene { int scene{-1}; juce::String name; };
 struct DeleteScene { int scene{-1}; };
 
-using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume, ImportClipAudio, SetTrackSend, SetTrackSendMode, CreateReturn, RenameReturn, DeleteReturn>;
+using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume, ImportClipAudio, SetTrackSend, SetTrackSendMode, CreateReturn, RenameReturn, DeleteReturn, SetReturnVolume, SetReturnPan, SetReturnMute, CreateBus, RenameBus, DeleteBus, SetBusVolume, SetBusPan, SetBusMute, SetBusSolo>;
 
 namespace detail {
 // Indexed like Command's alternatives.
-inline constexpr std::array<const char*, 31> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume", "ImportClipAudio", "SetTrackSend", "SetTrackSendMode", "CreateReturn", "RenameReturn", "DeleteReturn"};
-inline constexpr std::array<const char*, 31> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume", "Import audio", "Set send level", "Set send mode", "Add return", "Rename return", "Remove return"};
+inline constexpr std::array<const char*, 41> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume", "ImportClipAudio", "SetTrackSend", "SetTrackSendMode", "CreateReturn", "RenameReturn", "DeleteReturn", "SetReturnVolume", "SetReturnPan", "SetReturnMute", "CreateBus", "RenameBus", "DeleteBus", "SetBusVolume", "SetBusPan", "SetBusMute", "SetBusSolo"};
+inline constexpr std::array<const char*, 41> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume", "Import audio", "Set send level", "Set send mode", "Add return", "Rename return", "Remove return", "Set return volume", "Set return pan", "Set return mute", "Add bus", "Rename bus", "Delete bus", "Set bus volume", "Set bus pan", "Set bus mute", "Set bus solo"};
 static_assert(names.size() == std::variant_size_v<Command> && labels.size() == names.size());
 
 // The name the controller stores for `name` (it trims and caps track names).
@@ -131,6 +143,14 @@ inline std::optional<return_edit::Edit> returnEdit(const Command& command) {
     return {};
 }
 
+inline std::optional<bus_edit::Edit> busEdit(const Command& command) {
+    using Kind = bus_edit::Kind;
+    if (std::holds_alternative<CreateBus>(command)) return bus_edit::Edit{Kind::create};
+    if (const auto* c = std::get_if<RenameBus>(&command)) return bus_edit::Edit{Kind::rename, c->bus, c->name};
+    if (const auto* c = std::get_if<DeleteBus>(&command)) return bus_edit::Edit{Kind::remove, c->bus};
+    return {};
+}
+
 inline std::optional<scene_edit::Edit> sceneEdit(const Command& command) {
     using Kind = scene_edit::Kind;
     if (std::holds_alternative<CreateScene>(command)) return scene_edit::Edit{Kind::create};
@@ -182,6 +202,22 @@ inline juce::String refusal(const ProjectDocument& d, const Command& command, co
         return std::isfinite(c->level) && c->level >= 0 && c->level <= 1 ? juce::String{} : "A send level must be a finite linear level from 0 to 1.";
     }
     if (const auto* c = std::get_if<SetTrackSendMode>(&command)) return send(c->track, c->returnSlot);
+    if (const auto edit = busEdit(command)) return bus_edit::refusal(d, *edit);
+    auto stripGain = [](double gain, const char* strip) -> juce::String {
+        return std::isfinite(gain) && gain >= 0 && gain <= 2 ? juce::String{} : juce::String(strip) + " volume must be a finite linear gain from 0 to 2 (1 is unity).";
+    };
+    auto stripPan = [](double pan, const char* strip) -> juce::String {
+        return std::isfinite(pan) && pan >= -1 && pan <= 1 ? juce::String{} : juce::String(strip) + " pan must be a finite number from -1 (left) to 1 (right).";
+    };
+    auto returnSlot = [&](int slot) -> juce::String { return return_edit::slotInUse(d, slot) ? juce::String{} : "Return slot " + juce::String(slot) + " is not in use."; };
+    auto busSlot = [&](int slot) -> juce::String { return bus_edit::slotInUse(d, slot) ? juce::String{} : "Bus slot " + juce::String(slot) + " is not in use."; };
+    if (const auto* c = std::get_if<SetReturnVolume>(&command)) { if (const auto why = returnSlot(c->returnSlot); why.isNotEmpty()) return why; return stripGain(c->gain, "Return"); }
+    if (const auto* c = std::get_if<SetReturnPan>(&command)) { if (const auto why = returnSlot(c->returnSlot); why.isNotEmpty()) return why; return stripPan(c->pan, "Return"); }
+    if (const auto* c = std::get_if<SetReturnMute>(&command)) return returnSlot(c->returnSlot);
+    if (const auto* c = std::get_if<SetBusVolume>(&command)) { if (const auto why = busSlot(c->bus); why.isNotEmpty()) return why; return stripGain(c->gain, "Bus"); }
+    if (const auto* c = std::get_if<SetBusPan>(&command)) { if (const auto why = busSlot(c->bus); why.isNotEmpty()) return why; return stripPan(c->pan, "Bus"); }
+    if (const auto* c = std::get_if<SetBusMute>(&command)) return busSlot(c->bus);
+    if (const auto* c = std::get_if<SetBusSolo>(&command)) return busSlot(c->bus);
     if (const auto* c = std::get_if<SetMasterVolume>(&command)) return std::isfinite(c->gain) && c->gain >= 0 && c->gain <= maxMasterGain ? juce::String{} : "Master volume must be a finite linear gain from 0 to 4 (1 is unity).";
     if (const auto* c = std::get_if<SetTrackVolume>(&command)) {
         if (const auto why = track(c->track); why.isNotEmpty()) return why;
@@ -203,6 +239,18 @@ inline juce::String refusal(const ProjectDocument& d, const Command& command, co
 
 // One line saying what `command` does to `d` (call before applying it).
 inline juce::String describe(const ProjectDocument& d, const Command& command) {
+    auto returnName = [&](int r) { return "\"" + d.returns[static_cast<std::size_t>(r)].name + "\""; };
+    auto busName = [&](int b) { return "\"" + d.buses[static_cast<std::size_t>(b)].name + "\""; };
+    if (const auto* c = std::get_if<SetReturnVolume>(&command)) return "Set volume of return " + returnName(c->returnSlot) + " to linear gain " + juce::String(c->gain, 6);
+    if (const auto* c = std::get_if<SetReturnPan>(&command)) return "Set pan of return " + returnName(c->returnSlot) + " to " + juce::String(c->pan, 6);
+    if (const auto* c = std::get_if<SetReturnMute>(&command)) return juce::String(c->muted ? "Mute return " : "Unmute return ") + returnName(c->returnSlot);
+    if (std::holds_alternative<CreateBus>(command)) return "Add \"" + bus_edit::nextName(d) + "\" in bus slot " + juce::String(bus_edit::firstFreeSlot(d));
+    if (const auto* c = std::get_if<RenameBus>(&command)) return "Rename bus " + busName(c->bus) + " to \"" + bus_edit::storedName(c->name) + "\"";
+    if (const auto* c = std::get_if<DeleteBus>(&command)) return "Delete bus " + busName(c->bus) + ", sending its tracks to the master and dropping its FX";
+    if (const auto* c = std::get_if<SetBusVolume>(&command)) return "Set volume of bus " + busName(c->bus) + " to linear gain " + juce::String(c->gain, 6);
+    if (const auto* c = std::get_if<SetBusPan>(&command)) return "Set pan of bus " + busName(c->bus) + " to " + juce::String(c->pan, 6);
+    if (const auto* c = std::get_if<SetBusMute>(&command)) return juce::String(c->muted ? "Mute bus " : "Unmute bus ") + busName(c->bus);
+    if (const auto* c = std::get_if<SetBusSolo>(&command)) return juce::String(c->soloed ? "Solo bus " : "Unsolo bus ") + busName(c->bus);
     if (std::holds_alternative<CreateReturn>(command)) { const int r = return_edit::firstFreeSlot(d); return "Add \"" + defaultReturnName(r) + "\" in return slot " + juce::String(r); }
     if (const auto* c = std::get_if<RenameReturn>(&command)) return "Rename return \"" + d.returns[static_cast<std::size_t>(c->returnSlot)].name + "\" to \"" + return_edit::storedName(c->name) + "\"";
     if (const auto* c = std::get_if<DeleteReturn>(&command)) return "Remove return \"" + d.returns[static_cast<std::size_t>(c->returnSlot)].name + "\" with its sends, automation and FX";
@@ -253,6 +301,17 @@ inline juce::String applyTo(ProjectDocument& d, const Command& command, const cl
         if (const auto why = return_edit::apply(d, *edit); why.isNotEmpty()) return why;
         return d.synchronizeTrackRegistry() ? juce::String{} : juce::String("The project cannot resolve its track identities.");
     }
+    if (const auto edit = busEdit(command)) {
+        if (const auto why = bus_edit::apply(d, *edit); why.isNotEmpty()) return why;
+        return d.synchronizeTrackRegistry() ? juce::String{} : juce::String("The project cannot resolve its track identities.");
+    }
+    if (const auto* c = std::get_if<SetReturnVolume>(&command)) { d.returns[static_cast<std::size_t>(c->returnSlot)].settings.gain = static_cast<float>(c->gain); return {}; }
+    if (const auto* c = std::get_if<SetReturnPan>(&command)) { d.returns[static_cast<std::size_t>(c->returnSlot)].settings.pan = static_cast<float>(c->pan); return {}; }
+    if (const auto* c = std::get_if<SetReturnMute>(&command)) { d.returns[static_cast<std::size_t>(c->returnSlot)].settings.mute = c->muted; return {}; }
+    if (const auto* c = std::get_if<SetBusVolume>(&command)) { d.buses[static_cast<std::size_t>(c->bus)].settings.gain = static_cast<float>(c->gain); return {}; }
+    if (const auto* c = std::get_if<SetBusPan>(&command)) { d.buses[static_cast<std::size_t>(c->bus)].settings.pan = static_cast<float>(c->pan); return {}; }
+    if (const auto* c = std::get_if<SetBusMute>(&command)) { d.buses[static_cast<std::size_t>(c->bus)].settings.mute = c->muted; return {}; }
+    if (const auto* c = std::get_if<SetBusSolo>(&command)) { d.buses[static_cast<std::size_t>(c->bus)].settings.solo = c->soloed; return {}; }
     if (const auto* c = std::get_if<SetTrackSend>(&command)) { d.tracks[static_cast<std::size_t>(c->track)].settings.send[static_cast<std::size_t>(c->returnSlot)] = static_cast<float>(c->level); return {}; }
     if (const auto* c = std::get_if<SetTrackSendMode>(&command)) { d.tracks[static_cast<std::size_t>(c->track)].settings.sendPre[static_cast<std::size_t>(c->returnSlot)] = c->preFader; return {}; }
     if (const auto* c = std::get_if<SetMasterVolume>(&command)) { d.masterGain=static_cast<float>(c->gain); return {}; }
@@ -305,6 +364,15 @@ inline juce::var arguments(const Command& command) {
     if (const auto* c = std::get_if<SetTrackSend>(&command)) { object->setProperty("track", c->track); object->setProperty("return", c->returnSlot); object->setProperty("level", c->level); return result; }
     if (const auto* c = std::get_if<SetTrackSendMode>(&command)) { object->setProperty("track", c->track); object->setProperty("return", c->returnSlot); object->setProperty("preFader", c->preFader); return result; }
     if (const auto* c = std::get_if<RenameReturn>(&command)) { object->setProperty("return", c->returnSlot); object->setProperty("name", c->name); return result; }
+    if (const auto* c = std::get_if<SetReturnVolume>(&command)) { object->setProperty("return", c->returnSlot); object->setProperty("gain", c->gain); return result; }
+    if (const auto* c = std::get_if<SetReturnPan>(&command)) { object->setProperty("return", c->returnSlot); object->setProperty("pan", c->pan); return result; }
+    if (const auto* c = std::get_if<SetReturnMute>(&command)) { object->setProperty("return", c->returnSlot); object->setProperty("muted", c->muted); return result; }
+    if (const auto* c = std::get_if<RenameBus>(&command)) { object->setProperty("bus", c->bus); object->setProperty("name", c->name); return result; }
+    if (const auto* c = std::get_if<DeleteBus>(&command)) { object->setProperty("bus", c->bus); return result; }
+    if (const auto* c = std::get_if<SetBusVolume>(&command)) { object->setProperty("bus", c->bus); object->setProperty("gain", c->gain); return result; }
+    if (const auto* c = std::get_if<SetBusPan>(&command)) { object->setProperty("bus", c->bus); object->setProperty("pan", c->pan); return result; }
+    if (const auto* c = std::get_if<SetBusMute>(&command)) { object->setProperty("bus", c->bus); object->setProperty("muted", c->muted); return result; }
+    if (const auto* c = std::get_if<SetBusSolo>(&command)) { object->setProperty("bus", c->bus); object->setProperty("soloed", c->soloed); return result; }
     if (const auto* c = std::get_if<DeleteReturn>(&command)) { object->setProperty("return", c->returnSlot); return result; }
     if (const auto* c = std::get_if<SetMasterVolume>(&command)) { object->setProperty("gain",c->gain); return result; }
     if (const auto* c = std::get_if<ImportClipAudio>(&command)) {
@@ -368,14 +436,17 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
     while (index < detail::names.size() && commandName != detail::names[index]) ++index;
     if (index >= detail::names.size()) { error = "Unknown command \"" + commandName + "\"."; return std::nullopt; }
     if (index == 25) { error = "ImportClipAudio takes decoded audio, which cannot be written as arguments."; return std::nullopt; }
-    static const std::array<juce::StringArray, 31> allowed{
+    static const std::array<juce::StringArray, 41> allowed{
         juce::StringArray{}, juce::StringArray{"track"}, juce::StringArray{"track", "to"},
         juce::StringArray{"track", "name"}, juce::StringArray{"track", "colour"},
         juce::StringArray{"track", "gain"}, juce::StringArray{"track", "pan"},
         juce::StringArray{"track", "muted"}, juce::StringArray{"track", "soloed"},
         juce::StringArray{"track","scene"},juce::StringArray{"track","scene","toTrack","toScene"},juce::StringArray{"track","scene"},
         juce::StringArray{},juce::StringArray{"scene"},juce::StringArray{"scene","to"},juce::StringArray{"scene","name"},juce::StringArray{"scene"},juce::StringArray{"track","scene"},juce::StringArray{"track","scene"},juce::StringArray{"track","scene"},juce::StringArray{"track","scene","toTrack","toScene"},juce::StringArray{},juce::StringArray{"track","scene","clip"},juce::StringArray{"track","scene"},juce::StringArray{"gain"},juce::StringArray{},
-        juce::StringArray{"track","return","level"},juce::StringArray{"track","return","preFader"},juce::StringArray{},juce::StringArray{"return","name"},juce::StringArray{"return"}};
+        juce::StringArray{"track","return","level"},juce::StringArray{"track","return","preFader"},juce::StringArray{},juce::StringArray{"return","name"},juce::StringArray{"return"},
+        juce::StringArray{"return","gain"},juce::StringArray{"return","pan"},juce::StringArray{"return","muted"},
+        juce::StringArray{},juce::StringArray{"bus","name"},juce::StringArray{"bus"},
+        juce::StringArray{"bus","gain"},juce::StringArray{"bus","pan"},juce::StringArray{"bus","muted"},juce::StringArray{"bus","soloed"}};
     const auto* object = args.getDynamicObject();
     if (object == nullptr && !args.isVoid()) { error = commandName + " takes an object of arguments."; return std::nullopt; }
     if (object != nullptr)
@@ -441,6 +512,16 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
         case 28: command = CreateReturn{}; break;
         case 29: { const int r = integer("return"); command = RenameReturn{r, text("name")}; break; }
         case 30: command = DeleteReturn{integer("return")}; break;
+        case 31: { const int r = integer("return"); command = SetReturnVolume{r, number("gain")}; break; }
+        case 32: { const int r = integer("return"); command = SetReturnPan{r, number("pan")}; break; }
+        case 33: { const int r = integer("return"); command = SetReturnMute{r, boolean("muted")}; break; }
+        case 34: command = CreateBus{}; break;
+        case 35: { const int b = integer("bus"); command = RenameBus{b, text("name")}; break; }
+        case 36: command = DeleteBus{integer("bus")}; break;
+        case 37: { const int b = integer("bus"); command = SetBusVolume{b, number("gain")}; break; }
+        case 38: { const int b = integer("bus"); command = SetBusPan{b, number("pan")}; break; }
+        case 39: { const int b = integer("bus"); command = SetBusMute{b, boolean("muted")}; break; }
+        case 40: { const int b = integer("bus"); command = SetBusSolo{b, boolean("soloed")}; break; }
         case 23: { const int t = integer("track"), s = integer("scene"); command = RemoveClipAudio{t,s}; break; }
         case 21: command = CreateRackPattern{}; break;
         case 22: {
@@ -526,6 +607,7 @@ public:
         if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return std::holds_alternative<RemoveClipAudio>(c); })) return refused("Stop recording before removing Session clip audio.");
         if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return std::holds_alternative<ImportClipAudio>(c); })) return refused("Stop recording before importing Session clip audio.");
         if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return returnEdit(c).has_value(); })) return refused("Stop recording before adding, renaming or removing returns.");
+        if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return busEdit(c).has_value(); })) return refused("Stop recording before adding, renaming or deleting buses.");
         const auto clipboard = controller.clipClipboard();
         Result result = preview(commands, &clipboard);
         if (!result.ok || !result.changed) return result;
@@ -566,6 +648,16 @@ private:
             return controller.document().returns[static_cast<std::size_t>(c->returnSlot)].name == return_edit::storedName(c->name) || controller.renameReturn(c->returnSlot, c->name);
         }
         if (const auto* c = std::get_if<DeleteReturn>(&command)) return controller.deleteReturn(c->returnSlot);
+        if (const auto* c = std::get_if<SetReturnVolume>(&command)) return controller.setReturnVolume(c->returnSlot, c->gain);
+        if (const auto* c = std::get_if<SetReturnPan>(&command)) return controller.setReturnPan(c->returnSlot, c->pan);
+        if (const auto* c = std::get_if<SetReturnMute>(&command)) return controller.setReturnMute(c->returnSlot, c->muted);
+        if (std::holds_alternative<CreateBus>(command)) return controller.addBus() >= 0;
+        if (const auto* c = std::get_if<RenameBus>(&command)) return controller.renameBus(c->bus, c->name);
+        if (const auto* c = std::get_if<DeleteBus>(&command)) return controller.deleteBus(c->bus);
+        if (const auto* c = std::get_if<SetBusVolume>(&command)) return controller.setBusVolume(c->bus, c->gain);
+        if (const auto* c = std::get_if<SetBusPan>(&command)) return controller.setBusPan(c->bus, c->pan);
+        if (const auto* c = std::get_if<SetBusMute>(&command)) return controller.setBusMute(c->bus, c->muted);
+        if (const auto* c = std::get_if<SetBusSolo>(&command)) return controller.setBusSolo(c->bus, c->soloed);
         if (const auto* c = std::get_if<SetTrackSend>(&command)) return controller.setTrackSend(c->track, c->returnSlot, c->level);
         if (const auto* c = std::get_if<SetTrackSendMode>(&command)) return controller.setTrackSendMode(c->track, c->returnSlot, c->preFader);
         if (const auto* c = std::get_if<SetMasterVolume>(&command)) return controller.setMasterVolume(c->gain);

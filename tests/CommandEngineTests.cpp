@@ -445,6 +445,7 @@ static void continuousCommandTests() {
 #include "RemoveClipAudioTests.h"
 #include "ImportClipAudioCommandTests.h"
 #include "SendReturnCommandTests.h"
+#include "StripBusCommandTests.h"
 #include "MasterVolumeCommandTests.h"
 #include "SceneCommandTests.h"
 
@@ -454,6 +455,9 @@ int main() {
     removeClipAudioChecks();
     sendCommandChecks();
     returnCommandChecks();
+    returnStripCommandChecks();
+    busStripCommandChecks();
+    busStructureCommandChecks();
     importClipAudioNameChecks();
     importClipAudioCommandChecks();
     importClipAudioStorageChecks();
