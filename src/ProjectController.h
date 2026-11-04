@@ -422,8 +422,14 @@ public:
         return true;
     }
 
-    // The mixer writes the engine directly while a control moves; this copies
-    // the result back into the document.
+    // Validated noncommitting adapter for the master-volume command.
+    bool setMasterVolume(double gain) {
+        if(busy || !std::isfinite(gain) || gain<0 || gain>maxMasterGain)return false;
+        doc.masterGain=static_cast<float>(gain);
+        engine.masterControls.gain.store(doc.masterGain);
+        return true; // CommandEngine owns the history entry
+    }
+    // Legacy engine readback for saving/autosave and remaining direct controls.
     void masterGainEdited() { doc.masterGain = sanitizedMasterGain(engine.masterControls.gain.load()); }
     void returnSettingsEdited(int r) {
         if (r < 0 || r >= maxReturns || !doc.returns[static_cast<std::size_t>(r)].used) return;

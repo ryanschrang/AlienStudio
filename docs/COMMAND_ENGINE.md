@@ -80,7 +80,7 @@ Only the addressed document field and live engine control change. Session's left
 mute light, right-click solo light and S button now execute these named commands. A
 successful command sends a refresh-only notification to the mixer, without a second
 legacy commit; busy refusal sends no edit notification. Session volume/pan gestures also use named commands (see below).
-Master, bus, return and send controls retain their existing direct editing paths.
+Master volume now uses SetMasterVolume; bus, return and send controls retain their direct editing paths.
 
 CommandEngineTests covers true/false JSON round trips, strict types, side-effect-free
 preview, live controls, preserved mix/other solo states, busy/invalid-target refusal,
@@ -108,7 +108,7 @@ Busy commands and unchanged values write nothing and preserve redo. A drag that
 becomes busy or whose row is replaced/reordered stops accepting queued events;
 changes already accepted remain undoable. Gestures preserve the existing ranges,
 whole-percent rounding, centre/unity snapping and fine movement. No saved format
-or engine-capacity change. Master, bus, return and send controls remain later command slices.
+or engine-capacity change. Bus, return and send controls remain later command slices.
 
 CommandEngineTests covers grouping, refusal and interleaved commands.
 SessionViewTests drives real handlers, including a pause beyond the timed window,
@@ -119,7 +119,7 @@ Exact build/test results belong in the PR; listening remains a manual check.
 
 - The Session track menu, rename box and add-track button use named commands. Commands own
   the undo commit; the view refreshes structure/title without invoking the legacy edit-commit callback.
-  Scene edits now use commands too. Master/bus/return/send controls retain their existing controller paths. SessionViewTests covers
+  Scene edits now use commands too. Master volume uses commands; bus/return/send controls retain their controller paths. SessionViewTests covers
   menu add/move/delete, one-step undo/redo, busy refusal and host refresh notifications.
 - `applyTo()` repeats the document half of the controller's track operations so a preview can run
   without an engine. The preview-equals-execute tests guard against drift. A later slice could
@@ -136,7 +136,7 @@ Exact build/test results belong in the PR; listening remains a manual check.
 | DuplicateClip | Implemented for independent MIDI/audio/offline/rack Session copies with explicit source/destination cells | Song placement command duplication remains |
 | MakeClipUnique | Implemented for MIDI/audio/offline/rack Session content | Song placement command wrappers remain |
 | SetTrackVolume, SetTrackPan | Implemented: command setters write document then the addressed engine control | Session and Mixer track UI adopted; other parameter targets remain |
-| SetParameter (other targets) | Mixer edits via `trackSettingsEdited`, `returnSettingsEdited`, `masterGainEdited` with coalesced `commit` | Remaining targets need command wrappers |
+| SetParameter (other targets) | Track and master volume use dedicated commands; other mixer targets still use controller readback/commit | Remaining targets need command wrappers |
 | AutomateParameter | `editTimeline` on `parameterLanes`, plugin automation targets | Command wrapper over lane edits |
 | CreateSend | Up to eight dynamic returns with per-track send level and pre/post (`TrackSettings`) | Command wrappers for return creation and send settings |
 | CreateBus, RouteTrack, CreateGroup, AddToGroup | Existing group buses and track output routing (T1-05) | Pure Preview and noncommitting command/controller adapters; UI adoption |
@@ -153,7 +153,7 @@ one Undo step; a later drag or discrete edit starts another step. The command
 updates document and engine together. The host notification only refreshes the
 other view. Busy projects refuse these edits, and queued events from a strip
 whose track identity no longer matches its row are ignored. Instrument, send,
-master, return and bus controls retain their existing edit paths.
+return and bus controls retain their existing edit paths.
 
 ## Session clip creation and duplication commands
 
@@ -373,3 +373,26 @@ The plan holds runtime immutable pointers and is not a persisted/JSON command.
 A named import command consuming prepared results, browser import and processed
 Audio Tools entry points remain unfinished. They must reuse this validation model
 rather than decode or call plugins from Preview. No project format change.
+
+## Master volume command
+
+`SetMasterVolume {gain}` accepts a finite linear gain from 0 through 4 (1 is unity),
+matching the existing master fader. Invalid values refuse before document or engine
+writes; Preview touches only its document copy. Execute/Batch own one Undo/Redo
+step, and unchanged values preserve redo. Master mixing remains available during
+recording, like track mixing; busy projects refuse. No project format or DSP change.
+
+The Mixer master fader, text entry, wheel and unity reset use this command.
+Each drag receives a unique continuous history key, so a pause during a drag does
+not split Undo. Non-drag edits use a timed master-volume key. Host notification is
+refresh-only (`onMasterCommandExecuted`), replacing the legacy readback/commit.
+A drag captures project scope and refuses every queued update after project
+replacement until release; the next fresh gesture can edit the new project.
+Refused changes refresh the visible fader from the engine. Metering and existing
+master gain smoothing remain unchanged. Legacy engine readback for saving and
+autosave remains, but the master UI no longer depends on it for history.
+
+CommandEngineTests and SessionViewTests cover Preview/live values, bounds/nonfinite
+arguments, strict parsing, atomic mixed-batch refusal, no-op/redo behavior, busy
+refusal, real master-fader long/separate/no-op drags, timed edits and stale-project
+gestures. ProjectControllerTests retains master gain persistence/render coverage.

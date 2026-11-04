@@ -549,8 +549,8 @@ private:
 // shows when the mix is hot enough to be bent by it.
 class MasterChannelStrip final : public juce::Component {
 public:
-    MasterChannelStrip(MasterControls& masterControls, std::function<void(bool)> editedCallback)
-        : controls(masterControls), edited(std::move(editedCallback)) {
+    MasterChannelStrip(ProjectController& projectController, MasterControls& masterControls, std::function<void()> commandCallback)
+        : controller(projectController), controls(masterControls), commandExecuted(std::move(commandCallback)) {
         for (auto* c : std::array<juce::Component*, 4>{&title, &gainLabel, &gain, &meter}) addAndMakeVisible(c);
         title.setText("MASTER", juce::dontSendNotification);
         title.setFont(ui::font(13.0f, true));
@@ -569,11 +569,17 @@ public:
         gain.setDoubleClickReturnValue(true, 100.0);
         gain.textFromValueFunction = [](double v) { return mixer_text::gainToText(v); };
         gain.valueFromTextFunction = [](const juce::String& t) { return mixer_text::textToGain(t, maxMasterGain * 100.0); };
-        gain.onValueChange = [this] {
-            controls.gain.store(static_cast<float>(gain.getValue() / 100));
-            edited(!gain.isMouseButtonDown());
+        gain.onDragStart = [this] {
+            dragging=true; gestureScope=controller.document().identityScope;
+            gesture="master-drag-"+juce::String(++nextGesture);
         };
-        gain.onDragEnd = [this] { edited(true); };
+        gain.onValueChange = [this] {
+            if(dragging && gestureScope!=controller.document().identityScope){refreshSettings();return;}
+            const auto result=command::CommandEngine(controller).execute(command::SetMasterVolume{gain.getValue()/100.0},dragging?gesture:juce::String("master-volume"),dragging);
+            refreshSettings();
+            if(result.ok && result.changed && commandExecuted)commandExecuted();
+        };
+        gain.onDragEnd = [this] { dragging=false;gesture.clear(); };
         gain.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 64, 20);
         gain.setColour(juce::Slider::trackColourId, ui::colours::accent);
     }
@@ -613,8 +619,13 @@ public:
     }
 
 private:
+    ProjectController& controller;
     MasterControls& controls;
-    std::function<void(bool)> edited;
+    std::function<void()> commandExecuted;
+    bool dragging{};
+    std::uint32_t gestureScope{};
+    juce::String gesture;
+    inline static juce::uint64 nextGesture{};
     juce::Label title, gainLabel;
     juce::Slider gain;
     ui::LevelMeter meter;
@@ -633,7 +644,7 @@ public:
                     std::array<BusControls, maxBuses>& engineBusControls)
         : controller(projectController), controls(engineControls), returnControls(engineReturnControls), busControls(engineBusControls),
 
-          masterStrip(masterControls, [this](bool committed) { if (onMasterEdited) onMasterEdited(committed); }) {
+          masterStrip(projectController, masterControls, [this] { if (onMasterCommandExecuted) onMasterCommandExecuted(); }) {
         addAndMakeVisible(masterStrip);
         addAndMakeVisible(help);
         help.setText("Independent instrument, level, balance and sends for each Session track. Output sends a track to the master "
@@ -661,8 +672,8 @@ public:
     // for discrete changes and at the end of a fader/knob drag.
     std::function<void(int, bool)> onTrackEdited; // legacy instrument/send edits only
     std::function<void(int)> onTrackMixCommandExecuted;
-    // Same contract for the master fader, and for a return strip (its index).
-    std::function<void(bool)> onMasterEdited;
+    // Master edits are already committed by CommandEngine; refresh only.
+    std::function<void()> onMasterCommandExecuted;
     std::function<void(int, bool)> onReturnEdited;
     std::function<void(int, bool)> onBusEdited;   // a bus strip (its slot)
     // A bus was added, renamed or deleted, or a track's output changed; the label names the edit.
