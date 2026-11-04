@@ -92,6 +92,10 @@ sample rate, buffer size, MIDI controller, display scale, and pass/fail notes.
     and Tempo sync at several BPMs (change tempo while playing); ping-pong alternates
     ears; feedback at maximum stays stable. Limiter: push Gain up on a loud mix; the
     output meter must never pass the ceiling, including in the exported WAV.
+    Transient Shaper: on a drum loop, compare positive/negative Attack for punch and
+    positive/negative Sustain for decay length. Defaults and 0% Mix should sound dry;
+    keep headroom for boosts. Check stereo image, automation sweeps, bypass, saved
+    controls and WAV export. Listening and hardware acceptance are still pending.
 18. Stock effects, project and rack behavior: put several effects on a track, Move FX
     up/down, Bypass, Remove and Undo each; Save, close, reopen and confirm every
     knob position returned. Save portable and reopen. A track with a limiter must stay
@@ -512,6 +516,16 @@ Needs: Valhalla Supermassive, one VST3 instrument (ideally one that reports late
 - Files from Explorer: drag a WAV and an MP3 onto an empty Session cell and a free Song lane; the target is marked, the clip plays, and one Undo removes it. Drop onto an occupied cell: nothing changes and the status says why. Drag a .mid onto the piano roll and a drum groove onto the Channel Rack. From the Mixer, hold a WAV over the window: the Session opens; hold a .mid: the piano roll or Channel Rack opens. Drag two files: nothing imports and the status says one at a time. Repeat a drop into a detached Session window. A non-audio file shows the no-drop cursor. An app run as administrator refuses Explorer drags (a Windows rule).
 - Sample browser > Starter Pack: the list shows the samples and the MIDI clips, and the status line counts both. Select a .mid: Preview and both Import buttons grey out and the status line says to drag it. Drag a chord progression: the piano roll opens; an amber line follows the pointer across the grid; drop at bar 2 and the chords start at bar 2 as one undo step. Drag a drum groove: the Channel Rack opens with an amber border; drop it and a new pattern named after the groove appears (one undo step). Dragging a .mid over Session or Song shows no drop target, and dropping there does nothing.
 - Sample browser key matching: pick a sustained, pitched sample (not a drum), set the source key to its root and the target key a few semitones away, turn on Match key and press Preview. It sounds at the target key, lasts as long as the unshifted preview, and has no clicks or obvious warble. With Match project tempo also on, it follows both the tempo and the key. A combination that would stretch too far (for example half tempo shifted down) greys out Preview, and its tooltip says why.
+
+## Bit crusher (T2-02 / FX-02)
+
+- Add Alien Bit Crusher from the stock effect browser. Defaults and settled 0% Mix
+  should sound dry. At 100% Mix, lower Bits to hear quantisation and increase
+  Reduction to hear intentional sample-hold aliasing. Reduction counts host samples,
+  so its effective rate follows the audio device sample rate.
+- Check stereo channels, automated Mix sweeps, bypass, reset/device restart, saved
+  settings, Undo/Redo and Song export. Bit depth and hold-period changes are discrete
+  and intentionally gritty. Listening and physical-device acceptance remain pending.
 
 ## Equal sample slices (T2-01 / INST-07, format 33)
 

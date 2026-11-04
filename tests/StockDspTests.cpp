@@ -784,7 +784,75 @@ static void phaserTests() {
     }
 }
 
+static void transientTests() {
+    for (double sr : {8000., 44100., 48000., 96000., 192000.}) {
+        const int count = static_cast<int>(sr * .4), drop = static_cast<int>(sr * .05);
+        std::vector<float> input(count, .02f);
+        std::fill(input.begin(), input.begin() + drop, .4f);
+        const auto render = [&](TransientShaper::Settings settings, int block) {
+            TransientShaper effect; effect.prepare(sr); auto l = input, r = input;
+            for (auto& v : r) v *= .25f;
+            for (int at = 0; at < count; at += block) effect.process(l.data() + at, r.data() + at, std::min(block, count - at), settings);
+            return std::pair{l, r};
+        };
+        check(render({}, 37).first == input, "neutral transient shaper is exact identity");
+        check(render({12, 12, 0, 12}, 37).first == input, "zero mix is exact dry including trim");
+        const auto boost = render({12, 0, 1, 0}, 512), cut = render({-12, 0, 1, 0}, 512);
+        check(boost.first[0] > input[0] * 3 && cut.first[0] < input[0] * .4f, "attack boosts or softens the onset at every sample rate");
+        const int decay = drop + static_cast<int>(sr * .04);
+        const auto more = render({0, 12, 1, 0}, 512), less = render({0, -12, 1, 0}, 512);
+        check(more.first[decay] > input[decay] * 2 && less.first[decay] < input[decay] * .5f, "sustain boosts or reduces the decay separately from attack");
+        const auto reference = render({9, -7, .8, -2}, 512);
+        for (int block : {1, 37, 1024}) check(render({9, -7, .8, -2}, block) == reference, "transient response independent of host block size");
+        bool linked = true;
+        for (int i = 0; i < count; ++i) linked = linked && reference.second[i] == reference.first[i] * .25f;
+        check(linked, "linked gain preserves stereo ratios");
+        TransientShaper effect; effect.prepare(sr); auto l = input, r = input;
+        effect.process(l.data(), r.data(), count, {12, 12, 1, 12}); const auto first = l;
+        effect.reset(); l = input; r = input; effect.process(l.data(), r.data(), count, {12, 12, 1, 12});
+        check(l == first, "reset clears detector and smoothing history");
+        l.assign(count, 0); r = l; effect.process(l.data(), r.data(), count, {12, 12, 1, 12});
+        check(l == std::vector<float>(count, 0) && r == l, "silent input produces no tail or noise");
+    }
+    TransientShaper effect; effect.prepare(rate);
+    // A constant signal isolates smoothing from detector movement.
+    effect.reset(); std::vector<float> l(48000, .1f), r = l;
+    effect.process(l.data(), r.data(), 24000, {});
+    effect.process(l.data() + 24000, r.data() + 24000, 24000, {0, 0, 1, 12});
+    check(l[24000] > .1f && l[24000] < .102f && l.back() > .39f, "output trim ramps rather than stepping on automation");
+    l = {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), .1f}; r = l;
+    effect.reset(); effect.process(l.data(), r.data(), 3, {std::numeric_limits<double>::infinity(), 100, 2, -100});
+    check(finite(l[0]) && finite(l[1]) && finite(l[2]), "invalid input and settings cannot poison transient detector");
+}
+
+static void crusherTests() {
+    const auto input = noise(4096, .8, 42);
+    const auto render = [&](int block, double mix) {
+        BitCrusher e; e.prepare(rate); auto l = input, r = input;
+        for (auto& v : r) v = -v;
+        for (int at = 0; at < 4096; at += block) e.process(l.data() + at, r.data() + at, std::min(block, 4096 - at), {4, 7, mix});
+        return std::pair{l, r};
+    };
+    check(render(37, 0).first == input, "crusher zero mix is exact dry");
+    const auto crushed = render(512, 1);
+    for (int block : {1, 37, 1024}) check(render(block, 1) == crushed, "crusher clock independent of block boundaries");
+    bool quantised = true, held = true, stereo = true;
+    for (int i = 0; i < 4096; ++i) {
+        quantised = quantised && std::abs(crushed.first[i] * 8 - std::round(crushed.first[i] * 8)) < 1e-6;
+        held = held && (i % 7 == 0 || crushed.first[i] == crushed.first[i - 1]);
+        stereo = stereo && crushed.first[i] == -crushed.second[i];
+    }
+    check(quantised && held && stereo, "crusher applies signed four-bit grid and shared stereo hold clock");
+    BitCrusher e; e.prepare(rate); float l[]{.3f, .4f}, r[]{-.3f, -.4f};
+    e.process(l, r, 2, {4, 32, 1}); e.reset(); l[0] = .6f; r[0] = -.6f;
+    e.process(l, r, 1, {4, 32, 1}); near(l[0], .625, 1e-6, "reset forgets held audio");
+    float silence[64]{}, other[64]{}; e.process(silence, other, 64, {4, 32, 1});
+    check(silence[63] == 0 && other[63] == 0, "held sample decays to silence within maximum hold");
+}
+
 int main() {
+    crusherTests();
+    transientTests();
     phaserTests();
     chorusTests();
     smootherTests();
