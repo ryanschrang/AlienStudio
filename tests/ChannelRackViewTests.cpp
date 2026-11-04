@@ -1513,6 +1513,31 @@ static void deferredTrackIdentityRename() {
 }
 
 // Pattern menu > Import groove from Starter Pack: a new pattern on the matching channels, one undo step.
+// A drum groove from Explorer imports as one from the sample browser does; several files import nothing.
+static void explorerGrooveDrop() {
+    Rig rig;
+    rig.view.starterFolder = juce::File(juce::String(ALIEN_STARTER_PACK_DIR));
+    std::vector<alien::starterPack::MidiClip> grooves;
+    for (const auto& clip : alien::starterPack::midiClips(rig.view.starterFolder)) if (clip.isDrumGroove()) grooves.push_back(clip);
+    require(!grooves.empty(), "the Starter Pack has a drum groove");
+    const juce::StringArray one{grooves[0].file.getFullPathName()};
+    const juce::StringArray both{grooves[0].file.getFullPathName(), grooves[0].file.getFullPathName()};
+    require(rig.view.isInterestedInFileDrag(one) && !rig.view.isInterestedInFileDrag({"C:\\kick.wav"}), "the rack takes MIDI files, not audio");
+    rig.view.fileDragEnter(both, 10, 10);
+    require(!rig.view.isGrooveDropTarget(), "several files mark nothing");
+    const int before = rig.rack().patternCount;
+    rig.view.filesDropped(both, 10, 10);
+    require(rig.rack().patternCount == before && rig.view.hintText() == alien::filedrop::oneFileMessage, "several files import nothing and say why");
+    rig.view.fileDragEnter(one, 10, 10);
+    require(rig.view.isGrooveDropTarget(), "one file marks the rack");
+    rig.view.fileDragExit(one);
+    require(!rig.view.isGrooveDropTarget(), "leaving clears the mark");
+    rig.view.fileDragEnter(one, 10, 10);
+    rig.view.filesDropped(one, 10, 10);
+    require(!rig.view.isGrooveDropTarget() && rig.rack().patternCount > before, "a drop imports the groove as a new pattern");
+    std::puts("PASS: a drum groove from Explorer imports into the rack");
+}
+
 static void starterGrooveImport() {
     Rig rig;
     rig.view.starterFolder = juce::File(juce::String(ALIEN_STARTER_PACK_DIR));
@@ -1579,6 +1604,7 @@ static void grooveDrop() {
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     starterGrooveImport();
+    explorerGrooveDrop();
     grooveDrop();
     deferredTrackIdentityRename();
     synthChannelChecks();

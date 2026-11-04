@@ -2391,9 +2391,26 @@ static void sampleDropChecks() {
     require(c.timeline().regions == saved && c.undoLabel() == label, "decoded overlap refuses atomically without replacing Song clips");
 }
 
+static void explorerDropChecks() {
+    SampleDropFixture audio; ToneEngine engine; ProjectController c(engine); TimelineCanvas canvas(c); canvas.setSize(1000, 600);
+    const juce::StringArray one{audio.file.getFullPathName()};
+    const juce::StringArray both{audio.file.getFullPathName(), audio.file.getFullPathName()};
+    const auto point = juce::Point<int>{juce::roundToInt(canvas.xForTick(3840)), TimelineCanvas::topHeight + TimelineCanvas::rowHeight + 20};
+    juce::String said; canvas.onMessage = [&](const juce::String& text) { if (text.isNotEmpty()) said = text; };
+    require(canvas.isInterestedInFileDrag(one) && canvas.isInterestedInFileDrag(both) && !canvas.isInterestedInFileDrag({"C:\\clips\\groove.mid"}), "Song takes audio files from Explorer, not MIDI");
+    canvas.fileDragEnter(one, point.x, point.y); require(canvas.dropPreview().valid && canvas.dropPreview().row == 1 && canvas.dropPreview().tick == 3840 && c.timeline().regions.empty(), "hovering previews without changing the Song");
+    canvas.fileDragExit(one); require(!canvas.dropPreview().valid, "leaving clears the preview");
+    canvas.fileDragEnter(both, point.x, point.y); require(!canvas.dropPreview().valid, "several files preview nothing");
+    canvas.filesDropped(both, point.x, point.y); require(!c.isBusy() && c.timeline().regions.empty() && said == alien::filedrop::oneFileMessage, "several files import nothing and say why");
+    canvas.fileDragEnter(one, point.x, point.y); canvas.filesDropped(one, point.x, point.y); SampleDropFixture::wait(c);
+    require(c.timeline().regions.size() == 1 && c.timeline().regions[0].row == 1 && c.timeline().regions[0].start == 3840 && !canvas.dropPreview().valid, "a drop imports at the pointed lane and tick");
+    c.undo(); require(c.timeline().regions.empty(), "an Explorer drop has one Undo step");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     sampleDropChecks();
+    explorerDropChecks();
     warpRenderChecks();
     warpEditorChecks();
     freezeMenuChecks();

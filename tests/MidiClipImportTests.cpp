@@ -316,6 +316,48 @@ static void editorTakesDroppedClips() {
     std::puts("PASS: the piano roll takes a dragged MIDI clip at the step under the pointer");
 }
 
+// Files from Explorer take the browser drag's route, and a view that cannot take one opens one that can.
+static void explorerFilesReachTheRoll() {
+    PianoRollEditor editor;
+    editor.setSize(900, 500);
+    PianoRollPattern start;
+    editor.setPattern(start);
+    const juce::StringArray one{"C:/Clips/Chords.mid"};
+    const juce::StringArray both{"C:/Clips/Chords.mid", "C:/Clips/Bass.midi"};
+    require(!editor.isInterestedInFileDrag(one), "without an importer the editor leaves files alone");
+    juce::File imported; double importedAt = -1.0; int imports = 0;
+    editor.onImportMidiFile = [&](const juce::File& file) { imported = file; importedAt = editor.getInsertionStep(); ++imports; };
+    require(editor.isInterestedInFileDrag(one) && editor.isInterestedInFileDrag(both), "with one, it takes MIDI files");
+    require(!editor.isInterestedInFileDrag({"C:/kick.wav"}) && !editor.isInterestedInFileDrag({"Chords.mid"}), "but not audio or a relative path");
+    const int x = 64 + (900 - 64 - 26) / 2;
+    editor.fileDragEnter(one, x, 250);
+    const int target = editor.midiDropTarget();
+    require(target >= 28 && target <= 32, "the marker follows the pointer");
+    editor.filesDropped(one, x, 250);
+    require(imports == 1 && imported == juce::File("C:/Clips/Chords.mid") && importedAt == target && editor.midiDropTarget() < 0, "a drop imports at the marked step");
+    editor.fileDragEnter(both, x, 250);
+    require(editor.midiDropTarget() < 0, "several files mark nothing");
+    editor.filesDropped(both, x, 250);
+    require(imports == 1 && editor.getStatus() == alien::filedrop::oneFileMessage, "several files import nothing and say why");
+    editor.setLocked(true);
+    editor.filesDropped(one, x, 250);
+    require(imports == 1 && editor.getStatus().startsWith("No changes"), "a locked editor refuses, saying why");
+
+    using namespace alien::filedrop;
+    int asked = 0;
+    const auto drums = [&](const juce::File&) { ++asked; return true; };
+    const auto notDrums = [&](const juce::File&) { ++asked; return false; };
+    const juce::StringArray wav{"C:/kick.wav"};
+    require(landingTab(wav, 3, false, drums) == sessionTab && landingTab(wav, songTab, true, drums) == sessionTab, "audio over another view, or the devices, opens the Session");
+    require(landingTab(wav, sessionTab, false, drums) == -1 && landingTab(wav, songTab, false, drums) == -1, "audio stays on the Session or the Song");
+    require(asked == 0, "audio never reads a file");
+    require(landingTab(one, sessionTab, false, drums) == channelRackTab && landingTab(one, songTab, false, notDrums) == pianoRollTab, "MIDI opens where it can land, by what it holds");
+    asked = 0;
+    require(landingTab(one, pianoRollTab, false, drums) == -1 && landingTab(one, channelRackTab, false, notDrums) == -1 && asked == 0, "MIDI stays on the piano roll or rack, without reading it");
+    require(landingTab(both, 3, false, drums) == -1 && landingTab({"C:/notes.txt"}, 3, false, drums) == -1, "several files or another kind stay put");
+    std::puts("PASS: files from Explorer reach the piano roll, and open a view that can take them");
+}
+
 static rack_groove::Report importInto(rack::Project& p, const midi_import::ImportedClip& clip, const std::string& name) {
     rack_groove::Report report;
     require(rack_groove::importGroove(p, clip, name, &report) && p.valid(), "imports: " + juce::String(name));
@@ -441,6 +483,7 @@ int main() {
     timeSignatureSetsTheBar();
     editorImportIsOneUndoableEdit();
     editorTakesDroppedClips();
+    explorerFilesReachTheRoll();
     drumGrooveToRack();
     everyStarterPackClipImports();
 }

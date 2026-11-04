@@ -2,6 +2,7 @@
 #include "FlLook.h"
 #include "ProjectController.h"
 #include "CommandEngine.h"
+#include "ExternalFileDrop.h"
 #include "SampleDrag.h"
 #include "SessionClipButton.h"
 #include "SessionTrackStrip.h"
@@ -42,7 +43,7 @@ public:
 // track's controls (light, pan, volume, name, solo, stop) at its left end, and one column per scene with the
 // scene's launch button on top. The track column stays pinned at the left and the scene row stays pinned at
 // the top while the clip grid scrolls in both directions, so any number of tracks and scenes fits the window.
-class SessionView final : public juce::Component, public juce::DragAndDropTarget {
+class SessionView final : public juce::Component, public juce::DragAndDropTarget, public juce::FileDragAndDropTarget {
 public:
     // Layout, in pixels. The track column is as wide as SessionTrackStrip; clip columns grow with the window up to maxSceneWidth.
     static constexpr int headerWidth = SessionTrackStrip::width, gap = 6, sceneBarHeight = 30, rowHeight = 36,
@@ -496,6 +497,16 @@ public:
         if (cell.first < 0) { setImportStatus("Drop onto an empty, unfrozen Session cell.", {}); return; }
         controller.importBrowserSample(file, cell.first, cell.second);
     }
+    // A file dragged in from Explorer takes the same route as one from the sample browser.
+    bool isInterestedInFileDrag(const juce::StringArray& files) override { return filedrop::anySample(files); }
+    void fileDragEnter(const juce::StringArray& files, int x, int y) override { fileDragMove(files, x, y); }
+    void fileDragMove(const juce::StringArray& files, int x, int y) override { itemDragMove(filedrop::details(filedrop::samplePayload(files), x, y)); }
+    void fileDragExit(const juce::StringArray&) override { itemDragExit(filedrop::details({}, 0, 0)); }
+    void filesDropped(const juce::StringArray& files, int x, int y) override {
+        if (files.size() != 1) { itemDragExit(filedrop::details({}, 0, 0)); setImportStatus(filedrop::oneFileMessage, {}); return; }
+        itemDropped(filedrop::details(filedrop::samplePayload(files), x, y));
+    }
+    std::pair<int, int> sampleDropTarget() const noexcept { return sampleDrop; }
     void paintOverChildren(juce::Graphics& g) override {
         if (sampleDrop.first < 0) return;
         g.reduceClipRegion(viewport.getBounds()); g.setColour(ui::colours::accent);

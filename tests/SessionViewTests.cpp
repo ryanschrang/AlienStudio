@@ -1144,6 +1144,34 @@ static void sampleDropChecks() {
     view.itemDragExit(drag);
 }
 
+// Files from Explorer: the real window route (peer -> component under the pointer -> nearest interested parent), then the import.
+static void explorerDropChecks() {
+    SampleDropFixture audio; ToneEngine engine; ProjectController c(engine); SessionView view(c, engine); view.setSize(1200, 700);
+    const juce::StringArray one{audio.file.getFullPathName()};
+    const juce::StringArray both{audio.file.getFullPathName(), audio.file.getFullPathName()};
+    const auto cell = view.clipArea(1, 1).getCentre();
+    require(view.isInterestedInFileDrag(one), "Session takes an audio file from Explorer");
+    require(view.isInterestedInFileDrag(both), "several audio files still reach the view, to say why they are refused");
+    require(!view.isInterestedInFileDrag({"C:\\clips\\groove.mid"}) && !view.isInterestedInFileDrag({"C:\\notes.txt"}) && !view.isInterestedInFileDrag({"relative.wav"}),
+            "Session leaves MIDI, other files and relative paths alone");
+
+    view.fileDragEnter(one, cell.x, cell.y); require(view.sampleDropTarget() == std::pair<int,int>{1,1}, "hovering marks the cell under the pointer");
+    view.fileDragExit(one); require(view.sampleDropTarget().first < 0, "leaving clears the mark");
+    view.fileDragEnter(both, cell.x, cell.y); require(view.sampleDropTarget().first < 0, "several files mark nothing");
+    view.filesDropped(both, cell.x, cell.y);
+    require(!c.isBusy() && !c.document().cellClip(1, 1) && view.sampleDropTarget().first < 0, "several files import nothing");
+
+    view.setVisible(true); view.addToDesktop(0);
+    auto* peer = view.getPeer(); require(peer != nullptr, "Session has a window");
+    juce::ComponentPeer::DragInfo info; info.files = one; info.position = cell;
+    require(peer->handleDragMove(info) && view.sampleDropTarget() == std::pair<int,int>{1,1}, "a window-level drag reaches the view through the clip button under it");
+    require(peer->handleDragDrop(info), "the window takes the drop");
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(50); SampleDropFixture::wait(c);
+    require(c.document().clip(1, 1).isAudioClip() && !c.document().cellClip(0, 1), "a window-level drop imports into the pointed cell");
+    c.undo(); require(!c.document().cellClip(1, 1), "an Explorer drop has one Undo step");
+    view.removeFromDesktop();
+}
+
 static void sceneMenuCommands() {
     Rig rig; auto& c = rig.controller; auto& view = rig.view;
     int legacy = 0, refresh = 0; view.onEdited = [&](const juce::String& label) { ++legacy; c.commit(label); }; view.onStructureChanged = [&] { ++refresh; };
@@ -1329,6 +1357,7 @@ int main() {
     clipboardMenuCommands();
     clearClipCommandButton();
     sampleDropChecks();
+    explorerDropChecks();
     sceneMenuCommands();
     midiClipMenuCommands();
     layoutChecks();
