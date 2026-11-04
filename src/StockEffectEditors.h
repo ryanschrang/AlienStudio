@@ -824,6 +824,23 @@ public:
     void resized() override { auto area = content(); layoutKnobs(area, 0, 4, area.getWidth() / 4); }
 };
 
+class TransientEditor final : public EffectEditor {
+public:
+    explicit TransientEditor(TransientEffect& e) : EffectEditor(e, ui::colours::accent, 520, 220) {
+        addKnob(transient::attack, "Attack"); addKnob(transient::sustain, "Sustain");
+        addKnob(transient::mix, "Mix"); addKnob(transient::output, "Output"); finishSetup();
+    }
+    void resized() override { auto area = content(); layoutKnobs(area, 0, 4, area.getWidth() / 4); }
+};
+
+class BitCrusherEditor final : public EffectEditor {
+public:
+    explicit BitCrusherEditor(BitCrusherEffect& e) : EffectEditor(e, ui::colours::accent, 420, 220) {
+        addKnob(crusher::bits, "Bits"); addKnob(crusher::reduction, "Reduction"); addKnob(crusher::mix, "Mix"); finishSetup();
+    }
+    void resized() override { auto area = content(); layoutKnobs(area, 0, 3, area.getWidth() / 3); }
+};
+
 // ---- Registration ----------------------------------------------------------------------
 
 inline juce::AudioProcessorEditor* makeEditor(Effect& effect) {
@@ -838,6 +855,8 @@ inline juce::AudioProcessorEditor* makeEditor(Effect& effect) {
     if (id == catalog[7].id) return new GateEditor(static_cast<GateEffect&>(effect));
     if (id == catalog[8].id) return new ChorusEditor(static_cast<ChorusEffect&>(effect));
     if (id == catalog[9].id) return new PhaserEditor(static_cast<PhaserEffect&>(effect));
+    if (id == catalog[10].id) return new TransientEditor(static_cast<TransientEffect&>(effect));
+    if (id == catalog[11].id) return new BitCrusherEditor(static_cast<BitCrusherEffect&>(effect));
     return nullptr;
 }
 // Including this header installs the editors; without it the host shows its generic one.
