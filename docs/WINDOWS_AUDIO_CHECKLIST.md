@@ -92,6 +92,10 @@ sample rate, buffer size, MIDI controller, display scale, and pass/fail notes.
     and Tempo sync at several BPMs (change tempo while playing); ping-pong alternates
     ears; feedback at maximum stays stable. Limiter: push Gain up on a loud mix; the
     output meter must never pass the ceiling, including in the exported WAV.
+    Transient Shaper: on a drum loop, compare positive/negative Attack for punch and
+    positive/negative Sustain for decay length. Defaults and 0% Mix should sound dry;
+    keep headroom for boosts. Check stereo image, automation sweeps, bypass, saved
+    controls and WAV export. Listening and hardware acceptance are still pending.
 18. Stock effects, project and rack behavior: put several effects on a track, Move FX
     up/down, Bypass, Remove and Undo each; Save, close, reopen and confirm every
     knob position returned. Save portable and reopen. A track with a limiter must stay

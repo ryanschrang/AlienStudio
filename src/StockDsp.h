@@ -860,4 +860,55 @@ private:
     std::array<Channel, 2> channel{};
 };
 
+// Stereo-linked envelope differential shaper. The fast follower catches onsets;
+// the slower follower holds decays. Normalised differences make the response
+// independent of input level above the noise floor. One gain preserves the
+// stereo image; no delay, generated tail, or dynamically allocated state.
+class TransientShaper {
+public:
+    struct Settings { double attackDb{}, sustainDb{}, mix{1}, outputDb{}; };
+    void prepare(double sampleRate) noexcept {
+        const double rate = std::isfinite(sampleRate) ? std::clamp(sampleRate, 8000.0, 384000.0) : 44100.0;
+        const auto coefficient = [rate](double ms) { return std::exp(-1.0 / (ms * .001 * rate)); };
+        fastRise = coefficient(.2); fastFall = coefficient(20);
+        slowRise = coefficient(15); slowFall = coefficient(150);
+        for (auto* control : {&attack, &sustain, &mix, &output}) control->configure(rate, 5);
+        reset();
+    }
+    void reset() noexcept { fast = slow = 0; snapNext = true; }
+    void process(float* left, float* right, int samples, Settings s) noexcept {
+        if (samples <= 0) return;
+        const auto bounded = [](double v, double lo, double hi, double fallback) {
+            return std::isfinite(v) ? std::clamp(v, lo, hi) : fallback;
+        };
+        s.attackDb = bounded(s.attackDb, -12, 12, 0); s.sustainDb = bounded(s.sustainDb, -12, 12, 0);
+        s.mix = bounded(s.mix, 0, 1, 1); s.outputDb = bounded(s.outputDb, -12, 12, 0);
+        if (snapNext) {
+            attack.reset(s.attackDb); sustain.reset(s.sustainDb); mix.reset(s.mix); output.reset(s.outputDb); snapNext = false;
+        }
+        attack.setTarget(s.attackDb); sustain.setTarget(s.sustainDb); mix.setTarget(s.mix); output.setTarget(s.outputDb);
+        for (int i = 0; i < samples; ++i) {
+            const float l = finite(left[i]) ? left[i] : 0, r = finite(right[i]) ? right[i] : 0;
+            const double level = std::max(std::abs(l), std::abs(r));
+            const auto follow = [level](double current, double rise, double fall) {
+                const double c = level > current ? rise : fall;
+                const double next = level + c * (current - level);
+                return next < 1e-15 ? 0.0 : next;
+            };
+            fast = follow(fast, fastRise, fastFall); slow = follow(slow, slowRise, slowFall);
+            const double onset = std::clamp((fast - slow) / std::max(fast, 1e-9), 0.0, 1.0);
+            const double decay = std::clamp((slow - fast) / std::max(slow, 1e-9), 0.0, 1.0);
+            const double db = attack.advance(1) * onset + sustain.advance(1) * decay;
+            const double wet = mix.advance(1), trim = output.advance(1);
+            // Zero mix includes the output trim in the wet path, so it is exact dry.
+            const double gain = 1.0 + wet * (dbToGain(db + trim) - 1.0);
+            left[i] = static_cast<float>(l * gain); right[i] = static_cast<float>(r * gain);
+        }
+    }
+private:
+    double fast{}, slow{}, fastRise{}, fastFall{}, slowRise{}, slowFall{};
+    Smoother attack, sustain, mix, output;
+    bool snapNext{true};
+};
+
 } // namespace alien::dsp
