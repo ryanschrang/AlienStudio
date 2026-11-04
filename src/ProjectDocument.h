@@ -86,6 +86,7 @@ struct SessionTrack {
     int colour{}; // Index into the track colour palette.
     PluginRackState plugins;
     std::array<juce::String, drumPadCount> drumPaths{};
+    std::array<DrumSlice, drumPadCount> drumSlices{};
     std::array<std::shared_ptr<const SessionAudioClip>, drumPadCount> drumAssets{};
     std::uint32_t id = newObjectId();
 };
@@ -534,7 +535,7 @@ inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
         return false;
     for (std::size_t t = 0; t < a.tracks.size(); ++t)
         if (a.tracks[t].id != b.tracks[t].id || a.tracks[t].name != b.tracks[t].name
-            || a.tracks[t].plugins != b.tracks[t].plugins || a.tracks[t].drumAssets != b.tracks[t].drumAssets || a.tracks[t].colour != b.tracks[t].colour || !sameSettings(a.tracks[t].settings, b.tracks[t].settings))
+            || a.tracks[t].plugins != b.tracks[t].plugins || a.tracks[t].drumAssets != b.tracks[t].drumAssets || a.tracks[t].drumSlices != b.tracks[t].drumSlices || a.tracks[t].drumPaths != b.tracks[t].drumPaths || a.tracks[t].colour != b.tracks[t].colour || !sameSettings(a.tracks[t].settings, b.tracks[t].settings))
             return false;
     for (std::size_t s = 0; s < a.scenes.size(); ++s)
         if (a.scenes[s].id != b.scenes[s].id || a.scenes[s].name != b.scenes[s].name) return false;
@@ -593,6 +594,7 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
         const auto& track = doc.tracks[static_cast<std::size_t>(t)];
         data.plugins[t] = track.plugins;
         data.drumPaths[static_cast<std::size_t>(t)] = track.drumPaths;
+        data.drumSlices[static_cast<std::size_t>(t)] = track.drumSlices;
         data.trackSettings[static_cast<std::size_t>(t)] = track.settings;
         data.trackNames[static_cast<std::size_t>(t)] = track.name;
         data.trackColours[static_cast<std::size_t>(t)] = track.colour;
@@ -657,6 +659,7 @@ inline ProjectDocument fromProjectData(const SessionProjectData& source) {
         auto& track = doc.tracks[static_cast<std::size_t>(t)];
         track.plugins = data.plugins[t];
         track.drumPaths = data.drumPaths[static_cast<std::size_t>(t)];
+        track.drumSlices = data.drumSlices[static_cast<std::size_t>(t)];
         track.settings = data.trackSettings[static_cast<std::size_t>(t)];
         if (data.trackNames[static_cast<std::size_t>(t)].isNotEmpty()) track.name = data.trackNames[static_cast<std::size_t>(t)];
         track.colour = data.trackColours[static_cast<std::size_t>(t)];

@@ -106,7 +106,31 @@ static void rackAndRangeExportTests() {
     whole.deleteFile(); part.deleteFile(); halfFile.deleteFile();
 }
 
+static void slicedDrumExportTests() {
+    auto source = std::make_shared<alien::SessionAudioClip>();
+    source->sampleRate = 8000; source->channels = 2; source->frames = 80;
+    source->left.assign(80, .8f); source->right.assign(80, -.8f);
+    std::fill(source->left.begin() + 20, source->left.begin() + 30, .2f);
+    std::fill(source->right.begin() + 20, source->right.begin() + 30, -.2f); source->buildWaveform();
+    const auto view = alien::drumSliceView(source, {20, 30});
+    auto project = std::make_unique<alien::SessionProjectData>(); project->trackSettings[0].instrument = 1;
+    auto song = songOfBars(1); check(song->timeline.placeBars(0, 0, 0, 1), "place sliced drum pattern"); project->timeline = song->timeline;
+    alien::PianoRollPattern notes; notes.add(36, 0, 1, 1); song->clips[0][0].pattern = notes;
+    alien::DrumSamplePointers drums{}; drums[0][0] = view.get();
+    const auto file = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("alien-sliced-drum", ".wav");
+    std::atomic<bool> cancel{false}; juce::String error;
+    check(alien::exportArrangementWav(file, *project, *song, drums, cancel, error), "export sliced drum through Song engine");
+    juce::WavAudioFormat format; std::unique_ptr<juce::AudioFormatReader> reader(format.createReaderFor(file.createInputStream().release(), true));
+    std::array<float, 1024> left{}, right{}; float* channels[]{left.data(), right.data()};
+    check(reader && reader->read(channels, 2, 0, 1024), "read sliced drum export");
+    check(left[0] > .03f && left[0] < .06f && std::abs(left[0] + right[0]) < 1e-5, "export begins at selected stereo slice rather than full sample");
+    // The existing fractional-rate player can round the final source position
+    // down by one output sample (8000/48000 is not exactly representable).
+    bool silent = true; for (int i = 61; i < 1024; ++i) silent = silent && std::abs(left[i]) < 1e-6 && std::abs(right[i]) < 1e-6;
+    check(silent, "export stops at exclusive slice end"); reader.reset(); file.deleteFile();
+}
 int main() {
+    slicedDrumExportTests();
     mailboxTests();
     // Clips point at shared notes, so a song snapshot stays small (it was 16 MiB of copied notes).
     static_assert(sizeof(alien::ArrangementPlayback) < 64 * 1024, "a song snapshot holds pointers, not notes");

@@ -512,3 +512,18 @@ Needs: Valhalla Supermassive, one VST3 instrument (ideally one that reports late
 - Files from Explorer: drag a WAV and an MP3 onto an empty Session cell and a free Song lane; the target is marked, the clip plays, and one Undo removes it. Drop onto an occupied cell: nothing changes and the status says why. Drag a .mid onto the piano roll and a drum groove onto the Channel Rack. From the Mixer, hold a WAV over the window: the Session opens; hold a .mid: the piano roll or Channel Rack opens. Drag two files: nothing imports and the status says one at a time. Repeat a drop into a detached Session window. A non-audio file shows the no-drop cursor. An app run as administrator refuses Explorer drags (a Windows rule).
 - Sample browser > Starter Pack: the list shows the samples and the MIDI clips, and the status line counts both. Select a .mid: Preview and both Import buttons grey out and the status line says to drag it. Drag a chord progression: the piano roll opens; an amber line follows the pointer across the grid; drop at bar 2 and the chords start at bar 2 as one undo step. Drag a drum groove: the Channel Rack opens with an amber border; drop it and a new pattern named after the groove appears (one undo step). Dragging a .mid over Session or Song shows no drop target, and dropping there does nothing.
 - Sample browser key matching: pick a sustained, pitched sample (not a drum), set the source key to its root and the target key a few semitones away, turn on Match key and press Preview. It sounds at the target key, lasts as long as the unshifted preview, and has no clicks or obvious warble. With Match project tempo also on, it follows both the tempo and the key. A combination that would stretch too far (for example half tempo shifted down) greys out Preview, and its tooltip says why.
+
+## Equal sample slices (T2-01 / INST-07, format 33)
+
+- In Drums, load a rhythmic WAV/MP3 into a pad, select that pad and press Slice to 8 pads.
+  All eight pads are replaced. Audition each and sequence MIDI 36-43: each pad must play
+  only its own eighth of the sample. Pads 3/4 keep the existing hat choke behavior.
+- Undo once restores the previous kit; Redo restores slices. Save, reopen and save
+  portable: source media is collected once, with each pad's boundaries retained.
+- Rename the source folder, reopen offline and relink it. The same slices must return.
+  A replacement file too short for a saved slice must leave that pad offline.
+- Compare live playback with Song WAV export at 44.1/48/96 kHz; check slice boundaries,
+  stereo balance, retriggers and device restart. Equal slices may cut across a waveform;
+  listen for boundary clicks. Automatic transient/zero-crossing slicing is not included.
+
+Listening and physical-device acceptance remain pending; automated checks are recorded in the PR.

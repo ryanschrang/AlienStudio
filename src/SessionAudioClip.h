@@ -31,6 +31,16 @@ struct SessionAudioClip {
     std::array<AudioWaveformPeak, waveformPeakCount> waveform{};
     std::size_t waveformCount{};
     std::shared_ptr<const DiskAudioFile> streamSource;
+    // Decoded, non-nested view used by sampler pads. The original owns the PCM;
+    // local frame zero and interpolation limits belong to this view.
+    std::shared_ptr<const SessionAudioClip> sliceSource;
+    std::size_t sliceOffset{};
+
+    float sampleAt(int channel, std::size_t frame) const noexcept {
+        const auto& source = sliceSource ? *sliceSource : *this;
+        const auto index = frame + (sliceSource ? sliceOffset : 0);
+        return channel == 1 && source.channels == 2 ? source.right[index] : source.left[index];
+    }
 
     bool streamed() const noexcept { return streamSource != nullptr; }
     std::size_t decodedBytes() const noexcept {
@@ -39,6 +49,11 @@ struct SessionAudioClip {
     bool valid() const noexcept {
         if (!std::isfinite(sampleRate) || sampleRate < 8000.0 || sampleRate > 192000.0
             || channels < 1 || channels > 2 || frames == 0) return false;
+        if (sliceSource)
+            return !streamed() && !sliceSource->sliceSource && !sliceSource->streamed()
+                && sliceSource->valid() && sampleRate == sliceSource->sampleRate && channels == sliceSource->channels
+                && sliceOffset < sliceSource->frames && frames <= sliceSource->frames - sliceOffset
+                && left.empty() && right.empty() && waveformCount > 0 && waveformCount <= waveform.size();
         if (streamed())
             return streamSource->valid() && streamSource->sampleRate == sampleRate
                 && streamSource->channels == channels
@@ -60,8 +75,8 @@ struct SessionAudioClip {
             const auto end = std::max(begin + 1, (bucket + 1) * frames / waveformCount);
             AudioWaveformPeak peak{1.0f, -1.0f, 1.0f, -1.0f};
             for (std::size_t i = begin; i < end; ++i) {
-                const float l = left[i];
-                const float r = channels == 2 ? right[i] : l;
+                const float l = sampleAt(0, i);
+                const float r = sampleAt(1, i);
                 peak.leftMin = std::min(peak.leftMin, l);
                 peak.leftMax = std::max(peak.leftMax, l);
                 peak.rightMin = std::min(peak.rightMin, r);
@@ -198,11 +213,11 @@ public:
             }
             activeVoice->releaseBefore(activeGeneration, first);
         } else {
-            left = interpolate(activeClip->left[static_cast<std::size_t>(first)],
-                activeClip->left[static_cast<std::size_t>(second)], fraction);
+            left = interpolate(activeClip->sampleAt(0, static_cast<std::size_t>(first)),
+                activeClip->sampleAt(0, static_cast<std::size_t>(second)), fraction);
             right = activeClip->channels == 2
-                ? interpolate(activeClip->right[static_cast<std::size_t>(first)],
-                    activeClip->right[static_cast<std::size_t>(second)], fraction) : left;
+                ? interpolate(activeClip->sampleAt(1, static_cast<std::size_t>(first)),
+                    activeClip->sampleAt(1, static_cast<std::size_t>(second)), fraction) : left;
         }
         float gain = 1.0f;
         if (fadeInDone < fadeInTotal) gain = static_cast<float>(++fadeInDone) / static_cast<float>(fadeInTotal);

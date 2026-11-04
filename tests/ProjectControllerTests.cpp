@@ -1205,9 +1205,11 @@ static void phaserHistoryTests() {
 }
 
 #include "AudioImportPlanTests.h"
+#include "DrumSliceControllerTests.h"
 
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    drumSliceControllerTests();
     audioImportPlanChecks();
     phaserHistoryTests();
     chorusHistoryTests();

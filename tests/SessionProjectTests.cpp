@@ -26,6 +26,7 @@ static void portableProjectTests() {
     source.clips[0][1].audioFilePath = second.getFullPathName();
     source.clips[1][0].audioFilePath = first.getFullPathName();
     source.drumPaths[0][0] = first.getFullPathName();
+    source.drumSlices[0][0] = {1, 3};
     alien::timeline::Region archived; archived.row = 0; archived.source = 0;
     require(source.timeline.recordTake(archived), "portable fixture has original take");
     source.timeline.regions.clear(); // The original is not part of the active comp.
@@ -44,6 +45,7 @@ static void portableProjectTests() {
         && saved.clips[0][0].audioFilePath != saved.clips[0][1].audioFilePath,
         "relative media paths deduplicate reused sources and preserve duplicate basenames");
     require(saved.drumPaths[0][0] == saved.clips[0][0].audioFilePath, "kit samples collected and deduplicated with clips");
+    require(saved.drumSlices[0][0] == source.drumSlices[0][0], "portable collection preserves slice boundaries");
     const auto priorJson = target.loadFileAsString();
     source.clips[1][1].audioFilePath = originals.getChildFile("missing.wav").getFullPathName();
     require(!alien::writeSessionProjectFile(target, source, true, saved, error)
@@ -480,7 +482,7 @@ static void songRowFormatTests() {
     const auto json = alien::serializeSessionProject(source);
     require(json.isNotEmpty(), "a project at the track and scene limits saves");
     const auto saved = juce::JSON::parse(json);
-    require(static_cast<int>(saved.getProperty("version", 0)) == 32, "format 32");
+    require(static_cast<int>(saved.getProperty("version", 0)) == alien::sessionProjectFormatVersion, "current format");
     const auto* savedRegions = saved.getProperty("timeline", {}).getProperty("regions", {}).getArray();
     require(savedRegions != nullptr && savedRegions->size() == 2, "two saved regions");
     bool sawTrack = false, sawLane = false;
@@ -533,7 +535,30 @@ static void songRowFormatTests() {
     require(damaged([](auto& r) { r.removeProperty("lane"); }), "row -1 without a lane is refused");
 }
 
+static void drumSliceProjectTests() {
+    alien::SessionProjectData source;
+    source.drumPaths[0][0] = "C:/sample.wav"; source.drumSlices[0][0] = {5, 19};
+    alien::SessionProjectData parsed; juce::String error;
+    auto json = alien::serializeSessionProject(source);
+    require(alien::parseSessionProject(json, parsed, error) && parsed.drumSlices[0][0] == alien::DrumSlice{5, 19}, "slice boundaries roundtrip");
+    auto root = juce::JSON::parse(json); root.getDynamicObject()->setProperty("version", 32); root.getDynamicObject()->removeProperty("drumSlices");
+    require(alien::parseSessionProject(juce::JSON::toString(root), parsed, error) && parsed.drumSlices[0][0].whole(), "old kits migrate to whole samples");
+    root.getDynamicObject()->setProperty("version", 33);
+    require(!alien::parseSessionProject(juce::JSON::toString(root), parsed, error), "new format requires slice metadata");
+    for (const alien::DrumSlice bad : {alien::DrumSlice{-1, 9}, {8, 8}, {9, 2}, {3, 0}}) {
+        source.drumSlices[0][0] = bad; require(alien::serializeSessionProject(source).isEmpty(), "invalid slice cannot be saved");
+    }
+    source.drumSlices[0][0] = {5, 19}; source.drumPaths[0][0].clear();
+    require(alien::serializeSessionProject(source).isEmpty(), "slice without source cannot be saved");
+    root = juce::JSON::parse(json);
+    auto kits = root.getDynamicObject()->getProperty("drumSlices");
+    auto pads = (*kits.getArray())[0]; auto range = (*pads.getArray())[0];
+    range.getArray()->set(1, 1.5); pads.getArray()->set(0, range); kits.getArray()->set(0, pads);
+    root.getDynamicObject()->setProperty("drumSlices", kits);
+    require(!alien::parseSessionProject(juce::JSON::toString(root), parsed, error), "fractional source frames refused");
+}
 int main() {
+    drumSliceProjectTests();
     songRowFormatTests();
     warpFormatChecks();
     freezeFormatTests();
