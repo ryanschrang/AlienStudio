@@ -7,6 +7,7 @@
 // nothing from this file; a drag is previewed on a copy and committed once, so
 // each gesture is one undo step.
 #include "ClipBin.h"
+#include "ExternalFileDrop.h"
 #include "SampleDrag.h"
 #include "ProjectController.h"
 #include "StudioWidgets.h"
@@ -47,7 +48,7 @@ inline bool forgetTake(ProjectController& controller, std::uint32_t id) {
 }
 } // namespace tlui
 
-class TimelineCanvas final : public juce::Component, public juce::DragAndDropTarget {
+class TimelineCanvas final : public juce::Component, public juce::DragAndDropTarget, public juce::FileDragAndDropTarget {
 public:
     static constexpr int headerWidth = 156, markerStripHeight = 20, loopStripHeight = 16, rulerHeight = 24;
     static constexpr int topHeight = markerStripHeight + loopStripHeight + rulerHeight;
@@ -864,6 +865,23 @@ public:
             return;
         }
         if (place(plan.row, plan.source, plan.tick)) say("Placed on " + laneName(plan.row) + " at bar " + barBeat(plan.tick).upToFirstOccurrenceOf(".", false, false) + ".");
+    }
+    // A file dragged in from Explorer takes the same route as one from the sample browser.
+    bool isInterestedInFileDrag(const juce::StringArray& files) override { return filedrop::anySample(files); }
+    void fileDragEnter(const juce::StringArray& files, int x, int y) override {
+        const auto payload = filedrop::samplePayload(files);
+        if (payload.isVoid()) { say(filedrop::oneFileMessage); return; }
+        itemDragEnter(filedrop::details(payload, x, y));
+    }
+    void fileDragMove(const juce::StringArray& files, int x, int y) override {
+        const auto payload = filedrop::samplePayload(files);
+        if (!payload.isVoid()) itemDragMove(filedrop::details(payload, x, y));
+    }
+    void fileDragExit(const juce::StringArray&) override { itemDragExit(filedrop::details({}, 0, 0)); }
+    void filesDropped(const juce::StringArray& files, int x, int y) override {
+        const auto payload = filedrop::samplePayload(files);
+        if (payload.isVoid()) { showDropPlan({}); say(filedrop::oneFileMessage); return; }
+        itemDropped(filedrop::details(payload, x, y));
     }
     void showDropPlan(const DropPlan& plan) {
         dropGhost = plan;

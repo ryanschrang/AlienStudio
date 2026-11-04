@@ -10,6 +10,7 @@
 #include "PianoRollProgression.h"
 #include "PianoRollScale.h"
 #include "PianoRollPitchRows.h"
+#include "ExternalFileDrop.h"
 #include "MidiClipDrag.h"
 #include "PianoRollNoteInsert.h"
 #include "StarterPack.h"
@@ -26,7 +27,7 @@ namespace alien {
 
 // Message-thread editor. Publishing snapshots and playing notes belong to the
 // owner; drawing and pointer gestures never access the audio engine directly.
-class PianoRollEditor final : public juce::Component, public juce::DragAndDropTarget, private juce::ScrollBar::Listener {
+class PianoRollEditor final : public juce::Component, public juce::DragAndDropTarget, public juce::FileDragAndDropTarget, private juce::ScrollBar::Listener {
 public:
     PianoRollEditor() {
         setName("Piano roll note editor");
@@ -421,6 +422,17 @@ public:
         if (locked) { showStatus("No changes: this clip cannot be edited right now, so the MIDI clip was not imported."); return; }
         setInsertionStep(step);
         onImportMidiFile(file);
+    }
+    // A file dragged in from Explorer takes the same route as one from the sample browser.
+    bool isInterestedInFileDrag(const juce::StringArray& files) override { return onImportMidiFile != nullptr && filedrop::anyMidi(files); }
+    void fileDragEnter(const juce::StringArray& files, int x, int y) override { fileDragMove(files, x, y); }
+    void fileDragMove(const juce::StringArray& files, int x, int y) override {
+        if (files.size() == 1) itemDragMove(filedrop::details(filedrop::midiPayload(files), x, y));
+    }
+    void fileDragExit(const juce::StringArray&) override { itemDragExit(filedrop::details({}, 0, 0)); }
+    void filesDropped(const juce::StringArray& files, int x, int y) override {
+        if (files.size() != 1) { itemDragExit(filedrop::details({}, 0, 0)); showStatus(filedrop::oneFileMessage); return; }
+        itemDropped(filedrop::details(filedrop::midiPayload(files), x, y));
     }
     int midiDropTarget() const noexcept { return midiDropStep; }
     // A message for the status line, until the next edit replaces it.

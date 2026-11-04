@@ -36,6 +36,7 @@
 // to each other directly; they report intent and this class routes it.
 class MainComponent final : public juce::Component,
                             public juce::DragAndDropContainer,   // the Song's clip list is dragged onto its lanes
+                            public juce::FileDragAndDropTarget,  // a file from Explorer over a view that cannot take it
                             private juce::Timer,
                             private juce::MidiKeyboardState::Listener,
                             private juce::ChangeListener,
@@ -961,6 +962,22 @@ private:
                                        + " as notes. Each note is one step; pick a Session clip to edit clips again.", {});
     }
 
+public:
+    // Only a file over a part of the window that cannot take it gets here: the views that can are asked first. Open
+    // one that can, as a drag out of the browser does, and the next move lands on it.
+    bool isInterestedInFileDrag(const juce::StringArray& files) override { return alien::filedrop::anySample(files) || alien::filedrop::anyMidi(files); }
+    void fileDragEnter(const juce::StringArray& files, int, int) override {
+        const int tab = alien::filedrop::landingTab(files, tabs.getCurrentTabIndex(), workspace.isDeviceView(), [](const juce::File& file) {
+            const auto clip = alien::midi_import::read(file);
+            return clip.ok() && clip.drums();
+        });
+        if (tab >= 0) showView(tab);
+    }
+    void filesDropped(const juce::StringArray& files, int, int) override {
+        statusBar.setProjectStatus(files.size() == 1 ? juce::String("Drop audio on a Session cell or a Song lane, and MIDI on the piano roll or Channel Rack. Nothing was imported.")
+                                                     : juce::String(alien::filedrop::oneFileMessage), {});
+    }
+private:
     void showView(int index) {
         if (workspace.isDeviceView()) workspace.showDevices(false);
         tabs.setCurrentTabIndex(index);

@@ -8,6 +8,7 @@
 // a name to hear it.
 // Changes go through controller operations and named commands, so undo, saving and the
 // audio engine need nothing from this file.
+#include "ExternalFileDrop.h"
 #include "MidiClipDrag.h"
 #include "ProjectController.h"
 #include "CommandEngine.h"
@@ -1224,7 +1225,7 @@ private:
 };
 
 // The whole screen: pattern and swing controls on top, the rack, then the graph.
-class ChannelRackView final : public juce::Component, public juce::DragAndDropTarget, private juce::ScrollBar::Listener {
+class ChannelRackView final : public juce::Component, public juce::DragAndDropTarget, public juce::FileDragAndDropTarget, private juce::ScrollBar::Listener {
 public:
     static constexpr int toolbarHeight = 52, scrollBarHeight = 12, verticalBarWidth = 12;
 
@@ -1432,6 +1433,14 @@ public:
     void itemDropped(const SourceDetails& details) override {
         itemDragExit(details);
         if (const auto file = mididrag::decode(details.description); file != juce::File{}) importGroove(file);
+    }
+    // A file dragged in from Explorer takes the same route as one from the sample browser.
+    bool isInterestedInFileDrag(const juce::StringArray& files) override { return filedrop::anyMidi(files); }
+    void fileDragEnter(const juce::StringArray& files, int, int) override { if (files.size() == 1) { grooveDropping = true; repaint(); } }
+    void fileDragExit(const juce::StringArray&) override { grooveDropping = false; repaint(); }
+    void filesDropped(const juce::StringArray& files, int x, int y) override {
+        if (files.size() != 1) { grooveDropping = false; repaint(); hint.setText(filedrop::oneFileMessage, juce::dontSendNotification); return; }
+        itemDropped(filedrop::details(filedrop::midiPayload(files), x, y));
     }
     bool isGrooveDropTarget() const noexcept { return grooveDropping; }
     void paintOverChildren(juce::Graphics& g) override {
