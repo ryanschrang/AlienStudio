@@ -353,6 +353,7 @@ static void panels() {
     panel.setSize(1600, 720);
     juce::StringArray routing; int returnEdits = 0; bool captured = false;
     panel.onRoutingChanged = [&](const juce::String& label) { routing.add(label); c.commit(label); };
+    panel.onReturnCommandExecuted = [&] { routing.add(c.undoLabel()); };   // the command owns the undo step
     panel.onReturnEdited = [&](int r, bool) { c.returnSettingsEdited(r); ++returnEdits; };
     panel.beforeReturnDeleted = [&] { captured = true; };
     require(panel.returnStripCount() == 4 && panel.addReturnControl().isEnabled(), "a new project shows returns A-D and can add one");

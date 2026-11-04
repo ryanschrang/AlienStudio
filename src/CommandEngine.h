@@ -32,6 +32,13 @@ struct SetTrackPan { int track{-1}; double pan{}; };         // -1 left, 0 centr
 struct SetTrackMute { int track{-1}; bool muted{}; };
 struct SetTrackSolo { int track{-1}; bool soloed{}; }; // additive: other tracks keep their solo state
 
+// Sends and returns, addressed by return slot (0 is send A). Slots never move.
+struct SetTrackSend { int track{-1}, returnSlot{-1}; double level{}; }; // linear level, 0..1
+struct SetTrackSendMode { int track{-1}, returnSlot{-1}; bool preFader{}; };
+struct CreateReturn {};                                        // takes the first free slot
+struct RenameReturn { int returnSlot{-1}; juce::String name; };
+struct DeleteReturn { int returnSlot{-1}; };                   // also drops its sends, automation and FX
+
 // Session cells, zero-based. CreateClip is MIDI-only; duplication supports all types.
 struct CreateClip { int track{-1}, scene{-1}; };
 struct DuplicateClip { int track{-1}, scene{-1}, toTrack{-1}, toScene{-1}; };
@@ -55,12 +62,12 @@ struct MoveScene { int scene{-1}, to{-1}; };
 struct RenameScene { int scene{-1}; juce::String name; };
 struct DeleteScene { int scene{-1}; };
 
-using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume, ImportClipAudio>;
+using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume, ImportClipAudio, SetTrackSend, SetTrackSendMode, CreateReturn, RenameReturn, DeleteReturn>;
 
 namespace detail {
 // Indexed like Command's alternatives.
-inline constexpr std::array<const char*, 26> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume", "ImportClipAudio"};
-inline constexpr std::array<const char*, 26> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume", "Import audio"};
+inline constexpr std::array<const char*, 31> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume", "ImportClipAudio", "SetTrackSend", "SetTrackSendMode", "CreateReturn", "RenameReturn", "DeleteReturn"};
+inline constexpr std::array<const char*, 31> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume", "Import audio", "Set send level", "Set send mode", "Add return", "Rename return", "Remove return"};
 static_assert(names.size() == std::variant_size_v<Command> && labels.size() == names.size());
 
 // The name the controller stores for `name` (it trims and caps track names).
@@ -116,6 +123,14 @@ inline std::optional<clipboard_clip::Edit> clipboardEdit(const Command& command)
     return {};
 }
 
+inline std::optional<return_edit::Edit> returnEdit(const Command& command) {
+    using Kind = return_edit::Kind;
+    if (std::holds_alternative<CreateReturn>(command)) return return_edit::Edit{Kind::create};
+    if (const auto* c = std::get_if<RenameReturn>(&command)) return return_edit::Edit{Kind::rename, c->returnSlot, c->name};
+    if (const auto* c = std::get_if<DeleteReturn>(&command)) return return_edit::Edit{Kind::remove, c->returnSlot};
+    return {};
+}
+
 inline std::optional<scene_edit::Edit> sceneEdit(const Command& command) {
     using Kind = scene_edit::Kind;
     if (std::holds_alternative<CreateScene>(command)) return scene_edit::Edit{Kind::create};
@@ -157,6 +172,16 @@ inline juce::String refusal(const ProjectDocument& d, const Command& command, co
         if (const auto why = track(c->track); why.isNotEmpty()) return why;
         return detail::trackName(c->name).isNotEmpty() ? juce::String{} : "A track name cannot be blank.";
     }
+    if (const auto edit = returnEdit(command)) return return_edit::refusal(d, *edit);
+    auto send = [&](int t, int slot) -> juce::String {
+        if (const auto why = track(t); why.isNotEmpty()) return why;
+        return return_edit::slotInUse(d, slot) ? juce::String{} : "Return slot " + juce::String(slot) + " is not in use.";
+    };
+    if (const auto* c = std::get_if<SetTrackSend>(&command)) {
+        if (const auto why = send(c->track, c->returnSlot); why.isNotEmpty()) return why;
+        return std::isfinite(c->level) && c->level >= 0 && c->level <= 1 ? juce::String{} : "A send level must be a finite linear level from 0 to 1.";
+    }
+    if (const auto* c = std::get_if<SetTrackSendMode>(&command)) return send(c->track, c->returnSlot);
     if (const auto* c = std::get_if<SetMasterVolume>(&command)) return std::isfinite(c->gain) && c->gain >= 0 && c->gain <= maxMasterGain ? juce::String{} : "Master volume must be a finite linear gain from 0 to 4 (1 is unity).";
     if (const auto* c = std::get_if<SetTrackVolume>(&command)) {
         if (const auto why = track(c->track); why.isNotEmpty()) return why;
@@ -178,6 +203,11 @@ inline juce::String refusal(const ProjectDocument& d, const Command& command, co
 
 // One line saying what `command` does to `d` (call before applying it).
 inline juce::String describe(const ProjectDocument& d, const Command& command) {
+    if (std::holds_alternative<CreateReturn>(command)) { const int r = return_edit::firstFreeSlot(d); return "Add \"" + defaultReturnName(r) + "\" in return slot " + juce::String(r); }
+    if (const auto* c = std::get_if<RenameReturn>(&command)) return "Rename return \"" + d.returns[static_cast<std::size_t>(c->returnSlot)].name + "\" to \"" + return_edit::storedName(c->name) + "\"";
+    if (const auto* c = std::get_if<DeleteReturn>(&command)) return "Remove return \"" + d.returns[static_cast<std::size_t>(c->returnSlot)].name + "\" with its sends, automation and FX";
+    if (const auto* c = std::get_if<SetTrackSend>(&command)) return "Set " + detail::trackTitle(d, c->track) + " send to \"" + d.returns[static_cast<std::size_t>(c->returnSlot)].name + "\" to linear level " + juce::String(c->level, 6);
+    if (const auto* c = std::get_if<SetTrackSendMode>(&command)) return "Make " + detail::trackTitle(d, c->track) + " send to \"" + d.returns[static_cast<std::size_t>(c->returnSlot)].name + "\" " + (c->preFader ? "pre-fader" : "post-fader");
     if (const auto* c = std::get_if<SetMasterVolume>(&command)) return "Set master volume to linear gain " + juce::String(c->gain,6);
     if (const auto* c = std::get_if<ImportClipAudio>(&command)) {
         const auto [track, scene] = session_audio_import::resolve(d, c->prepared->plan);
@@ -219,6 +249,12 @@ inline juce::String describe(const ProjectDocument& d, const Command& command) {
 // refusal, or an empty string when it was applied.
 inline juce::String applyTo(ProjectDocument& d, const Command& command, const clipboard_clip::Clipboard* clipboard = nullptr) {
     if (const auto why = refusal(d, command, clipboard); why.isNotEmpty()) return why;
+    if (const auto edit = returnEdit(command)) {
+        if (const auto why = return_edit::apply(d, *edit); why.isNotEmpty()) return why;
+        return d.synchronizeTrackRegistry() ? juce::String{} : juce::String("The project cannot resolve its track identities.");
+    }
+    if (const auto* c = std::get_if<SetTrackSend>(&command)) { d.tracks[static_cast<std::size_t>(c->track)].settings.send[static_cast<std::size_t>(c->returnSlot)] = static_cast<float>(c->level); return {}; }
+    if (const auto* c = std::get_if<SetTrackSendMode>(&command)) { d.tracks[static_cast<std::size_t>(c->track)].settings.sendPre[static_cast<std::size_t>(c->returnSlot)] = c->preFader; return {}; }
     if (const auto* c = std::get_if<SetMasterVolume>(&command)) { d.masterGain=static_cast<float>(c->gain); return {}; }
     if (const auto* c = std::get_if<ImportClipAudio>(&command)) return session_audio_import::apply(d, *c->prepared);
     if (const auto* c = std::get_if<RemoveClipAudio>(&command)) return session_clip::removeAudio(d, c->track, c->scene) ? juce::String{} : "Clip audio could not be removed.";
@@ -266,6 +302,10 @@ inline juce::String applyTo(ProjectDocument& d, const Command& command, const cl
 inline juce::var arguments(const Command& command) {
     auto* object = new juce::DynamicObject();
     juce::var result(object);
+    if (const auto* c = std::get_if<SetTrackSend>(&command)) { object->setProperty("track", c->track); object->setProperty("return", c->returnSlot); object->setProperty("level", c->level); return result; }
+    if (const auto* c = std::get_if<SetTrackSendMode>(&command)) { object->setProperty("track", c->track); object->setProperty("return", c->returnSlot); object->setProperty("preFader", c->preFader); return result; }
+    if (const auto* c = std::get_if<RenameReturn>(&command)) { object->setProperty("return", c->returnSlot); object->setProperty("name", c->name); return result; }
+    if (const auto* c = std::get_if<DeleteReturn>(&command)) { object->setProperty("return", c->returnSlot); return result; }
     if (const auto* c = std::get_if<SetMasterVolume>(&command)) { object->setProperty("gain",c->gain); return result; }
     if (const auto* c = std::get_if<ImportClipAudio>(&command)) {
         if (c->prepared) object->setProperty("file", c->prepared->plan.file.getFullPathName());
@@ -328,13 +368,14 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
     while (index < detail::names.size() && commandName != detail::names[index]) ++index;
     if (index >= detail::names.size()) { error = "Unknown command \"" + commandName + "\"."; return std::nullopt; }
     if (index == 25) { error = "ImportClipAudio takes decoded audio, which cannot be written as arguments."; return std::nullopt; }
-    static const std::array<juce::StringArray, 26> allowed{
+    static const std::array<juce::StringArray, 31> allowed{
         juce::StringArray{}, juce::StringArray{"track"}, juce::StringArray{"track", "to"},
         juce::StringArray{"track", "name"}, juce::StringArray{"track", "colour"},
         juce::StringArray{"track", "gain"}, juce::StringArray{"track", "pan"},
         juce::StringArray{"track", "muted"}, juce::StringArray{"track", "soloed"},
         juce::StringArray{"track","scene"},juce::StringArray{"track","scene","toTrack","toScene"},juce::StringArray{"track","scene"},
-        juce::StringArray{},juce::StringArray{"scene"},juce::StringArray{"scene","to"},juce::StringArray{"scene","name"},juce::StringArray{"scene"},juce::StringArray{"track","scene"},juce::StringArray{"track","scene"},juce::StringArray{"track","scene"},juce::StringArray{"track","scene","toTrack","toScene"},juce::StringArray{},juce::StringArray{"track","scene","clip"},juce::StringArray{"track","scene"},juce::StringArray{"gain"},juce::StringArray{}};
+        juce::StringArray{},juce::StringArray{"scene"},juce::StringArray{"scene","to"},juce::StringArray{"scene","name"},juce::StringArray{"scene"},juce::StringArray{"track","scene"},juce::StringArray{"track","scene"},juce::StringArray{"track","scene"},juce::StringArray{"track","scene","toTrack","toScene"},juce::StringArray{},juce::StringArray{"track","scene","clip"},juce::StringArray{"track","scene"},juce::StringArray{"gain"},juce::StringArray{},
+        juce::StringArray{"track","return","level"},juce::StringArray{"track","return","preFader"},juce::StringArray{},juce::StringArray{"return","name"},juce::StringArray{"return"}};
     const auto* object = args.getDynamicObject();
     if (object == nullptr && !args.isVoid()) { error = commandName + " takes an object of arguments."; return std::nullopt; }
     if (object != nullptr)
@@ -395,6 +436,11 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
         case 19: { const int t = integer("track"), s = integer("scene"); command = PasteLinkedClip{t, s}; break; }
         case 20: { const int t = integer("track"), s = integer("scene"), to = integer("toTrack"), scene = integer("toScene"); command = MoveClip{t, s, to, scene}; break; }
         case 24: command = SetMasterVolume{number("gain")}; break;
+        case 26: { const int t = integer("track"), r = integer("return"); command = SetTrackSend{t, r, number("level")}; break; }
+        case 27: { const int t = integer("track"), r = integer("return"); command = SetTrackSendMode{t, r, boolean("preFader")}; break; }
+        case 28: command = CreateReturn{}; break;
+        case 29: { const int r = integer("return"); command = RenameReturn{r, text("name")}; break; }
+        case 30: command = DeleteReturn{integer("return")}; break;
         case 23: { const int t = integer("track"), s = integer("scene"); command = RemoveClipAudio{t,s}; break; }
         case 21: command = CreateRackPattern{}; break;
         case 22: {
@@ -479,6 +525,7 @@ public:
         if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return rackEdit(c).has_value(); })) return refused("Stop recording before creating or assigning rack patterns.");
         if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return std::holds_alternative<RemoveClipAudio>(c); })) return refused("Stop recording before removing Session clip audio.");
         if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return std::holds_alternative<ImportClipAudio>(c); })) return refused("Stop recording before importing Session clip audio.");
+        if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return returnEdit(c).has_value(); })) return refused("Stop recording before adding, renaming or removing returns.");
         const auto clipboard = controller.clipClipboard();
         Result result = preview(commands, &clipboard);
         if (!result.ok || !result.changed) return result;
@@ -513,6 +560,14 @@ private:
     static Result refused(const juce::String& why) { Result r; r.error = why; return r; }
 
     bool run(const Command& command, const clipboard_clip::Clipboard& clipboard) {
+        if (std::holds_alternative<CreateReturn>(command)) return controller.addReturn() >= 0;
+        if (const auto* c = std::get_if<RenameReturn>(&command)) {
+            // An unchanged name is a no-op, not a failure: the rest of a batch still runs.
+            return controller.document().returns[static_cast<std::size_t>(c->returnSlot)].name == return_edit::storedName(c->name) || controller.renameReturn(c->returnSlot, c->name);
+        }
+        if (const auto* c = std::get_if<DeleteReturn>(&command)) return controller.deleteReturn(c->returnSlot);
+        if (const auto* c = std::get_if<SetTrackSend>(&command)) return controller.setTrackSend(c->track, c->returnSlot, c->level);
+        if (const auto* c = std::get_if<SetTrackSendMode>(&command)) return controller.setTrackSendMode(c->track, c->returnSlot, c->preFader);
         if (const auto* c = std::get_if<SetMasterVolume>(&command)) return controller.setMasterVolume(c->gain);
         if (const auto* c = std::get_if<ImportClipAudio>(&command)) return controller.applyImportAudioCommand(*c->prepared);
         if (const auto* c = std::get_if<RemoveClipAudio>(&command)) return controller.applyRemoveClipAudioCommand(c->track,c->scene);

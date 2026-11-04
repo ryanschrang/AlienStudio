@@ -444,6 +444,7 @@ static void continuousCommandTests() {
 #include "RackCommandTests.h"
 #include "RemoveClipAudioTests.h"
 #include "ImportClipAudioCommandTests.h"
+#include "SendReturnCommandTests.h"
 #include "MasterVolumeCommandTests.h"
 #include "SceneCommandTests.h"
 
@@ -451,6 +452,8 @@ int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     masterVolumeCommandChecks();
     removeClipAudioChecks();
+    sendCommandChecks();
+    returnCommandChecks();
     importClipAudioNameChecks();
     importClipAudioCommandChecks();
     importClipAudioStorageChecks();
