@@ -911,4 +911,43 @@ private:
     bool snapNext{true};
 };
 
+// Intentional quantisation and sample-and-hold aliasing; not a resampler.
+// A shared sample clock preserves stereo timing across arbitrary host blocks.
+class BitCrusher {
+public:
+    struct Settings { double bits{12}, reduction{1}, mix{}; };
+    void prepare(double sampleRate) noexcept { wet.configure(std::max(8000.0, sampleRate), 5); reset(); }
+    void reset() noexcept { remaining = 0; held = {}; snapNext = true; }
+    void process(float* left, float* right, int samples, Settings s) noexcept {
+        if (samples <= 0) return;
+        const auto bounded = [](double v, double lo, double hi, double def) { return std::isfinite(v) ? std::clamp(v, lo, hi) : def; };
+        const int bits = static_cast<int>(std::round(bounded(s.bits, 4, 24, 12)));
+        const int period = static_cast<int>(std::round(bounded(s.reduction, 1, 32, 1)));
+        const double mix = bounded(s.mix, 0, 1, 0), scale = std::ldexp(1.0, bits - 1);
+        if (snapNext) { wet.reset(mix); snapNext = false; }
+        wet.setTarget(mix);
+        // A reduced period must take effect immediately, rather than waiting for
+        // the old longer hold to expire. Quantisation/clock changes are discrete.
+        if (period != previousPeriod || bits != previousBits) remaining = 0;
+        previousPeriod = period; previousBits = bits;
+        for (int i = 0; i < samples; ++i) {
+            const float l = finite(left[i]) ? left[i] : 0, r = finite(right[i]) ? right[i] : 0;
+            if (remaining == 0) {
+                held[0] = std::clamp(std::round(static_cast<double>(l) * scale), -scale, scale - 1) / scale;
+                held[1] = std::clamp(std::round(static_cast<double>(r) * scale), -scale, scale - 1) / scale;
+                remaining = period;
+            }
+            --remaining;
+            const double amount = wet.advance(1);
+            left[i] = static_cast<float>(l + amount * (held[0] - l));
+            right[i] = static_cast<float>(r + amount * (held[1] - r));
+        }
+    }
+private:
+    Smoother wet;
+    std::array<double, 2> held{};
+    int remaining{}, previousPeriod{1}, previousBits{12};
+    bool snapNext{true};
+};
+
 } // namespace alien::dsp

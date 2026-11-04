@@ -825,7 +825,33 @@ static void transientTests() {
     check(finite(l[0]) && finite(l[1]) && finite(l[2]), "invalid input and settings cannot poison transient detector");
 }
 
+static void crusherTests() {
+    const auto input = noise(4096, .8, 42);
+    const auto render = [&](int block, double mix) {
+        BitCrusher e; e.prepare(rate); auto l = input, r = input;
+        for (auto& v : r) v = -v;
+        for (int at = 0; at < 4096; at += block) e.process(l.data() + at, r.data() + at, std::min(block, 4096 - at), {4, 7, mix});
+        return std::pair{l, r};
+    };
+    check(render(37, 0).first == input, "crusher zero mix is exact dry");
+    const auto crushed = render(512, 1);
+    for (int block : {1, 37, 1024}) check(render(block, 1) == crushed, "crusher clock independent of block boundaries");
+    bool quantised = true, held = true, stereo = true;
+    for (int i = 0; i < 4096; ++i) {
+        quantised = quantised && std::abs(crushed.first[i] * 8 - std::round(crushed.first[i] * 8)) < 1e-6;
+        held = held && (i % 7 == 0 || crushed.first[i] == crushed.first[i - 1]);
+        stereo = stereo && crushed.first[i] == -crushed.second[i];
+    }
+    check(quantised && held && stereo, "crusher applies signed four-bit grid and shared stereo hold clock");
+    BitCrusher e; e.prepare(rate); float l[]{.3f, .4f}, r[]{-.3f, -.4f};
+    e.process(l, r, 2, {4, 32, 1}); e.reset(); l[0] = .6f; r[0] = -.6f;
+    e.process(l, r, 1, {4, 32, 1}); near(l[0], .625, 1e-6, "reset forgets held audio");
+    float silence[64]{}, other[64]{}; e.process(silence, other, 64, {4, 32, 1});
+    check(silence[63] == 0 && other[63] == 0, "held sample decays to silence within maximum hold");
+}
+
 int main() {
+    crusherTests();
     transientTests();
     phaserTests();
     chorusTests();

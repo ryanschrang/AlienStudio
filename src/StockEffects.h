@@ -16,7 +16,7 @@ namespace alien::stock {
 inline constexpr const char* formatName = "AlienStock";
 
 struct Info { const char* id; const char* name; const char* summary; };
-inline constexpr std::array<Info, 11> catalog{{
+inline constexpr std::array<Info, 12> catalog{{
     {"eq", "Alien EQ", "Four-band equaliser with low and high shelves and two bells"},
     {"compressor", "Alien Compressor", "Stereo-linked compressor with soft knee and parallel mix"},
     {"reverb", "Alien Reverb", "Stereo room reverb with pre-delay"},
@@ -28,6 +28,7 @@ inline constexpr std::array<Info, 11> catalog{{
     {"chorus", "Alien Chorus", "Stereo chorus with modulated delay, rate, depth and mix"},
     {"phaser", "Alien Phaser", "Six-stage stereo phaser with rate, depth, feedback and mix"},
     {"transient", "Alien Transient Shaper", "Stereo-linked attack and sustain shaping with parallel mix and output trim"},
+    {"bitcrusher", "Alien Bit Crusher", "Bit-depth reduction and sample-and-hold rate reduction with parallel mix"},
 }};
 
 // Parameter identifiers, shared by the processors and their editors.
@@ -38,6 +39,9 @@ inline constexpr const char *lowFreq = "lowFreq", *lowGain = "lowGain", *m1Freq 
 namespace comp {
 inline constexpr const char *threshold = "threshold", *ratio = "ratio", *attack = "attack", *release = "release",
     *knee = "knee", *makeup = "makeup", *mix = "mix";
+}
+namespace crusher {
+inline constexpr const char *bits = "bits", *reduction = "reduction", *mix = "mix";
 }
 namespace phaser {
 inline constexpr const char *rate = "rate", *depth = "depth", *feedback = "feedback", *mix = "mix";
@@ -695,6 +699,31 @@ private:
     dsp::TransientShaper engine;
 };
 
+class BitCrusherEffect final : public Effect {
+public:
+    BitCrusherEffect() : Effect(catalog[11], layout()) {
+        bits = parameter(crusher::bits); reduction = parameter(crusher::reduction); mix = parameter(crusher::mix);
+    }
+    void prepareToPlay(double sampleRate, int) override { engine.prepare(sampleRate); prepared = true; }
+    void reset() override { engine.reset(); }
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
+        juce::ScopedNoDenormals noDenormals;
+        if (prepared && buffer.getNumChannels() >= 2) engine.process(buffer.getWritePointer(0), buffer.getWritePointer(1), buffer.getNumSamples(), {bits->get(), reduction->get(), mix->get()});
+    }
+    double getTailLengthSeconds() const override { return 32.0 / std::max(8000.0, getSampleRate()); }
+private:
+    juce::AudioParameterFloat* parameter(const char* id) { return static_cast<juce::AudioParameterFloat*>(parameters.getParameter(id)); }
+    static Layout layout() {
+        Layout l;
+        l.add(floatParameter(crusher::bits, "Bits", {4, 24, 0}, 12, plainFormat(" bits", 0)));
+        l.add(floatParameter(crusher::reduction, "Reduction", {1, 32, 0}, 1, plainFormat(" samples", 0)));
+        l.add(floatParameter(crusher::mix, "Mix", {0, 1, 0}, 0, percentFormat()));
+        return l;
+    }
+    juce::AudioParameterFloat *bits{}, *reduction{}, *mix{};
+    dsp::BitCrusher engine;
+};
+
 // ---- Catalogue and project-file identity -----------------------------------------
 
 inline std::unique_ptr<Effect> create(const juce::String& id) {
@@ -709,6 +738,7 @@ inline std::unique_ptr<Effect> create(const juce::String& id) {
     if (id == catalog[8].id) return std::make_unique<ChorusEffect>();
     if (id == catalog[9].id) return std::make_unique<PhaserEffect>();
     if (id == catalog[10].id) return std::make_unique<TransientEffect>();
+    if (id == catalog[11].id) return std::make_unique<BitCrusherEffect>();
     return {};
 }
 
