@@ -269,6 +269,23 @@ left in its alignment delay and still aligns new audio. RackIntegrationTests
 `--capacity-report` prints the prepared engine heap (now counting over-aligned
 allocations) and callback times with the number of tracks in use per row.
 
-C1 does not change identity, persistence or limits. C2 replaces the `16 + lane`
-Song rack-lane rows with saved lane numbers (format 32), so a saved row no longer
-depends on the compiled track count; C3 measures and adopts a larger profile.
+C1 does not change identity, persistence or limits. C2 (below) replaces the
+`16 + lane` Song rack-lane rows with saved lane numbers; C3 measures and adopts a
+larger profile.
+
+## Increment C2: Song rack lanes saved apart from track rows (format 32)
+
+Formats 8-31 saved a Song region on rack lane n as row `16 + n`, right after a fixed 16 track
+rows. Raising the track limit would make those numbers collide with track rows. Format 32 saves
+a track region's row as before and a rack-lane region as row `-1` plus a separate `"lane"` (0-3),
+so a saved row never depends on the compiled track limit (`timeline::savedRow`, `savedLane`,
+`rowFromSaved` in `Timeline.h`).
+
+- Formats 8-31 still load: a saved row of 16-19 becomes lane 0-3.
+- A format 32 row past the tracks without a lane, a lane out of range or not an integer, and a
+  row other than -1 with a lane are all refused, and the loaded project is kept.
+- Takes and frozen originals are saved by the same code, so they follow the same rule.
+- Readers older than format 32 refuse format 32 projects, as for every format bump.
+
+No track, scene or engine change. Tests: `SessionProjectTests` (`songRowFormatTests`), a
+project at the track and scene limits round-trips byte for byte.

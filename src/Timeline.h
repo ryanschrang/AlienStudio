@@ -36,8 +36,20 @@ static_assert(ticksPerStep == PianoRollPattern::ticksPerStep, "the timeline and 
 inline constexpr int maxBars = 16384, defaultBars = 16;   // 18 h 12 min at 60 BPM, the longest song the engine and export support
 inline constexpr std::int64_t maxLength = maxBars * ticksPerBar;
 inline constexpr int rackLanes = 4;
-inline constexpr int rackRowBase = maxSessionTracks;      // rows 0..15 are Session tracks, then the rack lanes
+inline constexpr int rackRowBase = maxSessionTracks;      // rows 0..maxSessionTracks-1 are Session tracks, then the rack lanes
 inline constexpr int rowCount = rackRowBase + rackLanes;
+// Saved Song rows. Formats 8-31 numbered the rack lanes after a fixed 16 track rows; format 32 saves a
+// lane as its own number (row -1, "lane"), so a saved row never depends on the compiled track limit.
+inline constexpr int legacySavedRackRowBase = 16;
+inline constexpr int savedRow(int row) noexcept { return row >= rackRowBase ? -1 : row; }
+inline constexpr int savedLane(int row) noexcept { return row >= rackRowBase ? row - rackRowBase : -1; }
+// The row a saved region is on, or -1 (never valid) when the saved pair names neither a track row nor a lane.
+inline constexpr int rowFromSaved(int row, int lane, bool legacyRows) noexcept {
+    if (lane >= 0 || row < 0) return row == -1 && lane >= 0 && lane < rackLanes ? rackRowBase + lane : -1;
+    if (legacyRows && row >= legacySavedRackRowBase)
+        return row < legacySavedRackRowBase + rackLanes ? rackRowBase + row - legacySavedRackRowBase : -1;
+    return row < rackRowBase ? row : -1;
+}
 inline constexpr std::size_t maxRegions = 1024, maxMarkers = 128, maxTakes = 256;
 inline constexpr int maxMarkerNameBytes = 32;
 

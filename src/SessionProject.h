@@ -25,7 +25,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 31;   // 31: VST3 instruments on Channel Rack channels; 30: Song warp anchors; 29: persistent universal track registry and checked document bindings; 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings; 27: fade shapes; 28: independent rack launch slots per Session row
+inline constexpr int sessionProjectFormatVersion = 32;   // 32: Song rack lanes saved apart from track rows (T1-04 C2); 31: VST3 instruments on Channel Rack channels; 30: Song warp anchors; 29: persistent universal track registry and checked document bindings; 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings; 27: fade shapes; 28: independent rack launch slots per Session row
 
 // A group bus slot. Slots keep their index while other buses come and go, so a track's output
 // (TrackSettings::output) and the bus's FX rack never need renumbering.
@@ -538,7 +538,8 @@ inline juce::String serializeSessionProject(const SessionProjectData& source) {
                 if (it == groups.end()) { groups.push_back(r.group); it = groups.end() - 1; }
                 group = static_cast<int>(it - groups.begin()) + 1;
             }
-            object->setProperty("row", r.row); object->setProperty("source", r.source);
+            object->setProperty("row", timeline::savedRow(r.row)); object->setProperty("source", r.source);
+            if (r.isPattern()) object->setProperty("lane", timeline::savedLane(r.row));
             object->setProperty("start", static_cast<int>(r.start)); object->setProperty("length", static_cast<int>(r.length));
             object->setProperty("offset", static_cast<int>(r.offset)); object->setProperty("audioOffset", r.audioOffset);
             if (!r.warp.empty()) {
@@ -707,7 +708,7 @@ inline bool parseProjectClip(const juce::DynamicObject* clipObject, SessionProje
 // Reads the "timeline" object of a version 8 project. Region and marker ids are made up
 // fresh (they only identify things while the program runs); saved group numbers become groups.
 inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce::String& error,
-                          bool requireAudioEdits = true, bool requireAutomation = false) {
+                          bool requireAudioEdits = true, bool requireAutomation = false, bool legacyRows = false) {
     const auto* object = value.getDynamicObject();
     if (object == nullptr) { error = "The project's timeline is missing."; return false; }
     const auto length = object->getProperty("lengthBars"), loopStart = object->getProperty("loopStart"),
@@ -740,9 +741,12 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
             || !(audioOffset.isDouble() || audioOffset.isInt()) || !muted.isBool() || !group.isInt()) {
             error = "A timeline region is missing values."; return false;
         }
+        const auto lane = r->getProperty("lane");
+        if (!lane.isVoid() && (!lane.isInt() || static_cast<int>(lane) < 0)) { error = "A timeline region has an invalid lane."; return false; }
         timeline::Region region;
         region.id = timeline::newId();
-        region.row = static_cast<int>(row); region.source = static_cast<int>(source);
+        region.row = timeline::rowFromSaved(static_cast<int>(row), lane.isVoid() ? -1 : static_cast<int>(lane), legacyRows);
+        region.source = static_cast<int>(source);
         region.start = static_cast<int>(start); region.length = static_cast<int>(regionLength);
         region.offset = static_cast<int>(offset); region.audioOffset = static_cast<double>(audioOffset);
         if (const auto value = r->getProperty("warp"); !value.isVoid()) {
@@ -1124,7 +1128,7 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
     }
 
     if (formatVersion >= 8) {
-        if (!parseTimeline(rootObject->getProperty("timeline"), parsed.timeline, error, formatVersion >= 9, formatVersion >= 10)) return false;
+        if (!parseTimeline(rootObject->getProperty("timeline"), parsed.timeline, error, formatVersion >= 9, formatVersion >= 10, formatVersion < 32)) return false;
         for (const auto* list : {&parsed.timeline.regions, &parsed.timeline.frozenOriginals, &parsed.timeline.takes})
             for (const auto& region : *list)
                 if (region.clip != 0 && (formatVersion < 24 || list == &parsed.timeline.takes)) { error = "A timeline region names an invalid clip."; return false; }

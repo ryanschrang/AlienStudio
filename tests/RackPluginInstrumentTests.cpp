@@ -481,9 +481,9 @@ static void controller() {
             "the copy is a second instance with an identity of its own");
     c.setRackPluginStates({{c.document().channelRack.info[0].pluginInstance(), "dG9uZQ=="}});
     require(c.document().channelRack.info[0].pluginState() == "dG9uZQ==" && c.document().channelRack.info[1].pluginState().empty(), "states are kept by instance");
-    // The whole project saves with format 31 and opens again with the instrument.
+    // The whole project saves with format 31 or later and opens again with the instrument.
     const auto text = serializeSessionProject(toProjectData(c.document()));
-    require(juce::JSON::parse(text).getProperty("version", 0) == juce::var(31), "projects are format 31");
+    require(static_cast<int>(juce::JSON::parse(text).getProperty("version", 0)) >= 31, "projects are format 31 or later");
     auto parsed = std::make_unique<SessionProjectData>(); juce::String error;
     require(parseSessionProject(text, *parsed, error) && parsed->channelRack.info[0].pluginState() == "dG9uZQ==" && parsed->channelRack.channels[1].plugin,
             "and open with their rack instruments");

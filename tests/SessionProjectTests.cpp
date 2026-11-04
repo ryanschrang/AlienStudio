@@ -466,7 +466,75 @@ static void warpFormatChecks() {
     require(alien::parseSessionProject(juce::JSON::toString(json),loaded,error) && loaded.timeline.regions[0].warp.empty(),"older projects retain unstretched playback");
 }
 
+// T1-04 C2 (format 32): a Song rack lane is saved as its own number, so the saved rows of a project at the
+// compiled track limit never collide with the lanes, and formats 8-31 (lanes after 16 track rows) still load.
+static void songRowFormatTests() {
+    using namespace alien::timeline;
+    const int tracks = alien::maxSessionTracks, scenes = alien::maxSessionScenes;
+    alien::SessionProjectData source(tracks, scenes);
+    require(source.channelRack.addPattern(), "fixture: a second pattern");
+    source.channelRack.clips[0] = 101; source.channelRack.clips[1] = 102;
+    Region last; last.row = tracks - 1; last.source = scenes - 1; last.length = ticksPerBar;
+    Region lane; lane.row = rackRowBase + 3; lane.source = 1; lane.rackClip = 102; lane.length = ticksPerBar;
+    require(source.timeline.place(last) && source.timeline.place(lane), "fixture: the last track and the last lane");
+    const auto json = alien::serializeSessionProject(source);
+    require(json.isNotEmpty(), "a project at the track and scene limits saves");
+    const auto saved = juce::JSON::parse(json);
+    require(static_cast<int>(saved.getProperty("version", 0)) == 32, "format 32");
+    const auto* savedRegions = saved.getProperty("timeline", {}).getProperty("regions", {}).getArray();
+    require(savedRegions != nullptr && savedRegions->size() == 2, "two saved regions");
+    bool sawTrack = false, sawLane = false;
+    for (const auto& r : *savedRegions) {
+        if (static_cast<int>(r.getProperty("row", -2)) == tracks - 1 && !r.hasProperty("lane")) sawTrack = true;
+        if (static_cast<int>(r.getProperty("row", -2)) == -1 && static_cast<int>(r.getProperty("lane", -1)) == 3) sawLane = true;
+    }
+    require(sawTrack && sawLane, "a track row saves as itself and a lane saves apart from the rows");
+    alien::SessionProjectData loaded; juce::String error;
+    require(alien::parseSessionProject(json, loaded, error) && loaded.trackCount() == tracks && loaded.sceneCount() == scenes
+        && loaded.timeline.regions.size() == 2, "a project at the limits reopens");
+    int lastRows = 0, laneRows = 0;
+    for (const auto& r : loaded.timeline.regions) { lastRows += r.row == tracks - 1 && r.source == scenes - 1; laneRows += r.row == rackRowBase + 3; }
+    require(lastRows == 1 && laneRows == 1, "rows and lanes reopen where they were");
+    require(alien::serializeSessionProject(loaded) == json, "saving the reopened project changes nothing");
+
+    // Formats 8-31 saved lane n as row 16 + n.
+    alien::SessionProjectData small;
+    require(small.channelRack.addPattern(), "fixture: a second legacy pattern");
+    small.channelRack.clips[0] = 101; small.channelRack.clips[1] = 102;
+    Region legacyLane; legacyLane.row = rackRowBase + 1; legacyLane.source = 1; legacyLane.rackClip = 102; legacyLane.length = ticksPerBar;
+    Region track; track.row = 2; track.source = 0; track.length = ticksPerBar;
+    require(small.timeline.place(legacyLane) && small.timeline.place(track), "fixture: legacy lane and track");
+    auto legacy = juce::JSON::parse(alien::serializeSessionProject(small));
+    legacy.getDynamicObject()->setProperty("version", 31);
+    for (auto& r : *legacy.getProperty("timeline", {}).getProperty("regions", {}).getArray())
+        if (r.hasProperty("lane")) {
+            r.getDynamicObject()->setProperty("row", legacySavedRackRowBase + static_cast<int>(r.getProperty("lane", 0)));
+            r.getDynamicObject()->removeProperty("lane");
+        }
+    require(alien::parseSessionProject(juce::JSON::toString(legacy), loaded, error), "a format 31 Song opens");
+    bool legacyLaneFound = false, legacyTrackFound = false;
+    for (const auto& r : loaded.timeline.regions) { legacyLaneFound |= r.row == rackRowBase + 1; legacyTrackFound |= r.row == 2; }
+    require(legacyLaneFound && legacyTrackFound, "format 31 row 17 is lane 1 and track rows are unchanged");
+
+    // Malformed rows are refused without replacing what is loaded.
+    const auto prior = loaded.timeline;
+    const auto damaged = [&](const std::function<void(juce::DynamicObject&)>& change) {
+        auto broken = juce::JSON::parse(json);
+        auto* regions = broken.getProperty("timeline", {}).getProperty("regions", {}).getArray();
+        for (auto& r : *regions) if (r.hasProperty("lane")) change(*r.getDynamicObject());
+        return !alien::parseSessionProject(juce::JSON::toString(broken), loaded, error) && loaded.timeline == prior;
+    };
+    require(damaged([](auto& r) { r.setProperty("lane", rackLanes); }), "a lane past the last is refused");
+    require(damaged([](auto& r) { r.setProperty("lane", -1); }), "a negative lane is refused");
+    require(damaged([](auto& r) { r.setProperty("lane", 1.5); }), "a fractional lane is refused");
+    require(damaged([](auto& r) { r.setProperty("row", 0); }), "a region cannot be both a track row and a lane");
+    require(damaged([](auto& r) { r.removeProperty("lane"); r.setProperty("row", rackRowBase); }),
+        "format 32 does not read a row past the tracks as a lane");
+    require(damaged([](auto& r) { r.removeProperty("lane"); }), "row -1 without a lane is refused");
+}
+
 int main() {
+    songRowFormatTests();
     warpFormatChecks();
     freezeFormatTests();
     takeFormatTests();
