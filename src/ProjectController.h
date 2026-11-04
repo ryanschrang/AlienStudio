@@ -1867,11 +1867,40 @@ public:
         commit("Delete pattern");
         return true;
     }
+    bool sliceDrum(int track, int pad) {
+        if (busy || isRecording() || engine.recording.active() || isTrackFrozen(track) || track < 0 || track >= doc.trackCount() || pad < 0 || pad >= drumPadCount) return false;
+        auto& owner = doc.tracks[track];
+        const auto selected = owner.drumAssets[pad];
+        const auto path = owner.drumPaths[pad];
+        if (!selected || selected->streamed() || selected->frames < drumPadCount || path.isEmpty()) {
+            importStatus("Load a sample with at least eight frames before slicing.", {}); return false;
+        }
+        const auto source = selected->sliceSource ? selected->sliceSource : selected;
+        const auto offset = selected->sliceSource ? selected->sliceOffset : 0;
+        std::array<DrumSlice, drumPadCount> ranges{};
+        std::array<std::shared_ptr<const SessionAudioClip>, drumPadCount> views{};
+        for (int p = 0; p < drumPadCount; ++p) {
+            ranges[p] = {static_cast<int>(offset + selected->frames * p / drumPadCount),
+                         static_cast<int>(offset + selected->frames * (p + 1) / drumPadCount)};
+            views[p] = drumSliceView(source, ranges[p]);
+            if (!views[p]) return false;
+        }
+        // Views own no PCM. Keep them alive past any in-flight callback, as with
+        // loaded samples; the source was already counted and retained at load.
+        for (const auto& view : views) retained.push_back(view);
+        owner.drumSlices = ranges; owner.drumAssets = std::move(views); owner.drumPaths.fill(path);
+        owner.settings.instrument = 1;
+        pushDocumentToEngine(); commit("Slice sample to 8 pads");
+        if (onDocumentRestored) onDocumentRestored();
+        importStatus("Sample split into eight pads. Undo restores the previous kit.", {});
+        return true;
+    }
     void clearDrum(int track, int pad) {
         if(isTrackFrozen(track))return;
         if (track < 0 || track >= doc.trackCount() || pad < 0 || pad >= drumPadCount) return;
         doc.tracks[track].drumPaths[pad].clear();
         doc.tracks[track].drumAssets[pad].reset();
+        doc.tracks[track].drumSlices[pad] = {};
         pushDocumentToEngine(); commit("Clear drum pad");
     }
     void loadDrum(const juce::File& file, int track, int pad) {
@@ -1888,6 +1917,7 @@ public:
                 for (auto& track : doc.tracks) if (track.id == trackId) {
                     if (!result->clip || !retain(result->clip)) { importStatus("Could not load drum sample (format or memory limit)", {}); return; }
                     track.drumAssets[pad] = result->clip;
+                    track.drumSlices[pad] = {};
                     track.drumPaths[pad] = file.getFullPathName();
                     track.settings.instrument = 1;
                     pushDocumentToEngine(); commit("Load drum sample");
@@ -2241,13 +2271,16 @@ private:
                 : doc.clip(track, scene).audioOffline() && doc.clip(track, scene).audioFilePath == want.item.path;
             if (!unchanged) continue;
             if (!found.clip) { stillOffline.addIfNotAlreadyThere(want.item.fileName()); continue; }
+            const auto drumView = want.item.drumPad ? drumSliceView(found.clip, owner.drumSlices[pad]) : std::shared_ptr<const SessionAudioClip>{};
+            if (want.item.drumPad && !drumView) { stillOffline.addIfNotAlreadyThere(want.item.fileName()); continue; }
             if (!retainOnce(found.clip, counted)) {
                 memoryFull = true;
                 stillOffline.addIfNotAlreadyThere(want.item.fileName());
                 continue;
             }
             if (want.item.drumPad) {
-                owner.drumAssets[pad] = found.clip;
+                owner.drumAssets[pad] = drumView;
+                retained.push_back(drumView);
                 owner.drumPaths[pad] = found.file.getFullPathName();
             } else {
                 auto clip = doc.clip(track, scene);
@@ -2293,7 +2326,7 @@ private:
     struct LoadResult {
         SessionProjectData project;
         std::vector<std::shared_ptr<SessionAudioClip>> audio; // [scene * tracks + track]
-        std::vector<std::array<std::shared_ptr<SessionAudioClip>, drumPadCount>> drums;
+        std::vector<std::array<std::shared_ptr<const SessionAudioClip>, drumPadCount>> drums;
         std::vector<std::pair<std::string, std::shared_ptr<SessionAudioClip>>> rackClips; // by resolved path
         std::size_t decodedBytes{};
         std::vector<MissingMedia> missing; // referenced audio that could not be loaded; the project still opens
@@ -2334,19 +2367,37 @@ private:
                 result.audio[static_cast<std::size_t>(s * tracks + t)] = decoded.clip;
             }
         result.drums.resize(tracks);
+        std::map<juce::String, AudioClipImportResult> drumSources;
+        std::set<const SessionAudioClip*> drumCounted;
+        const auto drumBudget = maxSessionAudioBytes - result.decodedBytes;
+        std::size_t cachedDrumBytes{};
         for (int t = 0; t < tracks; ++t) for (int p = 0; p < drumPadCount; ++p) {
             const auto& path = result.project.drumPaths[t][p];
             if (path.isEmpty()) continue;
             const auto location = resolveProjectAudio(file, path);
-            const auto decoded = location == juce::File{} ? AudioClipImportResult{{}, "The saved audio location is not valid."}
-                                                          : decodeSessionAudioClip(location);
-            if (!decoded.clip) {
-                result.missing.push_back({true, t, p, location == juce::File{} ? path : location.getFullPathName(), decoded.error});
+            const auto key = location == juce::File{} ? path : location.getFullPathName();
+            auto found = drumSources.find(key);
+            if (found == drumSources.end()) {
+                auto decoded = location == juce::File{} ? AudioClipImportResult{{}, "The saved audio location is not valid."} : decodeSessionAudioClip(location);
+                if (decoded.clip) {
+                    const auto bytes = decoded.clip->decodedBytes();
+                    if (bytes > drumBudget - cachedDrumBytes) { result.error = "Drum audio exceeds memory limit"; return result; }
+                    cachedDrumBytes += bytes;
+                }
+                found = drumSources.emplace(key, std::move(decoded)).first;
+            }
+            const auto& decoded = found->second;
+            auto view = drumSliceView(decoded.clip, result.project.drumSlices[t][p]);
+            if (!view) {
+                result.missing.push_back({true, t, p, key, decoded.clip ? "Saved slice exceeds the source audio." : decoded.error});
                 continue;
             }
-            const auto bytes = decoded.clip->decodedBytes();
-            if (bytes > maxSessionAudioBytes - result.decodedBytes) { result.error = "Drum audio exceeds memory limit"; return result; }
-            result.decodedBytes += bytes; result.drums[t][p] = decoded.clip;
+            if (drumCounted.insert(decoded.clip.get()).second) {
+                const auto bytes = decoded.clip->decodedBytes();
+                if (bytes > maxSessionAudioBytes - result.decodedBytes) { result.error = "Drum audio exceeds memory limit"; return result; }
+                result.decodedBytes += bytes;
+            }
+            result.drums[t][p] = std::move(view);
         }
         std::set<std::string> attempted; // a sample used by several channels is decoded once
         for (int c = 0; c < result.project.channelRack.channelCount; ++c) {

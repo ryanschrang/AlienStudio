@@ -10,7 +10,7 @@ public:
     DrumSamplerPanel() : filter("*.wav;*.mp3", "*", "Audio samples"),
         browser(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
             juce::File{}, &filter, nullptr) {
-        for (auto* c : std::array<juce::Component*, 8>{&track, &pad, &load, &clear, &audition,
+        for (auto* c : std::array<juce::Component*, 9>{&track, &pad, &load, &clear, &audition, &slice,
             &route, &status, &browser}) addAndMakeVisible(c);
         for (int i = 0; i < 4; ++i) track.addItem("Track " + juce::String(i + 1), i + 1);
         for (int i = 0; i < drumPadCount; ++i) pad.addItem("Pad " + juce::String(i + 1)
@@ -20,6 +20,9 @@ public:
         track.onChange = [this] { refresh(); }; pad.onChange = [this] { refresh(); };
         load.setButtonText("Load selected file"); clear.setButtonText("Clear pad");
         audition.setButtonText("Play pad");
+        slice.setButtonText("Slice to 8 pads"); slice.setName("Slice sample to 8 pads");
+        slice.setTooltip("Replace all eight pads with equal slices of the selected pad sample. Undo restores the kit. Pads 3 and 4 retain their hat choke behavior.");
+        slice.onClick = [this] { if (onSlice) onSlice(track.getSelectedId() - 1, pad.getSelectedId() - 1); };
         load.onClick = [this] { if (onLoad && browser.getSelectedFile(0).existsAsFile())
             onLoad(track.getSelectedId() - 1, pad.getSelectedId() - 1, browser.getSelectedFile(0)); };
         clear.onClick = [this] { if (onClear) onClear(track.getSelectedId() - 1, pad.getSelectedId() - 1); };
@@ -37,9 +40,10 @@ public:
         refresh();
     }
     std::function<void(int,int,const juce::File&)> onLoad;
-    std::function<void(int,int)> onClear, onHit;
+    std::function<void(int,int)> onClear, onHit, onSlice;
     std::function<void(int)> onRoute;
-    void setPaths(const std::array<std::array<juce::String, drumPadCount>, maxSessionTracks>& paths) { names = paths; refresh(); }
+    void setPaths(const std::array<std::array<juce::String, drumPadCount>, maxSessionTracks>& paths,
+                  const std::array<std::array<DrumSlice, drumPadCount>, maxSessionTracks>& ranges = {}) { names = paths; slices = ranges; refresh(); }
     void setTrackNames(const juce::StringArray& labels) {
         const int selection = track.getSelectedId();
         const int inputRoute = route.getSelectedId();
@@ -52,13 +56,13 @@ public:
     }
     void setLiveInput(int destination) { route.setSelectedId(destination+2,juce::dontSendNotification); }
     void setStatus(const juce::String& text) { status.setText(text, juce::dontSendNotification); status.setTooltip(text); }
-    void setBusy(bool busy) { load.setEnabled(!busy); clear.setEnabled(!busy); }
+    void setBusy(bool busy) { load.setEnabled(!busy); clear.setEnabled(!busy); slice.setEnabled(!busy); }
     void resized() override {
         const int w = getWidth();
         track.setBounds(12, 8, 110, 28); pad.setBounds(130, 8, 170, 28);
         load.setBounds(308, 8, 145, 28); clear.setBounds(461, 8, 95, 28);
         audition.setBounds(564, 8, 95, 28); route.setBounds(667, 8, w - 679, 28);
-        status.setBounds(12, 40, w - 24, 26);
+        slice.setBounds(12, 40, 140, 26); status.setBounds(160, 40, w - 172, 26);
         browser.setBounds(12, 72, w / 2 - 20, getHeight() - 84);
         const int padWidth = (w / 2 - 28) / 4;
         for (int i = 0; i < drumPadCount; ++i)
@@ -72,16 +76,18 @@ private:
             const auto& path = names[t][static_cast<std::size_t>(i)];
             pads[static_cast<std::size_t>(i)].setButtonText("Pad " + juce::String(i + 1)
                 + " / " + juce::String(drumBaseNote + i) + "\n"
-                + (path.isEmpty() ? "Empty" : juce::File(path).getFileName()));
+                + (path.isEmpty() ? "Empty" : juce::File(path).getFileName())
+                + (slices[t][i].whole() ? juce::String{} : "\nFrames " + juce::String(slices[t][i].start) + "-" + juce::String(slices[t][i].end)));
         }
         setStatus("Load a sample to enable this track's kit. Sequence MIDI 36–43 in its piano roll. Pads 3/4 choke each other.");
     }
     juce::WildcardFileFilter filter;
     juce::FileBrowserComponent browser;
     juce::ComboBox track, pad, route;
-    juce::TextButton load, clear, audition;
+    juce::TextButton load, clear, audition, slice;
     juce::Label status;
     std::array<juce::TextButton, drumPadCount> pads;
     std::array<std::array<juce::String, drumPadCount>, maxSessionTracks> names{};
+    std::array<std::array<DrumSlice, drumPadCount>, maxSessionTracks> slices{};
 };
 } // namespace alien

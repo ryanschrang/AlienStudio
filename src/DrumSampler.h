@@ -5,6 +5,24 @@
 
 namespace alien {
 inline constexpr int drumPadCount = 8, drumBaseNote = 36;
+struct DrumSlice {
+    int start{}, end{}; // source frames, end exclusive; {0,0} means whole sample
+    bool whole() const noexcept { return start == 0 && end == 0; }
+    bool valid() const noexcept { return whole() || (start >= 0 && end > start); }
+    bool operator==(const DrumSlice&) const = default;
+};
+
+inline std::shared_ptr<const SessionAudioClip> drumSliceView(std::shared_ptr<const SessionAudioClip> source, DrumSlice range) {
+    if (!source || !range.valid()) return {};
+    if (range.whole()) return source;
+    if (source->sliceSource || source->streamed() || !source->valid() || static_cast<std::size_t>(range.end) > source->frames) return {};
+    auto view = std::make_shared<SessionAudioClip>();
+    view->sampleRate = source->sampleRate; view->channels = source->channels;
+    view->frames = static_cast<std::size_t>(range.end - range.start);
+    view->sliceOffset = static_cast<std::size_t>(range.start); view->sliceSource = std::move(source);
+    view->buildWaveform();
+    return view;
+}
 struct DrumKitControls {
     std::array<std::atomic<const SessionAudioClip*>, drumPadCount> samples{};
 };

@@ -1251,9 +1251,11 @@ static void transientHistoryTests() {
 }
 
 #include "AudioImportPlanTests.h"
+#include "DrumSliceControllerTests.h"
 
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    drumSliceControllerTests();
     audioImportPlanChecks();
     transientHistoryTests();
     crusherHistoryTests();

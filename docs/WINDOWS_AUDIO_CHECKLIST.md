@@ -526,3 +526,18 @@ Needs: Valhalla Supermassive, one VST3 instrument (ideally one that reports late
 - Check stereo channels, automated Mix sweeps, bypass, reset/device restart, saved
   settings, Undo/Redo and Song export. Bit depth and hold-period changes are discrete
   and intentionally gritty. Listening and physical-device acceptance remain pending.
+
+## Equal sample slices (T2-01 / INST-07, format 33)
+
+- In Drums, load a rhythmic WAV/MP3 into a pad, select that pad and press Slice to 8 pads.
+  All eight pads are replaced. Audition each and sequence MIDI 36-43: each pad must play
+  only its own eighth of the sample. Pads 3/4 keep the existing hat choke behavior.
+- Undo once restores the previous kit; Redo restores slices. Save, reopen and save
+  portable: source media is collected once, with each pad's boundaries retained.
+- Rename the source folder, reopen offline and relink it. The same slices must return.
+  A replacement file too short for a saved slice must leave that pad offline.
+- Compare live playback with Song WAV export at 44.1/48/96 kHz; check slice boundaries,
+  stereo balance, retriggers and device restart. Equal slices may cut across a waveform;
+  listen for boundary clicks. Automatic transient/zero-crossing slicing is not included.
+
+Listening and physical-device acceptance remain pending; automated checks are recorded in the PR.

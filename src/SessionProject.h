@@ -25,7 +25,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 32;   // 32: Song rack lanes saved apart from track rows (T1-04 C2); 31: VST3 instruments on Channel Rack channels; 30: Song warp anchors; 29: persistent universal track registry and checked document bindings; 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings; 27: fade shapes; 28: independent rack launch slots per Session row
+inline constexpr int sessionProjectFormatVersion = 33;   // 33: shared drum sample slices; 32: Song rack lanes saved apart from track rows (T1-04 C2); 31: VST3 instruments on Channel Rack channels; 30: Song warp anchors; 29: persistent universal track registry and checked document bindings; 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings; 27: fade shapes; 28: independent rack launch slots per Session row
 
 // A group bus slot. Slots keep their index while other buses come and go, so a track's output
 // (TrackSettings::output) and the bus's FX rack never need renumbering.
@@ -78,6 +78,7 @@ struct SessionProjectData {
     std::vector<int> trackColours;
     std::vector<juce::String> sceneNames;
     std::vector<std::array<juce::String, drumPadCount>> drumPaths;
+    std::vector<std::array<DrumSlice, drumPadCount>> drumSlices;
     alien::timeline::Timeline timeline;   // Absent before version 8: the old bar-based arrangement, converted on load.
     std::vector<PluginRackState> plugins;
     PluginRackState masterPlugins;
@@ -120,6 +121,7 @@ struct SessionProjectData {
                      std::vector<SessionProjectClip>(static_cast<std::size_t>(juce::jmax(0, tracks))));
         plugins.assign(static_cast<std::size_t>(juce::jmax(0, tracks)), {});
         drumPaths.assign(static_cast<std::size_t>(juce::jmax(0, tracks)), {});
+        drumSlices.assign(static_cast<std::size_t>(juce::jmax(0, tracks)), {});
         trackSettings.assign(static_cast<std::size_t>(juce::jmax(0, tracks)), TrackSettings{});
         trackNames.assign(static_cast<std::size_t>(juce::jmax(0, tracks)), juce::String{});
         trackColours.clear();
@@ -154,7 +156,10 @@ struct SessionProjectData {
             || static_cast<int>(trackNames.size()) != tracks || static_cast<int>(trackColours.size()) != tracks
             || static_cast<int>(sceneNames.size()) != scenes)
             return false;
-        if (!timeline.valid(tracks, scenes, channelRack.patternCount) || drumPaths.size() != trackSettings.size()) return false;
+        if (!timeline.valid(tracks, scenes, channelRack.patternCount) || drumPaths.size() != trackSettings.size() || drumSlices.size() != trackSettings.size()) return false;
+        for (std::size_t t = 0; t < drumSlices.size(); ++t)
+            for (int p = 0; p < drumPadCount; ++p)
+                if (!drumSlices[t][p].valid() || (!drumSlices[t][p].whole() && drumPaths[t][p].isEmpty())) return false;
         if ((launchQuantizationSteps != 4 && launchQuantizationSteps != 16)
             || selectedTrack < 0 || selectedTrack >= tracks
             || selectedScene < 0 || selectedScene >= scenes
@@ -502,6 +507,13 @@ inline juce::String serializeSessionProject(const SessionProjectData& source) {
         kits.add(juce::var(pads));
     }
     rootObject->setProperty("drumPaths", juce::var(kits));
+    juce::Array<juce::var> sliceKits;
+    for (const auto& kit : project.drumSlices) {
+        juce::Array<juce::var> pads;
+        for (const auto& slice : kit) pads.add(juce::var(juce::Array<juce::var>{slice.start, slice.end}));
+        sliceKits.add(juce::var(pads));
+    }
+    rootObject->setProperty("drumSlices", juce::var(sliceKits));
     juce::Array<juce::var> steps;
     for (const auto enabled : project.stepPattern) steps.add(enabled);
     rootObject->setProperty("stepPattern", juce::var(steps));
@@ -1094,6 +1106,21 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
             for (int p = 0; p < drumPadCount; ++p) {
                 if (!(*pads)[p].isString()) { error = "Invalid drum sample path."; return false; }
                 parsed.drumPaths[static_cast<std::size_t>(t)][static_cast<std::size_t>(p)] = (*pads)[p].toString();
+            }
+        }
+    }
+    if (static_cast<int>(version) >= 33) {
+        const auto value = rootObject->getProperty("drumSlices");
+        const auto* kits = value.getArray();
+        if (!kits || kits->size() != trackCount) { error = "Invalid drum slice kits."; return false; }
+        for (int t = 0; t < trackCount; ++t) {
+            const auto* pads = (*kits)[t].getArray();
+            if (!pads || pads->size() != drumPadCount) { error = "Invalid drum slice pads."; return false; }
+            for (int p = 0; p < drumPadCount; ++p) {
+                const auto* range = (*pads)[p].getArray();
+                if (!range || range->size() != 2 || !(*range)[0].isInt() || !(*range)[1].isInt()) { error = "Invalid drum slice frames."; return false; }
+                parsed.drumSlices[t][p] = {static_cast<int>((*range)[0]), static_cast<int>((*range)[1])};
+                if (!parsed.drumSlices[t][p].valid() || (!parsed.drumSlices[t][p].whole() && parsed.drumPaths[t][p].isEmpty())) { error = "Invalid drum slice range."; return false; }
             }
         }
     }
