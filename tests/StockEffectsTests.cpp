@@ -79,7 +79,7 @@ static bool allFinite(const std::vector<float>& x) { for (float v : x) if (!dsp:
 
 // ---------------------------------------------------------------------------
 static void catalogueTests() {
-    check(stock::catalog.size() == 10, "ten stock effects");
+    check(stock::catalog.size() == 11, "eleven stock effects");
     std::set<juce::String> names, ids;
     for (const auto& info : stock::catalog) {
         auto e = stock::create(info.id);
@@ -96,7 +96,7 @@ static void catalogueTests() {
         check(PluginState{xml->toString(), {}, false}.valid(), std::string("description is a valid rack entry: ") + info.id);
         check(e->hasEditor(), std::string("has an editor: ") + info.id);
     }
-    check(names.size() == 10 && ids.size() == 10, "names and ids are unique");
+    check(names.size() == stock::catalog.size() && ids.size() == stock::catalog.size(), "names and ids are unique");
     check(stock::create("nonsense") == nullptr && stock::create("") == nullptr, "unknown ids create nothing");
     juce::PluginDescription vst; vst.pluginFormatName = "VST3";
     check(!stock::isStock(vst), "a VST3 is not a stock effect");
@@ -843,10 +843,28 @@ static void editorTests() {
     juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
 }
 
+static void transientHostTests() {
+    auto effect = make("transient"); auto l = noise(4096, .3, 6), r = l; const auto original = l;
+    process(*effect, l, r, 37); check(l == original && r == original, "transient processor defaults are transparent");
+    check(effect->getLatencySamples() == 0 && effect->getTailLengthSeconds() == 0, "transient effect has no latency or generated tail");
+    auto* processor = dynamic_cast<stock::TransientEffect*>(effect.get());
+    auto* parameter = effect->parameters.getParameter(stock::transient::attack);
+    parameter->setValue(.875f); // Host automation does not notify APVTS listeners.
+    checkNear(processor->settings().attackDb, 9, 1e-6, "transient DSP reads host-automated attack directly");
+    std::unique_ptr<juce::AudioProcessorEditor> editor(effect->createEditorIfNeeded());
+    auto* panel = dynamic_cast<stock::TransientEditor*>(editor.get()); check(panel != nullptr, "transient custom editor available");
+    if (panel) {
+        panel->refreshFromParameters(); checkNear(panel->knob(0).slider.getValue(), 9, 1e-6, "transient editor follows automation");
+        panel->knob(1).slider.setValue(-6, juce::sendNotificationSync);
+        checkNear(processor->settings().sustainDb, -6, 1e-6, "sustain knob changes processor parameter");
+    }
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     catalogueTests();
     parameterTests();
+    transientHostTests();
     processingTests();
     reverbLevelAndTailTests();
     reverbPreDelayTailTest();

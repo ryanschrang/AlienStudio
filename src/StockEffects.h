@@ -16,7 +16,7 @@ namespace alien::stock {
 inline constexpr const char* formatName = "AlienStock";
 
 struct Info { const char* id; const char* name; const char* summary; };
-inline constexpr std::array<Info, 10> catalog{{
+inline constexpr std::array<Info, 11> catalog{{
     {"eq", "Alien EQ", "Four-band equaliser with low and high shelves and two bells"},
     {"compressor", "Alien Compressor", "Stereo-linked compressor with soft knee and parallel mix"},
     {"reverb", "Alien Reverb", "Stereo room reverb with pre-delay"},
@@ -27,6 +27,7 @@ inline constexpr std::array<Info, 10> catalog{{
     {"gate", "Alien Gate", "Noise gate with hold and range; key it from another track for rhythmic gating"},
     {"chorus", "Alien Chorus", "Stereo chorus with modulated delay, rate, depth and mix"},
     {"phaser", "Alien Phaser", "Six-stage stereo phaser with rate, depth, feedback and mix"},
+    {"transient", "Alien Transient Shaper", "Stereo-linked attack and sustain shaping with parallel mix and output trim"},
 }};
 
 // Parameter identifiers, shared by the processors and their editors.
@@ -40,6 +41,9 @@ inline constexpr const char *threshold = "threshold", *ratio = "ratio", *attack 
 }
 namespace phaser {
 inline constexpr const char *rate = "rate", *depth = "depth", *feedback = "feedback", *mix = "mix";
+}
+namespace transient {
+inline constexpr const char *attack = "attack", *sustain = "sustain", *mix = "mix", *output = "output";
 }
 namespace chorus {
 inline constexpr const char *rate = "rate", *depth = "depth", *mix = "mix";
@@ -661,6 +665,36 @@ private:
     dsp::StereoPhaser engine;
 };
 
+// ---- Transient shaper ---------------------------------------------------------
+class TransientEffect final : public Effect {
+public:
+    TransientEffect() : Effect(catalog[10], layout()) {
+        attack = parameter(transient::attack); sustain = parameter(transient::sustain);
+        mix = parameter(transient::mix); output = parameter(transient::output);
+    }
+    void prepareToPlay(double sampleRate, int) override { rate = sampleRate; engine.prepare(sampleRate); prepared = true; }
+    void reset() override { engine.reset(); }
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
+        juce::ScopedNoDenormals noDenormals;
+        if (!prepared || buffer.getNumChannels() < 2) return;
+        engine.process(buffer.getWritePointer(0), buffer.getWritePointer(1), buffer.getNumSamples(), settings());
+    }
+    dsp::TransientShaper::Settings settings() const noexcept { return {attack->get(), sustain->get(), mix->get(), output->get()}; }
+    double getTailLengthSeconds() const override { return 0; }
+private:
+    juce::AudioParameterFloat* parameter(const char* id) { return static_cast<juce::AudioParameterFloat*>(parameters.getParameter(id)); }
+    static Layout layout() {
+        Layout l;
+        l.add(floatParameter(transient::attack, "Attack", {-12, 12, 0}, 0, dbFormat()));
+        l.add(floatParameter(transient::sustain, "Sustain", {-12, 12, 0}, 0, dbFormat()));
+        l.add(floatParameter(transient::mix, "Mix", {0, 1, 0}, 1, percentFormat()));
+        l.add(floatParameter(transient::output, "Output", {-12, 12, 0}, 0, dbFormat()));
+        return l;
+    }
+    juce::AudioParameterFloat *attack{}, *sustain{}, *mix{}, *output{};
+    dsp::TransientShaper engine;
+};
+
 // ---- Catalogue and project-file identity -----------------------------------------
 
 inline std::unique_ptr<Effect> create(const juce::String& id) {
@@ -674,6 +708,7 @@ inline std::unique_ptr<Effect> create(const juce::String& id) {
     if (id == catalog[7].id) return std::make_unique<GateEffect>();
     if (id == catalog[8].id) return std::make_unique<ChorusEffect>();
     if (id == catalog[9].id) return std::make_unique<PhaserEffect>();
+    if (id == catalog[10].id) return std::make_unique<TransientEffect>();
     return {};
 }
 

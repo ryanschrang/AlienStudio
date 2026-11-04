@@ -1204,11 +1204,35 @@ static void phaserHistoryTests() {
     require(reopened.tracks[0].plugins.effects[0].instanceId == state.instanceId && std::abs(depthOf(reopened.tracks[0].plugins.effects[0]) - .8f) < 1e-6, "save/reopen retains phaser identity and parameters");
 }
 
+static void transientHistoryTests() {
+    ToneEngine engine; alien::ProjectController controller(engine);
+    auto effect = alien::stock::create("transient"); require(effect != nullptr, "transient available");
+    const auto stateFor = [&](float normalisedAttack) {
+        auto* parameter = effect->parameters.getParameter(alien::stock::transient::attack); parameter->setValueNotifyingHost(normalisedAttack);
+        juce::MemoryBlock data; effect->getStateInformation(data); return data.toBase64Encoding();
+    };
+    std::vector<alien::PluginRackState> racks(static_cast<std::size_t>(controller.document().trackCount())); alien::PluginRackState master;
+    alien::PluginState state(alien::stock::describe(alien::stock::catalog[10]).createXml()->toString(), stateFor(.25f));
+    racks[0].effects = {state}; controller.setPluginRacks(racks, master);
+    racks[0].effects[0].stateBase64 = stateFor(.8f); controller.setPluginRacks(racks, master);
+    const auto attackOf = [&](const alien::PluginState& saved) {
+        juce::MemoryBlock data; require(data.fromBase64Encoding(saved.stateBase64), "transient state base64"); effect->setStateInformation(data.getData(), static_cast<int>(data.getSize()));
+        return effect->parameters.getParameter(alien::stock::transient::attack)->getValue();
+    };
+    controller.undo(); require(std::abs(attackOf(controller.document().tracks[0].plugins.effects[0]) - .25f) < 1e-6, "Undo restores transient parameter state");
+    controller.redo(); require(std::abs(attackOf(controller.document().tracks[0].plugins.effects[0]) - .8f) < 1e-6, "Redo restores transient parameter state");
+    alien::SessionProjectData parsed; juce::String error;
+    require(alien::parseSessionProject(alien::serializeSessionProject(alien::toProjectData(controller.document())), parsed, error), "transient project serializes and parses");
+    const auto reopened = alien::fromProjectData(parsed);
+    require(reopened.tracks[0].plugins.effects[0].instanceId == state.instanceId && std::abs(attackOf(reopened.tracks[0].plugins.effects[0]) - .8f) < 1e-6, "save/reopen retains transient identity and parameters");
+}
+
 #include "AudioImportPlanTests.h"
 
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     audioImportPlanChecks();
+    transientHistoryTests();
     phaserHistoryTests();
     chorusHistoryTests();
     browserImportTests();
