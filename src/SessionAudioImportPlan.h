@@ -10,6 +10,7 @@ struct Plan {
     library::ClipId cell;
     std::shared_ptr<const library::PatternData> content;
     SessionClip previous;
+    bool emptyOnly{}; // a browser or Explorer drop never replaces what a cell already holds
 };
 struct Prepared { Plan plan; AudioClipImportResult decoded; };
 inline std::pair<int,int> resolve(const ProjectDocument& d, const Plan& p) {
@@ -28,26 +29,31 @@ inline juce::String destinationRefusal(const ProjectDocument& d,int track,int sc
         if(d.linkOf(t,s)==link && d.tracks[static_cast<std::size_t>(t)].settings.frozen())return "Unfreeze linked tracks before replacing their shared audio.";
     return {};
 }
-inline std::optional<Plan> prepare(const ProjectDocument& d,const juce::File& file,int track,int scene) {
-    if(file==juce::File{} || destinationRefusal(d,track,scene).isNotEmpty())return {};
+inline std::optional<Plan> prepare(const ProjectDocument& d,const juce::File& file,int track,int scene,bool emptyOnly=false) {
+    if(file==juce::File{} || destinationRefusal(d,track,scene).isNotEmpty() || (emptyOnly && d.cellClip(track,scene)))return {};
     const auto id=d.cellClip(track,scene);
-    return Plan{file,d.identityScope,d.tracks[static_cast<std::size_t>(track)].id,d.scenes[static_cast<std::size_t>(scene)].id,id,d.library.content(id),d.clip(track,scene)};
+    return Plan{file,d.identityScope,d.tracks[static_cast<std::size_t>(track)].id,d.scenes[static_cast<std::size_t>(scene)].id,id,d.library.content(id),d.clip(track,scene),emptyOnly};
 }
 inline juce::String refusal(const ProjectDocument& d,const Plan& p) {
     if(p.file==juce::File{})return "The audio-import plan has no source file.";
     const auto [track,scene]=resolve(d,p);
     if(const auto why=destinationRefusal(d,track,scene);why.isNotEmpty())return why;
+    if(p.emptyOnly && d.cellClip(track,scene))return "Destination is no longer empty.";
     const auto now=d.clip(track,scene);
     if(d.cellClip(track,scene)!=p.cell || d.library.content(p.cell)!=p.content
         || now.audio!=p.previous.audio || now.audioFilePath!=p.previous.audioFilePath || now.audioFileName!=p.previous.audioFileName)
         return "The clip changed while audio was being decoded; import again.";
     return {};
 }
-// No decoding, retention, engine publication or history: suitable for a future
-// prepared import command's Preview. Only a validated candidate is installed.
-inline juce::String apply(ProjectDocument& d,const Prepared& p) {
+inline juce::String refusal(const ProjectDocument& d,const Prepared& p) {
     if(const auto why=refusal(d,p.plan);why.isNotEmpty())return why;
     if(!p.decoded.clip || !p.decoded.clip->valid())return p.decoded.error.isNotEmpty()?p.decoded.error:juce::String("Audio decoding did not produce a valid clip.");
+    return {};
+}
+// No decoding, retention, engine publication or history: the ImportClipAudio
+// command's Preview uses this directly. Only a validated candidate is installed.
+inline juce::String apply(ProjectDocument& d,const Prepared& p) {
+    if(const auto why=refusal(d,p);why.isNotEmpty())return why;
     const auto [track,scene]=resolve(d,p.plan);auto clip=d.clip(track,scene);
     clip.audio=p.decoded.clip;clip.audioFileName=p.plan.file.getFileName();clip.audioFilePath=p.plan.file.getFullPathName();
     d.setClip(track,scene,clip);return {};
