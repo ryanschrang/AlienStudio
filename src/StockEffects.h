@@ -16,7 +16,7 @@ namespace alien::stock {
 inline constexpr const char* formatName = "AlienStock";
 
 struct Info { const char* id; const char* name; const char* summary; };
-inline constexpr std::array<Info, 14> catalog{{
+inline constexpr std::array<Info, 15> catalog{{
     {"eq", "Alien EQ", "Four-band equaliser with low and high shelves and two bells"},
     {"compressor", "Alien Compressor", "Stereo-linked compressor with soft knee and parallel mix"},
     {"reverb", "Alien Reverb", "Stereo room reverb with pre-delay"},
@@ -31,6 +31,7 @@ inline constexpr std::array<Info, 14> catalog{{
     {"bitcrusher", "Alien Bit Crusher", "Bit-depth reduction and sample-and-hold rate reduction with parallel mix"},
     {"imager", "Alien Stereo Imager", "Mid/side stereo width with parallel mix and output trim"},
     {"flanger", "Alien Flanger", "Short stereo modulated delay with rate, depth, signed feedback and mix"},
+    {"deesser", "Alien De-Esser", "Stereo-linked high-band attenuation with frequency, threshold, reduction and mix"},
 }};
 
 // Parameter identifiers, shared by the processors and their editors.
@@ -41,6 +42,9 @@ inline constexpr const char *lowFreq = "lowFreq", *lowGain = "lowGain", *m1Freq 
 namespace comp {
 inline constexpr const char *threshold = "threshold", *ratio = "ratio", *attack = "attack", *release = "release",
     *knee = "knee", *makeup = "makeup", *mix = "mix";
+}
+namespace deesser {
+inline constexpr const char *frequency = "frequency", *threshold = "threshold", *reduction = "reduction", *mix = "mix";
 }
 namespace flanger {
 inline constexpr const char *rate = "rate", *depth = "depth", *feedback = "feedback", *mix = "mix";
@@ -784,6 +788,33 @@ private:
     dsp::StereoFlanger engine;
 };
 
+class DeEsserEffect final : public Effect {
+public:
+    DeEsserEffect() : Effect(catalog[14], layout()) {
+        frequency = parameter(deesser::frequency); threshold = parameter(deesser::threshold);
+        reduction = parameter(deesser::reduction); mix = parameter(deesser::mix);
+    }
+    void prepareToPlay(double sampleRate, int) override { engine.prepare(sampleRate); prepared = true; }
+    void reset() override { engine.reset(); }
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
+        juce::ScopedNoDenormals noDenormals;
+        if (prepared && buffer.getNumChannels() >= 2) engine.process(buffer.getWritePointer(0), buffer.getWritePointer(1), buffer.getNumSamples(), {frequency->get(), threshold->get(), reduction->get(), mix->get()});
+    }
+    double getTailLengthSeconds() const override { return dsp::DeEsser::tailSeconds; }
+private:
+    juce::AudioParameterFloat* parameter(const char* id) { return static_cast<juce::AudioParameterFloat*>(parameters.getParameter(id)); }
+    static Layout layout() {
+        Layout l;
+        l.add(floatParameter(deesser::frequency, "Frequency", {2000, 12000, 5000}, 5000, frequencyFormat()));
+        l.add(floatParameter(deesser::threshold, "Threshold", {-60, 0, 0}, -18, dbFormat(" dBFS")));
+        l.add(floatParameter(deesser::reduction, "Reduction", {0, 18, 0}, 6, dbFormat()));
+        l.add(floatParameter(deesser::mix, "Mix", {0, 1, 0}, 1, percentFormat()));
+        return l;
+    }
+    juce::AudioParameterFloat *frequency{}, *threshold{}, *reduction{}, *mix{};
+    dsp::DeEsser engine;
+};
+
 // ---- Catalogue and project-file identity -----------------------------------------
 
 inline std::unique_ptr<Effect> create(const juce::String& id) {
@@ -801,6 +832,7 @@ inline std::unique_ptr<Effect> create(const juce::String& id) {
     if (id == catalog[11].id) return std::make_unique<BitCrusherEffect>();
     if (id == catalog[12].id) return std::make_unique<StereoImagerEffect>();
     if (id == catalog[13].id) return std::make_unique<FlangerEffect>();
+    if (id == catalog[14].id) return std::make_unique<DeEsserEffect>();
     return {};
 }
 
