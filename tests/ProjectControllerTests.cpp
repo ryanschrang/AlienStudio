@@ -1278,6 +1278,7 @@ static void transientHistoryTests() {
 
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    drumSliceBoundaryTests();
     drumSliceControllerTests();
     audioImportPlanChecks();
     transientHistoryTests();

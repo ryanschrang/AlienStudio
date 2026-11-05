@@ -553,3 +553,19 @@ Listening and physical-device acceptance remain pending; automated checks are re
   restart, Undo/Redo, save/reopen and live versus Song WAV export.
 - Physical-device listening, mono compatibility and perceived width remain manual
   acceptance checks; automated signal/state tests do not substitute for listening.
+
+## Editable sampler boundaries (T2-01 / INST-07)
+
+- In Drums, select a loaded pad and edit Start frame and End (exclusive), then press
+  Apply range. Only that pad should change. Start is zero-based, End is the first
+  source frame not played. The original source length is shown; a slice can expand
+  back into that source. Whole sample restores the full source.
+- Undo once restores the previous range; Redo reapplies it. Check a one-frame range,
+  invalid/empty/out-of-source values, changing pads, frozen/offline samples and busy
+  operations. Typing or a refresh alone must not commit an edit. A changed sample or
+  replaced project must not receive an old pending edit.
+- Save/reopen and portable collection must retain manual boundaries. Audition and
+  compare Song export; listen for boundary clicks on different sample rates/devices.
+  These are exact frame boundaries, not automatic transient/zero-crossing snapping.
+
+Manual listening and physical-device checks remain pending.

@@ -23,6 +23,16 @@ inline std::shared_ptr<const SessionAudioClip> drumSliceView(std::shared_ptr<con
     view->buildWaveform();
     return view;
 }
+// Message-thread editing target. The asset and project scope fence deferred UI
+// actions; a track's persistent runtime identity survives slot reordering.
+struct DrumSliceTarget {
+    std::uint32_t scope{}, trackId{};
+    int pad{-1};
+    std::shared_ptr<const SessionAudioClip> asset;
+    bool frozen{};
+    bool operator==(const DrumSliceTarget&) const = default;
+};
+
 struct DrumKitControls {
     std::array<std::atomic<const SessionAudioClip*>, drumPadCount> samples{};
 };
