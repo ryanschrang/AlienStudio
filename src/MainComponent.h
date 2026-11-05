@@ -65,6 +65,7 @@ public:
         addWorkspace("Arrangement", timelineView);
         addWorkspace("Audio lab", audioTools);
         drumPanel.onLoad = [this](int t, int p, const juce::File& f) { controller.loadDrum(f, t, p); };
+        drumPanel.onApplySlice = [this](const alien::DrumSliceTarget& target, alien::DrumSlice range) { return controller.editDrumSlice(target, range); };
         drumPanel.onSlice = [this](int t, int p) { controller.sliceDrum(t, p); };
         drumPanel.onClear = [this](int t, int p) { controller.clearDrum(t, p); refreshExtraViews(); };
         drumPanel.onHit = [this](int t, int p) { engine.drumAuditions[t].push(alien::drumBaseNote + p, 0.8f); };
@@ -1393,7 +1394,9 @@ private:
         std::array<std::array<juce::String, alien::drumPadCount>, alien::maxSessionTracks> paths{};
         std::array<std::array<alien::DrumSlice, alien::drumPadCount>, alien::maxSessionTracks> slices{};
         for (int t = 0; t < d.trackCount(); ++t) { names.add(d.tracks[t].name); paths[t] = d.tracks[t].drumPaths; slices[t] = d.tracks[t].drumSlices; }
-        drumPanel.setTrackNames(names); drumPanel.setPaths(paths, slices);
+        std::array<std::array<alien::DrumSliceTarget, alien::drumPadCount>, alien::maxSessionTracks> targets{};
+        for (int t = 0; t < d.trackCount(); ++t) for (int p = 0; p < alien::drumPadCount; ++p) targets[t][p] = controller.drumSliceTarget(t, p);
+        drumPanel.setTrackNames(names); drumPanel.setPaths(paths, slices); drumPanel.setSliceTargets(targets);
         refreshPlugins();
         timelineView.refresh();
         // Where the song will start playing is the view's play position; tell the engine unless it is playing (a jump is not wanted here).

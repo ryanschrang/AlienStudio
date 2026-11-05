@@ -1906,6 +1906,32 @@ public:
         commit("Delete pattern");
         return true;
     }
+    DrumSliceTarget drumSliceTarget(int track, int pad) const {
+        if (track < 0 || track >= doc.trackCount() || pad < 0 || pad >= drumPadCount) return {};
+        const auto& owner = doc.tracks[track];
+        return {doc.identityScope, owner.id, pad, owner.drumAssets[pad], owner.settings.frozen()};
+    }
+    bool editDrumSlice(const DrumSliceTarget& target, DrumSlice range) {
+        if (busy || isRecording() || engine.recording.active() || target.scope != doc.identityScope
+            || !target.asset || target.frozen || target.pad < 0 || target.pad >= drumPadCount || !range.valid()) return false;
+        int track = -1;
+        for (int t = 0; t < doc.trackCount(); ++t) if (doc.tracks[t].id == target.trackId) { track = t; break; }
+        if (track < 0 || isTrackFrozen(track)) return false;
+        auto& owner = doc.tracks[track];
+        if (owner.drumAssets[target.pad] != target.asset) return false;
+        const auto source = target.asset->sliceSource ? target.asset->sliceSource : target.asset;
+        if (source->streamed() || (!range.whole() && static_cast<std::size_t>(range.end) > source->frames)) return false;
+        // The entire source is one canonical state, preserving no-op/redo behavior.
+        if (range.start == 0 && static_cast<std::size_t>(range.end) == source->frames) range = {};
+        if (owner.drumSlices[target.pad] == range) return true;
+        const auto view = drumSliceView(source, range);
+        if (!view) return false;
+        if (view != source) retained.push_back(view); // source PCM already retained and counted
+        owner.drumAssets[target.pad] = view; owner.drumSlices[target.pad] = range;
+        pushDocumentToEngine(); commit(range.whole() ? "Restore whole drum sample" : "Edit drum slice");
+        if (onDocumentRestored) onDocumentRestored();
+        return true;
+    }
     bool sliceDrum(int track, int pad) {
         if (busy || isRecording() || engine.recording.active() || isTrackFrozen(track) || track < 0 || track >= doc.trackCount() || pad < 0 || pad >= drumPadCount) return false;
         auto& owner = doc.tracks[track];
