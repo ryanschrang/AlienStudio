@@ -569,3 +569,15 @@ Listening and physical-device acceptance remain pending; automated checks are re
   These are exact frame boundaries, not automatic transient/zero-crossing snapping.
 
 Manual listening and physical-device checks remain pending.
+
+## Flanger (T2-02 / FX-02)
+
+- Add Alien Flanger to a track and Master FX. Sweep Rate and Depth on a drum loop,
+  sustained synth and stereo material. At 50% Mix the short modulated delay should
+  create a moving comb-filter effect; 100% Mix is the delayed signal. Settled 0%
+  Mix must sound dry. Positive and negative Feedback should give different colours.
+- Check maximum signed Feedback for stability, smooth automation, bypass, device
+  restart, Undo/Redo, save/reopen and live versus Song WAV export. The declared tail
+  must cover feedback decay. No through-zero/negative delay or tempo sync is included.
+- Listening quality and physical-device acceptance remain pending; automated DSP,
+  state and allocation checks do not substitute for listening.
