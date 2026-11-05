@@ -881,7 +881,51 @@ static void imagerTests() {
     }
 }
 
+static void flangerTests() {
+    const auto input = noise(24000, .3, 48);
+    const auto render = [&](int block, bool dry) {
+        StereoFlanger e; e.prepare(rate); auto l = input, r = input;
+        for (int at = 0; at < 24000;) {
+            const int n = std::min({block, 24000 - at, at < 12000 ? 12000 - at : 24000 - at});
+            const auto settings = at < 12000 ? StereoFlanger::Settings{.25, .7, .35, dry ? 0. : .5} : StereoFlanger::Settings{5, 1, -.85, dry ? 0. : .75};
+            e.process(l.data() + at, r.data() + at, n, settings); at += n;
+        }
+        return std::pair{l, r};
+    };
+    check(render(37, true) == std::pair{input, input}, "flanger zero mix is exact dry during parameter changes");
+    const auto reference = render(512, false);
+    for (int block : {1, 37, 1024}) check(render(block, false) == reference, "flanger modulation and smoothing independent of host block boundaries");
+    double stereo = 0, changed = 0;
+    for (int i = 0; i < 24000; ++i) { stereo += std::abs(reference.first[i] - reference.second[i]); changed += std::abs(reference.first[i] - input[i]); }
+    check(stereo > 1 && changed > 1, "flanger modulates stereo delay rather than returning dry audio");
+    StereoFlanger e; e.prepare(8000);
+    for (double feedback : {0., .5, -.5}) {
+        e.reset(); std::vector<float> l(100), r(100); l[0] = 1;
+        e.process(l.data(), r.data(), 100, {1, 0, feedback, 1});
+        near(l[26], 1, 1e-6, "zero-depth flanger delays by 3.25 ms");
+        near(l[52], feedback, 1e-6, "flanger feedback repeats with requested sign and gain");
+        near(l[78], feedback * feedback, 1e-6, "feedback loop continues at the correct interval");
+        check(std::all_of(r.begin(), r.end(), [](float v) { return v == 0; }), "flanger channels have no crossfeed");
+    }
+    e.prepare(rate); auto l = input, r = input; e.process(l.data(), r.data(), 24000, {}); const auto first = l;
+    e.reset(); l = input; r = input; e.process(l.data(), r.data(), 24000, {}); check(l == first, "flanger reset clears delay, modulation and control history");
+    for (double sr : {8000., 44100., 48000., 96000., 192000.}) for (double feedback : {-.85, .85}) {
+        e.prepare(sr); const int count = static_cast<int>(sr * .6); l.assign(count, 0); r.assign(count, 0); l[0] = 1;
+        e.process(l.data(), r.data(), count, {5, 1, feedback, 1});
+        bool valid = true; double tail = 0;
+        for (int i = 0; i < count; ++i) {
+            valid = valid && finite(l[i]) && std::abs(l[i]) <= 1.000001f && r[i] == 0;
+            if (i >= static_cast<int>(sr * StereoFlanger::tailSeconds)) tail = std::max(tail, static_cast<double>(std::abs(l[i])));
+        }
+        check(valid && tail < 1e-5, "maximum signed feedback stays bounded and decays within declared tail across sample rates");
+    }
+    e.prepare(rate); l = {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), .2f}; r = l;
+    e.process(l.data(), r.data(), 3, {std::numeric_limits<double>::quiet_NaN(), 100, -100, 1});
+    check(std::all_of(l.begin(), l.end(), [](float v) { return finite(v); }), "flanger sanitises invalid inputs and settings");
+}
+
 int main() {
+    flangerTests();
     imagerTests();
     crusherTests();
     transientTests();

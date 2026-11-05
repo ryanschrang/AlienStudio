@@ -849,6 +849,15 @@ public:
     void resized() override { auto area = content(); layoutKnobs(area, 0, 3, area.getWidth() / 3); }
 };
 
+class FlangerEditor final : public EffectEditor {
+public:
+    explicit FlangerEditor(FlangerEffect& e) : EffectEditor(e, ui::colours::accent, 520, 220) {
+        addKnob(flanger::rate, "Rate"); addKnob(flanger::depth, "Depth");
+        addKnob(flanger::feedback, "Feedback"); addKnob(flanger::mix, "Mix"); finishSetup();
+    }
+    void resized() override { auto area = content(); layoutKnobs(area, 0, 4, area.getWidth() / 4); }
+};
+
 // ---- Registration ----------------------------------------------------------------------
 
 inline juce::AudioProcessorEditor* makeEditor(Effect& effect) {
@@ -866,6 +875,7 @@ inline juce::AudioProcessorEditor* makeEditor(Effect& effect) {
     if (id == catalog[10].id) return new TransientEditor(static_cast<TransientEffect&>(effect));
     if (id == catalog[11].id) return new BitCrusherEditor(static_cast<BitCrusherEffect&>(effect));
     if (id == catalog[12].id) return new StereoImagerEditor(static_cast<StereoImagerEffect&>(effect));
+    if (id == catalog[13].id) return new FlangerEditor(static_cast<FlangerEffect&>(effect));
     return nullptr;
 }
 // Including this header installs the editors; without it the host shows its generic one.
