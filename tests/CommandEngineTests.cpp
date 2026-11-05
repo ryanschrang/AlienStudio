@@ -460,6 +460,7 @@ int main() {
     busStripCommandChecks();
     busStructureCommandChecks();
     trackOutputCommandChecks();
+    sidechainCommandChecks();
     importClipAudioNameChecks();
     importClipAudioCommandChecks();
     importClipAudioStorageChecks();
