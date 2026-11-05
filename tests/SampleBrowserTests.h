@@ -124,5 +124,57 @@ static void sampleBrowserChecks() {
         require(starter && starter->isEnabled(), "the Starter Pack button is offered");
         browser.setStarterFolder(pack.getChildFile("missing")); require(!starter->isEnabled(), "and disabled when the pack is missing");
     }
+    {
+        const auto folder = root.getChildFile("Tempo"); require(folder.createDirectory().wasOk(), "tempo fixture folder");
+        alien::SessionAudioClip loop; loop.sampleRate = 8000; loop.channels = 1; loop.frames = 8000 * 15; loop.left.assign(loop.frames, 0.f);
+        const auto beat = 60.0 / 128 * 8000;
+        for (int b = 0; b * beat < static_cast<double>(loop.frames); ++b)
+            for (int n = 0; n < 400 && static_cast<std::size_t>(b * beat) + static_cast<std::size_t>(n) < loop.frames; ++n)
+                loop.left[static_cast<std::size_t>(b * beat) + static_cast<std::size_t>(n)] = .8f * std::exp(-n / 80.f) * (n % 2 == 0 ? 1.f : -1.f);
+        loop.buildWaveform();
+        alien::SessionAudioClip flat; flat.sampleRate = 8000; flat.channels = 1; flat.frames = 8000 * 6; flat.left.assign(flat.frames, .2f); flat.buildWaveform();
+        std::atomic<bool> writing{false}; juce::String writeError;
+        require(alien::writeClipWav(folder.getChildFile("Flat.wav"), flat, writing, writeError) && alien::writeClipWav(folder.getChildFile("Loop.wav"), loop, writing, writeError), "write tempo fixtures");
+        const auto loopBytes = folder.getChildFile("Loop.wav").getSize();
+        alien::SampleBrowser browser; browser.setSize(360, 400); browser.addToDesktop(0); browser.setVisible(true); browser.scan(folder);
+        auto pump = [] { juce::MessageManager::getInstance()->runDispatchLoopUntil(10); };
+        for (int i = 0; i < 400 && browser.resultCount() == 0; ++i) pump();
+        juce::Slider* bpm = nullptr; juce::Button* detect = nullptr; juce::Button* stop = nullptr; juce::ListBox* list = nullptr; juce::Label* status = nullptr;
+        for (auto* c : browser.getChildren()) {
+            if (c->getName() == "Sample source BPM") bpm = dynamic_cast<juce::Slider*>(c);
+            if (c->getName() == "Detect sample BPM") detect = dynamic_cast<juce::Button*>(c);
+            if (auto* b = dynamic_cast<juce::Button*>(c); b && b->getButtonText() == "Stop") stop = b;
+            if (auto* l = dynamic_cast<juce::ListBox*>(c)) list = l;
+            if (auto* l = dynamic_cast<juce::Label*>(c); l && l->getText().contains("samples (limit")) status = l;
+            require(browser.getLocalBounds().contains(c->getBounds()), "the tempo row fits the compact layout");
+        }
+        require(browser.resultCount() == 2 && bpm && detect && stop && list && status, "tempo controls available");
+        auto waitFor = [&](const juce::String& text) { for (int i = 0; i < 800 && !status->getText().contains(text); ++i) pump(); return status->getText().contains(text); };
+        int previews = 0, imports = 0; browser.onPreview = [&](const alien::SessionAudioClip&) { ++previews; }; browser.onImport = [&](const juce::File&, bool) { ++imports; };
+
+        list->selectRow(1); require(browser.selectedFile().getFileName() == "Loop.wav" && detect->isEnabled(), "a sample can be detected");
+        detect->onClick(); require(!detect->isEnabled() && status->getText() == "Detecting tempo...", "the button waits for the result");
+        require(waitFor("Estimated"), "the loop's tempo is found");
+        require(std::abs(bpm->getValue() - 128) <= .5 && detect->isEnabled(), "the result fills in Source BPM");
+        require(status->getText().contains("half or double"), "and says it may be off by an octave");
+        require(previews == 0 && imports == 0 && folder.getChildFile("Loop.wav").getSize() == loopBytes, "detecting does not preview, import or change the file");
+
+        bpm->setValue(99, juce::dontSendNotification); list->selectRow(0);
+        detect->onClick(); require(waitFor("No steady tempo"), "a flat sample reports no tempo");
+        require(juce::approximatelyEqual(bpm->getValue(), 99.0), "and keeps the BPM already set");
+
+        list->selectRow(1); detect->onClick(); stop->onClick();
+        require(status->getText() == "Tempo detection stopped." && detect->isEnabled(), "Stop abandons detection");
+        for (int i = 0; i < 100; ++i) pump();
+        require(juce::approximatelyEqual(bpm->getValue(), 99.0), "and a late result is discarded");
+
+        detect->onClick(); list->selectRow(0);
+        for (int i = 0; i < 100; ++i) pump();
+        require(juce::approximatelyEqual(bpm->getValue(), 99.0) && detect->isEnabled(), "choosing another sample discards the result");
+
+        detect->onClick(); bpm->setValue(101, juce::dontSendNotification); bpm->onValueChange();
+        for (int i = 0; i < 100; ++i) pump();
+        require(juce::approximatelyEqual(bpm->getValue(), 101.0), "a typed BPM wins over a pending result");
+    }
     require(root.deleteRecursively(), "remove sample fixtures");
 }

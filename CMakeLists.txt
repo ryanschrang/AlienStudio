@@ -459,6 +459,13 @@ if(BUILD_TESTING)
     target_link_libraries(LongTempoWarpTests PRIVATE juce::juce_audio_formats Threads::Threads)
     add_test(NAME LongTempoWarpTests COMMAND LongTempoWarpTests)
     set_tests_properties(LongTempoWarpTests PROPERTIES TIMEOUT 90)
+
+    add_executable(SampleTempoDetectTests tests/SampleTempoDetectTests.cpp)
+    target_include_directories(SampleTempoDetectTests PRIVATE src)
+    target_compile_definitions(SampleTempoDetectTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(SampleTempoDetectTests PRIVATE juce::juce_audio_formats Threads::Threads)
+    add_test(NAME SampleTempoDetectTests COMMAND SampleTempoDetectTests)
+    set_tests_properties(SampleTempoDetectTests PROPERTIES TIMEOUT 90)
 endif()
 
 if(BUILD_TESTING)
