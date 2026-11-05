@@ -7,6 +7,7 @@
 #include "ReturnCommands.h"
 #include "BusCommands.h"
 #include "SidechainCommands.h"
+#include "DeviceCommands.h"
 #include "ViewModes.h"
 #include "ToneEngine.h"
 #include "AudioClipImport.h"
@@ -557,6 +558,7 @@ public:
 
     // Writes the key to the document only. The caller commits, and the host rebuilds the plugin racks.
     bool applySidechainCommand(const sidechain_edit::Edit& edit) { return !busy && sidechain_edit::apply(doc, edit).isEmpty(); }
+    bool applyDeviceCommand(const device_edit::Edit& edit) { return !busy && device_edit::apply(doc, edit).isEmpty(); }
 
     // Message-thread command setters. Only the addressed control changes; the
     // caller commits after the complete command/batch, just like track renaming.
