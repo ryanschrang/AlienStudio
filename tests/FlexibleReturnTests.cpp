@@ -352,7 +352,6 @@ static void panels() {
     alien::TrackMixerPanel panel(c, engine.tracks, engine.returns, engine.masterControls, engine.buses);
     panel.setSize(1600, 720);
     juce::StringArray routing; int returnEdits = 0; bool captured = false;
-    panel.onRoutingChanged = [&](const juce::String& label) { routing.add(label); c.commit(label); };
     panel.onReturnCommandExecuted = [&] { routing.add(c.undoLabel()); };   // the command owns the undo step
     panel.onStripCommandExecuted = [&] { ++returnEdits; };
     panel.beforeReturnDeleted = [&] { captured = true; };

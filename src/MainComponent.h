@@ -696,8 +696,7 @@ private:
         mixerPanel.onStripCommandExecuted = [this] { updateEditorTitle(); };
         mixerPanel.beforeBusDeleted = [this] { snapshotPlugins(SnapshotReason::whenEdited); };
         mixerPanel.beforeReturnDeleted = [this] { snapshotPlugins(SnapshotReason::whenEdited); };
-        mixerPanel.onRoutingChanged = [this](const juce::String& label) {
-            controller.commit(label);
+        mixerPanel.onTrackOutputCommandExecuted = [this] {
             restorePlugins();
             timelineView.refresh();
         };

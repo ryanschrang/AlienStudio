@@ -446,6 +446,7 @@ static void continuousCommandTests() {
 #include "ImportClipAudioCommandTests.h"
 #include "SendReturnCommandTests.h"
 #include "StripBusCommandTests.h"
+#include "RoutingCommandTests.h"
 #include "MasterVolumeCommandTests.h"
 #include "SceneCommandTests.h"
 
@@ -458,6 +459,7 @@ int main() {
     returnStripCommandChecks();
     busStripCommandChecks();
     busStructureCommandChecks();
+    trackOutputCommandChecks();
     importClipAudioNameChecks();
     importClipAudioCommandChecks();
     importClipAudioStorageChecks();
