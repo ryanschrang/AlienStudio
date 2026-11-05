@@ -1,6 +1,7 @@
 #pragma once
 #include "ProjectController.h"
 #include "SceneCommands.h"
+#include "DeviceCommands.h"
 #include <juce_core/juce_core.h>
 #include <array>
 #include <charconv>
@@ -56,6 +57,11 @@ struct SetTrackOutput { int track{-1}, bus{-1}; };   // -1 is the master
 // What keys an effect's sidechain input. `rack` is a track, return slot or bus slot (0 for
 // the master); `source` is a track, bus slot or return slot, or -1 for no key.
 struct SetSidechain { RackStage stage{RackStage::track}; int rack{-1}, effect{-1}; KeySource from{KeySource::track}; int source{-1}; };
+// The devices in a rack. A slot of -1 is a track's instrument; other slots are FX slots.
+struct InsertDevice { RackStage stage{RackStage::track}; int rack{-1}, slot{-1}; PluginState device; };   // an instrument replaces the one there
+struct RemoveDevice { RackStage stage{RackStage::track}; int rack{-1}, slot{-1}; };
+struct MoveDevice { RackStage stage{RackStage::track}; int rack{-1}, slot{-1}, to{-1}; };
+struct SetDeviceBypass { RackStage stage{RackStage::track}; int rack{-1}, slot{-1}; bool bypassed{}; };
 
 // Session cells, zero-based. CreateClip is MIDI-only; duplication supports all types.
 struct CreateClip { int track{-1}, scene{-1}; };
@@ -80,12 +86,12 @@ struct MoveScene { int scene{-1}, to{-1}; };
 struct RenameScene { int scene{-1}; juce::String name; };
 struct DeleteScene { int scene{-1}; };
 
-using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume, ImportClipAudio, SetTrackSend, SetTrackSendMode, CreateReturn, RenameReturn, DeleteReturn, SetReturnVolume, SetReturnPan, SetReturnMute, CreateBus, RenameBus, DeleteBus, SetBusVolume, SetBusPan, SetBusMute, SetBusSolo, SetTrackOutput, SetSidechain>;
+using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume, ImportClipAudio, SetTrackSend, SetTrackSendMode, CreateReturn, RenameReturn, DeleteReturn, SetReturnVolume, SetReturnPan, SetReturnMute, CreateBus, RenameBus, DeleteBus, SetBusVolume, SetBusPan, SetBusMute, SetBusSolo, SetTrackOutput, SetSidechain, InsertDevice, RemoveDevice, MoveDevice, SetDeviceBypass>;
 
 namespace detail {
 // Indexed like Command's alternatives.
-inline constexpr std::array<const char*, 43> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume", "ImportClipAudio", "SetTrackSend", "SetTrackSendMode", "CreateReturn", "RenameReturn", "DeleteReturn", "SetReturnVolume", "SetReturnPan", "SetReturnMute", "CreateBus", "RenameBus", "DeleteBus", "SetBusVolume", "SetBusPan", "SetBusMute", "SetBusSolo", "SetTrackOutput", "SetSidechain"};
-inline constexpr std::array<const char*, 43> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume", "Import audio", "Set send level", "Set send mode", "Add return", "Rename return", "Remove return", "Set return volume", "Set return pan", "Set return mute", "Add bus", "Rename bus", "Delete bus", "Set bus volume", "Set bus pan", "Set bus mute", "Set bus solo", "Set track output", "Set sidechain"};
+inline constexpr std::array<const char*, 47> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume", "ImportClipAudio", "SetTrackSend", "SetTrackSendMode", "CreateReturn", "RenameReturn", "DeleteReturn", "SetReturnVolume", "SetReturnPan", "SetReturnMute", "CreateBus", "RenameBus", "DeleteBus", "SetBusVolume", "SetBusPan", "SetBusMute", "SetBusSolo", "SetTrackOutput", "SetSidechain", "InsertDevice", "RemoveDevice", "MoveDevice", "SetDeviceBypass"};
+inline constexpr std::array<const char*, 47> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume", "Import audio", "Set send level", "Set send mode", "Add return", "Rename return", "Remove return", "Set return volume", "Set return pan", "Set return mute", "Add bus", "Rename bus", "Delete bus", "Set bus volume", "Set bus pan", "Set bus mute", "Set bus solo", "Set track output", "Set sidechain", "Insert device", "Remove device", "Move device", "Set device bypass"};
 static_assert(names.size() == std::variant_size_v<Command> && labels.size() == names.size());
 
 // The name the controller stores for `name` (it trims and caps track names).
@@ -117,11 +123,17 @@ inline std::optional<KeySource> keySourceNamed(const juce::String& name) {
     for (const auto from : {KeySource::track, KeySource::trackPostFader, KeySource::bus, KeySource::returnTrack}) if (name == keySourceName(from)) return from;
     return {};
 }
-inline juce::String rackTitle(const ProjectDocument& d, const SetSidechain& c) {
-    if (c.stage == RackStage::master) return "the master";
-    if (c.stage == RackStage::track) return trackTitle(d, c.rack);
-    return c.stage == RackStage::bus ? "bus \"" + d.buses[static_cast<std::size_t>(c.rack)].name + "\""
-                                     : "return \"" + d.returns[static_cast<std::size_t>(c.rack)].name + "\"";
+inline juce::String rackTitle(const ProjectDocument& d, RackStage stage, int rack) {
+    if (stage == RackStage::master) return "the master";
+    if (stage == RackStage::track) return trackTitle(d, rack);
+    return stage == RackStage::bus ? "bus \"" + d.buses[static_cast<std::size_t>(rack)].name + "\""
+                                   : "return \"" + d.returns[static_cast<std::size_t>(rack)].name + "\"";
+}
+inline juce::String rackTitle(const ProjectDocument& d, const SetSidechain& c) { return rackTitle(d, c.stage, c.rack); }
+inline juce::String deviceTitle(const ProjectDocument& d, RackStage stage, int rack, int slot) {
+    const auto* found = sidechain_edit::rackOf(d, stage, rack);
+    const auto& device = slot == device_edit::instrumentSlot ? found->instrument : found->effects[static_cast<std::size_t>(slot)];
+    return pluginDisplayName(device) + (slot == device_edit::instrumentSlot ? " (instrument)" : " (FX " + juce::String(slot + 1) + ")") + " on " + rackTitle(d, stage, rack);
 }
 inline juce::String keyTitle(const ProjectDocument& d, const SetSidechain& c) {
     if (c.from == KeySource::bus) return "bus \"" + d.buses[static_cast<std::size_t>(c.source)].name + "\"";
@@ -180,6 +192,14 @@ inline std::optional<bus_edit::Edit> busEdit(const Command& command) {
     return {};
 }
 
+inline std::optional<device_edit::Edit> deviceEdit(const Command& command) {
+    using Kind = device_edit::Kind;
+    if (const auto* c = std::get_if<InsertDevice>(&command)) return device_edit::Edit{Kind::insert, c->stage, c->rack, c->slot, -1, false, c->device};
+    if (const auto* c = std::get_if<RemoveDevice>(&command)) return device_edit::Edit{Kind::remove, c->stage, c->rack, c->slot};
+    if (const auto* c = std::get_if<MoveDevice>(&command)) return device_edit::Edit{Kind::move, c->stage, c->rack, c->slot, c->to};
+    if (const auto* c = std::get_if<SetDeviceBypass>(&command)) return device_edit::Edit{Kind::bypass, c->stage, c->rack, c->slot, -1, c->bypassed};
+    return std::nullopt;
+}
 inline std::optional<sidechain_edit::Edit> sidechainEdit(const Command& command) {
     if (const auto* c = std::get_if<SetSidechain>(&command)) return sidechain_edit::Edit{c->stage, c->rack, c->effect, c->from, c->source};
     return {};
@@ -238,6 +258,7 @@ inline juce::String refusal(const ProjectDocument& d, const Command& command, co
     if (const auto* c = std::get_if<SetTrackSendMode>(&command)) return send(c->track, c->returnSlot);
     if (const auto edit = busEdit(command)) return bus_edit::refusal(d, *edit);
     if (const auto edit = sidechainEdit(command)) return sidechain_edit::refusal(d, *edit);
+    if (const auto edit = deviceEdit(command)) return device_edit::refusal(d, *edit);
     if (const auto* c = std::get_if<SetTrackOutput>(&command)) {
         if (const auto why = track(c->track); why.isNotEmpty()) return why;
         return c->bus == -1 || bus_edit::slotInUse(d, c->bus) ? juce::String{} : "Bus slot " + juce::String(c->bus) + " is not in use.";
@@ -285,6 +306,13 @@ inline juce::String describe(const ProjectDocument& d, const Command& command) {
         const auto effect = "FX " + juce::String(c->effect + 1) + " on " + detail::rackTitle(d, *c);
         return c->source < 0 ? "Remove the sidechain key from " + effect : "Key " + effect + " from " + detail::keyTitle(d, *c);
     }
+    if (const auto* c = std::get_if<InsertDevice>(&command)) {
+        const auto rack = detail::rackTitle(d, c->stage, c->rack);
+        return "Insert " + pluginDisplayName(c->device) + (c->slot == device_edit::instrumentSlot ? " as the instrument on " : " in FX slot " + juce::String(c->slot + 1) + " on ") + rack;
+    }
+    if (const auto* c = std::get_if<RemoveDevice>(&command)) return "Remove " + detail::deviceTitle(d, c->stage, c->rack, c->slot);
+    if (const auto* c = std::get_if<MoveDevice>(&command)) return "Move " + detail::deviceTitle(d, c->stage, c->rack, c->slot) + " to FX slot " + juce::String(c->to + 1);
+    if (const auto* c = std::get_if<SetDeviceBypass>(&command)) return juce::String(c->bypassed ? "Bypass " : "Enable ") + detail::deviceTitle(d, c->stage, c->rack, c->slot);
     if (const auto* c = std::get_if<SetReturnVolume>(&command)) return "Set volume of return " + returnName(c->returnSlot) + " to linear gain " + juce::String(c->gain, 6);
     if (const auto* c = std::get_if<SetReturnPan>(&command)) return "Set pan of return " + returnName(c->returnSlot) + " to " + juce::String(c->pan, 6);
     if (const auto* c = std::get_if<SetReturnMute>(&command)) return juce::String(c->muted ? "Mute return " : "Unmute return ") + returnName(c->returnSlot);
@@ -350,6 +378,7 @@ inline juce::String applyTo(ProjectDocument& d, const Command& command, const cl
         return d.synchronizeTrackRegistry() ? juce::String{} : juce::String("The project cannot resolve its track identities.");
     }
     if (const auto edit = sidechainEdit(command)) return sidechain_edit::apply(d, *edit);
+    if (const auto edit = deviceEdit(command)) return device_edit::apply(d, *edit);
     if (const auto* c = std::get_if<SetTrackOutput>(&command)) { d.tracks[static_cast<std::size_t>(c->track)].settings.output = c->bus; return {}; }
     if (const auto* c = std::get_if<SetReturnVolume>(&command)) { d.returns[static_cast<std::size_t>(c->returnSlot)].settings.gain = static_cast<float>(c->gain); return {}; }
     if (const auto* c = std::get_if<SetReturnPan>(&command)) { d.returns[static_cast<std::size_t>(c->returnSlot)].settings.pan = static_cast<float>(c->pan); return {}; }
@@ -412,6 +441,13 @@ inline juce::var arguments(const Command& command) {
         object->setProperty("stage", detail::stageName(c->stage)); object->setProperty("rack", c->rack); object->setProperty("effect", c->effect);
         object->setProperty("from", keySourceName(c->from)); object->setProperty("source", c->source); return result;
     }
+    if (const auto* c = std::get_if<InsertDevice>(&command)) {
+        object->setProperty("stage", detail::stageName(c->stage)); object->setProperty("rack", c->rack); object->setProperty("slot", c->slot);
+        object->setProperty("description", c->device.descriptionXml); return result;
+    }
+    if (const auto* c = std::get_if<RemoveDevice>(&command)) { object->setProperty("stage", detail::stageName(c->stage)); object->setProperty("rack", c->rack); object->setProperty("slot", c->slot); return result; }
+    if (const auto* c = std::get_if<MoveDevice>(&command)) { object->setProperty("stage", detail::stageName(c->stage)); object->setProperty("rack", c->rack); object->setProperty("slot", c->slot); object->setProperty("to", c->to); return result; }
+    if (const auto* c = std::get_if<SetDeviceBypass>(&command)) { object->setProperty("stage", detail::stageName(c->stage)); object->setProperty("rack", c->rack); object->setProperty("slot", c->slot); object->setProperty("bypassed", c->bypassed); return result; }
     if (const auto* c = std::get_if<SetTrackSend>(&command)) { object->setProperty("track", c->track); object->setProperty("return", c->returnSlot); object->setProperty("level", c->level); return result; }
     if (const auto* c = std::get_if<SetTrackSendMode>(&command)) { object->setProperty("track", c->track); object->setProperty("return", c->returnSlot); object->setProperty("preFader", c->preFader); return result; }
     if (const auto* c = std::get_if<RenameReturn>(&command)) { object->setProperty("return", c->returnSlot); object->setProperty("name", c->name); return result; }
@@ -487,7 +523,7 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
     while (index < detail::names.size() && commandName != detail::names[index]) ++index;
     if (index >= detail::names.size()) { error = "Unknown command \"" + commandName + "\"."; return std::nullopt; }
     if (index == 25) { error = "ImportClipAudio takes decoded audio, which cannot be written as arguments."; return std::nullopt; }
-    static const std::array<juce::StringArray, 43> allowed{
+    static const std::array<juce::StringArray, 47> allowed{
         juce::StringArray{}, juce::StringArray{"track"}, juce::StringArray{"track", "to"},
         juce::StringArray{"track", "name"}, juce::StringArray{"track", "colour"},
         juce::StringArray{"track", "gain"}, juce::StringArray{"track", "pan"},
@@ -498,7 +534,7 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
         juce::StringArray{"return","gain"},juce::StringArray{"return","pan"},juce::StringArray{"return","muted"},
         juce::StringArray{},juce::StringArray{"bus","name"},juce::StringArray{"bus"},
         juce::StringArray{"bus","gain"},juce::StringArray{"bus","pan"},juce::StringArray{"bus","muted"},juce::StringArray{"bus","soloed"},
-        juce::StringArray{"track","bus"},juce::StringArray{"stage","rack","effect","from","source"}};
+        juce::StringArray{"track","bus"},juce::StringArray{"stage","rack","effect","from","source"},juce::StringArray{"stage","rack","slot","description"},juce::StringArray{"stage","rack","slot"},juce::StringArray{"stage","rack","slot","to"},juce::StringArray{"stage","rack","slot","bypassed"}};
     const auto* object = args.getDynamicObject();
     if (object == nullptr && !args.isVoid()) { error = commandName + " takes an object of arguments."; return std::nullopt; }
     if (object != nullptr)
@@ -584,6 +620,17 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
             if (!from) { ok = false; error = "SetSidechain needs a \"from\" of track, post, bus or return."; break; }
             command = SetSidechain{*stage, rack, effect, *from, source}; break;
         }
+        case 43: case 44: case 45: case 46: {
+            const auto stageText = text("stage"); const int rack = integer("rack"), slot = integer("slot");
+            if (!ok) break;
+            const auto stage = detail::stageNamed(stageText);
+            if (!stage) { ok = false; error = commandName + " needs a \"stage\" of track, bus, return or master."; break; }
+            if (index == 43) { const auto description = text("description"); if (ok) command = InsertDevice{*stage, rack, slot, PluginState(description, {})}; }
+            else if (index == 44) command = RemoveDevice{*stage, rack, slot};
+            else if (index == 45) { const int to = integer("to"); if (ok) command = MoveDevice{*stage, rack, slot, to}; }
+            else { const bool bypassed = boolean("bypassed"); if (ok) command = SetDeviceBypass{*stage, rack, slot, bypassed}; }
+            break;
+        }
         case 23: { const int t = integer("track"), s = integer("scene"); command = RemoveClipAudio{t,s}; break; }
         case 21: command = CreateRackPattern{}; break;
         case 22: {
@@ -619,6 +666,23 @@ struct Preview : Result {
     ProjectDocument after;      // the document as the commands would leave it
     juce::StringArray changes;  // one line per command, in order
 };
+
+// What a Plugins panel button (1 bypass, 2 remove, 3 move up, 4 move down) does to the rack
+// it shows. Nothing, when a move has nowhere to go. Other problems are for the command to refuse.
+inline std::optional<Command> pluginPanelCommand(const ProjectDocument& d, RackStage stage, int rack, int op, int slot) {
+    if (op == 1) {
+        const auto* found = sidechain_edit::rackOf(d, stage, rack);
+        const bool present = found != nullptr && (slot == device_edit::instrumentSlot || (slot >= 0 && slot < static_cast<int>(found->effects.size())));
+        const bool bypassed = present && (slot == device_edit::instrumentSlot ? found->instrument : found->effects[static_cast<std::size_t>(slot)]).bypass;
+        return SetDeviceBypass{stage, rack, slot, !bypassed};
+    }
+    if (op == 2) return RemoveDevice{stage, rack, slot};
+    if (op != 3 && op != 4) return std::nullopt;
+    const auto* found = sidechain_edit::rackOf(d, stage, rack);
+    const int to = slot + (op == 3 ? -1 : 1);
+    if (found == nullptr || slot < 0 || slot >= static_cast<int>(found->effects.size()) || to < 0 || to >= static_cast<int>(found->effects.size())) return std::nullopt;
+    return MoveDevice{stage, rack, slot, to};
+}
 
 class CommandEngine {
 public:
@@ -671,6 +735,7 @@ public:
         if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return returnEdit(c).has_value(); })) return refused("Stop recording before adding, renaming or removing returns.");
         if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return busEdit(c).has_value(); })) return refused("Stop recording before adding, renaming or deleting buses.");
         if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return sidechainEdit(c).has_value(); })) return refused("Stop recording before changing a sidechain key.");
+        if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return deviceEdit(c).has_value(); })) return refused("Stop recording before changing plugins.");
         const auto clipboard = controller.clipClipboard();
         Result result = preview(commands, &clipboard);
         if (!result.ok || !result.changed) return result;
@@ -698,6 +763,19 @@ public:
         return result;
     }
 
+    // For a command that changes plugin racks. Live plugin state is captured only for an edit
+    // that will be accepted and changes something, and the racks are rebuilt only if it did.
+    template <class Capture, class Rebuild>
+    Result executeWithPlugins(const Command& command, Capture&& capture, Rebuild&& rebuild) {
+        if (!controller.canEditMidiClips() && sidechainEdit(command)) return refused("Stop recording before changing a sidechain key.");
+        if (!controller.canEditMidiClips() && deviceEdit(command)) return refused("Stop recording before changing plugins.");
+        const auto predicted = preview(command);
+        if (!predicted.ok || !predicted.changed) return predicted;
+        capture();
+        auto result = execute(command);
+        if (result.ok && result.changed) rebuild();
+        return result;
+    }
     bool undo() { return controller.undo(); }
     bool redo() { return controller.redo(); }
 
@@ -710,6 +788,7 @@ private:
             return controller.document().tracks[static_cast<std::size_t>(c->track)].settings.output == c->bus || controller.setTrackOutput(c->track, c->bus);
         }
         if (const auto edit = sidechainEdit(command)) return controller.applySidechainCommand(*edit);
+        if (const auto edit = deviceEdit(command)) return controller.applyDeviceCommand(*edit);
         if (std::holds_alternative<CreateReturn>(command)) return controller.addReturn() >= 0;
         if (const auto* c = std::get_if<RenameReturn>(&command)) {
             // An unchanged name is a no-op, not a failure: the rest of a batch still runs.

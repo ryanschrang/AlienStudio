@@ -440,6 +440,78 @@ static void commandKeyTests() {
     std::cout << "PASS: SetSidechain drives the keys the real stock effects use\n";
 }
 
+// Device commands through the same capture, execute and rebuild steps the app uses, with real stock
+// effects in a real host, so live settings are shown to survive a rack edit and its Undo.
+static void deviceHostTests() {
+    namespace cmd = alien::command;
+    using alien::RackStage;
+    ToneEngine engine;
+    alien::PluginHost host(*engine.plugins);
+    alien::ProjectController c(engine);
+    c.pushDocumentToEngine();
+    cmd::CommandEngine commands(c);
+    auto& rack = engine.plugins->racks[0];
+    const auto rebuild = [&] {
+        std::vector<alien::PluginRackState> states;
+        for (const auto& track : c.document().tracks) states.push_back(track.plugins);
+        const auto errors = host.restore(states, c.document().masterPlugins, c.returnRacks(), c.busRacks(), 48000);
+        require(errors.isEmpty(), "the stock effects load");
+    };
+    const auto capture = [&] {
+        std::vector<alien::PluginRackState> states;
+        for (const auto& track : c.document().tracks) states.push_back(track.plugins);
+        auto master = c.document().masterPlugins; auto returns = c.returnRacks(); auto buses = c.busRacks();
+        host.snapshot(states, master, returns, buses);
+        c.setPluginRacks(states, master, returns, buses);
+    };
+    const auto run = [&](const cmd::Command& edit) { return commands.executeWithPlugins(edit, capture, rebuild); };
+    const auto description = [](std::size_t effect) { return alien::stock::describe(alien::stock::catalog[effect]).createXml()->toString(); };
+    const auto loaded = [&](int slot) { return rack.effects[static_cast<std::size_t>(slot)].processor.get(); };
+    const auto firstParameter = [&](int slot) { return loaded(slot)->getParameters()[0]; };
+
+    const alien::PluginState eq(description(0), {}), compressor(description(1), {});
+    require(run(cmd::InsertDevice{RackStage::track, 0, 0, eq}).changed && rack.effectCount == 1 && loaded(0)->getName() == alien::stock::create(alien::stock::catalog[0].id)->getName(), "inserting loads the effect");
+    require(run(cmd::InsertDevice{RackStage::track, 0, 1, compressor}).changed && rack.effectCount == 2, "and a second one after it");
+    require(c.undoLabel() == "Insert device", "the host's capture does not take over the Undo label");
+
+    // A setting changed only in the live plugin, not yet in the document.
+    firstParameter(1)->setValueNotifyingHost(.81f);
+    const auto eqName = loaded(0)->getName(), compressorName = loaded(1)->getName();
+    require(run(cmd::MoveDevice{RackStage::track, 0, 1, 0}).changed, "the move runs");
+    require(rack.effectCount == 2 && loaded(0)->getName() == compressorName && loaded(1)->getName() == eqName, "the rebuilt rack has the new order");
+    require(std::abs(firstParameter(0)->getValue() - .81f) < .01f, "the moved effect keeps its live setting");
+    require(c.undoLabel() == "Move device", "one Undo step is named for the move");
+
+    require(c.undo(), "Undo the move");
+    rebuild();
+    require(loaded(0)->getName() == eqName && loaded(1)->getName() == compressorName, "Undo restores the order");
+    require(std::abs(firstParameter(1)->getValue() - .81f) < .01f, "and keeps the setting captured before the move");
+
+    require(run(cmd::SetDeviceBypass{RackStage::track, 0, 1, true}).changed && c.document().tracks[0].plugins.effects[1].bypass, "bypass runs");
+    require(rack.effects[1].bypass, "the rebuilt slot is bypassed");
+    require(std::abs(firstParameter(1)->getValue() - .81f) < .01f, "bypass keeps the setting");
+    require(c.undo(), "Undo the bypass"); rebuild();
+    require(!rack.effects[1].bypass, "Undo enables it again");
+
+    require(run(cmd::RemoveDevice{RackStage::track, 0, 1}).changed && rack.effectCount == 1 && loaded(0)->getName() == eqName, "removing unloads the effect");
+    require(c.undo(), "Undo the removal"); rebuild();
+    require(rack.effectCount == 2 && std::abs(firstParameter(1)->getValue() - .81f) < .01f, "Undo brings it back with its setting");
+
+    // Nothing to do: no capture and no rebuild, and a refusal never reaches the plugins.
+    int captures = 0, rebuilds = 0;
+    const auto counted = [&](const cmd::Command& edit) { return commands.executeWithPlugins(edit, [&] { ++captures; }, [&] { ++rebuilds; }); };
+    require(counted(cmd::SetDeviceBypass{RackStage::track, 0, 1, false}).ok && captures == 0 && rebuilds == 0, "an unchanged bypass captures nothing");
+    require(!counted(cmd::RemoveDevice{RackStage::track, 0, 5}).ok && captures == 0 && rebuilds == 0, "a refused edit captures nothing");
+    engine.recording.phase.store(alien::RecordControls::recording);
+    const auto recording = counted(cmd::RemoveDevice{RackStage::track, 0, 1});
+    require(!recording.ok && recording.error.contains("Stop recording") && captures == 0 && rebuilds == 0, "recording refuses before any capture");
+    const auto keyWhileRecording = counted(cmd::SetSidechain{RackStage::track, 0, 1, alien::KeySource::track, 1});
+    require(!keyWhileRecording.ok && captures == 0 && rebuilds == 0, "and so does a sidechain key");
+    engine.recording.phase.store(alien::RecordControls::idle);
+    host.restore({}, {}, {}, {}, 48000);
+    std::cout << "PASS: device commands keep live plugin settings through the host\n";
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     detectorTests();
@@ -451,6 +523,7 @@ int main() {
     mixKeyTests();
     partTwoProjectTests();
     commandKeyTests();
+    deviceHostTests();
     std::cout << "Sidechain tests passed\n";
     return 0;
 }

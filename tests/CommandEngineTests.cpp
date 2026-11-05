@@ -447,6 +447,7 @@ static void continuousCommandTests() {
 #include "SendReturnCommandTests.h"
 #include "StripBusCommandTests.h"
 #include "RoutingCommandTests.h"
+#include "DeviceCommandTests.h"
 #include "MasterVolumeCommandTests.h"
 #include "SceneCommandTests.h"
 
@@ -461,6 +462,7 @@ int main() {
     busStructureCommandChecks();
     trackOutputCommandChecks();
     sidechainCommandChecks();
+    deviceCommandChecks();
     importClipAudioNameChecks();
     importClipAudioCommandChecks();
     importClipAudioStorageChecks();
