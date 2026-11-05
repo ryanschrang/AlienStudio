@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -145,29 +146,42 @@ inline std::optional<TempoEstimate> estimateTempo(const float* mono, std::size_t
     return tempodetect::estimateFromOnsets(envelope.onsets(), envelope.hopRate(), cancel);
 }
 
-struct SampleTempoResult { std::optional<TempoEstimate> tempo; juce::String message; };
-
-// Worker-only. Reads at most the first minute of the file and changes nothing.
-inline SampleTempoResult detectSampleTempo(const juce::File& file, const std::atomic<bool>& cancel) try {
-    if (!file.hasFileExtension("wav;mp3")) return {{}, "Choose a WAV or MP3 sample."};
+// Worker-only. Reads at most the first minute of a sample into `push`, after calling `begin`
+// with its sample rate. Changes nothing. Returns why it could not, or empty when it read it all.
+template <class Begin, class Push>
+juce::String readSampleForAnalysis(const juce::File& file, const std::atomic<bool>& cancel, double minSeconds, const juce::String& what, Begin&& begin, Push&& push) {
+    const auto title = what.substring(0, 1).toUpperCase() + what.substring(1);
+    if (!file.hasFileExtension("wav;mp3")) return "Choose a WAV or MP3 sample.";
     juce::AudioFormatManager formats; formats.registerBasicFormats();
     std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
     if (!reader || reader->numChannels < 1 || reader->numChannels > 2 || !std::isfinite(reader->sampleRate)
         || reader->sampleRate < 8000 || reader->sampleRate > 192000 || reader->lengthInSamples <= 0)
-        return {{}, "Cannot read this audio file."};
-    if (static_cast<double>(reader->lengthInSamples) < tempodetect::minSeconds * reader->sampleRate)
-        return {{}, "This sample is too short to find a tempo. Source BPM not changed."};
+        return "Cannot read this audio file.";
+    if (static_cast<double>(reader->lengthInSamples) < minSeconds * reader->sampleRate)
+        return "This sample is too short to find a " + what + ". Source " + (what == "tempo" ? juce::String("BPM") : what) + " not changed.";
     const auto total = std::min<std::int64_t>(reader->lengthInSamples, static_cast<std::int64_t>(tempodetect::maxSeconds * reader->sampleRate));
     const int channels = static_cast<int>(reader->numChannels);
     juce::AudioBuffer<float> block(channels, 32768);
-    tempodetect::OnsetEnvelope envelope(reader->sampleRate);
+    begin(reader->sampleRate);
     for (std::int64_t start = 0; start < total;) {
-        if (cancel.load(std::memory_order_relaxed)) return {{}, "Tempo detection stopped."};
+        if (cancel.load(std::memory_order_relaxed)) return title + " detection stopped.";
         const int count = static_cast<int>(std::min<std::int64_t>(total - start, block.getNumSamples()));
-        if (!reader->read(block.getArrayOfWritePointers(), channels, start, count)) return {{}, "Cannot read this audio file."};
-        envelope.push(block.getArrayOfReadPointers(), channels, count); start += count;
+        if (!reader->read(block.getArrayOfWritePointers(), channels, start, count)) return "Cannot read this audio file.";
+        push(block.getArrayOfReadPointers(), channels, count); start += count;
     }
-    auto tempo = tempodetect::estimateFromOnsets(envelope.onsets(), envelope.hopRate(), cancel);
+    return cancel.load(std::memory_order_relaxed) ? title + " detection stopped." : juce::String{};
+}
+
+struct SampleTempoResult { std::optional<TempoEstimate> tempo; juce::String message; };
+
+// Worker-only. Reads at most the first minute of the file and changes nothing.
+inline SampleTempoResult detectSampleTempo(const juce::File& file, const std::atomic<bool>& cancel) try {
+    std::unique_ptr<tempodetect::OnsetEnvelope> envelope;
+    const auto problem = readSampleForAnalysis(file, cancel, tempodetect::minSeconds, "tempo",
+        [&](double rate) { envelope = std::make_unique<tempodetect::OnsetEnvelope>(rate); },
+        [&](const float* const* channels, int numChannels, int count) { envelope->push(channels, numChannels, count); });
+    if (problem.isNotEmpty()) return {{}, problem};
+    auto tempo = tempodetect::estimateFromOnsets(envelope->onsets(), envelope->hopRate(), cancel);
     if (cancel.load(std::memory_order_relaxed)) return {{}, "Tempo detection stopped."};
     if (!tempo) return {{}, "No steady tempo found. Source BPM not changed."};
     return {tempo, {}};

@@ -581,7 +581,7 @@ private:
     void wireEditors() {
         pianoRoll.onProjectScaleRequested = [this](int root, alien::ScaleType type, std::uint32_t scope) { return controller.setProjectScale(root, type, scope); };
         controller.onMusicalScaleChanged = [this] {
-            const auto& d = controller.document(); pianoRoll.setProjectScaleContext(d.musicalScale, d.identityScope); updateEditorTitle();
+            const auto& d = controller.document(); pianoRoll.setProjectScaleContext(d.musicalScale, d.identityScope); rackView.graphEditor().repaint(); updateEditorTitle();
         };
         pianoRoll.onChange = [this] {
             if (rollTarget.rack) {
@@ -1532,13 +1532,6 @@ private:
         return t>=alien::maxSessionTracks && t<alien::PluginRuntime::rackCount ? t : juce::jlimit(0,controller.document().trackCount()-1,t);
 
     }
-    // The rack state `t` (from pluginTarget) names, in copies of the document's racks.
-    static alien::PluginRackState& rackFor(int t, std::vector<alien::PluginRackState>& states, alien::PluginRackState& master, alien::ReturnRacks& returns, alien::BusRacks& buses) {
-        if (alien::PluginRuntime::isBus(t)) return buses[static_cast<std::size_t>(t-alien::PluginRuntime::busBase)];
-        if (alien::PluginRuntime::isReturn(t)) return returns[static_cast<std::size_t>(t-alien::PluginRuntime::returnBase)];
-
-        return t==alien::maxSessionTracks ? master : states[static_cast<std::size_t>(t)];
-    }
     // The scanned VST3 instruments, in the order the Channel Rack lists them.
     std::vector<juce::PluginDescription> rackInstrumentChoices() const {
         std::vector<juce::PluginDescription> choices;
@@ -1680,13 +1673,25 @@ private:
         }
         if(chosen.isInstrument!=instrument) { pluginPanel.setStatus("Select an instrument for the instrument slot, or an FX plugin for Add FX.");return; }
         const int t=pluginTarget(); if(instrument && t>=alien::maxSessionTracks)return;
-        snapshotPlugins(SnapshotReason::always); auto states=pluginStates();auto master=controller.document().masterPlugins;auto returns=controller.returnRacks();auto buses=controller.busRacks();
-        auto& rack=rackFor(t,states,master,returns,buses);
+        const auto [stage,rack]=pluginRackAddress();
+        const auto* shown=alien::sidechain_edit::rackOf(controller.document(),stage,rack);
+        const int slot=instrument?alien::device_edit::instrumentSlot:shown?static_cast<int>(shown->effects.size()):0;
+        runPluginCommand(alien::command::InsertDevice{stage,rack,slot,alien::PluginState{chosen.createXml()->toString(),{},false}});
+    }
 
-        alien::PluginState next{chosen.createXml()->toString(),{},false};
-        if(instrument)rack.instrument=next;
-        else { if(rack.effects.size()>=8){pluginPanel.setStatus("Each rack supports eight FX slots.");return;}rack.effects.push_back(next); }
-        controller.setPluginRacks(states,master,returns,buses); restorePlugins();
+    // The rack the Plugins page shows, as commands name it.
+    std::pair<alien::RackStage,int> pluginRackAddress() const {
+        const int t=pluginTarget();
+        const auto stage=alien::PluginRuntime::stageOf(t);
+        return {stage,stage==alien::RackStage::bus?t-alien::PluginRuntime::busBase:stage==alien::RackStage::returnTrack?t-alien::PluginRuntime::returnBase:stage==alien::RackStage::master?0:t};
+    }
+    // True if the command changed the racks. Reasons for a refusal go to the panel's status line.
+    bool runPluginCommand(const alien::command::Command& edit) {
+        if(projectBusy || controller.isBusy())return false;
+        alien::command::CommandEngine commands(controller);
+        const auto result=commands.executeWithPlugins(edit,[this]{snapshotPlugins(SnapshotReason::always);},[this]{restorePlugins();});
+        if(!result.ok)pluginPanel.setStatus(result.error);
+        return result.ok && result.changed;
     }
 
     void pluginAction(int op,int slot) {
@@ -1694,36 +1699,15 @@ private:
         if(projectBusy || controller.isBusy())return;
         const int t=pluginTarget();
         if(op==0){const auto problem=pluginHost.openEditor(t,slot);if(problem.isNotEmpty()){pluginPanel.setStatus(problem);refreshPlugins();}return;}
-        snapshotPlugins(SnapshotReason::always);auto states=pluginStates();auto master=controller.document().masterPlugins;auto returns=controller.returnRacks();auto buses=controller.busRacks();
-        auto& rack=rackFor(t,states,master,returns,buses);
-
-        if(slot<0){if(t>=alien::maxSessionTracks)return;if(op==1)rack.instrument.bypass=!rack.instrument.bypass;else if(op==2)rack.instrument={};}
-        else if(slot<static_cast<int>(rack.effects.size())){
-            if(op==1)rack.effects[slot].bypass=!rack.effects[slot].bypass;
-            else if(op==2)rack.effects.erase(rack.effects.begin()+slot);
-            else { const int other=slot+(op==3?-1:1);if(other>=0 && other<static_cast<int>(rack.effects.size()))std::swap(rack.effects[slot],rack.effects[other]); }
-        }
-        controller.setPluginRacks(states,master,returns,buses);restorePlugins();
+        const auto [stage,rack]=pluginRackAddress();
+        if(const auto edit=alien::command::pluginPanelCommand(controller.document(),stage,rack,op,slot))runPluginCommand(*edit);
     }
 
     // Keys the effect in `slot` of the shown rack from a track (before its FX or after its fader), a bus or a
     // return (`source` -1: no key). Only a key the mix makes before this rack runs is accepted.
     void setSidechain(int slot,alien::KeySource from,int source) {
-        if(projectBusy || controller.isBusy())return;
-        if(!controller.canEditMidiClips()){pluginPanel.setStatus("Stop recording before changing a sidechain key.");return;}
-        const int t=pluginTarget();
-        const auto stage=alien::PluginRuntime::stageOf(t);
-        const int rack=stage==alien::RackStage::bus?t-alien::PluginRuntime::busBase:stage==alien::RackStage::returnTrack?t-alien::PluginRuntime::returnBase:stage==alien::RackStage::master?0:t;
-        const alien::command::Command edit=alien::command::SetSidechain{stage,rack,slot,from,source};
-        alien::command::CommandEngine commands(controller);
-        // Live plugin state is captured only for an edit the command will accept and that changes something.
-        const auto preview=commands.preview(edit);
-        if(!preview.ok){pluginPanel.setStatus(preview.error);return;}
-        if(!preview.changed)return;
-        snapshotPlugins(SnapshotReason::always);
-        const auto result=commands.execute(edit);
-        if(!result.ok){pluginPanel.setStatus(result.error);return;}
-        restorePlugins();
+        const auto [stage,rack]=pluginRackAddress();
+        if(!runPluginCommand(alien::command::SetSidechain{stage,rack,slot,from,source}))return;
         const auto& d=controller.document();
         const auto name=from==alien::KeySource::bus?d.buses[static_cast<std::size_t>(std::max(source,0))].name
                        :from==alien::KeySource::returnTrack?d.returns[static_cast<std::size_t>(std::max(source,0))].name

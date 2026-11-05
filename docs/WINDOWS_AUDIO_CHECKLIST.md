@@ -627,3 +627,20 @@ Not yet verified on native audio hardware.
   minute should be refused. Equal slicing must remain available.
 - Check the Auto slice button, pad/track selection and status at 100/150/200% DPI.
   Busy and frozen targets should disable it; count-in/recording should refuse.
+
+## Channel Rack project-scale pitch drawing (T2-04 / MIDI-06)
+
+- Define a project key in Piano Roll > Scale. In Channel Rack's graph, choose Pitch
+  and turn on Scale. Draw across active bars: pitches should land on the nearest
+  project-scale note, including at the +/-24 limits. Turning the toggle on must not
+  change existing steps. Turn it off for chromatic editing; an undefined key also
+  leaves drawing chromatic. The rack's unity pitch reference is MIDI 60; this does
+  not detect the actual key of an imported sample.
+- Right-click resets pitch to zero; other lanes remain unaffected. Check Undo/Redo,
+  off steps, sample/synth/plugin channels, save/reopen and live versus Song export.
+  Stored pitches play as drawn; a later key change must not retune them.
+- During a drag, change the project key, pattern, channel order or project and then
+  continue dragging. The old stroke must stop editing; a fresh stroke uses the new
+  context. Check the Scale toggle at minimum name-column width and display DPI.
+
+Listening, physical controller/device and display acceptance remain pending.

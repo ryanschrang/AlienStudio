@@ -165,7 +165,7 @@ public:
     void audition(const Snapshot& snap, int channel, float velocity, const SessionAudioClip* clip, int pitch = 0, bool held = false) noexcept {
         if (channel < 0 || channel >= snap.channelCount || !std::isfinite(velocity)) return;
         const auto& settings = snap.channels[static_cast<std::size_t>(channel)];
-        const int note = 60 + std::clamp(pitch, -60, 67);
+        const int note = stepPitchBaseNote + std::clamp(pitch, -stepPitchBaseNote, 127 - stepPitchBaseNote);
         if (velocity <= 0) {
             for (auto& v : voices) if (v.active && v.preview && v.channel == channel && v.note == note) {
                 if (v.plugin) releaseVoice(v);
@@ -174,7 +174,7 @@ public:
             return;
         }
         if (clip == nullptr && !settings.isInstrument()) return;
-        auto& voice = start(settings, channel, clip, std::clamp(velocity, 0.0f, 1.0f), 0.0f, note - 60, true);
+        auto& voice = start(settings, channel, clip, std::clamp(velocity, 0.0f, 1.0f), 0.0f, note - stepPitchBaseNote, true);
         // Clicking a channel name must not leave a sustaining instrument held.
         if ((voice.synthPreset >= 0 || voice.plugin) && !held) voice.gateLeft = static_cast<std::int64_t>(sampleRate * 0.5) + 1;
     }
@@ -291,7 +291,7 @@ private:
         float velocity{}, stepPan{}, gl{}, gr{}, dl{}, dr{}, release{1.0f};
         std::uint64_t age{};
         std::int64_t gateLeft{-1};   // samples until the gate releases the voice; -1: plays to the end
-        int channel{-1}, bus{masterBus}, pattern{-1}, synthPreset{-1}, note{60};
+        int channel{-1}, bus{masterBus}, pattern{-1}, synthPreset{-1}, note{stepPitchBaseNote};
         std::uint64_t sequence{};
         std::uint64_t patternClip{};
         int instance{-1};
@@ -390,8 +390,8 @@ private:
                     if (delay < 0) continue; // No chase: only note-ons still ahead of the seek/trim point.
                     if (delay >= remainingSamples) continue;
                     const auto gate = std::min(std::max<std::int64_t>(1, std::llround(note.lengthSteps * stepSamples)), remainingSamples - delay) + 1;
-                    if (delay == 0) play(snap, clips, c, note.velocity, 0, note.pitch - 60, gate, patternIndex, token, instance);
-                    else schedule({now + delay, gate, note.velocity, 0, c, note.pitch - 60, patternIndex, token,
+                    if (delay == 0) play(snap, clips, c, note.velocity, 0, note.pitch - stepPitchBaseNote, gate, patternIndex, token, instance);
+                    else schedule({now + delay, gate, note.velocity, 0, c, note.pitch - stepPitchBaseNote, patternIndex, token,
                                    snap.clips[static_cast<std::size_t>(patternIndex)], instance});
                 }
                 continue;
@@ -470,7 +470,7 @@ private:
         chosen->clip = clip;
         chosen->synthPreset = channel.instrumentPreset;
         chosen->plugin = channel.plugin;
-        chosen->note = std::clamp(60 + semitones, 0, 127);
+        chosen->note = std::clamp(stepPitchBaseNote + semitones, 0, 127);
         if (chosen->plugin) {
             // Velocity goes to the plugin with the note; the channel's fader and pan are applied to its output.
             emitNote(index, chosen->note, std::clamp(velocity, 1.0f / 127.0f, 1.0f));

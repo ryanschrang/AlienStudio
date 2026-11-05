@@ -473,8 +473,33 @@ The Mixer output menu and the Plugins sidechain menu use these commands. Before 
 changes, the host captures live plugin state, and afterwards it rebuilds the plugin racks.
 Preview never touches a plugin, so it does not know whether an effect has a sidechain
 input; one without an input stays unkeyed when the racks rebuild. A script running
-`SetSidechain` directly changes the saved key, and has no such host step until the device
-commands exist.
+`SetSidechain` directly changes the saved key, and nothing rebuilds the racks for it.
+
+## Device commands
+
+`InsertDevice {stage, rack, slot, description}`, `RemoveDevice {stage, rack, slot}`,
+`MoveDevice {stage, rack, slot, to}` and `SetDeviceBypass {stage, rack, slot, bypassed}`
+edit the devices in a track, bus, return or master rack through a pure reducer in
+`DeviceCommands.h`. A slot of -1 is a track's instrument; other slots are FX slots. An
+instrument replaces the one there and cannot move. `to` is the slot the effect ends up in.
+A rack holds eight effects. Refusals cover a missing rack or device, a frozen track, a
+description that is not a plugin, an instrument in an FX slot and the reverse. Recording,
+count-in and a busy project refuse too, because the rack rebuild takes the audio callback
+down; the older Plugins buttons did not refuse during recording.
+
+`InsertDevice` carries the device and its identity, so Preview and execute agree and the
+same device cannot go in twice. Parsing the script form gives it a new identity. Preview
+never creates or calls a plugin, and checks only the saved description.
+
+The Plugins page's Add, Bypass, Remove and Move buttons and the browser's double click run
+these commands. `CommandEngine::executeWithPlugins` gives them and the sidechain menu one
+host flow: refuse first, capture live plugin state only for an edit that changes something,
+execute, then rebuild the racks. Undo rebuilds them through `onDocumentRestored`. Live
+settings captured first form their own "Change plugins" step when they differ from the
+saved ones, as they did before, so one Undo reverts the edit and leaves those settings. A
+script running these commands directly has no capture or rebuild step. A lane automating a
+removed plugin stays saved, as before, and comes back with Undo. Rack-channel instruments
+and generic parameter or automation commands are not part of this family.
 
 ## Master volume command
 
