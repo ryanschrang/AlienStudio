@@ -1,6 +1,6 @@
 # T1-02 completion audit
 
-CMD-01 is **not complete**. The Command Engine currently exposes 41 commands:
+CMD-01 is **not complete**. The Command Engine currently exposes 43 commands:
 five structural track commands, four Session track mix commands, three Session
 MIDI creation plus all-type duplication/independence, one Session clip delete
 command (claim #186), two clipboard paste commands (claim #189),
@@ -8,7 +8,7 @@ one Session MoveClip command (claim #192),
 five Session scene commands (claim #181), and CreateRackPattern/AssignRackClip
 (claim #198), RemoveClipAudio (claim #203), SetMasterVolume (claim #208),
 ImportClipAudio, five send and return commands (claim #223), and ten return strip
-and bus commands (claim #226).
+and bus commands (claim #226), and SetTrackOutput and SetSidechain (claim #234).
 
 The existing roadmap examples are a target catalog, not proof that every
 operation already has a command. Completion requires both a validated command
@@ -21,7 +21,7 @@ audition, and saving a file are separate lifecycle actions, not snapshot edits.
 | Track structure | Create/delete/move/rename/colour; Session track menus | Audit other entry points for direct mutations and duplicate commits |
 | Session scenes | Create/duplicate/move/rename/delete and Session add/menu/name UI | Native interaction/acceptance; shared reducer remains a follow-up to remove controller/Preview duplication |
 | Session clips | Empty MIDI creation, all-type independent duplication (claim #196), MIDI make-independent; all-type Session cell delete/clear; PasteClip/PasteLinkedClip and all-type MakeClipUnique; identity-preserving MoveClip and destination menu; CreateRackPattern/AssignRackClip and existing UI adoption (claim #198); RemoveClipAudio and Remove audio button (claim #203); ImportClipAudio with the Import audio button, browser and Explorer drops on Session cells, finished takes and tempo renders (import plan/result boundary, claim #205) | Other rack/channel edit wrappers |
-| Mixer parameters/routing | Session/Mixer track volume/pan/mute/solo; SetMasterVolume and master-fader gestures; SetTrackSend/SetTrackSendMode with the Mixer send knobs and switches; CreateReturn/RenameReturn/DeleteReturn with the Add return button and return menu (claim #223); SetReturnVolume/SetReturnPan/SetReturnMute and SetBusVolume/SetBusPan/SetBusMute/SetBusSolo with the Mixer strips; CreateBus/RenameBus/DeleteBus with the Add bus button and bus menu (claim #226) | Track output, group membership and sidechain routing; UI adoption |
+| Mixer parameters/routing | Session/Mixer track volume/pan/mute/solo; SetMasterVolume and master-fader gestures; SetTrackSend/SetTrackSendMode with the Mixer send knobs and switches; CreateReturn/RenameReturn/DeleteReturn with the Add return button and return menu (claim #223); SetReturnVolume/SetReturnPan/SetReturnMute and SetBusVolume/SetBusPan/SetBusMute/SetBusSolo with the Mixer strips; CreateBus/RenameBus/DeleteBus with the Add bus button and bus menu (claim #226); SetTrackOutput with the Mixer output menu (a track's bus is also its group) and SetSidechain with the Plugins sidechain menu (claim #234) | Audit other entry points for direct mutations; native acceptance |
 | Devices | Existing host/controller operations and saved plugin instances | Insert/move/remove/bypass devices as commands; noncommitting controller adapters and runtime preparation/restore failure handling |
 | Automation/parameters | Existing saved send/plugin lanes and playback | Named lane/point edits and generic parameter targets; Preview must not instantiate or call plugins; account for the older stock-automation cache audit (#179) |
 | Tempo/meter | Existing project tempo and Song map editors | Named project-tempo, tempo-map and meter commands; unfreeze/warp-preparation lifecycle, grouping and UI adoption |

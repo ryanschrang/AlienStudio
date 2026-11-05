@@ -6,6 +6,7 @@
 #include "RackCommands.h"
 #include "ReturnCommands.h"
 #include "BusCommands.h"
+#include "SidechainCommands.h"
 #include "ViewModes.h"
 #include "ToneEngine.h"
 #include "AudioClipImport.h"
@@ -544,6 +545,9 @@ public:
         engine.tracks[static_cast<std::size_t>(track)].output.store(output);
         return true;
     }
+
+    // Writes the key to the document only. The caller commits, and the host rebuilds the plugin racks.
+    bool applySidechainCommand(const sidechain_edit::Edit& edit) { return !busy && sidechain_edit::apply(doc, edit).isEmpty(); }
 
     // Message-thread command setters. Only the addressed control changes; the
     // caller commits after the complete command/batch, just like track renaming.

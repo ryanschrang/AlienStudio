@@ -3,6 +3,7 @@
 // allocating, the host switching the bus on and off, saving, track moves and deletes, and the
 // Plugins panel's choice of key. Part 2: the stock gate, keys from a track after its fader, from a
 // bus and from a return, which racks may use which keys, format 25, and bus/return removal.
+#include "CommandEngine.h"
 #include "PluginHost.h"
 #include "PluginPanel.h"
 #include "ProjectController.h"
@@ -400,6 +401,45 @@ static void partTwoProjectTests() {
     require(alien::toProjectData(c.document()).valid(), "the project stays valid");
 }
 
+// The command writes the saved key; what the host builds from that key is what plays.
+static void commandKeyTests() {
+    namespace cmd = alien::command;
+    using alien::KeySource; using alien::RackStage;
+    ToneEngine engine;
+    alien::ProjectController c(engine);
+    c.pushDocumentToEngine();
+    cmd::CommandEngine commands(c);
+    require(commands.execute(cmd::CreateBus{}).changed, "bus fixture");
+    std::vector<alien::PluginRackState> states;
+    for (const auto& track : c.document().tracks) states.push_back(track.plugins);
+    states[0].effects.push_back(compressorState());
+    auto master = c.document().masterPlugins;
+    alien::PluginState eq(alien::stock::describe(alien::stock::catalog[0]).createXml()->toString(), {});
+    master.effects.push_back(eq);
+    c.setPluginRacks(states, master, c.returnRacks(), c.busRacks());
+    const auto saved = [&] { return c.document().tracks[0].plugins.effects[0]; };
+
+    alien::PluginRuntime::Slot slot; slot.processor = alien::stock::create(alien::stock::catalog[1].id);
+    require(commands.execute(cmd::SetSidechain{RackStage::track, 0, 0, KeySource::track, 2}).changed, "the command keys the compressor");
+    alien::PluginHost::applySidechain(slot, saved(), 0);
+    require(slot.keyIndex == 2 && slot.keyFrom == KeySource::track && slot.processor->getTotalNumInputChannels() == 4, "the saved key switches the real effect's input on");
+    require(c.undo() && saved().sidechain == -1, "one Undo removes the key");
+    alien::PluginHost::applySidechain(slot, saved(), 0);
+    require(slot.keyIndex == -1 && slot.processor->getTotalNumInputChannels() == 2, "and the effect goes back to its own input");
+    require(c.redo() && saved().sidechain == 2, "Redo restores it");
+
+    // Keys set by the command follow the same track moves and deletions as any other key.
+    require(c.moveTrack(2, -1) && saved().sidechain == 1, "a key follows its track when it moves");
+    require(c.deleteTrack(1) && saved().sidechain == -1 && alien::toProjectData(c.document()).valid(), "and goes away with it");
+
+    // Preview cannot ask a plugin, so an effect with no sidechain input takes the saved key and stays unkeyed.
+    require(commands.execute(cmd::SetSidechain{RackStage::master, 0, 0, KeySource::bus, 0}).changed, "the command accepts a key for the EQ");
+    alien::PluginRuntime::Slot plain; plain.processor = alien::stock::create(alien::stock::catalog[0].id);
+    alien::PluginHost::applySidechain(plain, c.document().masterPlugins.effects[0], 0);
+    require(plain.keyIndex == -1 && plain.processor->getTotalNumInputChannels() == 2, "an effect without a sidechain input is never keyed");
+    std::cout << "PASS: SetSidechain drives the keys the real stock effects use\n";
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     detectorTests();
@@ -410,6 +450,7 @@ int main() {
     gateTests();
     mixKeyTests();
     partTwoProjectTests();
+    commandKeyTests();
     std::cout << "Sidechain tests passed\n";
     return 0;
 }
