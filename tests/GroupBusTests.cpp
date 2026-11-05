@@ -280,9 +280,10 @@ static void panels() {
     c.pushDocumentToEngine();
     alien::TrackMixerPanel panel(c, engine.tracks, engine.returns, engine.masterControls, engine.buses);
     panel.setSize(1600, 720);
-    juce::StringArray routing; int busEdits = 0;
+    juce::StringArray routing; int busEdits = 0, busCommands = 0;
     panel.onRoutingChanged = [&](const juce::String& label) { routing.add(label); c.commit(label); };
-    panel.onBusEdited = [&](int b, bool) { c.busSettingsEdited(b); ++busEdits; };
+    panel.onBusCommandExecuted = [&] { routing.add(c.undoLabel()); ++busCommands; };   // the command owns the undo step
+    panel.onStripCommandExecuted = [&] { ++busEdits; };
     require(panel.busStripCount() == 0 && panel.addBusControl().isEnabled(), "a new project has no buses and can add one");
     panel.addBusControl().triggerClick();
     juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
@@ -297,18 +298,55 @@ static void panels() {
     require(busStrip != nullptr && busStrip->isVisible() && busStrip->getWidth() > 60, "the bus strip is laid out");
     require(busStrip->getX() > panel.trackStrip(3)->getRight(), "after the track strips");
     busStrip->volume().setValue(50.0, juce::sendNotificationSync);
-    require(approx(engine.buses[0].gain.load(), 0.5f) && busEdits > 0 && c.document().buses[0].settings.gain == 0.5f, "its fader sets the bus level");
+    require(approx(engine.buses[0].gain.load(), 0.5f) && busEdits == 1 && c.document().buses[0].settings.gain == 0.5f && c.undoLabel() == "Set bus volume", "its fader runs the named command");
+    {   // One drag is one undo step, and the fader follows Undo.
+        const auto before = c.document().buses[0].settings;
+        busStrip->balance().onDragStart();
+        busStrip->balance().setValue(-40.0, juce::sendNotificationSync);
+        juce::Thread::sleep(alien::DocumentHistory::coalesceMilliseconds + 20);
+        busStrip->balance().setValue(40.0, juce::sendNotificationSync);
+        busStrip->balance().onDragEnd();
+        require(c.undoLabel() == "Set bus pan" && approx(engine.buses[0].pan.load(), 0.4f) && c.undo() && c.document().buses[0].settings == before && c.undoLabel() == "Set bus volume", "one bus pan drag is one undo step");
+        panel.refreshSettings();
+        require(panel.busStrip(0)->balance().getValue() == 0.0, "and the knob follows Undo");
+    }
+    busStrip->muteButton().triggerClick();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+    require(engine.buses[0].mute.load() && c.document().buses[0].settings.mute && c.undoLabel() == "Set bus mute", "its mute button runs the named command");
     busStrip->soloButton().triggerClick();
     juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
-    require(engine.buses[0].solo.load(), "its solo button solos the bus");
-    require(panel.renameBus(0, "Drums") && panel.trackStrip(1)->outputBox().getText() == "Drums", "renaming the bus renames it in every Output menu");
+    require(engine.buses[0].solo.load() && c.document().buses[0].settings.solo && c.undoLabel() == "Set bus solo", "its solo button solos the bus");
+    {   // A drag that outlives its bus is refused, even when a new bus takes the slot.
+        c.markAsNewBaseline();
+        busStrip->volume().onDragStart();
+        auto replaced = c.document();
+        require(c.deleteBus(0) && c.addBus() == 0, "the slot changes hands");
+        c.commit("Fixture");
+        const auto settled = c.document();
+        busStrip->volume().setValue(10.0, juce::sendNotificationSync);
+        busStrip->volume().onDragEnd();
+        require(alien::sameContent(settled, c.document()), "a stale drag changes nothing");
+        require(c.undo() && alien::sameContent(replaced, c.document()), "undo the fixture");
+        panel.refreshSettings();
+        busStrip = panel.busStrip(0);
+    }
+    require(panel.renameBus(0, "Drums") && panel.trackStrip(1)->outputBox().getText() == "Drums" && c.undoLabel() == "Rename bus", "renaming the bus renames it in every Output menu");
+    require(!panel.renameBus(0, "Drums") && !panel.renameBus(0, "  ") && !panel.renameBus(7, "X"), "a same name, a blank name and an unused slot do nothing");
     for (int b = 1; b < alien::maxBuses; ++b) panel.addBus();
     require(panel.busStripCount() == alien::maxBuses && !panel.addBusControl().isEnabled(), "Add bus is disabled with eight buses");
     bool captured = false;
     panel.beforeBusDeleted = [&] { captured = true; };
+    engine.recording.phase.store(alien::RecordControls::recording);
+    require(!panel.deleteBus(0) && !captured && panel.busStrip(0) != nullptr, "recording refuses a deletion before plugin state is captured");
+    panel.busStrip(0)->volume().setValue(25.0, juce::sendNotificationSync);
+    require(c.document().buses[0].settings.gain == 0.25f, "and leaves the bus fader working");
+    engine.recording.phase.store(alien::RecordControls::idle);
     require(panel.deleteBus(0) && captured && panel.busStrip(0) == nullptr && panel.trackStrip(1)->outputBox().getText() == "Master"
             && c.document().tracks[1].settings.output == -1, "deleting a bus removes its strip and sends its track to the master");
+    require(c.undoLabel() == "Delete bus" && routing[routing.size() - 1] == "Delete bus", "the command owns the undo step");
     require(c.undo() && c.document().buses[0].used && c.document().tracks[1].settings.output == 0, "deleting a bus is undoable");
+    panel.refreshSettings();
+    require(panel.busStrip(0) != nullptr && panel.busStrip(0)->nameButton().getButtonText() == "Drums", "an undone deletion brings the strip back");
 
     // The plugin panel offers each bus's FX rack, without an instrument slot.
     alien::PluginPanel plugins;

@@ -354,7 +354,7 @@ static void panels() {
     juce::StringArray routing; int returnEdits = 0; bool captured = false;
     panel.onRoutingChanged = [&](const juce::String& label) { routing.add(label); c.commit(label); };
     panel.onReturnCommandExecuted = [&] { routing.add(c.undoLabel()); };   // the command owns the undo step
-    panel.onReturnEdited = [&](int r, bool) { c.returnSettingsEdited(r); ++returnEdits; };
+    panel.onStripCommandExecuted = [&] { ++returnEdits; };
     panel.beforeReturnDeleted = [&] { captured = true; };
     require(panel.returnStripCount() == 4 && panel.addReturnControl().isEnabled(), "a new project shows returns A-D and can add one");
     auto* strip = panel.trackStrip(0);
@@ -369,11 +369,39 @@ static void panels() {
     require(panel.renameReturn(4, "Reverb") && panel.returnStrip(4)->nameButton().getButtonText() == "Reverb" && routing[routing.size() - 1] == "Rename return",
             "renaming a return renames its strip, as one undo step");
     require(strip->sendKnob(4).getTooltip().contains("Reverb"), "and the send knob's tooltip names it");
-    juce::Slider* volume = nullptr;
-    for (auto* child : panel.returnStrip(4)->getChildren()) if (child->getName() == "Return E volume") volume = dynamic_cast<juce::Slider*>(child);
-    require(volume != nullptr, "the new strip has a volume fader");
-    volume->setValue(50.0, juce::sendNotificationSync);
-    require(approx(engine.returns[4].gain.load(), 0.5f) && returnEdits > 0 && c.document().returns[4].settings.gain == 0.5f, "its fader sets return E's level");
+    panel.returnStrip(4)->volume().setValue(50.0, juce::sendNotificationSync);
+    require(approx(engine.returns[4].gain.load(), 0.5f) && returnEdits == 1 && c.document().returns[4].settings.gain == 0.5f && c.undoLabel() == "Set return volume", "its fader runs the named command");
+    {   // One drag is one undo step, and the knob follows Undo.
+        const auto label = c.undoLabel();
+        auto& balance = panel.returnStrip(4)->balance();
+        balance.onDragStart();
+        balance.setValue(-30.0, juce::sendNotificationSync);
+        juce::Thread::sleep(alien::DocumentHistory::coalesceMilliseconds + 20);
+        balance.setValue(30.0, juce::sendNotificationSync);
+        balance.onDragEnd();
+        require(c.undoLabel() == "Set return pan" && approx(engine.returns[4].pan.load(), 0.3f) && c.undo() && c.undoLabel() == label && engine.returns[4].pan.load() == 0.0f, "one return pan drag is one undo step");
+        panel.refreshSettings();
+        require(panel.returnStrip(4)->balance().getValue() == 0.0, "and the knob follows Undo");
+    }
+    panel.returnStrip(4)->muteButton().triggerClick();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+    require(engine.returns[4].mute.load() && c.document().returns[4].settings.mute && c.undoLabel() == "Set return mute", "its mute button runs the named command");
+    require(c.undo() && !engine.returns[4].mute.load(), "undo the mute");
+    panel.refreshSettings();
+    require(!panel.returnStrip(4)->muteButton().getToggleState(), "and the button follows Undo");
+    {   // A drag that outlives its return is refused, even when a new return takes the slot.
+        auto& fader = panel.returnStrip(4)->volume();
+        fader.onDragStart();
+        const auto before = c.document();
+        require(c.deleteReturn(4) && c.addReturn() == 4, "the slot changes hands");
+        c.commit("Fixture");
+        const auto settled = c.document();
+        fader.setValue(10.0, juce::sendNotificationSync);
+        fader.onDragEnd();
+        require(alien::sameContent(settled, c.document()), "a stale drag changes nothing");
+        require(c.undo() && alien::sameContent(before, c.document()), "undo the fixture");
+        panel.refreshSettings();
+    }
 
     require(panel.deleteReturn(1) && captured && panel.returnStrip(1) == nullptr && panel.returnStripCount() == 4 && routing[routing.size() - 1] == "Remove return",
             "removing return B removes its strip after the plugins are captured");
@@ -389,7 +417,7 @@ static void panels() {
     require(strip->sendKnob(7).getBottom() < strip->getHeight() - 200, "and leave room for the fader");
     // Undo outside the panel (the Edit menu): the strips follow the document.
     while (c.undoLabel() == "Add return") c.undo();
-    require(c.undo() && c.undoLabel() == "Rename return", "undo the removal");
+    require(c.undo() && c.undoLabel() == "Set return volume", "undo the removal");
     panel.refreshSettings();
     require(panel.returnStripCount() == 5 && panel.returnStrip(1) != nullptr && strip->sendKnob(1).isVisible(), "an undone removal brings the strip and knob back");
 

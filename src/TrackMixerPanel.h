@@ -331,14 +331,50 @@ private:
     juce::Colour colour{ui::colours::accent};
 };
 
+// What a return or bus strip does with an edit: runs the named command and shows the result.
+// A drag gets a key of its own, so it is one undo step however long it takes, and remembers the
+// slot's occupant: a value arriving after the project or the occupant changed is refused. Other
+// edits (typed values, the wheel) use the caller's timed key.
+class SlotStripEditor {
+public:
+    SlotStripEditor(ProjectController& projectController, TrackRole trackRole, int slotIndex, std::function<void()> refreshStrip, std::function<void()> commandExecuted)
+        : controller(projectController), role(trackRole), slot(slotIndex), refresh(std::move(refreshStrip)), executed(std::move(commandExecuted)) {}
+
+    void beginDrag() {
+        const auto& d = controller.document();
+        gesture = "mixer-slot-drag-" + juce::String(++nextGesture);
+        scope = d.identityScope;
+        owner = d.trackId(role, slot);
+    }
+    void endDrag() { gesture.clear(); }
+    void edit(const command::Command& command, const juce::String& timedKey = {}) {
+        const bool dragging = gesture.isNotEmpty();
+        const auto& d = controller.document();
+        if (dragging && (scope != d.identityScope || owner != d.trackId(role, slot))) { refresh(); return; }
+        const auto result = command::CommandEngine(controller).execute(command, dragging ? gesture : timedKey, dragging);
+        refresh();
+        if (result.ok && result.changed && executed) executed();
+    }
+
+private:
+    ProjectController& controller;
+    TrackRole role;
+    int slot;
+    std::function<void()> refresh, executed;
+    juce::String gesture;
+    std::uint32_t scope{};
+    TrackId owner{};
+    inline static juce::uint64 nextGesture{}; // message thread, unique across rebuilt strips
+};
+
 // A return track's strip: its level (the same range as a track fader), pan, mute and meter.
 // What the tracks send arrives here, through the return's FX (chosen in Plugins as
 // "Return A FX" and so on), and goes on to the master. Its name button opens a menu to rename
 // or remove it; the slot letter above the pan knob matches the send buttons on the tracks.
 class ReturnChannelStrip final : public juce::Component {
 public:
-    ReturnChannelStrip(int returnIndex, ReturnControls& returnControls, std::function<void(bool)> editedCallback)
-        : index(returnIndex), controls(returnControls), edited(std::move(editedCallback)) {
+    ReturnChannelStrip(ProjectController& projectController, int returnIndex, ReturnControls& returnControls, std::function<void()> commandExecuted)
+        : index(returnIndex), controls(returnControls), editor(projectController, TrackRole::returnTrack, returnIndex, [this] { refreshSettings(); }, std::move(commandExecuted)) {
         for (auto* c : std::array<juce::Component*, 8>{&title, &slotLabel, &panLabel, &pan, &mute, &gainLabel, &gain, &meter}) addAndMakeVisible(c);
         const auto letter = mixer_text::returnLetter(index);
         title.setColour(juce::TextButton::buttonColourId, ui::colours::accent.withAlpha(0.75f));
@@ -362,14 +398,15 @@ public:
         pan.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
         pan.setTooltip("Return " + letter + " stereo balance. Double-click to centre.");
         pan.setColour(juce::Slider::rotarySliderFillColourId, ui::colours::accent);
-        pan.onValueChange = [this] { controls.pan.store(static_cast<float>(pan.getValue() / 100)); edited(!pan.isMouseButtonDown()); };
-        pan.onDragEnd = [this] { edited(true); };
+        pan.onDragStart = [this] { editor.beginDrag(); };
+        pan.onValueChange = [this] { editor.edit(command::SetReturnPan{index, pan.getValue() / 100.0}, "return-pan-" + juce::String(index)); };
+        pan.onDragEnd = [this] { editor.endDrag(); };
         mute.setName("Return " + letter + " mute");
         mute.setButtonText("M"); mute.setTooltip("Mute return " + letter);
         mute.setClickingTogglesState(true);
         mute.setColour(juce::TextButton::buttonOnColourId, ui::colours::mute);
         mute.setColour(juce::TextButton::textColourOnId, ui::colours::accentInk);
-        mute.onClick = [this] { controls.mute.store(mute.getToggleState()); edited(true); };
+        mute.onClick = [this] { editor.edit(command::SetReturnMute{index, mute.getToggleState()}); };
         gain.setName("Return " + letter + " volume");
         gain.setSliderStyle(juce::Slider::LinearVertical);
         gain.setRange(0, 200, 1);
@@ -378,8 +415,9 @@ public:
         gain.setDoubleClickReturnValue(true, 100.0);
         gain.textFromValueFunction = [](double v) { return mixer_text::gainToText(v); };
         gain.valueFromTextFunction = [](const juce::String& t) { return mixer_text::textToGain(t, 200.0); };
-        gain.onValueChange = [this] { controls.gain.store(static_cast<float>(gain.getValue() / 100)); edited(!gain.isMouseButtonDown()); };
-        gain.onDragEnd = [this] { edited(true); };
+        gain.onDragStart = [this] { editor.beginDrag(); };
+        gain.onValueChange = [this] { editor.edit(command::SetReturnVolume{index, gain.getValue() / 100.0}, "return-volume-" + juce::String(index)); };
+        gain.onDragEnd = [this] { editor.endDrag(); };
         gain.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 60, 20);
         gain.setColour(juce::Slider::trackColourId, ui::colours::accent);
         setReturnName(defaultReturnName(index));
@@ -424,11 +462,14 @@ public:
 
     // For the tests.
     juce::TextButton& nameButton() { return title; }
+    juce::Slider& volume() { return gain; }
+    juce::Slider& balance() { return pan; }
+    juce::TextButton& muteButton() { return mute; }
 
 private:
     int index;
     ReturnControls& controls;
-    std::function<void(bool)> edited;
+    SlotStripEditor editor;
     juce::TextButton title;
     juce::Label slotLabel, panLabel, gainLabel;
     juce::Slider pan, gain;
@@ -441,8 +482,8 @@ private:
 // Its name button opens a menu to rename or delete it.
 class BusChannelStrip final : public juce::Component {
 public:
-    BusChannelStrip(BusControls& busControls, std::function<void(bool)> editedCallback)
-        : controls(busControls), edited(std::move(editedCallback)) {
+    BusChannelStrip(ProjectController& projectController, int busIndex, BusControls& busControls, std::function<void()> commandExecuted)
+        : index(busIndex), controls(busControls), editor(projectController, TrackRole::bus, busIndex, [this] { refreshSettings(); }, std::move(commandExecuted)) {
         for (auto* c : std::array<juce::Component*, 8>{&title, &panLabel, &pan, &mute, &solo, &gainLabel, &gain, &meter}) addAndMakeVisible(c);
         title.setColour(juce::TextButton::buttonColourId, ui::colours::accent.withAlpha(0.45f));
         title.setColour(juce::TextButton::textColourOffId, ui::colours::accentInk);
@@ -459,24 +500,26 @@ public:
         pan.setDoubleClickReturnValue(true, 0.0);
         pan.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
         pan.setColour(juce::Slider::rotarySliderFillColourId, ui::colours::accent);
-        pan.onValueChange = [this] { controls.pan.store(static_cast<float>(pan.getValue() / 100)); edited(!pan.isMouseButtonDown()); };
-        pan.onDragEnd = [this] { edited(true); };
+        pan.onDragStart = [this] { editor.beginDrag(); };
+        pan.onValueChange = [this] { editor.edit(command::SetBusPan{index, pan.getValue() / 100.0}, "bus-pan-" + juce::String(index)); };
+        pan.onDragEnd = [this] { editor.endDrag(); };
         mute.setButtonText("M"); solo.setButtonText("S");
         mute.setClickingTogglesState(true); solo.setClickingTogglesState(true);
         mute.setColour(juce::TextButton::buttonOnColourId, ui::colours::mute);
         mute.setColour(juce::TextButton::textColourOnId, ui::colours::accentInk);
         solo.setColour(juce::TextButton::buttonOnColourId, ui::colours::solo);
         solo.setColour(juce::TextButton::textColourOnId, juce::Colour(0xff06162a));
-        mute.onClick = [this] { controls.mute.store(mute.getToggleState()); edited(true); };
-        solo.onClick = [this] { controls.solo.store(solo.getToggleState()); edited(true); };
+        mute.onClick = [this] { editor.edit(command::SetBusMute{index, mute.getToggleState()}); };
+        solo.onClick = [this] { editor.edit(command::SetBusSolo{index, solo.getToggleState()}); };
         gain.setSliderStyle(juce::Slider::LinearVertical);
         gain.setRange(0, 200, 1);
         gain.setSkewFactorFromMidPoint(50.0);
         gain.setDoubleClickReturnValue(true, 100.0);
         gain.textFromValueFunction = [](double v) { return mixer_text::gainToText(v); };
         gain.valueFromTextFunction = [](const juce::String& t) { return mixer_text::textToGain(t, 200.0); };
-        gain.onValueChange = [this] { controls.gain.store(static_cast<float>(gain.getValue() / 100)); edited(!gain.isMouseButtonDown()); };
-        gain.onDragEnd = [this] { edited(true); };
+        gain.onDragStart = [this] { editor.beginDrag(); };
+        gain.onValueChange = [this] { editor.edit(command::SetBusVolume{index, gain.getValue() / 100.0}, "bus-volume-" + juce::String(index)); };
+        gain.onDragEnd = [this] { editor.endDrag(); };
         gain.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 60, 20);
         gain.setColour(juce::Slider::trackColourId, ui::colours::accent);
     }
@@ -526,11 +569,15 @@ public:
 
     // For the tests.
     juce::Slider& volume() { return gain; }
+    juce::Slider& balance() { return pan; }
+    juce::TextButton& muteButton() { return mute; }
     juce::TextButton& soloButton() { return solo; }
+    juce::TextButton& nameButton() { return title; }
 
 private:
+    int index;
     BusControls& controls;
-    std::function<void(bool)> edited;
+    SlotStripEditor editor;
     juce::TextButton title, mute, solo;
     juce::Label panLabel, gainLabel;
     juce::Slider pan, gain;
@@ -667,16 +714,17 @@ public:
     std::function<void(int)> onTrackMixCommandExecuted;
     // Master edits are already committed by CommandEngine; refresh only.
     std::function<void()> onMasterCommandExecuted;
-    std::function<void(int, bool)> onReturnEdited;
-    std::function<void(int, bool)> onBusEdited;   // a bus strip (its slot)
-    // A bus was added, renamed or deleted, or a track's output changed; the label names the edit.
-    // The panel has already updated itself; the owner commits it.
+    // A return or bus strip's volume, pan, mute or solo changed. The command owns the undo step.
+    std::function<void()> onStripCommandExecuted;
+    // A track's output changed; the label names the edit. The panel has already updated itself;
+    // the owner commits it.
     std::function<void(const juce::String&)> onRoutingChanged;
     std::function<void()> beforeBusDeleted;      // the owner can capture the bus's plugin state first
     std::function<void()> beforeReturnDeleted;   // the same, before a return is removed
     // A return was added, renamed or removed. The command owns the undo step; the host only
     // follows (plugin racks and the automation editor's list of sends).
     std::function<void()> onReturnCommandExecuted;
+    std::function<void()> onBusCommandExecuted;   // the same, for a bus
 
     // Recreate strips after tracks are added, removed or reordered.
     void rebuild() {
@@ -705,6 +753,11 @@ public:
         std::vector<int> shown;
         for (const auto& [slot, strip] : returnStrips) shown.push_back(slot);
         if (used != shown) { rebuildReturns(); resized(); }
+        std::vector<int> usedBuses;
+        for (int b = 0; b < maxBuses; ++b) if (d.buses[static_cast<std::size_t>(b)].used) usedBuses.push_back(b);
+        std::vector<int> shownBuses;
+        for (const auto& [slot, strip] : busStrips) shownBuses.push_back(slot);
+        if (usedBuses != shownBuses) { rebuildBuses(); resized(); }
         for (auto& [slot, strip] : returnStrips) {
             strip->setReturnName(d.returns[static_cast<std::size_t>(slot)].name);
             strip->refreshSettings();
@@ -737,33 +790,28 @@ public:
 
     // Routing edits, from the strips' menus (and the tests). Each returns false when nothing changed.
     int addBus() {
-        const int b = controller.addBus();
-        if (b >= 0) routingChanged("Add bus");
-        return b;
+        const int b = bus_edit::firstFreeSlot(controller.document());
+        return executeStructureCommand(command::CreateBus{}, onBusCommandExecuted) ? b : -1;
     }
-    bool renameBus(int b, const juce::String& name) {
-        if (!controller.renameBus(b, name)) return false;
-        routingChanged("Rename bus");
-        return true;
-    }
+    bool renameBus(int b, const juce::String& name) { return executeStructureCommand(command::RenameBus{b, name}, onBusCommandExecuted); }
     bool deleteBus(int b) {
-        if (b < 0 || b >= maxBuses || !controller.document().buses[static_cast<std::size_t>(b)].used) return false;
+        // Plugin state is captured only for a deletion the command will accept.
+        const command::Command remove = command::DeleteBus{b};
+        if (controller.isBusy() || !controller.canEditMidiClips() || command::refusal(controller.document(), remove).isNotEmpty()) return false;
         if (beforeBusDeleted) beforeBusDeleted();
-        if (!controller.deleteBus(b)) return false;
-        routingChanged("Delete bus");
-        return true;
+        return executeStructureCommand(remove, onBusCommandExecuted);
     }
     int addReturn() {
         const int r = return_edit::firstFreeSlot(controller.document());
-        return executeReturnCommand(command::CreateReturn{}) ? r : -1;
+        return executeStructureCommand(command::CreateReturn{}, onReturnCommandExecuted) ? r : -1;
     }
-    bool renameReturn(int r, const juce::String& name) { return executeReturnCommand(command::RenameReturn{r, name}); }
+    bool renameReturn(int r, const juce::String& name) { return executeStructureCommand(command::RenameReturn{r, name}, onReturnCommandExecuted); }
     bool deleteReturn(int r) {
         // Plugin state is captured only for a removal the command will accept.
         const command::Command remove = command::DeleteReturn{r};
         if (controller.isBusy() || !controller.canEditMidiClips() || command::refusal(controller.document(), remove).isNotEmpty()) return false;
         if (beforeReturnDeleted) beforeReturnDeleted();
-        return executeReturnCommand(remove);
+        return executeStructureCommand(remove, onReturnCommandExecuted);
     }
     bool chooseOutput(int track, int output) {
         if (!controller.setTrackOutput(track, output)) { refreshSettings(); return false; }
@@ -834,21 +882,22 @@ private:
         const auto& d = controller.document();
         for (int r = 0; r < maxReturns; ++r) {
             if (!d.returns[static_cast<std::size_t>(r)].used) continue;
-            auto strip = std::make_unique<ReturnChannelStrip>(r, returnControls[static_cast<std::size_t>(r)],
-                [this, r](bool committed) { if (onReturnEdited) onReturnEdited(r, committed); });
+            auto strip = std::make_unique<ReturnChannelStrip>(controller, r, returnControls[static_cast<std::size_t>(r)],
+                [this] { if (onStripCommandExecuted) onStripCommandExecuted(); });
             strip->onMenu = [this, r] { showReturnMenu(r); };
             addAndMakeVisible(*strip);
             returnStrips.emplace_back(r, std::move(strip));
         }
     }
-    bool executeReturnCommand(const command::Command& edit) {
+    // Adding, renaming or removing a return or bus. The command owns the undo step.
+    bool executeStructureCommand(const command::Command& edit, const std::function<void()>& executed) {
         const auto result = command::CommandEngine(controller).execute(edit);
         if (!result.ok || !result.changed) return false;
         rebuildBuses();
         rebuildReturns();
         refreshSettings();
         resized();
-        if (onReturnCommandExecuted) onReturnCommandExecuted();
+        if (executed) executed();
         return true;
     }
     void showReturnMenu(int r) {
@@ -882,8 +931,8 @@ private:
         const auto& d = controller.document();
         for (int b = 0; b < maxBuses; ++b) {
             if (!d.buses[static_cast<std::size_t>(b)].used) continue;
-            auto strip = std::make_unique<BusChannelStrip>(busControls[static_cast<std::size_t>(b)],
-                [this, b](bool committed) { if (onBusEdited) onBusEdited(b, committed); });
+            auto strip = std::make_unique<BusChannelStrip>(controller, b, busControls[static_cast<std::size_t>(b)],
+                [this] { if (onStripCommandExecuted) onStripCommandExecuted(); });
             strip->onMenu = [this, b] { showBusMenu(b); };
             content.addAndMakeVisible(*strip);
             busStrips.emplace_back(b, std::move(strip));

@@ -419,7 +419,39 @@ plugin state, and after any return command the host rebuilds the plugin racks.
 A script running `DeleteReturn` directly drops the saved FX in the document, and has
 no such host step until the device commands exist.
 
-Return strip volume, pan and mute, and all bus edits, are not commands yet.
+## Return strip and bus commands
+
+Return strips and buses are addressed by slot, and slots never move. The JSON
+arguments are `return` and `bus`.
+
+- `SetReturnVolume {return, gain}` and `SetBusVolume {bus, gain}` take a finite linear
+  gain from 0 to 2 (1 is unity), the range of a track fader.
+- `SetReturnPan {return, pan}` and `SetBusPan {bus, pan}` take a finite number from -1
+  (left) to 1 (right).
+- `SetReturnMute {return, muted}`, `SetBusMute {bus, muted}` and
+  `SetBusSolo {bus, soloed}` take a boolean.
+- `CreateBus {}` takes the first free slot and the lowest free "Bus n" name.
+- `RenameBus {bus, name}` trims the name and refuses a blank one.
+- `DeleteBus {bus}` also sends its tracks to the master, and drops its FX and any
+  sidechain keyed by its output. Other buses keep their slots.
+
+`BusCommands.h` holds the pure bus reducers, shared by Preview and the controller. A
+reused slot gets a fresh track identity in Preview and live alike. An edit to an unused
+slot refuses, and all ten refuse while the project is busy.
+
+Strip volume, pan, mute and solo stay adjustable during recording and count-in, as the
+track fader does. The three bus structure commands refuse then, as the return ones do,
+because they rebuild the engine routing and the plugin racks.
+
+The Mixer return and bus strips, Add bus button and bus menu use these commands. One
+drag is one undo step. A drag remembers the slot's occupant and the project, so a value
+arriving after either changed is refused. Other strip edits, such as typed values, use a
+timed key per control. Before a deletion the Mixer captures live plugin state, and after
+any bus structure command the host rebuilds the plugin racks. A script running
+`DeleteBus` directly drops the saved FX in the document, and has no such host step until
+the device commands exist.
+
+Track output, group membership and sidechain routing are not commands yet.
 
 ## Master volume command
 
