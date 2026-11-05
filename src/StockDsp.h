@@ -439,6 +439,14 @@ public:
         const double c1 = 0.5 * (p2 - p0), c2 = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3, c3 = 0.5 * (p3 - p0) + 1.5 * (p1 - p2);
         return static_cast<float>(((c3 * t + c2) * t + c1) * t + p1);
     }
+    // Convex interpolation for feedback loops: unlike cubic interpolation, it
+    // cannot overshoot the stored samples and amplify the loop gain.
+    float readLinear(double delay) const noexcept {
+        delay = std::clamp(delay, 2.0, static_cast<double>(capacity()));
+        const int i = static_cast<int>(delay);
+        const double fraction = delay - i;
+        return static_cast<float>(at(i) * (1 - fraction) + at(i + 1) * fraction);
+    }
 private:
     int size() const noexcept { return static_cast<int>(data.size()); }
     double at(int k) const noexcept { int index = write - k; if (index < 0) index += size(); return data[static_cast<std::size_t>(index)]; }
@@ -978,6 +986,47 @@ public:
 private:
     Smoother width, mix, output;
     bool snapNext{true};
+};
+
+// Short stereo modulated delay with signed feedback. Separate channel state,
+// quadrature modulation and a sample-counted clock; allocation only in prepare.
+class StereoFlanger {
+public:
+    struct Settings { double rateHz{.25}, depth{.7}, feedback{.35}, mix{.5}; };
+    static constexpr double tailSeconds = .5; // covers 6 ms loops at |feedback| <= .85 to below -100 dB
+    void prepare(double sampleRate) {
+        rate = std::isfinite(sampleRate) ? std::clamp(sampleRate, 8000.0, 192000.0) : 44100;
+        for (auto* line : {&leftLine, &rightLine}) line->prepare(static_cast<int>(std::ceil(rate * .007)) + 8);
+        coefficient = 1 - std::exp(-1 / (.02 * rate)); ready = true; reset();
+    }
+    void reset() noexcept { leftLine.clear(); rightLine.clear(); phase = 0; initialised = false; }
+    void process(float* left, float* right, int count, Settings s) noexcept {
+        if (!ready || count <= 0) return;
+        const auto bounded = [](double v, double lo, double hi, double def) { return std::isfinite(v) ? std::clamp(v, lo, hi) : def; };
+        s.rateHz = bounded(s.rateHz, .05, 5, .25); s.depth = bounded(s.depth, 0, 1, .7);
+        s.feedback = bounded(s.feedback, -.85, .85, .35); s.mix = bounded(s.mix, 0, 1, .5);
+        if (!initialised) { speed = s.rateHz; depth = s.depth; feedback = s.feedback; mix = s.mix; initialised = true; }
+        const auto smooth = [&](double& value, double target) {
+            value += coefficient * (target - value); if (std::abs(value - target) < 1e-9) value = target;
+        };
+        for (int i = 0; i < count; ++i) {
+            smooth(speed, s.rateHz); smooth(depth, s.depth); smooth(feedback, s.feedback); smooth(mix, s.mix);
+            const double dryL = finite(left[i]) ? left[i] : 0, dryR = finite(right[i]) ? right[i] : 0;
+            const double wetL = leftLine.readLinear(rate * (.00325 + .00275 * depth * std::sin(phase)));
+            const double wetR = rightLine.readLinear(rate * (.00325 + .00275 * depth * std::cos(phase)));
+            // Feedback storage has generous headroom but cannot be poisoned by
+            // pathological finite input approaching the float range limit.
+            leftLine.push(static_cast<float>(std::clamp(dryL + feedback * wetL, -32.0, 32.0)));
+            rightLine.push(static_cast<float>(std::clamp(dryR + feedback * wetR, -32.0, 32.0)));
+            left[i] = static_cast<float>(dryL * (1 - mix) + wetL * mix);
+            right[i] = static_cast<float>(dryR * (1 - mix) + wetR * mix);
+            phase += 2 * pi * speed / rate; if (phase >= 2 * pi) phase -= 2 * pi;
+        }
+    }
+private:
+    FractionalDelayLine leftLine, rightLine;
+    double rate{44100}, coefficient{}, phase{}, speed{}, depth{}, feedback{}, mix{};
+    bool ready{}, initialised{};
 };
 
 } // namespace alien::dsp
