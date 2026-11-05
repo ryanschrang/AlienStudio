@@ -950,4 +950,34 @@ private:
     bool snapNext{true};
 };
 
+// Mid/side width control: preserve the mid signal and scale only the side.
+// This does not synthesise stereo from mono. Output trim belongs to the wet path.
+class StereoImager {
+public:
+    struct Settings { double width{1}, mix{1}, outputDb{}; };
+    void prepare(double sampleRate) noexcept {
+        const double rate = std::isfinite(sampleRate) ? std::clamp(sampleRate, 8000.0, 192000.0) : 44100.0;
+        for (auto* control : {&width, &mix, &output}) control->configure(rate, 5);
+        reset();
+    }
+    void reset() noexcept { snapNext = true; }
+    void process(float* left, float* right, int samples, Settings s) noexcept {
+        if (samples <= 0) return;
+        const auto bounded = [](double v, double lo, double hi, double def) { return std::isfinite(v) ? std::clamp(v, lo, hi) : def; };
+        s.width = bounded(s.width, 0, 2, 1); s.mix = bounded(s.mix, 0, 1, 1); s.outputDb = bounded(s.outputDb, -12, 12, 0);
+        if (snapNext) { width.reset(s.width); mix.reset(s.mix); output.reset(s.outputDb); snapNext = false; }
+        width.setTarget(s.width); mix.setTarget(s.mix); output.setTarget(s.outputDb);
+        for (int i = 0; i < samples; ++i) {
+            const double l = finite(left[i]) ? left[i] : 0, r = finite(right[i]) ? right[i] : 0;
+            const double delta = (l - r) * .5 * (width.advance(1) - 1);
+            const double wet = mix.advance(1), gain = dbToGain(output.advance(1));
+            left[i] = static_cast<float>(l + wet * ((l + delta) * gain - l));
+            right[i] = static_cast<float>(r + wet * ((r - delta) * gain - r));
+        }
+    }
+private:
+    Smoother width, mix, output;
+    bool snapNext{true};
+};
+
 } // namespace alien::dsp

@@ -541,3 +541,15 @@ Needs: Valhalla Supermassive, one VST3 instrument (ideally one that reports late
   listen for boundary clicks. Automatic transient/zero-crossing slicing is not included.
 
 Listening and physical-device acceptance remain pending; automated checks are recorded in the PR.
+
+## Stereo imager (T2-02 / FX-02)
+
+- Add Alien Stereo Imager to a stereo track or Master FX. Width 100%, Mix 100%
+  and Output 0 dB should sound unchanged. Width 0% collapses to the average of
+  left and right; 200% doubles the side signal while preserving the mono sum.
+  A mono source stays mono. Wider settings can raise peaks; use Output for headroom.
+- Sweep Width, Mix and Output during playback and automation; controls should move
+  smoothly. Settled 0% Mix bypasses width and output trim. Check bypass, device
+  restart, Undo/Redo, save/reopen and live versus Song WAV export.
+- Physical-device listening, mono compatibility and perceived width remain manual
+  acceptance checks; automated signal/state tests do not substitute for listening.

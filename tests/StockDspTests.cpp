@@ -850,7 +850,39 @@ static void crusherTests() {
     check(silence[63] == 0 && other[63] == 0, "held sample decays to silence within maximum hold");
 }
 
+static void imagerTests() {
+    const auto inputL = noise(4096, .7, 31), inputR = noise(4096, .7, 32);
+    const auto render = [&](StereoImager::Settings settings, int block, bool mono = false) {
+        StereoImager e; e.prepare(rate); auto l = inputL, r = mono ? inputL : inputR;
+        for (int at = 0; at < 4096; at += block) e.process(l.data() + at, r.data() + at, std::min(block, 4096 - at), settings);
+        return std::pair{l, r};
+    };
+    check(render({}, 37) == std::pair{inputL, inputR}, "imager defaults are exact identity");
+    check(render({2, 0, 12}, 37) == std::pair{inputL, inputR}, "imager zero mix bypasses width and trim exactly");
+    const auto collapsed = render({0, 1, 0}, 512), wide = render({2, 1, 0}, 512);
+    bool mono = true, mid = true, side = true;
+    for (int i = 0; i < 4096; ++i) {
+        const double expectedMid = (static_cast<double>(inputL[i]) + inputR[i]) * .5;
+        mono = mono && collapsed.first[i] == collapsed.second[i] && std::abs(collapsed.first[i] - expectedMid) < 1e-7;
+        mid = mid && std::abs((wide.first[i] + wide.second[i]) * .5 - expectedMid) < 1e-7;
+        side = side && std::abs((wide.first[i] - wide.second[i]) - 2 * (inputL[i] - inputR[i])) < 5e-7;
+    }
+    check(mono && mid && side, "imager collapses to mono, preserves mid and doubles side at maximum width");
+    const auto unchangedMono = render({2, 1, 0}, 37, true);
+    check(unchangedMono.first == inputL && unchangedMono.second == inputL, "width does not create side information from mono");
+    const auto reference = render({1.7, .6, -3}, 512);
+    for (int block : {1, 37, 1024}) check(render({1.7, .6, -3}, block) == reference, "imager independent of host block size");
+    for (double sr : {8000., 44100., 48000., 96000., 192000.}) {
+        StereoImager e; e.prepare(sr); std::vector<float> l(40000, .5f), r(40000, -.5f);
+        e.process(l.data(), r.data(), 20000, {}); e.process(l.data() + 20000, r.data() + 20000, 20000, {0, 1, 0});
+        check(l[20000] > .48f && l[20000] < .5f && std::abs(l.back()) < 1e-5, "width automation ramps smoothly at supported rates");
+        e.reset(); l.assign(40000, .5f); r.assign(40000, -.5f); e.process(l.data(), r.data(), 40000, {0, 1, 0});
+        check(l.front() == 0 && r.back() == 0, "imager reset uses fresh settings without old control history");
+    }
+}
+
 int main() {
+    imagerTests();
     crusherTests();
     transientTests();
     phaserTests();
