@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PianoRollSequence.h"
+#include "PianoRollScale.h"
 #include "MidiRecording.h"
 #include "TrackMixer.h"
 #include "SynthEngine.h"
@@ -25,7 +26,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 33;   // 33: shared drum sample slices; 32: Song rack lanes saved apart from track rows (T1-04 C2); 31: VST3 instruments on Channel Rack channels; 30: Song warp anchors; 29: persistent universal track registry and checked document bindings; 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings; 27: fade shapes; 28: independent rack launch slots per Session row
+inline constexpr int sessionProjectFormatVersion = 34;   // 34: shared project musical scale; 33: shared drum sample slices; 32: Song rack lanes saved apart from track rows (T1-04 C2); 31: VST3 instruments on Channel Rack channels; 30: Song warp anchors; 29: persistent universal track registry and checked document bindings; 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings; 27: fade shapes; 28: independent rack launch slots per Session row
 
 // A group bus slot. Slots keep their index while other buses come and go, so a track's output
 // (TrackSettings::output) and the bus's FX rack never need renumbering.
@@ -94,6 +95,7 @@ struct SessionProjectData {
     // Retain that audible behavior on re-save; new projects launch one occurrence per row.
     bool legacyRackSceneLaunch{};
     int launchQuantizationSteps{16};
+    ProjectMusicalScale musicalScale;
     float masterGain{1.0f}; // Absent in older files: unity.
     RecordSettings recording; // Absent in older files: defaults.
     int selectedTrack{};
@@ -163,7 +165,7 @@ struct SessionProjectData {
         if ((launchQuantizationSteps != 4 && launchQuantizationSteps != 16)
             || selectedTrack < 0 || selectedTrack >= tracks
             || selectedScene < 0 || selectedScene >= scenes
-            || bpm < 60 || bpm > 200 || synthPreset < 0 || synthPreset >= presetCount || !validMasterGain(masterGain)
+            || bpm < 60 || bpm > 200 || synthPreset < 0 || synthPreset >= presetCount || !validMasterGain(masterGain) || !musicalScale.valid()
             || !recording.valid())
             return false;
         if (plugins.size() != trackSettings.size() || !masterPlugins.valid() || !masterPlugins.instrument.descriptionXml.isEmpty()) return false;
@@ -420,6 +422,11 @@ inline juce::String serializeSessionProject(const SessionProjectData& source) {
     rootObject->setProperty("selectedTrack", project.selectedTrack);
     rootObject->setProperty("selectedScene", project.selectedScene);
     rootObject->setProperty("bpm", project.bpm);
+    auto* musicalScale = new juce::DynamicObject();
+    musicalScale->setProperty("defined", project.musicalScale.defined);
+    musicalScale->setProperty("root", project.musicalScale.rootPitchClass);
+    musicalScale->setProperty("type", static_cast<int>(project.musicalScale.type));
+    rootObject->setProperty("musicalScale", juce::var(musicalScale));
     rootObject->setProperty("synthPreset", project.synthPreset);
     rootObject->setProperty("masterGain", project.masterGain);
     {
@@ -967,6 +974,15 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
     parsed.selectedTrack = static_cast<int>(selectedTrack);
     parsed.selectedScene = static_cast<int>(selectedScene);
     parsed.bpm = static_cast<int>(bpm);
+    if (static_cast<int>(version) >= 34) {
+        const auto value = rootObject->getProperty("musicalScale");
+        const auto* scale = value.getDynamicObject();
+        if (!scale || !scale->getProperty("defined").isBool() || !scale->getProperty("root").isInt() || !scale->getProperty("type").isInt()) {
+            error = "Invalid project musical scale."; return false;
+        }
+        parsed.musicalScale = {static_cast<bool>(scale->getProperty("defined")), static_cast<int>(scale->getProperty("root")), static_cast<ScaleType>(static_cast<int>(scale->getProperty("type")))};
+        if (!parsed.musicalScale.valid()) { error = "Project key or scale is out of range."; return false; }
+    }
     parsed.synthPreset = static_cast<int>(synthPreset);
     const auto masterGain = rootObject->getProperty("masterGain");
     if (masterGain.isDouble() || masterGain.isInt()) {

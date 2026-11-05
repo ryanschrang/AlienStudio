@@ -10,6 +10,16 @@ namespace alien {
 enum class ScaleType { major, naturalMinor, harmonicMinor, melodicMinor, dorian,
                        mixolydian, majorPentatonic, minorPentatonic, blues, chromatic };
 
+// Shared project musical context. Highlighting and input snapping remain view
+// preferences; defining a key does not rewrite notes or retune audio.
+struct ProjectMusicalScale {
+    bool defined{};
+    int rootPitchClass{};
+    ScaleType type{ScaleType::major};
+    bool valid() const noexcept { return rootPitchClass >= 0 && rootPitchClass < 12 && static_cast<int>(type) >= 0 && static_cast<int>(type) < 10; }
+    bool operator==(const ProjectMusicalScale&) const = default;
+};
+
 struct ScaleSettings {
     int rootPitchClass {};
     ScaleType type { ScaleType::major };

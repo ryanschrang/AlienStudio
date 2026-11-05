@@ -557,7 +557,27 @@ static void drumSliceProjectTests() {
     root.getDynamicObject()->setProperty("drumSlices", kits);
     require(!alien::parseSessionProject(juce::JSON::toString(root), parsed, error), "fractional source frames refused");
 }
+static void projectScaleSerializationTests() {
+    alien::SessionProjectData source, parsed; juce::String error;
+    source.musicalScale = {true, 9, alien::ScaleType::naturalMinor};
+    const auto json = alien::serializeSessionProject(source);
+    require(alien::parseSessionProject(json, parsed, error) && parsed.musicalScale == source.musicalScale, "project musical scale roundtrips");
+    auto old = juce::JSON::parse(json); old.getDynamicObject()->setProperty("version", 33); old.getDynamicObject()->removeProperty("musicalScale");
+    require(alien::parseSessionProject(juce::JSON::toString(old), parsed, error) && !parsed.musicalScale.defined, "old projects migrate without an assumed musical key");
+    old.getDynamicObject()->setProperty("version", 34);
+    require(!alien::parseSessionProject(juce::JSON::toString(old), parsed, error), "new format requires musical context metadata");
+    for (const auto bad : {alien::ProjectMusicalScale{true, -1, alien::ScaleType::major}, {true, 12, alien::ScaleType::major}, {true, 0, static_cast<alien::ScaleType>(10)}}) {
+        source.musicalScale = bad; require(alien::serializeSessionProject(source).isEmpty(), "invalid key/scale cannot be saved");
+    }
+    for (const auto& field : {"root", "type", "defined"}) {
+        auto root = juce::JSON::parse(json); auto* scale = root.getDynamicObject()->getProperty("musicalScale").getDynamicObject();
+        scale->setProperty(field, juce::String(field) == "defined" ? juce::var(1) : juce::var(1.5));
+        require(!alien::parseSessionProject(juce::JSON::toString(root), parsed, error), "musical context fields use strict JSON types");
+    }
+}
+
 int main() {
+    projectScaleSerializationTests();
     drumSliceProjectTests();
     songRowFormatTests();
     warpFormatChecks();

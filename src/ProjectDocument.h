@@ -140,6 +140,7 @@ struct ProjectDocument {
     library::Library library;
     std::map<std::uint64_t, SessionMedia> media;   // by MediaId
     std::uint64_t nextMedia{1};
+    ProjectMusicalScale musicalScale;
     int bpm{120};
     bool legacyRackSceneLaunch{};
     int launchQuantizationSteps{16};
@@ -529,7 +530,7 @@ inline bool sameContent(const ProjectDocument& a, const ProjectDocument& b) {
 
     if (!a.channelRack.sameContent(b.channelRack)) return false; // which pattern is selected is not an edit
     if (!(a.timeline == b.timeline)) return false;
-    if (a.legacyRackSceneLaunch != b.legacyRackSceneLaunch || a.bpm != b.bpm || a.launchQuantizationSteps != b.launchQuantizationSteps || a.livePreset != b.livePreset
+    if (a.musicalScale != b.musicalScale || a.legacyRackSceneLaunch != b.legacyRackSceneLaunch || a.bpm != b.bpm || a.launchQuantizationSteps != b.launchQuantizationSteps || a.livePreset != b.livePreset
         || a.steps.on != b.steps.on || a.steps.pitch != b.steps.pitch || a.steps.velocity != b.steps.velocity
         || a.tracks.size() != b.tracks.size() || a.scenes.size() != b.scenes.size())
         return false;
@@ -589,6 +590,7 @@ inline SessionProjectData toProjectData(const ProjectDocument& doc) {
     data.selectedTrack = doc.selectedTrack;
     data.selectedScene = doc.selectedScene;
     data.bpm = doc.bpm;
+    data.musicalScale = doc.musicalScale;
     data.synthPreset = doc.livePreset;
     for (int t = 0; t < doc.trackCount(); ++t) {
         const auto& track = doc.tracks[static_cast<std::size_t>(t)];
@@ -654,6 +656,7 @@ inline ProjectDocument fromProjectData(const SessionProjectData& source) {
     doc.selectedTrack = data.selectedTrack;
     doc.selectedScene = data.selectedScene;
     doc.bpm = data.bpm;
+    doc.musicalScale = data.musicalScale;
     doc.livePreset = data.synthPreset;
     for (int t = 0; t < data.trackCount(); ++t) {
         auto& track = doc.tracks[static_cast<std::size_t>(t)];

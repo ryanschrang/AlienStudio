@@ -112,7 +112,7 @@ complete upgrade has passed acceptance.
 - [x] Root-note emphasis and scale-note shading use the selected key/scale
   consistently with MIDI-06. (The Scale tool's root and scale drive the grid rows, the keys, Scale rows and snapping
   alike: a wide mark on root keys, a narrow one on the scale's other keys. Shown when Highlight scale is on or Scale
-  rows are shown. MIDI-06 itself, project-wide key awareness, is still planned; the scale stays per editor.)
+  rows are shown. MIDI-06 now has a saved project key/scale with optional Piano Roll following; local overrides remain. Channel Rack and generator adoption are pending.)
 - [x] Drawing, selecting, moving, resizing and auditioning target the correct
   MIDI pitches with hidden rows, zoom and scrolling; undo/redo preserves edits. (Dragging and the arrow keys move
   a row at a time across hidden pitches; a drag keeps its starting rows until it ends. Scrolling is covered; the
@@ -232,7 +232,7 @@ artwork stay original.
 | PROD-04 | Per-channel pattern length and rate, step trigger conditions | Planned | From the existing ROADMAP |
 | MIDI-04 | Capture MIDI: recover what was just played without recording (Live Capture MIDI) | Planned | Fixed-size history buffer filled off the audio thread |
 | MIDI-05 | MIDI transformations and generators (Live 12) | Planned | Undoable, deterministic with a seed |
-| MIDI-06 | Key and scale awareness across Piano Roll, Channel Rack and generators | Planned | Scale highlight, fold and snap |
+| MIDI-06 | Key and scale awareness across Piano Roll, Channel Rack and generators | Partial: shared saved project scale and optional Piano Roll following (claim #238, format 34) | Scale tool: Use as project scale, Follow project scale, local overrides; highlighting, fold and snap consume the effective context without rewriting notes. Undo/Redo and legacy undefined-context migration tested. Channel Rack/generator adoption remains. See PROJECT_SCALE.md. |
 | MIDI-07 | Note repeat (Logic Step Sequencer) | Planned | Tempo-synced from live input |
 | MIDI-08 | MPE recording and editing | Planned | Per-note pitch bend, pressure and slide |
 | MIDI-09 | Alternative tuning systems | Planned | Tuning files applied to built-in instruments |
@@ -267,7 +267,7 @@ otherwise. The Tier column is the roadmap tier; existing rows keep their place a
 | QA-03 | 1 (T1-12) | Windows hardware verification pass across Tier 1 features | Ongoing | Results recorded in WINDOWS_AUDIO_CHECKLIST.md with device, driver, buffer size and commit |
 | MIX-06 | 1 (later) | Node routing view editing the same routing graph as the mixer | Planned | After MIX-03 to MIX-05 |
 | RACK-01 | 2 (T2-02) | Instrument and effect racks with macros | Planned | Builds on the eight-slot FX racks and stock effects |
-| CHORD-01 | 2 (T2-04) | Project chord track and arrangement sections | Planned | One chord/scale context for the whole project (feeds INTEL-01); MIDI-06 covers scale awareness |
+| CHORD-01 | 2 (T2-04) | Project chord track and arrangement sections | Planned | Shared project scale foundation delivered under MIDI-06 (claim #238); chord track and arrangement sections remain unimplemented. One context feeds future INTEL-01 consumers. |
 | LIVE-05 | 2 (T2-05) | Follow actions, scene capture, record performance to the Song, crossfader, live looping | Planned | Starts after ARCH-01 is stable |
 | INTEL-01 | 3 | Global musical intelligence: chord track -> piano roll -> patterns -> bass generator -> arpeggiator -> Session Players -> pitch correction -> arrangement | Planned | Every smart feature reads the same project context |
 | PLAYER-01 | 4 | Intelligent Session Players | Planned | Needs INTEL-01 |
