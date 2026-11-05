@@ -697,8 +697,7 @@ private:
         mixerPanel.onStripCommandExecuted = [this] { updateEditorTitle(); };
         mixerPanel.beforeBusDeleted = [this] { snapshotPlugins(SnapshotReason::whenEdited); };
         mixerPanel.beforeReturnDeleted = [this] { snapshotPlugins(SnapshotReason::whenEdited); };
-        mixerPanel.onRoutingChanged = [this](const juce::String& label) {
-            controller.commit(label);
+        mixerPanel.onTrackOutputCommandExecuted = [this] {
             restorePlugins();
             timelineView.refresh();
         };
@@ -1703,22 +1702,22 @@ private:
     // Keys the effect in `slot` of the shown rack from a track (before its FX or after its fader), a bus or a
     // return (`source` -1: no key). Only a key the mix makes before this rack runs is accepted.
     void setSidechain(int slot,alien::KeySource from,int source) {
+        if(projectBusy || controller.isBusy())return;
+        if(!controller.canEditMidiClips()){pluginPanel.setStatus("Stop recording before changing a sidechain key.");return;}
         const int t=pluginTarget();
-        if(controller.isTrackFrozen(t)){pluginPanel.setStatus("Unfreeze the track before editing its effects.");return;}
+        const auto stage=alien::PluginRuntime::stageOf(t);
+        const int rack=stage==alien::RackStage::bus?t-alien::PluginRuntime::busBase:stage==alien::RackStage::returnTrack?t-alien::PluginRuntime::returnBase:stage==alien::RackStage::master?0:t;
+        const alien::command::Command edit=alien::command::SetSidechain{stage,rack,slot,from,source};
+        alien::command::CommandEngine commands(controller);
+        // Live plugin state is captured only for an edit the command will accept and that changes something.
+        const auto preview=commands.preview(edit);
+        if(!preview.ok){pluginPanel.setStatus(preview.error);return;}
+        if(!preview.changed)return;
+        snapshotPlugins(SnapshotReason::always);
+        const auto result=commands.execute(edit);
+        if(!result.ok){pluginPanel.setStatus(result.error);return;}
+        restorePlugins();
         const auto& d=controller.document();
-        const bool trackKey=from==alien::KeySource::track || from==alien::KeySource::trackPostFader;
-        if(projectBusy || controller.isBusy() || (source>=0 && !alien::keyReady(alien::PluginRuntime::stageOf(t),from))
-           || (trackKey && (source>=d.trackCount() || (source==t && from==alien::KeySource::track)))
-           || (from==alien::KeySource::bus && (source<0 || source>=alien::maxBuses || !d.buses[static_cast<std::size_t>(source)].used))
-           || (from==alien::KeySource::returnTrack && (source<0 || source>=alien::maxReturns || !d.returns[static_cast<std::size_t>(source)].used)))return;
-        snapshotPlugins(SnapshotReason::always);auto states=pluginStates();auto master=d.masterPlugins;auto returns=controller.returnRacks();auto buses=controller.busRacks();
-        auto& rack=rackFor(t,states,master,returns,buses);
-        if(slot<0 || slot>=static_cast<int>(rack.effects.size()))return;
-        auto& effect=rack.effects[static_cast<std::size_t>(slot)];
-        if(source<0) from=alien::KeySource::track;
-        if(effect.sidechain==source && effect.sidechainFrom==from)return;
-        effect.sidechain=source; effect.sidechainFrom=from;
-        controller.setPluginRacks(states,master,returns,buses);restorePlugins();
         const auto name=from==alien::KeySource::bus?d.buses[static_cast<std::size_t>(std::max(source,0))].name
                        :from==alien::KeySource::returnTrack?d.returns[static_cast<std::size_t>(std::max(source,0))].name
                        :source>=0?d.tracks[static_cast<std::size_t>(source)].name+(from==alien::KeySource::trackPostFader?" after its fader":""):juce::String();

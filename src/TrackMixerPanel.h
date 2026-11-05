@@ -716,9 +716,8 @@ public:
     std::function<void()> onMasterCommandExecuted;
     // A return or bus strip's volume, pan, mute or solo changed. The command owns the undo step.
     std::function<void()> onStripCommandExecuted;
-    // A track's output changed; the label names the edit. The panel has already updated itself;
-    // the owner commits it.
-    std::function<void(const juce::String&)> onRoutingChanged;
+    // A track's output changed. The command owns the undo step; the host only follows.
+    std::function<void()> onTrackOutputCommandExecuted;
     std::function<void()> beforeBusDeleted;      // the owner can capture the bus's plugin state first
     std::function<void()> beforeReturnDeleted;   // the same, before a return is removed
     // A return was added, renamed or removed. The command owns the undo step; the host only
@@ -814,8 +813,11 @@ public:
         return executeStructureCommand(remove, onReturnCommandExecuted);
     }
     bool chooseOutput(int track, int output) {
-        if (!controller.setTrackOutput(track, output)) { refreshSettings(); return false; }
-        routingChanged("Change track output");
+        const auto result = command::CommandEngine(controller).execute(command::SetTrackOutput{track, output});
+        // A refused choice puts the menu back on the output the track still has.
+        refreshSettings();
+        if (!result.ok || !result.changed) return false;
+        if (onTrackOutputCommandExecuted) onTrackOutputCommandExecuted();
         return true;
     }
 
@@ -937,13 +939,6 @@ private:
             content.addAndMakeVisible(*strip);
             busStrips.emplace_back(b, std::move(strip));
         }
-    }
-    void routingChanged(const juce::String& label) {
-        rebuildBuses();
-        rebuildReturns();
-        refreshSettings();
-        resized();
-        if (onRoutingChanged) onRoutingChanged(label);
     }
     void showBusMenu(int b) {
         auto* strip = busStrip(b);

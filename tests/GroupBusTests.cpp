@@ -281,7 +281,7 @@ static void panels() {
     alien::TrackMixerPanel panel(c, engine.tracks, engine.returns, engine.masterControls, engine.buses);
     panel.setSize(1600, 720);
     juce::StringArray routing; int busEdits = 0, busCommands = 0;
-    panel.onRoutingChanged = [&](const juce::String& label) { routing.add(label); c.commit(label); };
+    panel.onTrackOutputCommandExecuted = [&] { routing.add(c.undoLabel()); };   // the command owns the undo step
     panel.onBusCommandExecuted = [&] { routing.add(c.undoLabel()); ++busCommands; };   // the command owns the undo step
     panel.onStripCommandExecuted = [&] { ++busEdits; };
     require(panel.busStripCount() == 0 && panel.addBusControl().isEnabled(), "a new project has no buses and can add one");
@@ -291,9 +291,22 @@ static void panels() {
     auto* strip = panel.trackStrip(1);
     require(strip != nullptr && strip->outputBox().getNumItems() == 2 && strip->outputBox().getText() == "Master", "a track's Output lists the master and the bus");
     strip->outputBox().setSelectedId(2, juce::sendNotificationSync);
-    require(c.document().tracks[1].settings.output == 0 && engine.tracks[1].output.load() == 0 && routing[1] == "Change track output",
+    require(c.document().tracks[1].settings.output == 0 && engine.tracks[1].output.load() == 0 && routing[1] == "Set track output" && c.undoLabel() == "Set track output",
             "choosing the bus routes the track");
     require(panel.trackStrip(1)->outputBox().getText() == "Bus 1", "and the menu shows it");
+    {   // A refused choice runs nothing and puts the menu back; a repeat records nothing; Undo moves the menu.
+        const auto steps = routing.size();
+        c.setExternalBusy(true);
+        panel.trackStrip(1)->outputBox().setSelectedId(1, juce::sendNotificationSync);
+        c.setExternalBusy(false);
+        require(c.document().tracks[1].settings.output == 0 && engine.tracks[1].output.load() == 0 && routing.size() == steps && panel.trackStrip(1)->outputBox().getText() == "Bus 1", "a busy project refuses and the menu goes back");
+        require(!panel.chooseOutput(1, 0) && routing.size() == steps, "choosing the same output records nothing");
+        require(c.undo() && engine.tracks[1].output.load() == -1, "one Undo sends the track back");
+        panel.refreshSettings();
+        require(panel.trackStrip(1)->outputBox().getText() == "Master", "and the menu follows Undo");
+        require(c.redo() && engine.tracks[1].output.load() == 0, "Redo routes it again");
+        panel.refreshSettings();
+    }
     auto* busStrip = panel.busStrip(0);
     require(busStrip != nullptr && busStrip->isVisible() && busStrip->getWidth() > 60, "the bus strip is laid out");
     require(busStrip->getX() > panel.trackStrip(3)->getRight(), "after the track strips");

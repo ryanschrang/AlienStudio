@@ -581,3 +581,16 @@ Manual listening and physical-device checks remain pending.
   must cover feedback decay. No through-zero/negative delay or tempo sync is included.
 - Listening quality and physical-device acceptance remain pending; automated DSP,
   state and allocation checks do not substitute for listening.
+
+## De-esser (T2-02 / FX-02)
+
+- Add Alien De-Esser to a vocal or bright drum track. Lower Threshold to reduce
+  sibilants; Frequency selects the high-band split (capped below Nyquist at low
+  device rates), Reduction caps attenuation in dB, and Mix blends with dry audio.
+  This attenuates the high band only, not the entire signal. The detector uses both
+  stereo channels with a shared gain; attack/release are fixed at 0.5/60 ms.
+- Check that low content stays largely unchanged while sibilants reduce, and that
+  the stereo image remains stable. Settled 0% Mix or 0 dB Reduction should sound dry.
+- Sweep and automate controls; check bypass, device restart, Undo/Redo, save/reopen
+  and live versus Song WAV export. Listen for pumping, harshness, and lisping at
+  extreme settings. Listening and physical-device acceptance remain pending.

@@ -79,7 +79,7 @@ static bool allFinite(const std::vector<float>& x) { for (float v : x) if (!dsp:
 
 // ---------------------------------------------------------------------------
 static void catalogueTests() {
-    check(stock::catalog.size() == 14, "fourteen stock effects");
+    check(stock::catalog.size() == 15, "fifteen stock effects");
     std::set<juce::String> names, ids;
     for (const auto& info : stock::catalog) {
         auto e = stock::create(info.id);
@@ -867,9 +867,17 @@ static void flangerParameterTests() {
     checkNear(feedback->convertFrom0to1(feedback->getValueForText("-65%")), -.65, 1e-6, "flanger accepts signed feedback percentages");
 }
 
+static void deesserParameterTests() {
+    auto effect = make("deesser");
+    check(effect->getLatencySamples() == 0 && effect->getTailLengthSeconds() == dsp::DeEsser::tailSeconds, "de-esser reports zero latency and bounded filter tail");
+    auto* frequency = effect->parameters.getParameter(stock::deesser::frequency);
+    checkNear(frequency->convertFrom0to1(frequency->getValueForText("6k")), 6000, .1, "de-esser frequency accepts kHz input");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     flangerParameterTests();
+    deesserParameterTests();
     catalogueTests();
     parameterTests();
     transientHostTests();
