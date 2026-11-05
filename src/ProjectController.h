@@ -18,6 +18,7 @@
 #include "PianoRollProcessing.h"
 #include "RackSounds.h"
 #include "RackChannelNotes.h"
+#include "DrumTransientSlices.h"
 #include "DiskRecording.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
@@ -1939,6 +1940,61 @@ public:
         owner.drumAssets[target.pad] = view; owner.drumSlices[target.pad] = range;
         pushDocumentToEngine(); commit(range.whole() ? "Restore whole drum sample" : "Edit drum slice");
         if (onDocumentRestored) onDocumentRestored();
+        return true;
+    }
+    bool autoSliceDrum(const DrumSliceTarget& target) {
+        if (busy || isRecording() || engine.recording.active() || target.scope != doc.identityScope
+            || target.frozen || !target.asset || target.pad < 0 || target.pad >= drumPadCount) return false;
+        int track = -1;
+        for (int t = 0; t < doc.trackCount(); ++t) if (doc.tracks[t].id == target.trackId) track = t;
+        if (track < 0 || isTrackFrozen(track)) return false;
+        const auto& owner = doc.tracks[track];
+        if (owner.drumAssets[target.pad] != target.asset || owner.drumPaths[target.pad].isEmpty()) return false;
+        if (target.asset->streamed() || target.asset->frames / target.asset->sampleRate > 60) {
+            importStatus("Auto slice needs a decoded sample range of at most one minute.", {}); return false;
+        }
+        const auto assets = owner.drumAssets; const auto ranges = owner.drumSlices;
+        const auto paths = owner.drumPaths; const auto instrument = owner.settings.instrument;
+        setBusy(true); importStatus("Finding sample attacks...", {});
+        std::weak_ptr<int> token = alive;
+        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, target, assets, ranges, paths, instrument] {
+            auto detected = detectDrumTransientSlices(*target.asset);
+            const auto source = target.asset->sliceSource ? target.asset->sliceSource : target.asset;
+            const int offset = static_cast<int>(target.asset->sliceSource ? target.asset->sliceOffset : 0);
+            std::array<std::shared_ptr<const SessionAudioClip>, drumPadCount> views{};
+            for (int p = 0; p < detected.count; ++p) {
+                detected.ranges[p].start += offset; detected.ranges[p].end += offset;
+                views[p] = drumSliceView(source, detected.ranges[p]);
+                if (!views[p]) { detected.count = 0; break; }
+            }
+            juce::MessageManager::callAsync([this, token, target, assets, ranges, paths, instrument, detected, views] {
+                if (!token.lock()) return;
+                setBusy(false);
+                if (target.scope != doc.identityScope || isRecording() || engine.recording.active()) {
+                    importStatus("Auto slice discarded: project or recording state changed.", {}); return;
+                }
+                for (int t = 0; t < doc.trackCount(); ++t) if (doc.tracks[t].id == target.trackId) {
+                    auto& kit = doc.tracks[t];
+                    if (isTrackFrozen(t) || kit.drumAssets != assets || kit.drumSlices != ranges
+                        || kit.drumPaths != paths || kit.settings.instrument != instrument) break;
+                    if (detected.count < 2) {
+                        importStatus("No useful attack boundaries found. Kit unchanged; try equal slicing or edit ranges.", {}); return;
+                    }
+                    for (const auto& view : views) if (view) retained.push_back(view);
+                    kit.drumAssets = views; kit.drumSlices = detected.ranges;
+                    for (int p = 0; p < drumPadCount; ++p)
+                        kit.drumPaths[p] = p < detected.count ? paths[target.pad] : juce::String{};
+                    kit.settings.instrument = 1;
+                    pushDocumentToEngine(); commit("Auto slice sample to pads");
+                    if (onDocumentRestored) onDocumentRestored();
+                    importStatus("Found " + juce::String(detected.count) + " slices. Unused pads cleared; Undo restores the kit.", {});
+                    return;
+                }
+                importStatus("Auto slice discarded: the target kit changed.", {});
+            });
+            return juce::ThreadPoolJob::jobHasFinished;
+        };
+        pool.addJob(std::move(job));
         return true;
     }
     bool sliceDrum(int track, int pad) {

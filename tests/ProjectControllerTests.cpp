@@ -1322,9 +1322,11 @@ static void transientHistoryTests() {
 #include "AudioImportPlanTests.h"
 #include "ProjectScaleTests.h"
 #include "DrumSliceControllerTests.h"
+#include "DrumTransientControllerTests.h"
 
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    drumTransientControllerTests();
     drumSliceBoundaryTests();
     drumSliceControllerTests();
     projectScaleTests();

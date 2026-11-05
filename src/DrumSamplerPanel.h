@@ -10,7 +10,7 @@ public:
     DrumSamplerPanel() : filter("*.wav;*.mp3", "*", "Audio samples"),
         browser(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
             juce::File{}, &filter, nullptr) {
-        for (auto* c : std::array<juce::Component*, 16>{&track, &pad, &load, &clear, &audition, &slice,
+        for (auto* c : std::array<juce::Component*, 17>{&track, &pad, &load, &clear, &audition, &slice, &autoSlice,
             &route, &status, &browser, &startLabel, &endLabel, &startFrame, &endFrame, &applySlice, &wholeSample, &sourceLength}) addAndMakeVisible(c);
         for (int i = 0; i < 4; ++i) track.addItem("Track " + juce::String(i + 1), i + 1);
         for (int i = 0; i < drumPadCount; ++i) pad.addItem("Pad " + juce::String(i + 1)
@@ -23,6 +23,9 @@ public:
         slice.setButtonText("Slice to 8 pads"); slice.setName("Slice sample to 8 pads");
         slice.setTooltip("Replace all eight pads with equal slices of the selected pad sample. Undo restores the kit. Pads 3 and 4 retain their hat choke behavior.");
         slice.onClick = [this] { if (onSlice) onSlice(track.getSelectedId() - 1, pad.getSelectedId() - 1); };
+        autoSlice.setButtonText("Auto slice"); autoSlice.setName("Auto slice sample at attacks");
+        autoSlice.setTooltip("Find up to eight slices at attacks in this sample range (one minute maximum). Replaces all pads; unused pads are cleared. Undo restores the kit. No useful attacks leaves it unchanged. Pads 3/4 keep their hat choke.");
+        autoSlice.onClick = [this] { if (!editingBusy && onAutoSlice) onAutoSlice(editingTarget); };
         startLabel.setText("Start frame", juce::dontSendNotification);
         endLabel.setText("End (exclusive)", juce::dontSendNotification);
         startFrame.setName("Slice start frame"); endFrame.setName("Slice end frame");
@@ -63,6 +66,7 @@ public:
     std::function<void(int,int)> onClear, onHit, onSlice;
     std::function<void(int)> onRoute;
     std::function<bool(const DrumSliceTarget&, DrumSlice)> onApplySlice;
+    std::function<void(const DrumSliceTarget&)> onAutoSlice;
     void setSliceTargets(const std::array<std::array<DrumSliceTarget, drumPadCount>, maxSessionTracks>& value) { targets = value; refreshSliceEditor(); }
     void setPaths(const std::array<std::array<juce::String, drumPadCount>, maxSessionTracks>& paths,
                   const std::array<std::array<DrumSlice, drumPadCount>, maxSessionTracks>& ranges = {}) { names = paths; slices = ranges; refresh(); }
@@ -84,7 +88,7 @@ public:
         track.setBounds(12, 8, 110, 28); pad.setBounds(130, 8, 170, 28);
         load.setBounds(308, 8, 145, 28); clear.setBounds(461, 8, 95, 28);
         audition.setBounds(564, 8, 95, 28); route.setBounds(667, 8, w - 679, 28);
-        slice.setBounds(12, 40, 140, 26); status.setBounds(160, 40, w - 172, 26);
+        slice.setBounds(12, 40, 140, 26); autoSlice.setBounds(160, 40, 110, 26); status.setBounds(278, 40, w - 290, 26);
         startLabel.setBounds(12, 72, 82, 26); startFrame.setBounds(96, 72, 96, 26);
         endLabel.setBounds(202, 72, 120, 26); endFrame.setBounds(324, 72, 96, 26);
         applySlice.setBounds(432, 72, 110, 26); wholeSample.setBounds(550, 72, 125, 26);
@@ -99,6 +103,7 @@ private:
     void updateSliceEnabled() {
         const bool enabled = !editingBusy && editingTarget.asset && !editingTarget.frozen && !editingTarget.asset->streamed();
         for (auto* c : std::array<juce::Component*, 4>{&startFrame, &endFrame, &applySlice, &wholeSample}) c->setEnabled(enabled);
+        autoSlice.setEnabled(enabled);
     }
     void refreshSliceEditor() {
         const auto t = static_cast<std::size_t>(std::max(0, track.getSelectedId() - 1));
@@ -131,11 +136,12 @@ private:
                 + (slices[t][i].whole() ? juce::String{} : "\nFrames " + juce::String(slices[t][i].start) + "-" + juce::String(slices[t][i].end)));
         }
         setStatus("Load a sample to enable this track's kit. Sequence MIDI 36–43 in its piano roll. Pads 3/4 choke each other.");
+        refreshSliceEditor();
     }
     juce::WildcardFileFilter filter;
     juce::FileBrowserComponent browser;
     juce::ComboBox track, pad, route;
-    juce::TextButton load, clear, audition, slice;
+    juce::TextButton load, clear, audition, slice, autoSlice;
     juce::Label status, startLabel, endLabel, sourceLength;
     juce::TextEditor startFrame, endFrame;
     juce::TextButton applySlice, wholeSample;

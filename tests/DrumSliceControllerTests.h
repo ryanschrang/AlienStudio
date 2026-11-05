@@ -170,12 +170,15 @@ static void drumSliceBoundaryTests() {
         const auto before = frozen.drumSliceTarget(0, 0); const auto expected = frozen.timeline();
         require(frozen.installFrozenTrack(0, file, audio, expected), "freeze sampler track");
         require(!frozen.editDrumSlice(before, {1, 20}), "frozen track refuses formerly editable target");
+        require(!frozen.autoSliceDrum(before), "frozen track refuses auto slicing");
         alien::DrumSamplerPanel panel;
         std::array<std::array<alien::DrumSliceTarget, alien::drumPadCount>, alien::maxSessionTracks> targets{};
         targets[0][0] = frozen.drumSliceTarget(0, 0); panel.setSliceTargets(targets);
         bool disabled = false;
         for (int i = 0; i < panel.getNumChildComponents(); ++i) if (panel.getChildComponent(i)->getName() == "Apply drum slice range") disabled = !panel.getChildComponent(i)->isEnabled();
         require(disabled, "frozen panel disables boundary action");
+        for (int i = 0; i < panel.getNumChildComponents(); ++i) if (panel.getChildComponent(i)->getName() == "Auto slice sample at attacks")
+            require(!panel.getChildComponent(i)->isEnabled(), "frozen panel disables auto slicing");
     }
     root.deleteRecursively();
 }
