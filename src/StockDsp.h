@@ -1029,4 +1029,55 @@ private:
     bool ready{}, initialised{};
 };
 
+// Complementary first-order low/high split. Only the high band is attenuated;
+// one peak envelope drives both channels. Fixed detector attack/release: .5/60 ms.
+class DeEsser {
+public:
+    struct Settings { double frequency{5000}, thresholdDb{-18}, reductionDb{6}, mix{1}; };
+    static constexpr double tailSeconds = .02;
+    void prepare(double sampleRate) noexcept {
+        rate = std::isfinite(sampleRate) ? std::clamp(sampleRate, 8000.0, 192000.0) : 44100.0;
+        for (auto* control : {&frequency, &threshold, &amount, &mix}) control->configure(rate, 5);
+        const auto coefficient = [this](double ms) { return std::exp(-1 / (ms * .001 * rate)); };
+        attack = coefficient(.5); release = coefficient(60); gainRelease = coefficient(20);
+        ready = true; reset();
+    }
+    void reset() noexcept { state = {}; envelope = reduction = 0; previousFrequency = -1; snapNext = true; }
+    double reductionDb() const noexcept { return reduction; } // audio-thread-owned kernel state
+    void process(float* left, float* right, int count, Settings s) noexcept {
+        if (!ready || count <= 0) return;
+        const auto bounded = [](double v, double lo, double hi, double def) { return std::isfinite(v) ? std::clamp(v, lo, hi) : def; };
+        s.frequency = bounded(s.frequency, 2000, 12000, 5000); s.thresholdDb = bounded(s.thresholdDb, -60, 0, -18);
+        s.reductionDb = bounded(s.reductionDb, 0, 18, 6); s.mix = bounded(s.mix, 0, 1, 1);
+        if (snapNext) { frequency.reset(s.frequency); threshold.reset(s.thresholdDb); amount.reset(s.reductionDb); mix.reset(s.mix); snapNext = false; }
+        frequency.setTarget(s.frequency); threshold.setTarget(s.thresholdDb); amount.setTarget(s.reductionDb); mix.setTarget(s.mix);
+        for (int i = 0; i < count; ++i) {
+            const double cutoff = std::min(frequency.advance(1), rate * .45);
+            if (cutoff != previousFrequency) {
+                const double g = std::tan(pi * cutoff / rate); split = g / (1 + g); previousFrequency = cutoff;
+            }
+            const double l = finite(left[i]) ? left[i] : 0, r = finite(right[i]) ? right[i] : 0;
+            const auto high = [this](double x, int channel) {
+                auto& memory = state[static_cast<std::size_t>(channel)];
+                const double v = (x - memory) * split, low = v + memory;
+                memory = low + v; if (std::abs(memory) < 1e-15) memory = 0;
+                return x - low;
+            };
+            const double highL = high(l, 0), highR = high(r, 1), level = std::max(std::abs(highL), std::abs(highR));
+            const double detectorCoefficient = level > envelope ? attack : release;
+            envelope = level + detectorCoefficient * (envelope - level); if (envelope < 1e-15) envelope = 0;
+            const double wanted = std::min(amount.advance(1), std::max(0.0, gainToDb(envelope) - threshold.advance(1)));
+            const double gainCoefficient = wanted > reduction ? attack : gainRelease;
+            reduction = wanted + gainCoefficient * (reduction - wanted); if (reduction < 1e-9) reduction = 0;
+            const double delta = (dbToGain(-reduction) - 1) * mix.advance(1);
+            left[i] = static_cast<float>(l + highL * delta); right[i] = static_cast<float>(r + highR * delta);
+        }
+    }
+private:
+    Smoother frequency, threshold, amount, mix;
+    std::array<double, 2> state{};
+    double rate{44100}, attack{}, release{}, gainRelease{}, split{}, previousFrequency{-1}, envelope{}, reduction{};
+    bool ready{}, snapNext{true};
+};
+
 } // namespace alien::dsp

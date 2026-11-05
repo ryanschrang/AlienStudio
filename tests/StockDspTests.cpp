@@ -924,7 +924,52 @@ static void flangerTests() {
     check(std::all_of(l.begin(), l.end(), [](float v) { return finite(v); }), "flanger sanitises invalid inputs and settings");
 }
 
+static void deesserTests() {
+    const auto high = sine(8000, .6, 24000), low = sine(100, .2, 24000);
+    const auto energy = [](const std::vector<float>& x) { double sum = 0; for (int i = 12000; i < 24000; ++i) sum += x[i] * x[i]; return sum; };
+    const auto render = [&](const std::vector<float>& inL, const std::vector<float>& inR, DeEsser::Settings settings) {
+        DeEsser e; e.prepare(rate); auto l = inL, r = inR; e.process(l.data(), r.data(), static_cast<int>(l.size()), settings); return std::pair{l, r};
+    };
+    const auto shaped = render(high, low, {4000, -30, 12, 1});
+    check(energy(shaped.first) < energy(high) * .45 && energy(shaped.second) > energy(low) * .98, "de-esser reduces high-frequency content without ducking low-frequency content in other channel");
+    check(render(high, low, {4000, -60, 18, 0}) == std::pair{high, low}, "de-esser zero mix is exact dry");
+    check(render(high, low, {4000, -60, 0, 1}) == std::pair{high, low}, "zero maximum reduction is exact identity");
+    const auto quiet = sine(8000, .001, 24000);
+    check(render(quiet, quiet, {4000, -18, 12, 1}) == std::pair{quiet, quiet}, "below-threshold audio remains exact dry");
+    auto loud = sine(8000, .8, 24000), quarter = loud; for (auto& v : quarter) v *= .25f;
+    const auto linked = render(loud, quarter, {4000, -12, 12, 1}); bool stereo = true;
+    for (int i = 0; i < 24000; ++i) stereo = stereo && std::abs(linked.second[i] - linked.first[i] * .25f) < 1e-7;
+    check(stereo && energy(linked.second) < energy(quarter) * .8, "one detector gain preserves stereo ratio even when quieter channel is below threshold");
+    const auto mid = sine(3000, .6, 24000);
+    check(energy(render(mid, mid, {2000, -30, 12, 1}).first) < energy(render(mid, mid, {12000, -30, 12, 1}).first) * .8, "frequency control selects the affected high band");
+    const auto input = noise(24000, .5, 74);
+    const auto automated = [&](int block) {
+        DeEsser e; e.prepare(rate); auto l = input, r = input;
+        for (int at = 0; at < 24000;) {
+            const int n = std::min({block, 24000 - at, at < 12000 ? 12000 - at : 24000 - at});
+            e.process(l.data() + at, r.data() + at, n, at < 12000 ? DeEsser::Settings{4000, -30, 12, 1} : DeEsser::Settings{9000, -18, 4, .6}); at += n;
+        }
+        return std::pair{l, r};
+    };
+    const auto reference = automated(512); for (int block : {1, 37, 1024}) check(automated(block) == reference, "de-esser detector, filter and smoothing independent of host block boundaries");
+    DeEsser e; e.prepare(rate); auto l = high, r = high; e.process(l.data(), r.data(), 24000, {4000, -30, 12, 1}); const auto first = l;
+    check(e.reductionDb() > 11.9 && e.reductionDb() <= 12.000001, "maximum reduction bounds detector gain");
+    l.assign(24000, 0); r = l; e.process(l.data(), r.data(), 24000, {4000, -30, 12, 1});
+    check(peakOf(l, static_cast<int>(rate * DeEsser::tailSeconds), 24000) < 1e-5 && e.reductionDb() < 1e-5, "filter tail and detector recover after sibilant burst");
+    e.reset(); l = high; r = high; e.process(l.data(), r.data(), 24000, {4000, -30, 12, 1}); check(l == first, "de-esser reset clears filter, detector and gain history");
+    for (double sr : {8000., 44100., 48000., 96000., 192000.}) for (double cutoff : {2000., 12000.}) {
+        e.prepare(sr); const int count = static_cast<int>(sr * .03); l.assign(count, 0); r = l; l[0] = 1;
+        e.process(l.data(), r.data(), count, {cutoff, -60, 18, 1}); bool valid = true;
+        for (int i = 0; i < count; ++i) valid = valid && finite(l[i]) && std::abs(l[i]) < 2 && r[i] == 0;
+        check(valid && peakOf(l, static_cast<int>(sr * DeEsser::tailSeconds), count) < 1e-5, "de-esser split stays stable, has no crossfeed and respects tail with Nyquist-clamped frequency at supported sample rates");
+    }
+    e.prepare(rate); l = {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), .2f}; r = l;
+    e.process(l.data(), r.data(), 3, {std::numeric_limits<double>::quiet_NaN(), -100, 100, 1});
+    check(std::all_of(l.begin(), l.end(), [](float v) { return finite(v); }), "de-esser sanitises invalid inputs and settings");
+}
+
 int main() {
+    deesserTests();
     flangerTests();
     imagerTests();
     crusherTests();
