@@ -1,5 +1,6 @@
 // Channel Rack data model and built-in drum sounds. No JUCE: runs in a moment.
 #include "RackModel.h"
+#include "RackScale.h"
 #include "RackSounds.h"
 #include <atomic>
 #include <cstdio>
@@ -503,7 +504,30 @@ static void synthChannelModel() {
     check(!p.valid(), "unknown presets invalidate a rack");
 }
 
+static void projectScalePitchTests() {
+    check(snapStepPitchToScale(1, {true, 0, alien::ScaleType::major}) == 0, "pitch scale ties prefer lower note");
+    check(snapStepPitchToScale(0, {true, 2, alien::ScaleType::major}) == -1, "rack pitch snapping uses actual C4 note basis");
+    check(snapStepPitchToScale(-24, {true, 1, alien::ScaleType::naturalMinor}) == -23, "lower graph edge searches upward when lower scale tone is outside range");
+    check(snapStepPitchToScale(24, {true, 1, alien::ScaleType::naturalMinor}) == 23, "upper graph edge remains in scale and in range");
+    for (int root = 0; root < 12; ++root) for (int mode = 0; mode < 10; ++mode) {
+        const alien::ProjectMusicalScale context{true, root, static_cast<alien::ScaleType>(mode)};
+        const alien::ScaleSettings scale{root, context.type, false, true}; bool valid = true, nearest = true;
+        for (int raw = -30; raw <= 30; ++raw) {
+            const int input = std::clamp(raw, -24, 24), result = snapStepPitchToScale(raw, context);
+            valid = valid && result >= -24 && result <= 24 && alien::isPitchInScale(stepPitchBaseNote + result, scale);
+            for (int candidate = -24; candidate <= 24; ++candidate)
+                if (alien::isPitchInScale(stepPitchBaseNote + candidate, scale) && std::abs(candidate - input) < std::abs(result - input)) nearest = false;
+        }
+        check(valid && nearest, "all project roots/scales produce nearest valid bounded step pitches");
+    }
+    for (int value = -24; value <= 24; ++value) {
+        check(snapStepPitchToScale(value, {}) == value, "undefined project scale preserves chromatic editing");
+        check(snapStepPitchToScale(value, {true, 7, alien::ScaleType::chromatic}) == value, "chromatic scale preserves every step pitch");
+    }
+}
+
 int main() {
+    projectScalePitchTests();
     synthChannelModel();
     melodicRows();
     rowToolTests();

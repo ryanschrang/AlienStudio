@@ -13,6 +13,7 @@
 #include "ProjectController.h"
 #include "CommandEngine.h"
 #include "RackGrooveImport.h"
+#include "RackScale.h"
 #include "StarterPack.h"
 #include "StudioWidgets.h"
 #include <functional>
@@ -1057,11 +1058,16 @@ public:
             button.onClick = [this, i] { setField(static_cast<rack::StepField>(i)); };
         }
         fieldButtons[0].setToggleState(true, juce::dontSendNotification);
+        addAndMakeVisible(scaleSnap); scaleSnap.setButtonText("Scale");
+        scaleSnap.setName("Follow project scale in rack pitch graph"); scaleSnap.setClickingTogglesState(true);
+        scaleSnap.setTooltip("Snap newly drawn pitch values to the project scale set in Piano Roll > Scale. Undefined key means chromatic. Right-click still resets to zero.");
+        scaleSnap.setColour(juce::TextButton::buttonOnColourId, ui::colours::accent);
+        scaleSnap.setEnabled(false); scaleSnap.onClick = [this] { cancelGesture(); repaint(); };
     }
 
     rack::StepField field() const noexcept { return currentField; }
     void setField(rack::StepField f) {
-        currentField = f;
+        cancelGesture(); currentField = f; scaleSnap.setEnabled(f == rack::StepField::pitch);
         fieldButtons[static_cast<std::size_t>(f)].setToggleState(true, juce::dontSendNotification);
         repaint();
     }
@@ -1082,14 +1088,20 @@ public:
         return area.getBottom() - juce::roundToInt(static_cast<double>(value - low) / (high - low) * area.getHeight());
     }
     // Draws or erases nothing: sets one property of one step. Steps that are off are left alone.
-    bool setValue(int step, int value, const juce::String& key) {
+    bool setValue(int step, int value, const juce::String& key, bool snapPitch = true) {
+        if (controller.isBusy()) return false;
+        if (gestureActive && !validGesture()) { gestureBlocked = true; return false; }
         const int channel = grid.selectedChannel();
         const auto field = currentField;
         const auto& p = controller.channelRack();
         if (!p.validStep(p.selectedPattern, channel, step) || step >= grid.length()) return false;
         if (!p.pattern(p.selectedPattern).steps[static_cast<std::size_t>(channel)][static_cast<std::size_t>(step)].on) return false;
-        return controller.editRack("Edit step " + juce::String(fieldLabel()), [&](rack::Project& q) {
+        if (field == rack::StepField::pitch && snapPitch && scaleSnap.getToggleState())
+            value = rack::snapStepPitchToScale(value, controller.document().musicalScale);
+        const bool changed = controller.editRack("Edit step " + juce::String(fieldLabel()), [&](rack::Project& q) {
             return q.setStepField(q.selectedPattern, channel, step, field, value); }, key);
+        if (gestureActive && changed) gestureContent = controller.channelRack().patterns[static_cast<std::size_t>(gesturePattern)];
+        return changed;
     }
 
     void resized() override {
@@ -1097,6 +1109,7 @@ public:
         const int bw = (w - 3 * 4) / 4;
         for (int i = 0; i < rack::stepFieldCount; ++i)
             fieldButtons[static_cast<std::size_t>(i)].setBounds(10 + (i % 4) * (bw + 4), 32 + (i / 4) * 28, bw, 24);
+        scaleSnap.setBounds(10 + 3 * (bw + 4), 60, bw, 24);
     }
 
     // What a step's value in the shown lane means, as the hover readout says it.
@@ -1125,7 +1138,10 @@ public:
         }
         g.setColour(col::textFaint);
         g.setFont(ui::font(10.5f));
-        g.drawFittedText("Drag across a row of bars to draw. Right-click a bar to reset it.", juce::Rectangle<int>(10, 90, grid.headerWidth() - 20, 40), juce::Justification::topLeft, 3);
+        g.drawFittedText(currentField == rack::StepField::pitch && scaleSnap.getToggleState()
+            ? (controller.document().musicalScale.defined ? "New pitches follow project scale. Right-click resets to zero."
+                                                       : "No project scale defined: pitch drawing is chromatic.")
+            : "Drag across a row of bars to draw. Right-click a bar to reset it.", juce::Rectangle<int>(10, 90, grid.headerWidth() - 20, 40), juce::Justification::topLeft, 3);
         const auto area = plot();
         g.setColour(col::surface);
         g.fillRect(area);
@@ -1166,21 +1182,45 @@ public:
     }
 
     void mouseDown(const juce::MouseEvent& e) override {
+        beginGesture();
         stroke = "rack-graph-" + juce::String(++strokeCounter);
         lastStep = -1;
         if (e.mods.isPopupMenu()) {
             const int step = grid.stepAtX(e.x);
-            if (step >= 0) { setValue(step, rack::fieldDefault(currentField), stroke); repaint(); }
+            if (step >= 0) { setValue(step, rack::fieldDefault(currentField), stroke, false); repaint(); }
             lastStep = -2;   // a right-click never draws
             return;
         }
         draw(e);
     }
-    void mouseDrag(const juce::MouseEvent& e) override { if (lastStep != -2) draw(e); }
+    void mouseDrag(const juce::MouseEvent& e) override { if (gestureActive && lastStep != -2) draw(e); }
+    void mouseUp(const juce::MouseEvent&) override { cancelGesture(); }
     void mouseMove(const juce::MouseEvent& e) override { setHover(grid.stepAtX(e.x)); }
     void mouseExit(const juce::MouseEvent&) override { setHover(-1); }
 
 private:
+    void cancelGesture() { gestureActive = false; lastStep = -1; gestureContent.reset(); }
+    void beginGesture() {
+        gestureActive = true; gestureBlocked = false;
+        const auto& p = controller.channelRack(); const int channel = grid.selectedChannel();
+        gestureScope = controller.document().identityScope; gesturePattern = p.selectedPattern; gestureChannel = channel;
+        gestureScale = controller.document().musicalScale; gestureFollow = scaleSnap.getToggleState(); gestureField = currentField;
+        gestureBlocked = !p.validChannel(channel) || !p.validPattern(gesturePattern);
+        if (!gestureBlocked) {
+            gestureLane = p.lanes[static_cast<std::size_t>(channel)]; gestureClip = p.clips[static_cast<std::size_t>(gesturePattern)];
+            gestureContent = p.patterns[static_cast<std::size_t>(gesturePattern)];
+        }
+    }
+    bool validGesture() const {
+        const auto& p = controller.channelRack();
+        return !gestureBlocked && gestureScope == controller.document().identityScope && gestureField == currentField
+            && gestureChannel == grid.selectedChannel() && p.validChannel(gestureChannel) && gesturePattern == p.selectedPattern
+            && p.validPattern(gesturePattern) && p.lanes[static_cast<std::size_t>(gestureChannel)] == gestureLane
+            && p.clips[static_cast<std::size_t>(gesturePattern)] == gestureClip
+            && p.patterns[static_cast<std::size_t>(gesturePattern)] == gestureContent
+            && gestureFollow == scaleSnap.getToggleState()
+            && !(currentField == rack::StepField::pitch && gestureFollow && gestureScale != controller.document().musicalScale);
+    }
     const char* fieldLabel() const {
         static const char* names[]{"velocity", "pan", "pitch", "chance", "gate", "nudge", "ratchet"};
         return names[static_cast<int>(currentField)];
@@ -1218,6 +1258,14 @@ private:
     ProjectController& controller;
     ChannelRackGrid& grid;
     std::array<juce::TextButton, rack::stepFieldCount> fieldButtons;
+    juce::TextButton scaleSnap;
+    bool gestureActive{}, gestureBlocked{}, gestureFollow{};
+    std::uint32_t gestureScope{};
+    int gesturePattern{}, gestureChannel{};
+    std::uint64_t gestureLane{}, gestureClip{};
+    rack::StepField gestureField{rack::StepField::velocity};
+    ProjectMusicalScale gestureScale;
+    std::shared_ptr<const rack::Pattern> gestureContent;
     rack::StepField currentField{rack::StepField::velocity};
     int hoverStep{-1}, lastStep{-1}, lastValue{};
     std::uint32_t strokeCounter{};

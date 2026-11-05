@@ -579,7 +579,7 @@ private:
     void wireEditors() {
         pianoRoll.onProjectScaleRequested = [this](int root, alien::ScaleType type, std::uint32_t scope) { return controller.setProjectScale(root, type, scope); };
         controller.onMusicalScaleChanged = [this] {
-            const auto& d = controller.document(); pianoRoll.setProjectScaleContext(d.musicalScale, d.identityScope); updateEditorTitle();
+            const auto& d = controller.document(); pianoRoll.setProjectScaleContext(d.musicalScale, d.identityScope); rackView.graphEditor().repaint(); updateEditorTitle();
         };
         pianoRoll.onChange = [this] {
             if (rollTarget.rack) {

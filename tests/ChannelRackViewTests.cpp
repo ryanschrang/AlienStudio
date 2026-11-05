@@ -638,6 +638,53 @@ static void headerControls() {
 }
 
 // ---- graph editor ----------------------------------------------------------------------
+static void graphProjectScale() {
+    Rig rig; auto& c = rig.controller; auto& graph = rig.graph; auto& grid = rig.grid;
+    require(c.editRack("Prepare scale steps", [](Project& p) {
+        bool changed = false; for (int channel : {0, 1}) for (int step : {0, 4, 8}) changed = p.setStep(p.selectedPattern, channel, step, Step{true, 100, 0, 1, 100}) || changed; return changed;
+    }), "prepare pitch graph steps");
+    graph.setField(StepField::pitch); grid.selectChannel(0);
+    juce::Button* follow = nullptr;
+    for (int i = 0; i < graph.getNumChildComponents(); ++i) if (graph.getChildComponent(i)->getName() == "Follow project scale in rack pitch graph") follow = dynamic_cast<juce::Button*>(graph.getChildComponent(i));
+    require(follow && follow->isEnabled() && graph.getLocalBounds().contains(follow->getBounds()) && !follow->getToggleState(), "pitch graph exposes opt-in project scale control");
+    const auto beforeToggle = c.undoLabel(); clickButton(*follow);
+    require(c.undoLabel() == beforeToggle && rig.step(0, 0).pitch == 1, "enabling graph snapping changes no saved pitches or history");
+    require(graph.setValue(0, 3, "undefined") && rig.step(0, 0).pitch == 3, "undefined project context falls back to chromatic input"); c.undo();
+    require(c.setProjectScale(0, ScaleType::major, c.document().identityScope), "define C major");
+    const auto point = [&](int step, int value) { return juce::Point<int>{grid.stepLeft(step) + grid.cellWidth() / 2, graph.yForValue(value)}; };
+    graph.mouseDown(mouse(graph, point(0, 1))); graph.mouseDrag(mouse(graph, point(8, 5), leftButton, 1, true)); graph.mouseUp(mouse(graph, point(8, 5)));
+    require(rig.step(0, 0).pitch == 0 && rig.step(0, 4).pitch == 2 && rig.step(0, 8).pitch == 5 && !rig.step(0, 1).on, "graph stroke snaps each interpolated active step, preserving off steps");
+    c.undo(); require(rig.step(0, 0).pitch == 1 && rig.step(0, 4).pitch == 1 && rig.step(0, 8).pitch == 1, "one Undo restores complete snapped stroke");
+    c.redo(); require(rig.step(0, 4).pitch == 2, "Redo restores snapped values");
+    require(c.setProjectScale(1, ScaleType::naturalMinor, c.document().identityScope), "change to C sharp minor");
+    require(graph.setValue(0, -24, "low edge") && rig.step(0, 0).pitch == -23, "UI graph lower edge stays within scale");
+    require(graph.setValue(4, 24, "high edge") && rig.step(0, 4).pitch == 23, "UI graph upper edge stays within scale");
+    graph.mouseDown(mouse(graph, point(4, 10), rightButton)); graph.mouseUp(mouse(graph, point(4, 10)));
+    require(rig.step(0, 4).pitch == 0, "right-click retains neutral chromatic reset");
+    clickButton(*follow); require(graph.setValue(0, 0, "chromatic override") && rig.step(0, 0).pitch == 0, "disabled scale option permits chromatic pitch values");
+    clickButton(*follow); require(rig.step(0, 0).pitch == 0, "reenabling does not rewrite existing out-of-scale pitch");
+    require(graph.setValue(0, -24, "restore snapped edge"), "restore pitch edge for lane checks");
+    graph.setField(StepField::pan); require(!follow->isEnabled(), "scale control is disabled for unrelated graph lanes");
+    require(graph.setValue(0, 41, "pan unchanged") && rig.step(0, 0).pan == 41 && rig.step(0, 0).pitch == -23, "other graph values are not quantised or retuned");
+    graph.setField(StepField::pitch);
+    graph.mouseDown(mouse(graph, point(0, 3)));
+    require(c.setProjectScale(9, ScaleType::naturalMinor, c.document().identityScope), "change shared scale during graph stroke");
+    const auto beforeScaleDrag = rig.step(0, 8).pitch; graph.mouseDrag(mouse(graph, point(8, 12), leftButton, 1, true));
+    require(rig.step(0, 8).pitch == beforeScaleDrag, "changed scale cancels old pitch gesture"); graph.mouseUp(mouse(graph, point(8, 12)));
+    graph.mouseDown(mouse(graph, point(0, 3)));
+    require(c.editRack("Move channel", [](Project& p) { return p.moveChannel(0, 1); }), "move channel during graph stroke");
+    const auto beforeMove = c.channelRack(); graph.mouseDrag(mouse(graph, point(8, 12), leftButton, 1, true));
+    require(c.channelRack() == beforeMove, "row/lane changes refuse remaining old stroke"); graph.mouseUp(mouse(graph, point(8, 12)));
+    graph.mouseDown(mouse(graph, point(0, 3))); c.newProject();
+    require(c.editRack("Prepare replacement steps", [](Project& p) { return p.setStepOn(p.selectedPattern, 0, 8, true); }), "replacement has an editable target for stale-drag check");
+    const auto fresh = c.channelRack(); graph.mouseDrag(mouse(graph, point(8, 12), leftButton, 1, true)); graph.mouseUp(mouse(graph, point(8, 12)));
+    require(c.channelRack() == fresh, "replacement project refuses stale graph stroke");
+    graph.mouseDown(mouse(graph, point(8, 3)));
+    require(c.editRack("External pattern edit", [](Project& p) { return p.setStepField(p.selectedPattern, 0, 8, StepField::pitch, 2); }), "change pattern content during stroke");
+    graph.mouseDrag(mouse(graph, point(8, 12), leftButton, 1, true)); graph.mouseUp(mouse(graph, point(8, 12)));
+    require(rig.step(0, 8).pitch == 2, "external pattern revision cancels old stroke");
+}
+
 static void graphEditor() {
     Rig rig;
     auto& g = rig.grid;
@@ -743,7 +790,7 @@ static void graphEditor() {
     // The tab buttons switch what the graph draws.
     int tabs = 0;
     for (auto* child : graph.getChildren())
-        if (auto* b = dynamic_cast<juce::TextButton*>(child)) { ++tabs; clickButton(*b); }
+        if (auto* b = dynamic_cast<juce::TextButton*>(child); b && b->getName().startsWith("Graph shows ")) { ++tabs; clickButton(*b); }
     require(tabs == 7 && graph.field() == StepField::ratchet, "seven tabs choose velocity, pan, pitch, chance, gate, nudge or ratchet");
     for (auto* child : graph.getChildren())
         if (auto* b = dynamic_cast<juce::TextButton*>(child))
@@ -1621,6 +1668,7 @@ int main() {
     tallRackScrolls();
     paintAndEraseStrokes();
     headerControls();
+    graphProjectScale();
     graphEditor();
     createPatternCommandHistory();
     patternBankAndToolbar();

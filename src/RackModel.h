@@ -27,6 +27,7 @@ inline constexpr int maxChannels = 64;
 inline constexpr int maxPatterns = 64;
 inline constexpr int maxSteps = 128;
 inline constexpr int defaultVelocity = 100;
+inline constexpr int stepPitchBaseNote = 60; // zero semitone offset, shared by editing and playback
 // Per-step timing: gate is the percent of a step (or of one ratchet hit's share of it) a hit sounds for
 // before it is released, 100 meaning the whole sample; nudge delays the step's hits by a percent of a
 // step (FL's "shift"); ratchet plays the step 1-4 times, evenly spaced inside it.

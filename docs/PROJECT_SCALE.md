@@ -24,9 +24,18 @@ context falls back to the local settings. Older applications reject version 34 f
 instead of silently dropping the new metadata. Follow mode is a local editor preference,
 not a saved musical property.
 
-Delivered: shared model/persistence and Piano Roll guide/fold/snap adoption. Channel
-Rack and generator adoption, chord track, arrangement sections and automatic key
-inference remain future increments. This does not complete MIDI-06 or CHORD-01.
+Delivered: shared model/persistence, Piano Roll guide/fold/snap adoption, and optional
+Channel Rack pitch-graph snapping. In Rack > Pitch graph, turn on **Scale** to snap
+newly drawn pitches to the saved context. Undefined context leaves drawing chromatic.
+The graph uses the existing MIDI-60 unity reference and searches inside its -24..24
+semitone range, with ties downward. Samples retain that existing unity reference;
+this does not infer a loaded sample's acoustic key. Right-click still resets to zero,
+even when that pitch is outside the key. Existing steps are not rewritten, and playback
+never resnaps them when the project key changes. The toggle is a local view preference.
+A changed project, scale, row, pattern or pattern content cancels a stale draw gesture.
+
+Note-based rack rows can use the Piano Roll's existing follow option. Generator adoption, chord track,
+arrangement sections and automatic key inference remain future increments. This does not complete MIDI-06 or CHORD-01.
 
 Verification: SessionProjectTests covers strict format validation and migration;
 ProjectControllerTests drives the actual Scale controls and history/scoped guards;
