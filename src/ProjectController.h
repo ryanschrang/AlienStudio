@@ -54,6 +54,15 @@ public:
         engine.arrangementPreparing.store(false);
     }
 
+    std::function<void()> onMusicalScaleChanged;
+    bool setProjectScale(int root, ScaleType type, std::uint32_t expectedScope) {
+        const ProjectMusicalScale next{true, root, type};
+        if (busy || isRecording() || engine.recording.active() || expectedScope != doc.identityScope || !next.valid()) return false;
+        if (doc.musicalScale == next) return true;
+        doc.musicalScale = next; commit("Set project key and scale");
+        if (onMusicalScaleChanged) onMusicalScaleChanged();
+        return true;
+    }
     const ProjectDocument& document() const noexcept { return doc; }
     void setExternalBusy(bool value) { setBusy(value); }
     bool isBusy() const noexcept { return busy; }

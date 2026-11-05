@@ -578,3 +578,19 @@ Listening and physical-device acceptance remain pending; automated checks are re
 - Sweep and automate controls; check bypass, device restart, Undo/Redo, save/reopen
   and live versus Song WAV export. Listen for pumping, harshness, and lisping at
   extreme settings. Listening and physical-device acceptance remain pending.
+
+## Project key and scale (T2-04 / MIDI-06, format 34)
+
+- In Piano Roll > Scale, choose Root/Scale and press Use as project scale. Follow
+  project scale should turn on; the root/type controls show that context. Highlight,
+  Scale rows and note snapping should use it without transposing existing notes.
+- Turn following off, select a local override, then follow again. Toggle highlight
+  and snap independently. Existing out-of-scale notes must remain visible when folded.
+- Undo/Redo the project key, save/reopen, and open a version 33 project. A legacy file
+  has no defined global key and uses local settings. Verify typing/menu focus and
+  100/150/200% DPI, including the detached Piano Roll.
+- Play an existing song while changing the project context: notes/audio must not be
+  retuned, the transport must continue and plugins must not be recreated by the edit.
+  Channel Rack/generator following and a chord track are outside this increment.
+
+Physical-device listening and display checks remain pending.

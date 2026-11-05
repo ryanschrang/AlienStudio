@@ -576,6 +576,10 @@ private:
     }
 
     void wireEditors() {
+        pianoRoll.onProjectScaleRequested = [this](int root, alien::ScaleType type, std::uint32_t scope) { return controller.setProjectScale(root, type, scope); };
+        controller.onMusicalScaleChanged = [this] {
+            const auto& d = controller.document(); pianoRoll.setProjectScaleContext(d.musicalScale, d.identityScope); updateEditorTitle();
+        };
         pianoRoll.onChange = [this] {
             if (rollTarget.rack) {
                 if (loadingClip) return;
@@ -775,6 +779,7 @@ private:
     }
 
     void loadSelectedClip(bool allowMultiClip = true) {
+        pianoRoll.setProjectScaleContext(controller.document().musicalScale, controller.document().identityScope);
         if (rollTarget.rack && !controller.channelRack().validChannel(rollTarget.channel)) rollTarget = {};
         if (rollTarget.placement != 0 && controller.placementTrack(rollTarget.placement) < 0) rollTarget = {};   // no region plays it any more
         if (rollTarget.rack || rollTarget.placement != 0) multiClip.end();   // only Session clips are edited together

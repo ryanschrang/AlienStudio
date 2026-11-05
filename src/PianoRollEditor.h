@@ -236,12 +236,25 @@ public:
         addChildComponent(scaleSnap);
         scaleSnap.setButtonText("Snap note pitches");
         scaleSnap.setName("Snap piano roll notes to scale");
-        for (auto* control : std::initializer_list<juce::Component*> { &scaleRoot, &scaleType, &scaleHighlight, &scaleSnap })
+        for (auto* control : std::initializer_list<juce::Component*> { &scaleRoot, &scaleType, &scaleHighlight, &scaleSnap, &followProjectScale, &useProjectScale })
             control->setWantsKeyboardFocus(true);
         scaleRoot.onChange = [this] { updateScaleSettings(); };
         scaleType.onChange = [this] { updateScaleSettings(); };
         scaleHighlight.onClick = [this] { updateScaleSettings(); };
         scaleSnap.onClick = [this] { updateScaleSettings(); };
+        addChildComponent(followProjectScale); followProjectScale.setButtonText("Follow project scale"); followProjectScale.setName("Follow project scale");
+        followProjectScale.onClick = [this] { applyScaleContext(); };
+        addChildComponent(useProjectScale); useProjectScale.setButtonText("Use as project scale"); useProjectScale.setName("Use as project scale");
+        useProjectScale.onClick = [this] {
+            const auto scope = projectScaleScope;
+            const ProjectMusicalScale requested{true, scaleSettings.rootPitchClass, scaleSettings.type};
+            if (scope != 0 && onProjectScaleRequested && onProjectScaleRequested(requested.rootPitchClass, requested.type, scope) && scope == projectScaleScope) {
+                projectMusicalScale = requested; followProjectScale.setToggleState(true, juce::dontSendNotification); applyScaleContext();
+                statusMessage = "Project key and scale saved";
+            } else statusMessage = "Project scale unchanged; finish the current operation and try again";
+            repaint();
+        };
+        addChildComponent(projectScaleSummary);
         addChildComponent(applyButton);
         applyButton.setButtonText("Apply");
         applyButton.setName("Apply piano roll processing");
@@ -279,6 +292,12 @@ public:
     }
 
     std::function<void()> onChange;
+    std::function<bool(int, ScaleType, std::uint32_t)> onProjectScaleRequested;
+    void setProjectScaleContext(ProjectMusicalScale value, std::uint32_t scope) {
+        if (!value.valid()) return;
+        projectMusicalScale = value; projectScaleScope = scope; applyScaleContext();
+    }
+    bool followsProjectScale() const noexcept { return followProjectScale.getToggleState(); }
     // Called once per finished edit gesture (and after this editor's own
     // undo/redo), so the owner can record a project-wide undo step.
     std::function<void()> onEditCommitted;
@@ -359,10 +378,8 @@ public:
     }
     const ScaleSettings& getScaleSettings() const noexcept { return scaleSettings; }
     void setScaleSettings(const ScaleSettings& settings) {
-        scaleSettings = settings;
-        syncScaleControls();
-        refreshRows();
-        repaint();
+        localScaleSettings = settings;
+        applyScaleContext();
     }
     // The pitches whose rows are on screen, top to bottom.
     std::vector<int> shownPitches() const {
@@ -618,6 +635,9 @@ public:
             scaleType.setBounds(238, 78, 170, 26);
             scaleHighlight.setBounds(424, 78, 140, 26);
             scaleSnap.setBounds(572, 78, 160, 26);
+            followProjectScale.setBounds(16, 113, 170, 26);
+            useProjectScale.setBounds(194, 113, 170, 26);
+            projectScaleSummary.setBounds(380, 113, juce::jmax(0, getWidth() - 580), 26);
         } else {
             seedLabel.setBounds(16, 113, 106, 26);
             seed.setBounds(128, 113, 190, 26);
@@ -1533,7 +1553,7 @@ private:
         chordTypeLabel.setVisible(tool == 5);
         previewChordButton.setVisible(tool == 5);
         for (auto* control : std::initializer_list<juce::Component*> {
-                 &scaleRoot, &scaleRootLabel, &scaleType, &scaleTypeLabel, &scaleHighlight, &scaleSnap })
+                 &scaleRoot, &scaleRootLabel, &scaleType, &scaleTypeLabel, &scaleHighlight, &scaleSnap, &followProjectScale, &useProjectScale, &projectScaleSummary })
             control->setVisible(tool == 6);
         if (tool == 1) {
             descending.setButtonText("High to low");
@@ -1611,7 +1631,7 @@ private:
                                                                  &cancelButton, &seed, &seedLabel, &descending,
                                                                  &chordType, &chordTypeLabel, &previewChordButton,
                                                                  &scaleRoot, &scaleRootLabel, &scaleType, &scaleTypeLabel,
-                                                                 &scaleHighlight, &scaleSnap })
+                                                                 &scaleHighlight, &scaleSnap, &followProjectScale, &useProjectScale, &projectScaleSummary })
             child->setVisible(false);
         for (std::size_t i = 0; i < parameters.size(); ++i) {
             parameters[i].setVisible(false);
@@ -1769,14 +1789,25 @@ private:
         if (panelOpen && tools.getSelectedId() == 5 && previewChordButton.getToggleState())
             startChordPreview();
     }
+    void applyScaleContext() {
+        scaleSettings = localScaleSettings;
+        const bool following = followProjectScale.getToggleState() && projectMusicalScale.defined;
+        if (following) { scaleSettings.rootPitchClass = projectMusicalScale.rootPitchClass; scaleSettings.type = projectMusicalScale.type; }
+        syncScaleControls(); scaleRoot.setEnabled(!following); scaleType.setEnabled(!following);
+        useProjectScale.setEnabled(projectScaleScope != 0);
+        projectScaleSummary.setText(projectMusicalScale.defined
+            ? "Project: " + juce::String(scalePitchClassName(projectMusicalScale.rootPitchClass)) + " " + scaleType.getItemText(static_cast<int>(projectMusicalScale.type))
+            : juce::String("No project scale defined"), juce::dontSendNotification);
+        refreshRows(); repaint();
+    }
     void updateScaleSettings() {
-        scaleSettings.rootPitchClass = juce::jlimit(1, 12, scaleRoot.getSelectedId()) - 1;
-        scaleSettings.type = static_cast<ScaleType>(juce::jlimit(1, 10, scaleType.getSelectedId()) - 1);
-        scaleSettings.highlight = scaleHighlight.getToggleState();
-        scaleSettings.snap = scaleSnap.getToggleState();
+        if (!followProjectScale.getToggleState() || !projectMusicalScale.defined) {
+            localScaleSettings.rootPitchClass = juce::jlimit(1, 12, scaleRoot.getSelectedId()) - 1;
+            localScaleSettings.type = static_cast<ScaleType>(juce::jlimit(1, 10, scaleType.getSelectedId()) - 1);
+        }
+        localScaleSettings.highlight = scaleHighlight.getToggleState(); localScaleSettings.snap = scaleSnap.getToggleState();
+        applyScaleContext();
         statusMessage = scaleName() + (scaleSettings.snap ? " scale snap on" : " scale highlight");
-        refreshRows();
-        repaint();
     }
     void showPitchViewMenu() {
         juce::PopupMenu menu;
@@ -1845,6 +1876,12 @@ private:
     }
 
     PianoRollPattern pattern;
+    ProjectMusicalScale projectMusicalScale;
+    std::uint32_t projectScaleScope{};
+    ScaleSettings localScaleSettings;
+    juce::ToggleButton followProjectScale;
+    juce::TextButton useProjectScale;
+    juce::Label projectScaleSummary;
     juce::ComboBox snap, tools, chordType, scaleRoot, scaleType;
     juce::Label snapLabel, velocityLabel, probabilityLabel, chordTypeLabel, scaleRootLabel, scaleTypeLabel;
     juce::Slider velocity, probability;
