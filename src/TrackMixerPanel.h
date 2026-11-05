@@ -33,7 +33,7 @@ inline juce::String returnLetter(int r) { return juce::String::charToString(stat
 
 // One console channel strip: instrument, pan knob, mute/solo, fader with dB
 // scale, peak meter and coloured name plate. Track mix commands own their
-// history; legacy instrument/send edits still notify the host.
+// history; legacy instrument edits still notify the host.
 class MixerChannelStrip final : public juce::Component {
 public:
     MixerChannelStrip(ProjectController& projectController, int trackIndex, TrackControls& trackControls, std::function<void(bool)> editedCallback)
@@ -118,23 +118,16 @@ public:
             knob.setSkewFactorFromMidPoint(25.0);
             knob.setDoubleClickReturnValue(true, 0.0);
             knob.textFromValueFunction = [](double v) { return mixer_text::gainToText(v); };
-            knob.onValueChange = [this, r] {
-                controls.send[r].store(static_cast<float>(sends[r].getValue() / 100));
-                updateSendTooltip(static_cast<int>(r));
-                edited(!sends[r].isMouseButtonDown());
-            };
-            knob.onDragEnd = [this] { edited(true); };
+            knob.onDragStart = [this] { sendGesture = "mixer-send-drag-" + juce::String(++nextMixGesture); };
+            knob.onValueChange = [this, r] { executeMix(command::SetTrackSend{track, static_cast<int>(r), sends[r].getValue() / 100.0}, sendGesture); };
+            knob.onDragEnd = [this] { sendGesture.clear(); };
             auto& mode = sendModes[r];
             addAndMakeVisible(mode);
             mode.setButtonText(mixer_text::returnLetter(static_cast<int>(r)));
             mode.setClickingTogglesState(true);
             mode.setColour(juce::TextButton::buttonOnColourId, ui::colours::accent);
             mode.setColour(juce::TextButton::textColourOnId, ui::colours::accentInk);
-            mode.onClick = [this, r] {
-                controls.sendPre[r].store(sendModes[r].getToggleState());
-                updateSendTooltip(static_cast<int>(r));
-                edited(true);
-            };
+            mode.onClick = [this, r] { executeMix(command::SetTrackSendMode{track, static_cast<int>(r), sendModes[r].getToggleState()}); };
             updateSendTooltip(static_cast<int>(r));
             knob.setVisible(returnNames[r].isNotEmpty());
             mode.setVisible(returnNames[r].isNotEmpty());
@@ -296,7 +289,7 @@ private:
         executeMix(edit, key);
     }
     void executeMix(const command::Command& edit, const juce::String& key = {}) {
-        if (!ownsTrack()) { gainGesture.clear(); panGesture.clear(); return; }
+        if (!ownsTrack()) { gainGesture.clear(); panGesture.clear(); sendGesture.clear(); return; }
         const auto result = command::CommandEngine(controller).execute(edit, key, key.isNotEmpty());
         refreshSettings();
         if (result.ok && result.changed && onMixCommandExecuted) onMixCommandExecuted();
@@ -304,7 +297,7 @@ private:
     ProjectController& controller;
     int track;
     std::uint32_t owner;
-    juce::String gainGesture, panGesture;
+    juce::String gainGesture, panGesture, sendGesture;
     inline static juce::uint64 nextMixGesture{}; // message thread, unique across rebuilt strips
     void updateSendTooltip(int r) {
         const auto i = static_cast<std::size_t>(r);
@@ -670,7 +663,7 @@ public:
 
     // Called whenever a strip control changes the engine. "committed" is true
     // for discrete changes and at the end of a fader/knob drag.
-    std::function<void(int, bool)> onTrackEdited; // legacy instrument/send edits only
+    std::function<void(int, bool)> onTrackEdited; // legacy instrument edits only
     std::function<void(int)> onTrackMixCommandExecuted;
     // Master edits are already committed by CommandEngine; refresh only.
     std::function<void()> onMasterCommandExecuted;
@@ -681,6 +674,9 @@ public:
     std::function<void(const juce::String&)> onRoutingChanged;
     std::function<void()> beforeBusDeleted;      // the owner can capture the bus's plugin state first
     std::function<void()> beforeReturnDeleted;   // the same, before a return is removed
+    // A return was added, renamed or removed. The command owns the undo step; the host only
+    // follows (plugin racks and the automation editor's list of sends).
+    std::function<void()> onReturnCommandExecuted;
 
     // Recreate strips after tracks are added, removed or reordered.
     void rebuild() {
@@ -758,21 +754,16 @@ public:
         return true;
     }
     int addReturn() {
-        const int r = controller.addReturn();
-        if (r >= 0) routingChanged("Add return");
-        return r;
+        const int r = return_edit::firstFreeSlot(controller.document());
+        return executeReturnCommand(command::CreateReturn{}) ? r : -1;
     }
-    bool renameReturn(int r, const juce::String& name) {
-        if (!controller.renameReturn(r, name)) return false;
-        routingChanged("Rename return");
-        return true;
-    }
+    bool renameReturn(int r, const juce::String& name) { return executeReturnCommand(command::RenameReturn{r, name}); }
     bool deleteReturn(int r) {
-        if (r < 0 || r >= maxReturns || !controller.document().returns[static_cast<std::size_t>(r)].used) return false;
+        // Plugin state is captured only for a removal the command will accept.
+        const command::Command remove = command::DeleteReturn{r};
+        if (controller.isBusy() || !controller.canEditMidiClips() || command::refusal(controller.document(), remove).isNotEmpty()) return false;
         if (beforeReturnDeleted) beforeReturnDeleted();
-        if (!controller.deleteReturn(r)) return false;
-        routingChanged("Remove return");
-        return true;
+        return executeReturnCommand(remove);
     }
     bool chooseOutput(int track, int output) {
         if (!controller.setTrackOutput(track, output)) { refreshSettings(); return false; }
@@ -849,6 +840,16 @@ private:
             addAndMakeVisible(*strip);
             returnStrips.emplace_back(r, std::move(strip));
         }
+    }
+    bool executeReturnCommand(const command::Command& edit) {
+        const auto result = command::CommandEngine(controller).execute(edit);
+        if (!result.ok || !result.changed) return false;
+        rebuildBuses();
+        rebuildReturns();
+        refreshSettings();
+        resized();
+        if (onReturnCommandExecuted) onReturnCommandExecuted();
+        return true;
     }
     void showReturnMenu(int r) {
         auto* strip = returnStrip(r);

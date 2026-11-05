@@ -708,6 +708,10 @@ private:
         mixerPanel.onRoutingChanged = [this](const juce::String& label) {
             controller.commit(label);
             restorePlugins();
+            timelineView.refresh();
+        };
+        mixerPanel.onReturnCommandExecuted = [this] {
+            restorePlugins();
             timelineView.refresh();   // the automation editor offers only the sends that exist
         };
 

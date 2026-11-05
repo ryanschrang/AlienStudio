@@ -4,6 +4,7 @@
 #include "ClipboardClipCommands.h"
 #include "SessionClipCommands.h"
 #include "RackCommands.h"
+#include "ReturnCommands.h"
 #include "ViewModes.h"
 #include "ToneEngine.h"
 #include "AudioClipImport.h"
@@ -484,32 +485,19 @@ public:
     // never moves another's. Removing one turns every track's send to it off, drops its send
     // automation and its FX. The caller commits, and rebuilds the plugin racks after a removal.
     int addReturn(const juce::String& name = {}) {
-        if (busy || !doc.trackRegistry.canAllocate()) return -1;
-        for (std::size_t r = 0; r < doc.returns.size(); ++r) {
-            if (doc.returns[r].used) continue;
-            const auto trimmed = name.trim().substring(0, 64);
-            doc.returns[r] = {true, trimmed.isNotEmpty() ? trimmed : defaultReturnName(static_cast<int>(r)), {}, {}};
-            pushDocumentToEngine();
-            return static_cast<int>(r);
-        }
-        return -1;
+        const int r = return_edit::firstFreeSlot(doc);
+        if (busy || return_edit::apply(doc, {return_edit::Kind::create, -1, name}).isNotEmpty()) return -1;
+        pushDocumentToEngine();
+        return r;
     }
     bool renameReturn(int r, const juce::String& name) {
-        const auto trimmed = name.trim().substring(0, 64);
-        if (busy || r < 0 || r >= maxReturns || !doc.returns[static_cast<std::size_t>(r)].used || trimmed.isEmpty()
-            || doc.returns[static_cast<std::size_t>(r)].name == trimmed) return false;
-        doc.returns[static_cast<std::size_t>(r)].name = trimmed;
-        return true;
+        if (busy || !return_edit::slotInUse(doc, r) || doc.returns[static_cast<std::size_t>(r)].name == return_edit::storedName(name)) return false;
+        return return_edit::apply(doc, {return_edit::Kind::rename, r, name}).isEmpty();
     }
     bool deleteReturn(int r) {
-        if (busy || r < 0 || r >= maxReturns || !doc.returns[static_cast<std::size_t>(r)].used) return false;
-        const auto slot = static_cast<std::size_t>(r);
+        if (busy || !return_edit::slotInUse(doc, r)) return false;
         for (int t = 0; t < doc.trackCount(); ++t) trackSettingsEdited(t);
-        for (auto& track : doc.tracks) { track.settings.send[slot] = 0.0f; track.settings.sendPre[slot] = false; }
-        auto& lanes = doc.timeline.automationLanes;
-        lanes.erase(std::remove_if(lanes.begin(), lanes.end(), [r](const auto& lane) { return automation::sendIndex(lane.parameter) == r; }), lanes.end());
-        doc.returns[slot] = {};
-        doc.sidechainReturnDeleted(r);   // effects keyed by its output lose their key
+        if (return_edit::apply(doc, {return_edit::Kind::remove, r}).isNotEmpty()) return false;
         pushDocumentToEngine();
         return true;
     }
@@ -532,6 +520,20 @@ public:
         const auto value = static_cast<float>(gain);
         doc.tracks[static_cast<std::size_t>(track)].settings.gain = value;
         engine.tracks[static_cast<std::size_t>(track)].gain.store(value);
+        return true;
+    }
+    bool setTrackSend(int track, int r, double level) {
+        if (busy || track < 0 || track >= doc.trackCount() || !return_edit::slotInUse(doc, r) || !std::isfinite(level) || level < 0 || level > 1) return false;
+        const auto value = static_cast<float>(level); const auto slot = static_cast<std::size_t>(r);
+        doc.tracks[static_cast<std::size_t>(track)].settings.send[slot] = value;
+        engine.tracks[static_cast<std::size_t>(track)].send[slot].store(value);
+        return true;
+    }
+    bool setTrackSendMode(int track, int r, bool preFader) {
+        if (busy || track < 0 || track >= doc.trackCount() || !return_edit::slotInUse(doc, r)) return false;
+        const auto slot = static_cast<std::size_t>(r);
+        doc.tracks[static_cast<std::size_t>(track)].settings.sendPre[slot] = preFader;
+        engine.tracks[static_cast<std::size_t>(track)].sendPre[slot].store(preFader);
         return true;
     }
     bool setTrackPan(int track, double pan) {

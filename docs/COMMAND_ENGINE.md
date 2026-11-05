@@ -394,6 +394,33 @@ Sample imports placed on the Song timeline use `importSampleToSong` and are not 
 command. Any later processed-audio entry point must reuse this validation model
 rather than decode or call plugins from Preview.
 
+## Send and return commands
+
+Sends and returns are addressed by return slot, where 0 is send A. Slots never move,
+so removing a return leaves the others in place. The JSON argument is `return`.
+
+- `SetTrackSend {track, return, level}` takes a finite linear level from 0 to 1.
+- `SetTrackSendMode {track, return, preFader}` switches a send between pre-fader and
+  post-fader.
+- `CreateReturn {}` takes the first free slot and its default name.
+- `RenameReturn {return, name}` trims the name and refuses a blank one.
+- `DeleteReturn {return}` also turns off every track's send to it, and drops its send
+  automation, its FX and any sidechain keyed by its output.
+
+`ReturnCommands.h` holds the pure return reducers, shared by Preview and the
+controller. A reused slot gets a fresh track identity in Preview and live alike.
+A send to an unused slot refuses. All five refuse while the project is busy. The
+three return commands also refuse during recording or count-in; send levels and
+modes stay adjustable, as the track fader does.
+
+The Mixer send knobs and switches, Add return button and return menu use these
+commands. One knob drag is one undo step. Before a removal the Mixer captures live
+plugin state, and after any return command the host rebuilds the plugin racks.
+A script running `DeleteReturn` directly drops the saved FX in the document, and has
+no such host step until the device commands exist.
+
+Return strip volume, pan and mute, and all bus edits, are not commands yet.
+
 ## Master volume command
 
 `SetMasterVolume {gain}` accepts a finite linear gain from 0 through 4 (1 is unity),

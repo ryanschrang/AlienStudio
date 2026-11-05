@@ -229,16 +229,29 @@ static void undoAndPanels() {
     // The mixer: send knobs and pre switches on each track strip, and four return strips.
     alien::TrackMixerPanel panel(c, engine.tracks, engine.returns, engine.masterControls, engine.buses);
     panel.setSize(1400, 640);
-    int trackEdits = 0, returnEdits = 0, lastReturn = -1;
+    int trackEdits = 0, sendCommands = 0, returnEdits = 0, lastReturn = -1;
     panel.onTrackEdited = [&](int, bool) { ++trackEdits; };
+    panel.onTrackMixCommandExecuted = [&](int) { ++sendCommands; };
     panel.onReturnEdited = [&](int r, bool) { ++returnEdits; lastReturn = r; };
     auto* strip = panel.trackStrip(0);
     require(strip != nullptr && strip->sendKnob(1).getValue() == 70.0 && strip->sendMode(1).getToggleState(), "a strip shows its sends and pre switches");
     strip->sendKnob(2).setValue(50.0, juce::sendNotificationSync);
-    require(approx(engine.tracks[0].send[2].load(), 0.5f) && trackEdits > 0, "turning a send knob sets the send");
+    require(approx(engine.tracks[0].send[2].load(), 0.5f) && approx(c.document().tracks[0].settings.send[2], 0.5f) && sendCommands == 1 && trackEdits == 0 && c.undoLabel() == "Set send level",
+            "turning a send knob runs the named command, not the legacy edit");
     strip->sendMode(2).triggerClick();
     juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
-    require(engine.tracks[0].sendPre[2].load(), "its switch makes it pre-fader");
+    require(engine.tracks[0].sendPre[2].load() && c.document().tracks[0].settings.sendPre[2] && c.undoLabel() == "Set send mode", "its switch makes it pre-fader");
+    {   // One drag of a send knob is one undo step, and Undo reaches the knob.
+        const auto label = c.undoLabel();
+        strip->sendKnob(3).onDragStart();
+        strip->sendKnob(3).setValue(20.0, juce::sendNotificationSync);
+        juce::Thread::sleep(alien::DocumentHistory::coalesceMilliseconds + 20);
+        strip->sendKnob(3).setValue(40.0, juce::sendNotificationSync);
+        strip->sendKnob(3).onDragEnd();
+        require(c.undoLabel() == "Set send level" && c.undo() && c.undoLabel() == label && engine.tracks[0].send[3].load() == 0.0f, "one send drag is one undo step");
+        panel.refreshSettings();
+        require(strip->sendKnob(3).getValue() == 0.0, "and the knob follows Undo");
+    }
     require(strip->sendKnob(0).getTooltip().contains("off") && strip->sendKnob(2).getTooltip().contains("pre-fader"), "the knob's tooltip says its level and mode");
     auto& returnB = *panel.returnStrip(1);
     juce::Slider* volume = nullptr;
