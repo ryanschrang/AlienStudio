@@ -5,6 +5,7 @@
 #include "SessionClipCommands.h"
 #include "RackCommands.h"
 #include "ReturnCommands.h"
+#include "BusCommands.h"
 #include "ViewModes.h"
 #include "ToneEngine.h"
 #include "AudioClipImport.h"
@@ -448,36 +449,67 @@ public:
     // master, so no edit can make a loop. The caller commits, and rebuilds the plugin racks
     // after a delete.
     int addBus(const juce::String& name = {}) {
-        if (busy || !doc.trackRegistry.canAllocate()) return -1;
-        for (std::size_t b = 0; b < doc.buses.size(); ++b) {
-            if (doc.buses[b].used) continue;
-            const auto trimmed = name.trim().substring(0, 64);
-            doc.buses[b] = {true, trimmed.isNotEmpty() ? trimmed : nextBusName(), {}, {}};
-            pushDocumentToEngine();
-            return static_cast<int>(b);
-        }
-        return -1;
-    }
-    juce::String nextBusName() const {
-        for (int n = 1;; ++n) {
-            bool taken = false;
-            for (const auto& bus : doc.buses) taken = taken || (bus.used && bus.name == "Bus " + juce::String(n));
-            if (!taken) return "Bus " + juce::String(n);
-        }
+        const int b = bus_edit::firstFreeSlot(doc);
+        if (busy || bus_edit::apply(doc, {bus_edit::Kind::create, -1, name}).isNotEmpty()) return -1;
+        pushDocumentToEngine();
+        return b;
     }
     bool renameBus(int b, const juce::String& name) {
-        const auto trimmed = name.trim().substring(0, 64);
-        if (busy || b < 0 || b >= maxBuses || !doc.buses[static_cast<std::size_t>(b)].used || trimmed.isEmpty()) return false;
-        doc.buses[static_cast<std::size_t>(b)].name = trimmed;
-        return true;
+        return !busy && bus_edit::apply(doc, {bus_edit::Kind::rename, b, name}).isEmpty();
     }
     bool deleteBus(int b) {
-        if (busy || b < 0 || b >= maxBuses || !doc.buses[static_cast<std::size_t>(b)].used) return false;
+        if (busy || !bus_edit::slotInUse(doc, b)) return false;
         for (int t = 0; t < doc.trackCount(); ++t) trackSettingsEdited(t);
-        for (auto& track : doc.tracks) if (track.settings.output == b) track.settings.output = -1;
-        doc.buses[static_cast<std::size_t>(b)] = {};
-        doc.sidechainBusDeleted(b);   // effects keyed by its output lose their key
+        if (bus_edit::apply(doc, {bus_edit::Kind::remove, b}).isNotEmpty()) return false;
         pushDocumentToEngine();
+        return true;
+    }
+    // Validated noncommitting strip adapters: each writes the document and the engine, and the
+    // caller commits. A strip takes the same ranges as a track fader and pan.
+    bool setBusVolume(int b, double gain) {
+        if (busy || !bus_edit::slotInUse(doc, b) || !std::isfinite(gain) || gain < 0 || gain > 2) return false;
+        const auto value = static_cast<float>(gain); const auto slot = static_cast<std::size_t>(b);
+        doc.buses[slot].settings.gain = value;
+        engine.buses[slot].gain.store(value);
+        return true;
+    }
+    bool setBusPan(int b, double pan) {
+        if (busy || !bus_edit::slotInUse(doc, b) || !std::isfinite(pan) || pan < -1 || pan > 1) return false;
+        const auto value = static_cast<float>(pan); const auto slot = static_cast<std::size_t>(b);
+        doc.buses[slot].settings.pan = value;
+        engine.buses[slot].pan.store(value);
+        return true;
+    }
+    bool setBusMute(int b, bool muted) {
+        if (busy || !bus_edit::slotInUse(doc, b)) return false;
+        doc.buses[static_cast<std::size_t>(b)].settings.mute = muted;
+        engine.buses[static_cast<std::size_t>(b)].mute.store(muted);
+        return true;
+    }
+    bool setBusSolo(int b, bool soloed) {
+        if (busy || !bus_edit::slotInUse(doc, b)) return false;
+        doc.buses[static_cast<std::size_t>(b)].settings.solo = soloed;
+        engine.buses[static_cast<std::size_t>(b)].solo.store(soloed);
+        return true;
+    }
+    bool setReturnVolume(int r, double gain) {
+        if (busy || !return_edit::slotInUse(doc, r) || !std::isfinite(gain) || gain < 0 || gain > 2) return false;
+        const auto value = static_cast<float>(gain); const auto slot = static_cast<std::size_t>(r);
+        doc.returns[slot].settings.gain = value;
+        engine.returns[slot].gain.store(value);
+        return true;
+    }
+    bool setReturnPan(int r, double pan) {
+        if (busy || !return_edit::slotInUse(doc, r) || !std::isfinite(pan) || pan < -1 || pan > 1) return false;
+        const auto value = static_cast<float>(pan); const auto slot = static_cast<std::size_t>(r);
+        doc.returns[slot].settings.pan = value;
+        engine.returns[slot].pan.store(value);
+        return true;
+    }
+    bool setReturnMute(int r, bool muted) {
+        if (busy || !return_edit::slotInUse(doc, r)) return false;
+        doc.returns[static_cast<std::size_t>(r)].settings.mute = muted;
+        engine.returns[static_cast<std::size_t>(r)].mute.store(muted);
         return true;
     }
     // Return tracks (MIX-05). A new return takes the first free slot (its index, or -1 when all are

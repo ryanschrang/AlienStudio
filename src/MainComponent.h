@@ -693,16 +693,7 @@ private:
             loadSelectedClip();
         };
         mixerPanel.onMasterCommandExecuted = [this] { updateEditorTitle(); };
-        mixerPanel.onReturnEdited = [this](int r, bool committed) {
-            controller.returnSettingsEdited(r);
-            if (committed) controller.commit("Change " + controller.document().returns[static_cast<std::size_t>(r)].name + " mix", -1, -1, "return-" + juce::String(r));
-        };
-        mixerPanel.onBusEdited = [this](int b, bool committed) {
-            controller.busSettingsEdited(b);
-            if (committed) controller.commit("Change " + controller.document().buses[static_cast<std::size_t>(b)].name + " mix", -1, -1, "bus-" + juce::String(b));
-        };
-        // A bus was added, renamed or deleted, or a track's output changed: one undo step, and the
-        // plugin racks follow (a deleted bus takes its FX with it).
+        mixerPanel.onStripCommandExecuted = [this] { updateEditorTitle(); };
         mixerPanel.beforeBusDeleted = [this] { snapshotPlugins(SnapshotReason::whenEdited); };
         mixerPanel.beforeReturnDeleted = [this] { snapshotPlugins(SnapshotReason::whenEdited); };
         mixerPanel.onRoutingChanged = [this](const juce::String& label) {
@@ -713,6 +704,11 @@ private:
         mixerPanel.onReturnCommandExecuted = [this] {
             restorePlugins();
             timelineView.refresh();   // the automation editor offers only the sends that exist
+        };
+        // A deleted bus takes its FX with it, so the plugin racks follow.
+        mixerPanel.onBusCommandExecuted = [this] {
+            restorePlugins();
+            timelineView.refresh();
         };
 
         mixerPanel.onTrackEdited = [this](int track, bool committed) {

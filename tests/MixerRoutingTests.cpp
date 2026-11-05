@@ -229,10 +229,10 @@ static void undoAndPanels() {
     // The mixer: send knobs and pre switches on each track strip, and four return strips.
     alien::TrackMixerPanel panel(c, engine.tracks, engine.returns, engine.masterControls, engine.buses);
     panel.setSize(1400, 640);
-    int trackEdits = 0, sendCommands = 0, returnEdits = 0, lastReturn = -1;
+    int trackEdits = 0, sendCommands = 0, returnEdits = 0;
     panel.onTrackEdited = [&](int, bool) { ++trackEdits; };
     panel.onTrackMixCommandExecuted = [&](int) { ++sendCommands; };
-    panel.onReturnEdited = [&](int r, bool) { ++returnEdits; lastReturn = r; };
+    panel.onStripCommandExecuted = [&] { ++returnEdits; };
     auto* strip = panel.trackStrip(0);
     require(strip != nullptr && strip->sendKnob(1).getValue() == 70.0 && strip->sendMode(1).getToggleState(), "a strip shows its sends and pre switches");
     strip->sendKnob(2).setValue(50.0, juce::sendNotificationSync);
@@ -254,11 +254,23 @@ static void undoAndPanels() {
     }
     require(strip->sendKnob(0).getTooltip().contains("off") && strip->sendKnob(2).getTooltip().contains("pre-fader"), "the knob's tooltip says its level and mode");
     auto& returnB = *panel.returnStrip(1);
-    juce::Slider* volume = nullptr;
-    for (auto* child : returnB.getChildren()) if (child->getName() == "Return B volume") volume = dynamic_cast<juce::Slider*>(child);
-    require(volume != nullptr, "a return strip has a volume fader");
-    volume->setValue(50.0, juce::sendNotificationSync);
-    require(approx(engine.returns[1].gain.load(), 0.5f) && returnEdits > 0 && lastReturn == 1, "moving it sets that return's level");
+    require(returnB.volume().getName() == "Return B volume", "a return strip has a volume fader");
+    returnB.volume().setValue(50.0, juce::sendNotificationSync);
+    require(approx(engine.returns[1].gain.load(), 0.5f) && approx(c.document().returns[1].settings.gain, 0.5f) && returnEdits == 1 && c.undoLabel() == "Set return volume", "moving it runs the named command for that return");
+    returnB.balance().setValue(-50.0, juce::sendNotificationSync);
+    require(approx(engine.returns[1].pan.load(), -0.5f) && c.undoLabel() == "Set return pan", "its knob sets that return's balance");
+    returnB.muteButton().triggerClick();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+    require(engine.returns[1].mute.load() && c.undoLabel() == "Set return mute", "its button mutes that return");
+    {   // A refused edit leaves the document alone and puts the control back.
+        const auto steady = c.document();
+        c.setExternalBusy(true);
+        returnB.volume().setValue(10.0, juce::sendNotificationSync);
+        c.setExternalBusy(false);
+        require(alien::sameContent(steady, c.document()) && returnB.volume().getValue() == 50.0, "busy work refuses the fader, which shows the kept value");
+    }
+    engine.returns[1].mute.store(false); c.returnSettingsEdited(1);
+    returnB.refreshSettings();
     for (int r = 0; r < alien::defaultReturns; ++r) {
         const auto b = panel.returnStrip(r)->getBounds();
         require(panel.returnStrip(r)->isVisible() && b.getWidth() > 60 && b.getRight() <= panel.getWidth(), "every return strip is laid out");
