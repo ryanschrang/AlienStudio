@@ -451,7 +451,30 @@ any bus structure command the host rebuilds the plugin racks. A script running
 `DeleteBus` directly drops the saved FX in the document, and has no such host step until
 the device commands exist.
 
-Track output, group membership and sidechain routing are not commands yet.
+## Routing commands
+
+- `SetTrackOutput {track, bus}` sends a track to a bus slot, or to the master with -1. A
+  track's bus is also its group, so there is no separate membership command.
+- `SetSidechain {stage, rack, effect, from, source}` chooses what keys an effect. `stage`
+  is `track`, `bus`, `return` or `master`; `rack` is the track or slot (0 for the master);
+  `effect` is the FX slot. `from` is `track` (before its FX), `post` (after its fader),
+  `bus` or `return`; `source` is that track or slot, or -1 for no key.
+
+`SidechainCommands.h` holds the pure reducer. A key must exist and be made before the
+rack runs: a track's FX hears only other tracks before their FX, a bus's FX hears tracks,
+a return's FX also hears buses, and the master hears everything. An empty FX slot and a
+frozen track's rack refuse.
+
+Rerouting is one atomic store, so `SetTrackOutput` stays live during recording and
+count-in, as a fader does. `SetSidechain` refuses then, because the rack rebuild takes
+the audio callback down. Both refuse while the project is busy.
+
+The Mixer output menu and the Plugins sidechain menu use these commands. Before a key
+changes, the host captures live plugin state, and afterwards it rebuilds the plugin racks.
+Preview never touches a plugin, so it does not know whether an effect has a sidechain
+input; one without an input stays unkeyed when the racks rebuild. A script running
+`SetSidechain` directly changes the saved key, and has no such host step until the device
+commands exist.
 
 ## Master volume command
 
