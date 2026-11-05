@@ -176,5 +176,62 @@ static void sampleBrowserChecks() {
         for (int i = 0; i < 100; ++i) pump();
         require(juce::approximatelyEqual(bpm->getValue(), 101.0), "a typed BPM wins over a pending result");
     }
+    {
+        const auto folder = root.getChildFile("Key"); require(folder.createDirectory().wasOk(), "key fixture folder");
+        // F minor chords, written at a low sample rate to keep the fixture small.
+        alien::SessionAudioClip chords; chords.sampleRate = 8000; chords.channels = 1; chords.frames = 8000 * 12; chords.left.assign(chords.frames, 0.f);
+        const std::array<std::array<int, 3>, 4> progression{{{0, 3, 7}, {5, 8, 12}, {7, 10, 14}, {0, 3, 7}}};
+        for (std::size_t n = 0; n < chords.frames; ++n) {
+            const auto& chord = progression[(n / 8000) % progression.size()];
+            for (const auto interval : chord)
+                for (int partial = 1; partial <= 3; ++partial)
+                    chords.left[n] += .1f / static_cast<float>(partial) * static_cast<float>(std::sin(2 * juce::MathConstants<double>::pi * 440 * std::pow(2.0, (65 + interval - 69) / 12.0) * partial * static_cast<double>(n) / 8000));
+        }
+        chords.buildWaveform();
+        alien::SessionAudioClip flat; flat.sampleRate = 8000; flat.channels = 1; flat.frames = 8000 * 6; flat.left.assign(flat.frames, .2f); flat.buildWaveform();
+        std::atomic<bool> writing{false}; juce::String writeError;
+        require(alien::writeClipWav(folder.getChildFile("Flat.wav"), flat, writing, writeError) && alien::writeClipWav(folder.getChildFile("Keys.wav"), chords, writing, writeError), "write key fixtures");
+        const auto bytes = folder.getChildFile("Keys.wav").getSize();
+        alien::SampleBrowser browser; browser.setSize(360, 400); browser.addToDesktop(0); browser.setVisible(true); browser.scan(folder);
+        auto pump = [] { juce::MessageManager::getInstance()->runDispatchLoopUntil(10); };
+        for (int i = 0; i < 400 && browser.resultCount() == 0; ++i) pump();
+        juce::ComboBox* source = nullptr; juce::Button* detect = nullptr; juce::Button* tempo = nullptr; juce::Button* stop = nullptr; juce::ListBox* list = nullptr; juce::Label* status = nullptr;
+        for (auto* c : browser.getChildren()) {
+            if (c->getName() == "Sample source key") source = dynamic_cast<juce::ComboBox*>(c);
+            if (c->getName() == "Detect sample key") detect = dynamic_cast<juce::Button*>(c);
+            if (c->getName() == "Detect sample BPM") tempo = dynamic_cast<juce::Button*>(c);
+            if (auto* b = dynamic_cast<juce::Button*>(c); b && b->getButtonText() == "Stop") stop = b;
+            if (auto* l = dynamic_cast<juce::ListBox*>(c)) list = l;
+            if (auto* l = dynamic_cast<juce::Label*>(c); l && l->getText().contains("samples (limit")) status = l;
+            require(browser.getLocalBounds().contains(c->getBounds()), "the key row fits the compact layout");
+        }
+        require(browser.resultCount() == 2 && source && detect && tempo && stop && list && status, "key controls available");
+        auto waitFor = [&](const juce::String& text) { for (int i = 0; i < 800 && !status->getText().contains(text); ++i) pump(); return status->getText().contains(text); };
+        int previews = 0, imports = 0; browser.onPreview = [&](const alien::SessionAudioClip&) { ++previews; }; browser.onImport = [&](const juce::File&, bool) { ++imports; };
+
+        list->selectRow(1); require(browser.selectedFile().getFileName() == "Keys.wav" && detect->isEnabled(), "a sample's key can be detected");
+        detect->onClick(); require(!detect->isEnabled() && !tempo->isEnabled() && status->getText() == "Detecting key...", "both detect buttons wait for the result");
+        require(waitFor("Estimated"), "the key is found");
+        require(source->getSelectedId() == 6, "the result fills in the source key");
+        require(status->getText().contains("F minor") && status->getText().contains("relative Ab major"), "and names the mode and the relative key");
+        require(detect->isEnabled() && previews == 0 && imports == 0 && folder.getChildFile("Keys.wav").getSize() == bytes, "detecting does not preview, import or change the file");
+
+        source->setSelectedId(3, juce::dontSendNotification); list->selectRow(0);
+        detect->onClick(); require(waitFor("No clear key"), "a flat sample reports no key");
+        require(source->getSelectedId() == 3, "and keeps the key already set");
+
+        list->selectRow(1); detect->onClick(); stop->onClick();
+        require(status->getText() == "Key detection stopped." && detect->isEnabled(), "Stop abandons detection");
+        for (int i = 0; i < 100; ++i) pump();
+        require(source->getSelectedId() == 3, "and a late result is discarded");
+
+        detect->onClick(); list->selectRow(0);
+        for (int i = 0; i < 100; ++i) pump();
+        require(source->getSelectedId() == 3 && detect->isEnabled(), "choosing another sample discards the result");
+
+        list->selectRow(1); detect->onClick(); source->setSelectedId(8, juce::sendNotificationSync);
+        for (int i = 0; i < 100; ++i) pump();
+        require(source->getSelectedId() == 8, "a chosen key wins over a pending result");
+    }
     require(root.deleteRecursively(), "remove sample fixtures");
 }

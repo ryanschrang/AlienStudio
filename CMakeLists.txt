@@ -466,6 +466,13 @@ if(BUILD_TESTING)
     target_link_libraries(SampleTempoDetectTests PRIVATE juce::juce_audio_formats Threads::Threads)
     add_test(NAME SampleTempoDetectTests COMMAND SampleTempoDetectTests)
     set_tests_properties(SampleTempoDetectTests PROPERTIES TIMEOUT 90)
+
+    add_executable(SampleKeyDetectTests tests/SampleKeyDetectTests.cpp)
+    target_include_directories(SampleKeyDetectTests PRIVATE src)
+    target_compile_definitions(SampleKeyDetectTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(SampleKeyDetectTests PRIVATE juce::juce_audio_formats Threads::Threads)
+    add_test(NAME SampleKeyDetectTests COMMAND SampleKeyDetectTests)
+    set_tests_properties(SampleKeyDetectTests PROPERTIES TIMEOUT 120)
 endif()
 
 if(BUILD_TESTING)

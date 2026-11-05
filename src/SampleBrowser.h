@@ -4,6 +4,7 @@
 #include "StarterPack.h"
 #include "SamplePreviewRender.h"
 #include "SampleTempoDetect.h"
+#include "SampleKeyDetect.h"
 #include "SampleDrag.h"
 #include "MidiClipDrag.h"
 #include <functional>
@@ -13,7 +14,7 @@ class SampleBrowser final : public juce::Component, private juce::ListBoxModel {
 public:
     SampleBrowser() {
         setName("Local sample browser");
-        for (auto* component : std::initializer_list<juce::Component*>{&folder, &starter, &search, &list, &preview, &stopButton, &session, &song, &status, &empty, &dragDestination, &matchTempo, &sourceTempo, &detectTempo, &tempoLabel, &matchKey, &sourceKey, &targetKey}) addAndMakeVisible(component);
+        for (auto* component : std::initializer_list<juce::Component*>{&folder, &starter, &search, &list, &preview, &stopButton, &session, &song, &status, &empty, &dragDestination, &matchTempo, &sourceTempo, &detectTempo, &tempoLabel, &matchKey, &sourceKey, &targetKey, &detectKey}) addAndMakeVisible(component);
         dragDestination.setName("Sample drag destination"); dragDestination.addItem("Drag into Session", 1); dragDestination.addItem("Drag into Song", 2); dragDestination.setSelectedId(1);
         dragDestination.setTooltip("Dragging a sample reveals this editor. Drop it onto an empty Session cell or a free Song lane position.");
         list.setTooltip("Drag a sample to import it. Choose Session or Song above; the editor opens when dragging starts. Drag a MIDI clip into the piano roll, or a drum groove onto the Channel Rack.");
@@ -31,11 +32,14 @@ public:
             for (int i = 0; i < 12; ++i) key->addItem(previewKeyNames[i], i + 1);
             key->setSelectedId(1, juce::dontSendNotification); key->onChange = [this] { stop(); updateButtons(); };
         }
-        sourceKey.setName("Sample source key"); sourceKey.setTooltip("Root key of the selected sample, entered manually.");
+        sourceKey.setName("Sample source key"); sourceKey.setTooltip("Root key of the selected sample. Choose it, or press Detect key.");
         targetKey.setName("Sample preview target key"); targetKey.setTooltip("Key to hear the preview in. It shifts by at most six semitones, the nearer way round.");
         matchKey.setButtonText("Match key"); matchKey.setName("Match sample preview key");
         matchKey.setTooltip("Shift the preview's pitch from the source key to the target key. Only preview is changed.");
         matchKey.onClick = [this] { stop(); updateButtons(); };
+        detectKey.setButtonText("Detect key"); detectKey.setName("Detect sample key");
+        detectKey.setTooltip("Estimate the selected sample's key from its first minute and fill in the source key. It can be the relative major or minor instead, so check it by ear.");
+        detectKey.onClick = [this] { detectSampleKeyNow(); };
         folder.setButtonText("Choose sample folder..."); folder.onClick = [this] { chooseFolder(); };
         starter.setButtonText("Starter Pack"); starter.setTooltip("Drum sounds that come with Alien Studio");
         starter.onClick = [this] { showStarterPack(); };
@@ -84,13 +88,13 @@ public:
     void setStatus(const juce::String& text) { status.setText(text, juce::dontSendNotification); }
     void stop() {
         previewCancelled->store(true); ++previewGeneration; if (onStop) onStop();
-        if (detecting) { detecting = false; setStatus("Tempo detection stopped."); updateButtons(); }
+        if (detecting.isNotEmpty()) { setStatus(detecting + " detection stopped."); detecting.clear(); updateButtons(); }
     }
     void visibilityChanged() override { if (!isShowing()) stop(); }
     void resized() override {
         auto r = getLocalBounds(); auto top = r.removeFromTop(28); starter.setBounds(top.removeFromRight(110)); top.removeFromRight(6); folder.setBounds(top); r.removeFromTop(6); search.setBounds(r.removeFromTop(26)); r.removeFromTop(6); dragDestination.setBounds(r.removeFromTop(26)); r.removeFromTop(6);
         tempoLabel.setBounds(r.removeFromTop(18)); auto tempo = r.removeFromTop(26); sourceTempo.setBounds(tempo.removeFromLeft(108)); tempo.removeFromLeft(6); detectTempo.setBounds(tempo.removeFromLeft(84)); tempo.removeFromLeft(6); matchTempo.setBounds(tempo); r.removeFromTop(4);
-        auto key = r.removeFromTop(26); sourceKey.setBounds(key.removeFromLeft(64)); key.removeFromLeft(6); targetKey.setBounds(key.removeFromLeft(64)); key.removeFromLeft(6); matchKey.setBounds(key); r.removeFromTop(6);
+        auto key = r.removeFromTop(26); sourceKey.setBounds(key.removeFromLeft(64)); key.removeFromLeft(6); targetKey.setBounds(key.removeFromLeft(64)); key.removeFromLeft(6); detectKey.setBounds(key.removeFromLeft(78)); key.removeFromLeft(6); matchKey.setBounds(key); r.removeFromTop(6);
         status.setBounds(r.removeFromBottom(38)); song.setBounds(r.removeFromBottom(28)); r.removeFromBottom(4); session.setBounds(r.removeFromBottom(28)); r.removeFromBottom(6);
         auto buttons = r.removeFromBottom(28); preview.setBounds(buttons.removeFromLeft(100)); buttons.removeFromLeft(6); stopButton.setBounds(buttons.removeFromLeft(60)); r.removeFromBottom(6); list.setBounds(r); empty.setBounds(r.reduced(8));
     }
@@ -136,29 +140,43 @@ private:
         updateButtons(); repaint();
     }
     void updateButtons() { const bool selected = selectedIsSample(); starter.setEnabled(starterFolder.isDirectory()); empty.setVisible(matches.empty()); const bool valid = validPreviewSettings(matchTempo.getToggleState(), sourceTempo.getValue(), projectTempo, keyShift());
-        preview.setEnabled(selected && valid); detectTempo.setEnabled(selected && !detecting);
+        preview.setEnabled(selected && valid); detectTempo.setEnabled(selected && detecting.isEmpty()); detectKey.setEnabled(selected && detecting.isEmpty());
         preview.setTooltip(valid ? "Preview up to five seconds without changing the project" : matchTempo.getToggleState() && !validPreviewTempoRatio(sourceTempo.getValue(), projectTempo)
             ? "Use a source/project tempo ratio between 0.5 and 2." : "This key shift and tempo ratio together stretch the sample too far."); session.setEnabled(selected && canImport); song.setEnabled(selected && canImportSong); }
     // One job at a time with preview: it shares the cancel flag and generation, so a new
-    // selection, a typed BPM, Stop or leaving the browser all discard the result.
-    void detect() {
+    // selection, a typed value, Stop or leaving the browser all discard the result.
+    template <class Run, class Finish>
+    void runDetection(const juce::String& what, Run run, Finish finish) {
         const auto file = selectedFile(); stop(); if (!selectedIsSample()) return;
         previewCancelled = std::make_shared<std::atomic<bool>>(false); const auto cancel = previewCancelled;
-        const auto generation = previewGeneration; detecting = true; updateButtons(); setStatus("Detecting tempo...");
+        const auto generation = previewGeneration; detecting = what; updateButtons(); setStatus("Detecting " + what.toLowerCase() + "...");
         juce::Component::SafePointer<SampleBrowser> safe(this);
-        pool.addJob([safe, file, generation, cancel] {
+        pool.addJob([safe, file, generation, cancel, run, finish] {
             if (cancel->load()) return;
-            auto result = std::make_shared<SampleTempoResult>(detectSampleTempo(file, *cancel));
-            juce::MessageManager::callAsync([safe, generation, result] {
+            auto result = std::make_shared<decltype(run(file, *cancel))>(run(file, *cancel));
+            juce::MessageManager::callAsync([safe, generation, result, finish] {
                 if (!safe || generation != safe->previewGeneration) return;
-                safe->detecting = false;
-                if (result->tempo) {
-                    safe->sourceTempo.setValue(result->tempo->bpm, juce::dontSendNotification);
-                    safe->setStatus("Estimated " + juce::String(result->tempo->bpm, 1) + " BPM. It can be off by half or double, so check it by ear.");
-                } else safe->setStatus(result->message);
-                safe->updateButtons();
+                safe->detecting.clear(); finish(*safe, *result); safe->updateButtons();
             });
         });
+    }
+    void detect() {
+        runDetection("Tempo", [](const juce::File& file, const std::atomic<bool>& cancel) { return detectSampleTempo(file, cancel); },
+            [](SampleBrowser& browser, const SampleTempoResult& result) {
+                if (!result.tempo) { browser.setStatus(result.message); return; }
+                browser.sourceTempo.setValue(result.tempo->bpm, juce::dontSendNotification);
+                browser.setStatus("Estimated " + juce::String(result.tempo->bpm, 1) + " BPM. It can be off by half or double, so check it by ear.");
+            });
+    }
+    void detectSampleKeyNow() {
+        runDetection("Key", [](const juce::File& file, const std::atomic<bool>& cancel) { return detectSampleKey(file, cancel); },
+            [](SampleBrowser& browser, const SampleKeyResult& result) {
+                if (!result.key) { browser.setStatus(result.message); return; }
+                const auto& key = *result.key;
+                browser.sourceKey.setSelectedId(key.root + 1, juce::dontSendNotification);
+                browser.setStatus("Estimated " + juce::String(previewKeyNames[key.root]) + (key.minor ? " minor" : " major") + ". It can be the relative "
+                    + previewKeyNames[key.relativeRoot()] + (key.minor ? " major" : " minor") + " instead, so check it by ear.");
+            });
     }
     void audition() {
         const auto file = selectedFile(); stop(); if (file == juce::File{}) return;
@@ -210,7 +228,7 @@ private:
     }
     juce::TextButton folder, starter, preview, stopButton, session, song, detectTempo;
     juce::ToggleButton matchTempo; juce::Slider sourceTempo; juce::Label tempoLabel;
-    juce::ToggleButton matchKey; juce::ComboBox sourceKey, targetKey;
+    juce::ToggleButton matchKey; juce::ComboBox sourceKey, targetKey; juce::TextButton detectKey;
     int keyShift() const { return matchKey.getToggleState() ? previewKeyShift(sourceKey.getSelectedId() - 1, targetKey.getSelectedId() - 1) : 0; }
     double projectTempo{120};
     juce::ComboBox dragDestination;
@@ -220,6 +238,6 @@ private:
     std::unique_ptr<juce::FileChooser> chooser; juce::ThreadPool pool{1};
     std::shared_ptr<std::atomic<bool>> cancelled{std::make_shared<std::atomic<bool>>(false)};
     std::shared_ptr<std::atomic<bool>> previewCancelled{std::make_shared<std::atomic<bool>>(false)};
-    unsigned previewGeneration{}; bool canImport{}, canImportSong{}, detecting{};
+    unsigned previewGeneration{}; bool canImport{}, canImportSong{}; juce::String detecting;   // "Tempo" or "Key" while detecting
 };
 } // namespace alien
