@@ -501,6 +501,33 @@ script running these commands directly has no capture or rebuild step. A lane au
 removed plugin stays saved, as before, and comes back with Undo. Rack-channel instruments
 and generic parameter or automation commands are not part of this family.
 
+## Tempo and time signature commands
+
+`SetTempo {bpm}` sets the project tempo, a whole number from 60 to 200. It refuses a value
+outside that range rather than clamping it. On the Song, `SetTempoChange {tick, bpm}`,
+`MoveTempoChange {tick, to}`, `RemoveTempoChange {tick}`, `ClearTempoChanges`,
+`SetMeterChange {bar, numerator, denominator}`, `RemoveMeterChange {bar}` and
+`ClearMeterChanges` edit the tempo and time signature changes. Bars count from 0. All eight
+share a pure reducer in `TempoCommands.h`, with the same Undo labels the editors had.
+
+Frozen audio was rendered at the old tempo, so an edit that changes the tempo unfreezes every
+frozen track, in the same Undo step. The reducer does this, so Preview's document and its
+description show it. A tempo edit is judged against the unfrozen song, which can be shorter,
+so a change that would fall outside it is refused before anything thaws. A time signature
+leaves frozen tracks frozen. An edit that changes nothing never unfreezes and preserves redo.
+
+A busy project refuses all of them. Tempo changes refuse while recording, as their editors
+did. The project tempo and time signatures stay editable while recording, as before, unless
+the song has warped audio, which then refuses all eight from count-in until recording ends.
+
+The transport's tempo control runs `SetTempo` through `setProjectTempo`. Wheel steps within a
+moment form one Undo step. A drag is an audition: the engine follows it and warped audio is
+gated, but the project does not change until the release, which is one `SetTempo`. So frozen
+tracks now unfreeze at the release instead of on the first movement, and play back at the
+dragged tempo until then. The Song ruler's tempo and time signature editors run these commands
+too. `ProjectController::setBpm`, `commit` after it and `editTempoMap` remain for tests and
+are not reached from the UI; removing them belongs with the obsolete route cleanup.
+
 ## Master volume command
 
 `SetMasterVolume {gain}` accepts a finite linear gain from 0 through 4 (1 is unity),

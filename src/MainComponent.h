@@ -429,16 +429,22 @@ private:
             controller.setRecordSettings(settings);
         };
         topBar.onTempoChanged = [this](int bpm) {
-            controller.setBpm(bpm);
-            if (!topBar.isTempoDragging()) controller.commit("Change tempo", -1, -1, "tempo");
+            if (topBar.isTempoDragging()) controller.auditionTempo(bpm);
+            else commitTempo(bpm);
         };
-        topBar.onTempoCommitted = [this] { controller.commit("Change tempo", -1, -1, "tempo"); };
+        topBar.onTempoCommitted = [this] { commitTempo(topBar.tempoValue()); };
         topBar.onNew = [this] { newProject(); };
         topBar.onOpen = [this] { openProject(); };
         topBar.onSave = [this] { controller.save(); };
         topBar.onSavePortable = [this] { controller.chooseSavePath(true); };
         topBar.onUndo = [this] { undo(); };
         topBar.onRedo = [this] { redo(); };
+    }
+
+    void commitTempo(int bpm) {
+        const auto result = alien::command::setProjectTempo(controller, bpm);
+        topBar.setTempo(controller.document().bpm);
+        if (!result.ok) timelineView.setStatus(result.error);
     }
 
     void togglePlay() {

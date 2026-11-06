@@ -1,6 +1,6 @@
 # T1-02 completion audit
 
-CMD-01 is **not complete**. The Command Engine currently exposes 47 commands:
+CMD-01 is **not complete**. The Command Engine currently exposes 55 commands:
 five structural track commands, four Session track mix commands, three Session
 MIDI creation plus all-type duplication/independence, one Session clip delete
 command (claim #186), two clipboard paste commands (claim #189),
@@ -8,7 +8,7 @@ one Session MoveClip command (claim #192),
 five Session scene commands (claim #181), and CreateRackPattern/AssignRackClip
 (claim #198), RemoveClipAudio (claim #203), SetMasterVolume (claim #208),
 ImportClipAudio, five send and return commands (claim #223), and ten return strip
-and bus commands (claim #226), SetTrackOutput and SetSidechain (claim #234), and four device commands (claim #242).
+and bus commands (claim #226), SetTrackOutput and SetSidechain (claim #234), four device commands (claim #242), and eight tempo and time signature commands (claim #250).
 
 The existing roadmap examples are a target catalog, not proof that every
 operation already has a command. Completion requires both a validated command
@@ -24,7 +24,7 @@ audition, and saving a file are separate lifecycle actions, not snapshot edits.
 | Mixer parameters/routing | Session/Mixer track volume/pan/mute/solo; SetMasterVolume and master-fader gestures; SetTrackSend/SetTrackSendMode with the Mixer send knobs and switches; CreateReturn/RenameReturn/DeleteReturn with the Add return button and return menu (claim #223); SetReturnVolume/SetReturnPan/SetReturnMute and SetBusVolume/SetBusPan/SetBusMute/SetBusSolo with the Mixer strips; CreateBus/RenameBus/DeleteBus with the Add bus button and bus menu (claim #226); SetTrackOutput with the Mixer output menu (a track's bus is also its group) and SetSidechain with the Plugins sidechain menu (claim #234) | Audit other entry points for direct mutations; native acceptance |
 | Devices | InsertDevice/RemoveDevice/MoveDevice/SetDeviceBypass with the Plugins Add, Remove, Move and Bypass buttons and a shared capture, execute and rebuild flow (claim #242) | Runtime load failure stays a status message, not a refusal; rack-channel instrument commands; native acceptance |
 | Automation/parameters | Existing saved send/plugin lanes and playback | Named lane/point edits and generic parameter targets; Preview must not instantiate or call plugins; account for the older stock-automation cache audit (#179) |
-| Tempo/meter | Existing project tempo and Song map editors | Named project-tempo, tempo-map and meter commands; unfreeze/warp-preparation lifecycle, grouping and UI adoption |
+| Tempo/meter | SetTempo with the transport control (a drag is an audition until its release); SetTempoChange, MoveTempoChange, RemoveTempoChange and ClearTempoChanges, SetMeterChange, RemoveMeterChange and ClearMeterChanges with the Song ruler editors; the unfreeze is predicted by Preview and shares the Undo step (claim #250) | Native acceptance; remove the unused direct setBpm and editTempoMap routes in the final route cleanup |
 | Song/MIDI/rack edits | Existing editor/controller operations | Inventory and route remaining undoable placement, note, pattern and recording-settings edits through the same contract; retain existing gesture grouping |
 
 ## Suggested implementation sequence

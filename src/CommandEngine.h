@@ -2,6 +2,7 @@
 #include "ProjectController.h"
 #include "SceneCommands.h"
 #include "DeviceCommands.h"
+#include "TempoCommands.h"
 #include <juce_core/juce_core.h>
 #include <array>
 #include <charconv>
@@ -86,12 +87,22 @@ struct MoveScene { int scene{-1}, to{-1}; };
 struct RenameScene { int scene{-1}; juce::String name; };
 struct DeleteScene { int scene{-1}; };
 
-using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume, ImportClipAudio, SetTrackSend, SetTrackSendMode, CreateReturn, RenameReturn, DeleteReturn, SetReturnVolume, SetReturnPan, SetReturnMute, CreateBus, RenameBus, DeleteBus, SetBusVolume, SetBusPan, SetBusMute, SetBusSolo, SetTrackOutput, SetSidechain, InsertDevice, RemoveDevice, MoveDevice, SetDeviceBypass>;
+// The project tempo, and the Song's tempo and time signature changes. Tempo edits unfreeze frozen tracks.
+struct SetTempo { int bpm{}; };
+struct SetTempoChange { std::int64_t tick{}; double bpm{}; };
+struct MoveTempoChange { std::int64_t tick{}, to{}; };
+struct RemoveTempoChange { std::int64_t tick{}; };
+struct ClearTempoChanges {};
+struct SetMeterChange { int bar{}, numerator{}, denominator{}; };   // bars count from 0
+struct RemoveMeterChange { int bar{}; };
+struct ClearMeterChanges {};
+
+using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume, ImportClipAudio, SetTrackSend, SetTrackSendMode, CreateReturn, RenameReturn, DeleteReturn, SetReturnVolume, SetReturnPan, SetReturnMute, CreateBus, RenameBus, DeleteBus, SetBusVolume, SetBusPan, SetBusMute, SetBusSolo, SetTrackOutput, SetSidechain, InsertDevice, RemoveDevice, MoveDevice, SetDeviceBypass, SetTempo, SetTempoChange, MoveTempoChange, RemoveTempoChange, ClearTempoChanges, SetMeterChange, RemoveMeterChange, ClearMeterChanges>;
 
 namespace detail {
 // Indexed like Command's alternatives.
-inline constexpr std::array<const char*, 47> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume", "ImportClipAudio", "SetTrackSend", "SetTrackSendMode", "CreateReturn", "RenameReturn", "DeleteReturn", "SetReturnVolume", "SetReturnPan", "SetReturnMute", "CreateBus", "RenameBus", "DeleteBus", "SetBusVolume", "SetBusPan", "SetBusMute", "SetBusSolo", "SetTrackOutput", "SetSidechain", "InsertDevice", "RemoveDevice", "MoveDevice", "SetDeviceBypass"};
-inline constexpr std::array<const char*, 47> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume", "Import audio", "Set send level", "Set send mode", "Add return", "Rename return", "Remove return", "Set return volume", "Set return pan", "Set return mute", "Add bus", "Rename bus", "Delete bus", "Set bus volume", "Set bus pan", "Set bus mute", "Set bus solo", "Set track output", "Set sidechain", "Insert device", "Remove device", "Move device", "Set device bypass"};
+inline constexpr std::array<const char*, 55> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume", "ImportClipAudio", "SetTrackSend", "SetTrackSendMode", "CreateReturn", "RenameReturn", "DeleteReturn", "SetReturnVolume", "SetReturnPan", "SetReturnMute", "CreateBus", "RenameBus", "DeleteBus", "SetBusVolume", "SetBusPan", "SetBusMute", "SetBusSolo", "SetTrackOutput", "SetSidechain", "InsertDevice", "RemoveDevice", "MoveDevice", "SetDeviceBypass", "SetTempo", "SetTempoChange", "MoveTempoChange", "RemoveTempoChange", "ClearTempoChanges", "SetMeterChange", "RemoveMeterChange", "ClearMeterChanges"};
+inline constexpr std::array<const char*, 55> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume", "Import audio", "Set send level", "Set send mode", "Add return", "Rename return", "Remove return", "Set return volume", "Set return pan", "Set return mute", "Add bus", "Rename bus", "Delete bus", "Set bus volume", "Set bus pan", "Set bus mute", "Set bus solo", "Set track output", "Set sidechain", "Insert device", "Remove device", "Move device", "Set device bypass", "Change tempo", "Tempo change", "Move tempo change", "Remove tempo change", "Remove tempo changes", "Time signature change", "Remove time signature change", "Remove time signature changes"};
 static_assert(names.size() == std::variant_size_v<Command> && labels.size() == names.size());
 
 // The name the controller stores for `name` (it trims and caps track names).
@@ -205,6 +216,20 @@ inline std::optional<sidechain_edit::Edit> sidechainEdit(const Command& command)
     return {};
 }
 
+inline std::optional<tempo_edit::Edit> tempoEdit(const Command& command) {
+    using Kind = tempo_edit::Kind;
+    tempo_edit::Edit e;
+    if (const auto* c = std::get_if<SetTempo>(&command)) { e.kind = Kind::projectTempo; e.bpm = c->bpm; return e; }
+    if (const auto* c = std::get_if<SetTempoChange>(&command)) { e.kind = Kind::setChange; e.tick = c->tick; e.changeBpm = c->bpm; return e; }
+    if (const auto* c = std::get_if<MoveTempoChange>(&command)) { e.kind = Kind::moveChange; e.tick = c->tick; e.to = c->to; return e; }
+    if (const auto* c = std::get_if<RemoveTempoChange>(&command)) { e.kind = Kind::removeChange; e.tick = c->tick; return e; }
+    if (std::holds_alternative<ClearTempoChanges>(command)) { e.kind = Kind::clearChanges; return e; }
+    if (const auto* c = std::get_if<SetMeterChange>(&command)) { e.kind = Kind::setMeter; e.bar = c->bar; e.numerator = c->numerator; e.denominator = c->denominator; return e; }
+    if (const auto* c = std::get_if<RemoveMeterChange>(&command)) { e.kind = Kind::removeMeter; e.bar = c->bar; return e; }
+    if (std::holds_alternative<ClearMeterChanges>(command)) { e.kind = Kind::clearMeters; return e; }
+    return std::nullopt;
+}
+
 inline std::optional<scene_edit::Edit> sceneEdit(const Command& command) {
     using Kind = scene_edit::Kind;
     if (std::holds_alternative<CreateScene>(command)) return scene_edit::Edit{Kind::create};
@@ -259,6 +284,7 @@ inline juce::String refusal(const ProjectDocument& d, const Command& command, co
     if (const auto edit = busEdit(command)) return bus_edit::refusal(d, *edit);
     if (const auto edit = sidechainEdit(command)) return sidechain_edit::refusal(d, *edit);
     if (const auto edit = deviceEdit(command)) return device_edit::refusal(d, *edit);
+    if (const auto edit = tempoEdit(command)) return tempo_edit::refusal(d, *edit);
     if (const auto* c = std::get_if<SetTrackOutput>(&command)) {
         if (const auto why = track(c->track); why.isNotEmpty()) return why;
         return c->bus == -1 || bus_edit::slotInUse(d, c->bus) ? juce::String{} : "Bus slot " + juce::String(c->bus) + " is not in use.";
@@ -301,6 +327,17 @@ inline juce::String refusal(const ProjectDocument& d, const Command& command, co
 inline juce::String describe(const ProjectDocument& d, const Command& command) {
     auto returnName = [&](int r) { return "\"" + d.returns[static_cast<std::size_t>(r)].name + "\""; };
     auto busName = [&](int b) { return "\"" + d.buses[static_cast<std::size_t>(b)].name + "\""; };
+    if (const auto edit = tempoEdit(command)) {
+        const juce::String thawing = tempo_edit::changesTempo(*edit) && tempo_edit::anyFrozen(d) && !tempo_edit::changesNothing(d, *edit) ? " (frozen tracks are unfrozen first)" : "";
+        if (const auto* c = std::get_if<SetTempo>(&command)) return "Set the project tempo to " + juce::String(c->bpm) + " BPM" + thawing;
+        if (const auto* c = std::get_if<SetTempoChange>(&command)) return "Set the tempo from tick " + juce::String(c->tick) + " to " + juce::String(c->bpm, 2) + " BPM" + thawing;
+        if (const auto* c = std::get_if<MoveTempoChange>(&command)) return "Move the tempo change at tick " + juce::String(c->tick) + " to tick " + juce::String(c->to) + thawing;
+        if (const auto* c = std::get_if<RemoveTempoChange>(&command)) return "Remove the tempo change at tick " + juce::String(c->tick) + thawing;
+        if (std::holds_alternative<ClearTempoChanges>(command)) return "Remove every tempo change" + thawing;
+        if (const auto* c = std::get_if<SetMeterChange>(&command)) return "Set the time signature from bar " + juce::String(c->bar + 1) + " to " + juce::String(c->numerator) + "/" + juce::String(c->denominator);
+        if (const auto* c = std::get_if<RemoveMeterChange>(&command)) return "Remove the time signature change at bar " + juce::String(c->bar + 1);
+        return "Remove every time signature change";
+    }
     if (const auto* c = std::get_if<SetTrackOutput>(&command)) return "Send " + detail::trackTitle(d, c->track) + " to " + (c->bus < 0 ? juce::String("the master") : "bus " + busName(c->bus));
     if (const auto* c = std::get_if<SetSidechain>(&command)) {
         const auto effect = "FX " + juce::String(c->effect + 1) + " on " + detail::rackTitle(d, *c);
@@ -379,6 +416,7 @@ inline juce::String applyTo(ProjectDocument& d, const Command& command, const cl
     }
     if (const auto edit = sidechainEdit(command)) return sidechain_edit::apply(d, *edit);
     if (const auto edit = deviceEdit(command)) return device_edit::apply(d, *edit);
+    if (const auto edit = tempoEdit(command)) return tempo_edit::apply(d, *edit);
     if (const auto* c = std::get_if<SetTrackOutput>(&command)) { d.tracks[static_cast<std::size_t>(c->track)].settings.output = c->bus; return {}; }
     if (const auto* c = std::get_if<SetReturnVolume>(&command)) { d.returns[static_cast<std::size_t>(c->returnSlot)].settings.gain = static_cast<float>(c->gain); return {}; }
     if (const auto* c = std::get_if<SetReturnPan>(&command)) { d.returns[static_cast<std::size_t>(c->returnSlot)].settings.pan = static_cast<float>(c->pan); return {}; }
@@ -437,6 +475,13 @@ inline juce::var arguments(const Command& command) {
     auto* object = new juce::DynamicObject();
     juce::var result(object);
     if (const auto* c = std::get_if<SetTrackOutput>(&command)) { object->setProperty("track", c->track); object->setProperty("bus", c->bus); return result; }
+    if (const auto* c = std::get_if<SetTempo>(&command)) { object->setProperty("bpm", c->bpm); return result; }
+    if (const auto* c = std::get_if<SetTempoChange>(&command)) { object->setProperty("tick", static_cast<juce::int64>(c->tick)); object->setProperty("bpm", c->bpm); return result; }
+    if (const auto* c = std::get_if<MoveTempoChange>(&command)) { object->setProperty("tick", static_cast<juce::int64>(c->tick)); object->setProperty("to", static_cast<juce::int64>(c->to)); return result; }
+    if (const auto* c = std::get_if<RemoveTempoChange>(&command)) { object->setProperty("tick", static_cast<juce::int64>(c->tick)); return result; }
+    if (std::holds_alternative<ClearTempoChanges>(command) || std::holds_alternative<ClearMeterChanges>(command)) return result;
+    if (const auto* c = std::get_if<SetMeterChange>(&command)) { object->setProperty("bar", c->bar); object->setProperty("numerator", c->numerator); object->setProperty("denominator", c->denominator); return result; }
+    if (const auto* c = std::get_if<RemoveMeterChange>(&command)) { object->setProperty("bar", c->bar); return result; }
     if (const auto* c = std::get_if<SetSidechain>(&command)) {
         object->setProperty("stage", detail::stageName(c->stage)); object->setProperty("rack", c->rack); object->setProperty("effect", c->effect);
         object->setProperty("from", keySourceName(c->from)); object->setProperty("source", c->source); return result;
@@ -523,7 +568,7 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
     while (index < detail::names.size() && commandName != detail::names[index]) ++index;
     if (index >= detail::names.size()) { error = "Unknown command \"" + commandName + "\"."; return std::nullopt; }
     if (index == 25) { error = "ImportClipAudio takes decoded audio, which cannot be written as arguments."; return std::nullopt; }
-    static const std::array<juce::StringArray, 47> allowed{
+    static const std::array<juce::StringArray, 55> allowed{
         juce::StringArray{}, juce::StringArray{"track"}, juce::StringArray{"track", "to"},
         juce::StringArray{"track", "name"}, juce::StringArray{"track", "colour"},
         juce::StringArray{"track", "gain"}, juce::StringArray{"track", "pan"},
@@ -534,7 +579,9 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
         juce::StringArray{"return","gain"},juce::StringArray{"return","pan"},juce::StringArray{"return","muted"},
         juce::StringArray{},juce::StringArray{"bus","name"},juce::StringArray{"bus"},
         juce::StringArray{"bus","gain"},juce::StringArray{"bus","pan"},juce::StringArray{"bus","muted"},juce::StringArray{"bus","soloed"},
-        juce::StringArray{"track","bus"},juce::StringArray{"stage","rack","effect","from","source"},juce::StringArray{"stage","rack","slot","description"},juce::StringArray{"stage","rack","slot"},juce::StringArray{"stage","rack","slot","to"},juce::StringArray{"stage","rack","slot","bypassed"}};
+        juce::StringArray{"track","bus"},juce::StringArray{"stage","rack","effect","from","source"},juce::StringArray{"stage","rack","slot","description"},juce::StringArray{"stage","rack","slot"},juce::StringArray{"stage","rack","slot","to"},juce::StringArray{"stage","rack","slot","bypassed"},
+        {"bpm"}, {"tick", "bpm"}, {"tick", "to"}, {"tick"}, {}, {"bar", "numerator", "denominator"}, {"bar"}, {}
+    };
     const auto* object = args.getDynamicObject();
     if (object == nullptr && !args.isVoid()) { error = commandName + " takes an object of arguments."; return std::nullopt; }
     if (object != nullptr)
@@ -578,7 +625,22 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
         ok = false;
         return false;
     };
+    auto wide = [&](const char* key) {
+        const auto value = object != nullptr ? object->getProperty(key) : juce::var{};
+        if (ok && (value.isInt() || value.isInt64())) return static_cast<std::int64_t>(static_cast<juce::int64>(value));
+        if (ok) error = commandName + " needs a whole-number \"" + juce::String(key) + "\" argument.";
+        ok = false;
+        return std::int64_t{};
+    };
     switch (index) {
+        case 47: command = SetTempo{integer("bpm")}; break;
+        case 48: { const auto tick = wide("tick"); command = SetTempoChange{tick, number("bpm")}; break; }
+        case 49: { const auto tick = wide("tick"); command = MoveTempoChange{tick, wide("to")}; break; }
+        case 50: command = RemoveTempoChange{wide("tick")}; break;
+        case 51: command = ClearTempoChanges{}; break;
+        case 52: { const int bar = integer("bar"), top = integer("numerator"); command = SetMeterChange{bar, top, integer("denominator")}; break; }
+        case 53: command = RemoveMeterChange{integer("bar")}; break;
+        case 54: command = ClearMeterChanges{}; break;
         case 0: command = CreateTrack{}; break;
         case 1: command = DeleteTrack{integer("track")}; break;
         case 2: { const int track = integer("track"); command = MoveTrack{track, integer("to")}; break; }
@@ -736,6 +798,9 @@ public:
         if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return busEdit(c).has_value(); })) return refused("Stop recording before adding, renaming or deleting buses.");
         if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return sidechainEdit(c).has_value(); })) return refused("Stop recording before changing a sidechain key.");
         if (!controller.canEditMidiClips() && std::any_of(commands.begin(), commands.end(), [](const auto& c) { return deviceEdit(c).has_value(); })) return refused("Stop recording before changing plugins.");
+        for (const auto& command : commands)
+            if (const auto edit = tempoEdit(command))
+                if (const auto why = controller.tempoEditRefusal(*edit); why.isNotEmpty()) return refused(why);
         const auto clipboard = controller.clipClipboard();
         Result result = preview(commands, &clipboard);
         if (!result.ok || !result.changed) return result;
@@ -789,6 +854,7 @@ private:
         }
         if (const auto edit = sidechainEdit(command)) return controller.applySidechainCommand(*edit);
         if (const auto edit = deviceEdit(command)) return controller.applyDeviceCommand(*edit);
+        if (const auto edit = tempoEdit(command)) return controller.applyTempoCommand(*edit);
         if (std::holds_alternative<CreateReturn>(command)) return controller.addReturn() >= 0;
         if (const auto* c = std::get_if<RenameReturn>(&command)) {
             // An unchanged name is a no-op, not a failure: the rest of a batch still runs.
@@ -843,6 +909,14 @@ private:
 
     ProjectController& controller;
 };
+
+// The transport's tempo control. Wheel steps within a moment are one Undo step; a drag calls
+// this once, at release. Either way the engine ends on the project's tempo, even if refused.
+inline Result setProjectTempo(ProjectController& controller, int bpm) {
+    const auto result = CommandEngine(controller).execute(SetTempo{bpm}, "tempo");
+    controller.endTempoAudition();
+    return result;
+}
 
 // The entry points for audio bound for a Session cell. Each ends in ImportClipAudio,
 // so there is one set of checks, one reducer and one Undo step.

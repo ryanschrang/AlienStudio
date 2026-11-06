@@ -102,6 +102,23 @@ static void warpEditorChecks() {
     const timeline::TempoMap changedTempo{c.timeline().tempoChanges,100};
     const auto expectedFrames=static_cast<std::size_t>(std::ceil(changedTempo.secondsBetween(savedRegion->start,savedRegion->end())*8000));
     require(changed->clipFor(*changed->timeline.find(id),2).audio->frames==expectedFrames,"prepared cache duration uses changed project tempo before the first Song tempo event");
+    // The transport's control over warped audio: a drag gates playback and is no edit until its release.
+    {
+        const auto dragLabel=c.undoLabel();
+        c.auditionTempo(130);
+        require(rig->engine.arrangementPreparing.load() && !rig->engine.playing.load() && c.document().bpm==100 && !c.isBusy() && c.undoLabel()==dragLabel,"a tempo drag gates playback before its release");
+        require(alien::command::setProjectTempo(c,100).ok && c.undoLabel()==dragLabel && rig->engine.bpm.load()==100,"a drag returning to its start is no edit");waitForWarp(c);
+        require(!rig->engine.arrangementPreparing.load(),"and cannot strand transport preparation");
+        c.auditionTempo(110);
+        require(alien::command::setProjectTempo(c,110).changed && c.isBusy() && rig->engine.arrangementPreparing.load(),"its release prepares warped audio for the new tempo");waitForWarp(c);
+        require(!rig->engine.arrangementPreparing.load() && c.undoLabel()=="Change tempo" && c.undo(),"and is one Undo step");waitForWarp(c);
+        rig->engine.recording.phase.store(alien::RecordControls::recording);
+        alien::command::CommandEngine commands(c);
+        require(!commands.execute(alien::command::SetTempo{111}).ok && !commands.execute(alien::command::SetMeterChange{0,3,4}).ok && c.document().bpm==100,"warped audio refuses tempo and time signature edits while recording");
+        c.auditionTempo(111);
+        require(rig->engine.bpm.load()==100,"and a drag while recording");
+        rig->engine.recording.phase.store(alien::RecordControls::idle);
+    }
     c.setBpm(120);c.commit("Restore base tempo");waitForWarp(c);
     const auto publications=rig->engine.arrangementMailbox.publishedCount();
     require(c.retryWarpPreparation(),"prepare concurrent-edit fixture");
