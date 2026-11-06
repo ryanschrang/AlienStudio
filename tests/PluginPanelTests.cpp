@@ -96,7 +96,12 @@ static void browserTests() {
           "screen readers hear the plugin, its kind and maker rather than a row number");
 
     browser.setQuery("verb"); browser.setKind(PluginBrowser::Kind::effects);
-    check(browser.resultCount() == 2, "search and the Effects filter combine (Alien Reverb and Zeta Verb)");
+    const std::vector<juce::String> expectedVerbs{"Alien Reverb", "Alien Convolution Reverb", "Zeta Verb"};
+    std::vector<juce::String> matchedVerbs;
+    for (int index : PluginBrowser::matching(rows, "verb", PluginBrowser::Kind::effects))
+        matchedVerbs.push_back(rows[static_cast<std::size_t>(index)].name);
+    check(matchedVerbs == expectedVerbs, "verb search includes both stock reverbs and the scanned reverb in stable order");
+    check(browser.resultCount() == static_cast<int>(expectedVerbs.size()), "search and the Effects filter show all three reverb matches");
     browser.setKind(PluginBrowser::Kind::instruments);
     check(browser.resultCount() == 0 && browser.selected() == nullptr && !addFx->isEnabled() && !useInstrument->isEnabled(), "nothing listed, nothing to add");
     check(browser.select(idOf("Zeta Verb")) && browser.selectedChoice() == idOf("Zeta Verb") && addFx->isEnabled(), "select() clears a filter that hides the plugin");
