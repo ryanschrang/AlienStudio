@@ -968,7 +968,9 @@ static void deesserTests() {
     check(std::all_of(l.begin(), l.end(), [](float v) { return finite(v); }), "de-esser sanitises invalid inputs and settings");
 }
 
+#include "MultibandDspTests.h"
 int main() {
+    multibandTests();
     deesserTests();
     flangerTests();
     imagerTests();

@@ -645,6 +645,22 @@ Not yet verified on native audio hardware.
 
 Listening, physical controller/device and display acceptance remain pending.
 
+## Alien Multiband Compressor (T2-02 / FX-02, claim #254)
+
+Native hardware listening and display checks remain pending.
+
+- Add Alien Multiband Compressor to a track, return, bus and Master FX. Play a
+  full-range mix and lower each band threshold separately: bass, midrange and
+  high-frequency gain reduction should be distinguishable, with gentle overlap
+  around the fixed 250/2500 Hz splits. Check left/right balance on stereo material.
+- Try fast/slow attack and release on drums and sustained notes. Check for clicks,
+  pumping and distorted transients; the effect is not a peak limiter.
+- At ratio 1:1, output 0 and settled gains compare against bypass. Mix 0 should
+  be dry even with raised wet Output. Check reset, stop/restart and device changes.
+- Automate thresholds, ratio, timing, Output and Mix; save/reopen and Undo/Redo
+  parameter edits. Compare live playback with Song WAV export and freeze.
+- Check all eight knobs and typed dB/ms/seconds/percent values at 100/150/200% DPI.
+
 ## Euclidean rhythm generator (T2-04 / MIDI-05, claim #249)
 
 Native UI and listening checks remain pending.

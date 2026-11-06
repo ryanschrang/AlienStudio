@@ -867,6 +867,21 @@ public:
     void resized() override { auto area = content(); layoutKnobs(area, 0, 4, area.getWidth() / 4); }
 };
 
+class MultibandEditor final : public EffectEditor {
+public:
+    explicit MultibandEditor(MultibandEffect& e) : EffectEditor(e, ui::colours::accent, 640, 380) {
+        addKnob(multiband::low, "Low <250 Hz"); addKnob(multiband::mid, "Mid 250-2500");
+        addKnob(multiband::high, "High >2500 Hz"); addKnob(multiband::ratio, "Ratio");
+        addKnob(multiband::attack, "Attack"); addKnob(multiband::release, "Release");
+        addKnob(multiband::output, "Output"); addKnob(multiband::mix, "Mix"); finishSetup();
+    }
+    void resized() override {
+        auto area = content(); auto top = area.removeFromTop(area.getHeight() / 2);
+        layoutKnobs(top.withTrimmedBottom(6), 0, 4, top.getWidth() / 4);
+        layoutKnobs(area.withTrimmedTop(6), 4, 4, area.getWidth() / 4);
+    }
+};
+
 // ---- Registration ----------------------------------------------------------------------
 
 inline juce::AudioProcessorEditor* makeEditor(Effect& effect) {
@@ -886,6 +901,7 @@ inline juce::AudioProcessorEditor* makeEditor(Effect& effect) {
     if (id == catalog[12].id) return new StereoImagerEditor(static_cast<StereoImagerEffect&>(effect));
     if (id == catalog[13].id) return new FlangerEditor(static_cast<FlangerEffect&>(effect));
     if (id == catalog[14].id) return new DeEsserEditor(static_cast<DeEsserEffect&>(effect));
+    if (id == catalog[15].id) return new MultibandEditor(static_cast<MultibandEffect&>(effect));
     return nullptr;
 }
 // Including this header installs the editors; without it the host shows its generic one.
