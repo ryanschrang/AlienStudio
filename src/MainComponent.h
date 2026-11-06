@@ -67,6 +67,7 @@ public:
         drumPanel.onLoad = [this](int t, int p, const juce::File& f) { controller.loadDrum(f, t, p); };
         drumPanel.onApplySlice = [this](const alien::DrumSliceTarget& target, alien::DrumSlice range) { return controller.editDrumSlice(target, range); };
         drumPanel.onSlice = [this](int t, int p) { controller.sliceDrum(t, p); };
+        drumPanel.onAutoSlice = [this](const alien::DrumSliceTarget& target) { controller.autoSliceDrum(target); };
         drumPanel.onClear = [this](int t, int p) { controller.clearDrum(t, p); refreshExtraViews(); };
         drumPanel.onHit = [this](int t, int p) { engine.drumAuditions[t].push(alien::drumBaseNote + p, 0.8f); };
         drumPanel.onRoute = [this](int t) { releaseNotes(); liveRackInstance = 0; engine.liveRackChannel.store(-1); engine.liveDrumTrack.store(t); refreshPlugins(); };
@@ -543,6 +544,7 @@ private:
         };
         controller.onImportStatus = [this](const juce::String& text, const juce::String& tip) {
             sessionView.setImportStatus(text, tip);
+            drumPanel.setStatus(text);
             devicesView.samples().setStatus(text);
             timelineView.setStatus(text);
         };

@@ -538,7 +538,7 @@ Needs: Valhalla Supermassive, one VST3 instrument (ideally one that reports late
   A replacement file too short for a saved slice must leave that pad offline.
 - Compare live playback with Song WAV export at 44.1/48/96 kHz; check slice boundaries,
   stereo balance, retriggers and device restart. Equal slices may cut across a waveform;
-  listen for boundary clicks. Automatic transient/zero-crossing slicing is not included.
+  listen for boundary clicks. This equal-slice action does not adjust to zero crossings.
 
 Listening and physical-device acceptance remain pending; automated checks are recorded in the PR.
 
@@ -610,6 +610,23 @@ Manual listening and physical-device checks remain pending.
   Channel Rack/generator following and a chord track are outside this increment.
 
 Physical-device listening and display checks remain pending.
+
+## Automatic attack slices (T2-01 / INST-07, claim #245)
+
+Not yet verified on native audio hardware.
+
+- Load a drum loop, select its pad and press Auto slice. Check that up to eight
+  chronological pads begin at useful attacks, the first includes the lead-in and
+  the last includes the tail. Unused pads should clear; Undo restores the whole
+  prior kit and Redo restores the slices. Pads 3/4 still choke each other.
+- Try quiet hits, rolls, a noisy loop and opposite-polarity stereo. Inspect and
+  adjust Start/End frames if detection misses a hit; listen for boundary clicks.
+- Select an edited subrange and repeat: no slice should escape that range. Save,
+  reopen and audition the same pads; compare live playback with Song WAV export.
+- Silence or one isolated hit should leave the kit unchanged. A range over one
+  minute should be refused. Equal slicing must remain available.
+- Check the Auto slice button, pad/track selection and status at 100/150/200% DPI.
+  Busy and frozen targets should disable it; count-in/recording should refuse.
 
 ## Channel Rack project-scale pitch drawing (T2-04 / MIDI-06)
 

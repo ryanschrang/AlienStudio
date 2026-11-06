@@ -1,4 +1,5 @@
 #include "DrumSampler.h"
+#include "DrumTransientSlices.h"
 #include <iostream>
 #include <cstdlib>
 #include <new>
@@ -38,7 +39,50 @@ static void sliceTests() {
         check(allocations == before, "slice playback is allocation free");
     }
 }
+static void transientTests() {
+    for (double rate : {8000., 44100., 48000., 96000.}) {
+        alien::SessionAudioClip clip; clip.sampleRate = rate; clip.channels = 2;
+        clip.frames = static_cast<std::size_t>(rate); clip.left.resize(clip.frames); clip.right.resize(clip.frames);
+        for (int hit = 0; hit < 4; ++hit) {
+            const auto start = static_cast<std::size_t>(rate * (.05 + hit * .2));
+            for (std::size_t f = 0; f < static_cast<std::size_t>(rate * .04); ++f) {
+                const auto amplitude = static_cast<float>(std::exp(-static_cast<double>(f) / (rate * .004)));
+                clip.left[start + f] = amplitude; clip.right[start + f] = -amplitude;
+            }
+        }
+        clip.buildWaveform(); const auto result = alien::detectDrumTransientSlices(clip);
+        check(result.count == 4, "four separated attacks yield four slices at supported sample rates");
+        check(result.ranges[0].start == 0 && result.ranges[3].end == static_cast<int>(clip.frames), "auto slices retain lead-in and tail");
+        for (int p = 0; p < 3; ++p) {
+            check(result.ranges[p].end == result.ranges[p + 1].start, "auto slices partition without gaps");
+            check(std::abs(result.ranges[p].end - rate * (.25 + p * .2)) < rate * .006, "boundaries are near the attack, not equal divisions");
+        }
+        check(alien::detectDrumTransientSlices(clip).ranges == result.ranges, "detection is deterministic");
+        clip.channels = 1; clip.right.clear(); check(alien::detectDrumTransientSlices(clip).count == 4, "mono attacks detected");
+        std::fill(clip.left.begin(), clip.left.end(), .1f); clip.buildWaveform();
+        check(alien::detectDrumTransientSlices(clip).count == 0, "steady sample refuses instead of inventing slices");
+        std::fill(clip.left.begin(), clip.left.end(), 0.f); clip.buildWaveform();
+        check(alien::detectDrumTransientSlices(clip).count == 0, "silence refuses");
+        clip.left[static_cast<std::size_t>(rate * .1)] = 1;
+        check(alien::detectDrumTransientSlices(clip).count == 0, "single attack leaves kit unchanged");
+        clip.left[static_cast<std::size_t>(rate * .11)] = .5f;
+        check(alien::detectDrumTransientSlices(clip).count == 0, "attacks within thirty milliseconds do not create tiny slices");
+        clip.left[0] = std::numeric_limits<float>::quiet_NaN();
+        check(alien::detectDrumTransientSlices(clip).count == 0, "nonfinite source refuses");
+    }
+    auto source = std::make_shared<alien::SessionAudioClip>(); source->sampleRate = 8000; source->channels = 1;
+    source->frames = 16000; source->left.resize(source->frames);
+    for (int hit = 0; hit < 12; ++hit) source->left[400 + hit * 1200] = .2f + hit * .05f;
+    source->buildWaveform(); auto result = alien::detectDrumTransientSlices(*source);
+    check(result.count == 8 && result.ranges[0].end == 6400, "over eight attacks keeps first and strongest seven boundaries");
+    const auto view = alien::drumSliceView(source, {2800, 7600});
+    result = alien::detectDrumTransientSlices(*view);
+    check(result.count == 4 && result.ranges[0].start == 0 && result.ranges[3].end == 4800, "view detection uses local selected range only");
+    source->frames = 480001; source->left.resize(source->frames); source->buildWaveform();
+    check(alien::detectDrumTransientSlices(*source).count == 0, "over-minute source refuses without truncation");
+}
 int main() {
+    transientTests();
     sliceTests();
     alien::SessionAudioClip clip;
     clip.sampleRate=24000; clip.frames=4; clip.channels=1; clip.left={1,0.5f,0.25f,0}; clip.buildWaveform();
