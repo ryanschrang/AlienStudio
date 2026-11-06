@@ -969,7 +969,9 @@ static void deesserTests() {
 }
 
 #include "MultibandDspTests.h"
+#include "ConvolutionDspTests.h"
 int main() {
+    convolutionTests();
     multibandTests();
     deesserTests();
     flangerTests();

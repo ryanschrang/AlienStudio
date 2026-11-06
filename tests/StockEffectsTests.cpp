@@ -79,7 +79,7 @@ static bool allFinite(const std::vector<float>& x) { for (float v : x) if (!dsp:
 
 // ---------------------------------------------------------------------------
 static void catalogueTests() {
-    check(stock::catalog.size() == 16, "sixteen stock effects");
+    check(stock::catalog.size() == 17, "seventeen stock effects");
     std::set<juce::String> names, ids;
     for (const auto& info : stock::catalog) {
         auto e = stock::create(info.id);
@@ -867,6 +867,27 @@ static void flangerParameterTests() {
     checkNear(feedback->convertFrom0to1(feedback->getValueForText("-65%")), -.65, 1e-6, "flanger accepts signed feedback percentages");
 }
 
+static void convolutionHostTests() {
+    auto effect = make("convolution");
+    check(effect->getLatencySamples() == dsp::ConvolutionReverb::latency && effect->getTailLengthSeconds() > .3, "convolution reports FIR latency and conservative tail");
+    auto* tone = effect->parameters.getParameter(stock::convolution::tone);
+    checkNear(tone->convertFrom0to1(tone->getValueForText("3k")), 3000, 1, "convolution tone accepts kHz input");
+    setParam(*effect, stock::convolution::mix, 0);
+    juce::MemoryBlock saved; effect->getStateInformation(saved);
+    auto runtime = std::make_unique<PluginRuntime>(); runtime->prepare(rate); PluginHost host(*runtime);
+    std::vector<PluginRackState> racks(2); PluginRackState master;
+    racks[0].effects = {stockState("convolution")}; racks[0].effects[0].stateBase64 = saved.toBase64Encoding();
+    check(host.restore(racks, master, rate).isEmpty(), "convolution restores in host rack");
+    check(runtime->rackLatency(runtime->racks[0]) == dsp::ConvolutionReverb::latency, "host sees convolution latency");
+    runtime->begin(512, 120, true, 0);
+    for (int t = 0; t < 2; ++t) { runtime->tracks[t].setSample(0, 0, .5f); runtime->tracks[t].setSample(1, 0, .5f); }
+    runtime->effectsAndAlign(512);
+    checkNear(runtime->tracks[0].getSample(0, 0), 0, 1e-9, "convolution dry path does not arrive early");
+    checkNear(runtime->tracks[1].getSample(0, 0), 0, 1e-9, "parallel track is delayed to convolution latency");
+    runtime->begin(512, 120, true, 512); runtime->effectsAndAlign(512);
+    checkNear(runtime->tracks[0].getSample(0, 0), .5, 1e-7, "convolution dry impulse arrives after one partition");
+    checkNear(runtime->tracks[1].getSample(0, 0), .5, 1e-7, "host compensation aligns the other track exactly");
+}
 static void multibandParameterTests() {
     auto effect = make("multiband");
     check(effect->getLatencySamples() == 0 && effect->getTailLengthSeconds() == dsp::MultibandCompressor::tailSeconds, "multiband reports zero latency and bounded filter tail");
@@ -888,6 +909,7 @@ static void deesserParameterTests() {
 
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    convolutionHostTests();
     multibandParameterTests();
     flangerParameterTests();
     deesserParameterTests();
