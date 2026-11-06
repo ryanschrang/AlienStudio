@@ -8,6 +8,7 @@
 #include "PianoRollGhostNotes.h"
 #include "PianoRollChordStamp.h"
 #include "PianoRollProgression.h"
+#include "PianoRollEuclidean.h"
 #include "PianoRollScale.h"
 #include "PianoRollPitchRows.h"
 #include "ExternalFileDrop.h"
@@ -129,6 +130,7 @@ public:
         tools.addItem("Reverse", 9);
         tools.addItem("Arpeggiate", 10);
         tools.addItem("Chord progression", 11);
+        tools.addItem("Euclidean rhythm", 12);
         tools.setSelectedId(1, juce::dontSendNotification);
         tools.setTooltip("Choose a note processing tool, then open its settings");
         tools.onChange = [this] {
@@ -189,6 +191,10 @@ public:
         seedLabel.setText("Random seed", juce::dontSendNotification);
         seedLabel.setJustificationType(juce::Justification::centredRight);
         addChildComponent(descending);
+        addChildComponent(euclideanScale);
+        euclideanScale.setButtonText("Project scale");
+        euclideanScale.setName("Euclidean follow project scale");
+        euclideanScale.setTooltip("Snap the generated pitch to the current project scale, independently of local Scale settings. Undefined project key leaves it chromatic. Existing notes stay unchanged.");
         descending.setButtonText("High to low");
         descending.setName("Strum from high pitch to low pitch");
         addChildComponent(chordTypeLabel);
@@ -642,6 +648,7 @@ public:
             seedLabel.setBounds(16, 113, 106, 26);
             seed.setBounds(128, 113, 190, 26);
             descending.setBounds(336, 113, 150, 26);
+            euclideanScale.setBounds(336, 113, 170, 26);
         }
         applyButton.setBounds(getWidth() - 184, 113, 78, 28);
         cancelButton.setBounds(getWidth() - 98, 113, 78, 28);
@@ -1204,11 +1211,12 @@ private:
         exampleButton.setEnabled(pattern.count == 0);
         undoButton.setEnabled(canUndo());
         redoButton.setEnabled(canRedo());
-        applyButton.setEnabled(tools.getSelectedId() == 5 || tools.getSelectedId() == 6 || tools.getSelectedId() == 11 || selection.count != 0);
+        applyButton.setEnabled(tools.getSelectedId() == 5 || tools.getSelectedId() == 6 || tools.getSelectedId() == 11 || tools.getSelectedId() == 12 || selection.count != 0);
         if (panelOpen)
             panelTitle.setText(tools.getSelectedId() == 5
                                ? "Chord stamp at step " + juce::String(insertionStep + 1.0, 3)
                                : tools.getSelectedId() == 11 ? "Chord progression at step " + juce::String(insertionStep + 1.0, 3)
+                               : tools.getSelectedId() == 12 ? "Euclidean rhythm at step " + juce::String(insertionStep + 1.0, 3)
                                : tools.getSelectedId() == 6 ? "Scale highlighting and snapping"
                                : tools.getText() + " selected notes  |  "
                                  + juce::String(static_cast<int>(selection.count)) + " selected",
@@ -1533,20 +1541,24 @@ private:
         const auto tool = tools.getSelectedId();
         panelTitle.setText(tool == 5 ? "Chord stamp at step " + juce::String(insertionStep + 1.0, 3)
                                     : tool == 11 ? "Chord progression at step " + juce::String(insertionStep + 1.0, 3)
+                                    : tool == 12 ? "Euclidean rhythm at step " + juce::String(insertionStep + 1.0, 3)
                                     : tool == 6 ? "Scale highlighting and snapping"
                                     : tool == 10 ? "Arpeggiate selected chords"
                                     : tools.getText() + " selected notes  |  " + juce::String(static_cast<int>(selection.count))
                                       + " selected", juce::dontSendNotification);
         panelHelp.setText(tool == 5 ? "Choose a voicing, preview it, then add the chord as one undoable edit."
                                     : tool == 11 ? "Four diatonic triads. 16 steps = one bar. Inserts at the cursor; existing notes are kept. Undo removes all four."
+                                    : tool == 12 ? "One sixteenth per step; half-step notes at velocity 102. Hits <= steps; rotation < steps. Inserts at cursor; keeps existing notes."
                                     : tool == 6 ? "Changes apply immediately. Snap affects newly drawn notes and pitch moves; existing notes stay unchanged."
                                     : tool == 10 ? "Sequence notes sharing a start time. Rate and gate use the 240-tick sixteenth grid."
                                     : "240 ticks = one 1/16 note. Changes apply to selected notes only.",
                           juce::dontSendNotification);
         applyButton.setButtonText(tool == 6 ? "Done" : "Apply");
-        seed.setVisible(tool == 1 || tool == 3 || tool == 5);
+        seed.setVisible(tool == 1 || tool == 3 || tool == 5 || tool == 12);
         seedLabel.setVisible(seed.isVisible());
         descending.setVisible(tool == 1 || tool == 10);
+        euclideanScale.setVisible(tool == 12);
+        seed.setTooltip(tool == 12 ? "MIDI pitch for generated notes, optionally snapped to the project scale" : "The same seed and notes reproduce the same randomized result");
         progressionMode.setVisible(tool == 11);
         for (auto& degree : progressionDegrees) degree.setVisible(tool == 11);
         chordType.setVisible(tool == 5);
@@ -1590,6 +1602,13 @@ private:
             seed.setValue(chordSettings.inversion, juce::dontSendNotification);
             chordType.setSelectedId(static_cast<int>(chordSettings.type) + 1, juce::dontSendNotification);
             updateChordInversionRange();
+        } else if (tool == 12) {
+            configureParameter(0, "Steps", "Euclidean steps", 1, 64, euclideanSettings.steps);
+            configureParameter(1, "Hits", "Euclidean hits", 0, 64, euclideanSettings.hits);
+            configureParameter(2, "Rotate right", "Euclidean rotation", 0, 63, euclideanSettings.rotation);
+            seed.setName("Euclidean MIDI pitch"); seedLabel.setText("Pitch (MIDI)", juce::dontSendNotification);
+            seed.setRange(0, 127, 1); seed.setValue(euclideanSettings.pitch, juce::dontSendNotification);
+            euclideanScale.setToggleState(euclideanSettings.followProjectScale, juce::dontSendNotification);
         } else if (tool == 6) {
             syncScaleControls();
         } else if (tool == 11) {
@@ -1628,7 +1647,7 @@ private:
         progressionMode.setVisible(false);
         for (auto& degree : progressionDegrees) degree.setVisible(false);
         for (auto* child : std::initializer_list<juce::Component*> { &panelTitle, &panelHelp, &applyButton,
-                                                                 &cancelButton, &seed, &seedLabel, &descending,
+                                                                 &cancelButton, &seed, &seedLabel, &descending, &euclideanScale,
                                                                  &chordType, &chordTypeLabel, &previewChordButton,
                                                                  &scaleRoot, &scaleRootLabel, &scaleType, &scaleTypeLabel,
                                                                  &scaleHighlight, &scaleSnap, &followProjectScale, &useProjectScale, &projectScaleSummary })
@@ -1648,6 +1667,23 @@ private:
             return;
         }
         beginEdit();
+        if (tools.getSelectedId() == 12) {
+            euclideanSettings = {static_cast<int>(parameters[0].getValue()), static_cast<int>(parameters[1].getValue()),
+                static_cast<int>(parameters[2].getValue()), static_cast<int>(seed.getValue()), euclideanScale.getToggleState()};
+            const auto result = insertEuclidean(pattern, insertionStep, euclideanSettings, projectMusicalScale);
+            if (result.changed()) {
+                selection = result.selection; activeId = selection.ids[0]; changed(); endEdit(); closeToolPanel();
+            } else {
+                endEdit();
+                statusMessage = result.status == EuclideanStatus::outOfBounds
+                    ? "No changes: the full rhythm does not fit after the cursor. Reduce Steps or move the cursor."
+                    : result.status == EuclideanStatus::capacityExceeded ? "No changes: the rhythm exceeds the clip note limit."
+                    : result.status == EuclideanStatus::unchanged ? "No changes: zero hits generates no notes."
+                    : "No changes: Hits must be <= Steps and rotation must be < Steps.";
+                panelHelp.setText(statusMessage, juce::dontSendNotification); updateSelection();
+            }
+            return;
+        }
         if (tools.getSelectedId() == 11) {
             progressionSettings.tonic = static_cast<int>(parameters[0].getValue());
             progressionSettings.chordSteps = parameters[1].getValue();
@@ -1890,7 +1926,7 @@ private:
     std::array<juce::Label, 3> parameterLabels;
     std::array<juce::Slider, 3> parameters;
     juce::Slider seed;
-    juce::ToggleButton descending, previewChordButton, scaleHighlight, scaleSnap;
+    juce::ToggleButton descending, previewChordButton, scaleHighlight, scaleSnap, euclideanScale;
     juce::ScrollBar pitchScroll { true };
     PianoRollSelection selection, marqueeBase;
     PianoRollClipboard clipboard;
@@ -1918,6 +1954,7 @@ private:
     RandomizeSettings randomizeSettings;
     QuantizeSettings quantizeSettings;
     ArpeggiateSettings arpeggiateSettings;
+    EuclideanSettings euclideanSettings;
     ProgressionSettings progressionSettings;
     juce::ComboBox progressionMode;
     std::array<juce::ComboBox, 4> progressionDegrees;
