@@ -424,7 +424,9 @@ static void splitTests() {
     require(count == 4, "repeated stop does not leave another split-note release pending");
 }
 
+#include "PianoRollEuclideanTests.h"
 int main() {
+    euclideanTests();
     splitTests();
     transposeTests();
     selectionTests(); strumTests(); chopTests(); randomizeTests(); quantizeTests();

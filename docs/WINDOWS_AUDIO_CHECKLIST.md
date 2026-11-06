@@ -644,3 +644,23 @@ Not yet verified on native audio hardware.
   context. Check the Scale toggle at minimum name-column width and display DPI.
 
 Listening, physical controller/device and display acceptance remain pending.
+
+## Euclidean rhythm generator (T2-04 / MIDI-05, claim #249)
+
+Native UI and listening checks remain pending.
+
+- Open an empty Piano Roll, choose Euclidean rhythm, open Settings and Apply the
+  defaults. Expect five short notes across 16 sixteenth-note cells. Undo once
+  removes them all; Redo restores them. Repeat in a populated clip: existing
+  notes must remain. Compare live playback and Song export; stop mid-note and
+  check that no note is left sounding.
+- Set Steps 8, Hits 3, rotation 0: cells 0/3/6 should sound. Rotation 1 should
+  move them to 1/4/7. Place the cursor later and check the same offsets.
+- Define C major, set Pitch 61 and enable Project scale: generated pitch should
+  be 60. Change the project key and generate again; old notes must stay unchanged.
+  Turn following off for exact chromatic/drum note mapping. Local Scale settings
+  must not override the generator's explicit Project scale option.
+- Try zero hits, Hits greater than Steps, rotation >= Steps and a cycle extending
+  beyond the loop. Refusal must leave all notes and redo unchanged, with settings
+  open for correction. Cancel and tool switching must hide generator controls.
+- Check controls and messages at minimum window width and 100/150/200% DPI.
