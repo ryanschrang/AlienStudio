@@ -528,6 +528,30 @@ dragged tempo until then. The Song ruler's tempo and time signature editors run 
 too. `ProjectController::setBpm`, `commit` after it and `editTempoMap` remain for tests and
 are not reached from the UI; removing them belongs with the obsolete route cleanup.
 
+## Rack channel commands
+
+`AddRackChannel {sound}`, `AddRackSynthChannel {preset}`, `RemoveRackChannel {channel}`,
+`MoveRackChannel {channel, to}`, `DuplicateRackChannel {channel}`, `RenameRackChannel {channel, name}`,
+`SetRackChannelVolume {channel, volume}`, `SetRackChannelPan {channel, pan}`,
+`SetRackChannelMute {channel, muted}`, `SetRackChannelSolo {channel, soloed}`,
+`SetRackChannelOutput {channel, output}` and `SetRackChannelChoke {channel, group}` share a pure
+reducer in `RackChannelCommands.h`. An empty `sound` adds an empty sampler. Channels count from 0,
+and an output of -1 is the master.
+
+Refusals cover a missing channel, track, preset or built-in sound, values out of range, a blank
+name, a full rack, and any edit that would leave a rack channel routed into a frozen track. An
+edit that changes nothing preserves redo. A busy project refuses them. Recording does not, as
+the Channel Rack allowed these edits before.
+
+`DuplicateRackChannel` carries the copy's plugin identity, so Preview and execute agree. Parsing
+the script form gives it a new one. The host rebuilds after the commit, only if which channel
+holds which plugin has changed.
+
+The Channel Rack's channel menu, add menu, mute and solo buttons, volume and pan knobs run these
+commands, one per selected channel in one batch, with the same Undo labels. A knob gesture merges
+under its key. A refusal now shows as a message, except during a knob gesture. Steps, patterns,
+swing, sound choice and plugin choice still call `editRack`.
+
 ## Master volume command
 
 `SetMasterVolume {gain}` accepts a finite linear gain from 0 through 4 (1 is unity),

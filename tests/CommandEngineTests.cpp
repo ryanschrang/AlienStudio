@@ -450,12 +450,14 @@ static void continuousCommandTests() {
 #include "DeviceCommandTests.h"
 #include "MasterVolumeCommandTests.h"
 #include "TempoCommandTests.h"
+#include "RackChannelCommandTests.h"
 #include "SceneCommandTests.h"
 
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     masterVolumeCommandChecks();
     tempoCommandChecks();
+    rackChannelCommandChecks();
     removeClipAudioChecks();
     sendCommandChecks();
     returnCommandChecks();

@@ -1,6 +1,6 @@
 # T1-02 completion audit
 
-CMD-01 is **not complete**. The Command Engine currently exposes 55 commands:
+CMD-01 is **not complete**. The Command Engine currently exposes 67 commands:
 five structural track commands, four Session track mix commands, three Session
 MIDI creation plus all-type duplication/independence, one Session clip delete
 command (claim #186), two clipboard paste commands (claim #189),
@@ -8,7 +8,7 @@ one Session MoveClip command (claim #192),
 five Session scene commands (claim #181), and CreateRackPattern/AssignRackClip
 (claim #198), RemoveClipAudio (claim #203), SetMasterVolume (claim #208),
 ImportClipAudio, five send and return commands (claim #223), and ten return strip
-and bus commands (claim #226), SetTrackOutput and SetSidechain (claim #234), four device commands (claim #242), and eight tempo and time signature commands (claim #250).
+and bus commands (claim #226), SetTrackOutput and SetSidechain (claim #234), four device commands (claim #242), eight tempo and time signature commands (claim #250), and twelve rack channel commands.
 
 The existing roadmap examples are a target catalog, not proof that every
 operation already has a command. Completion requires both a validated command
@@ -20,7 +20,7 @@ audition, and saving a file are separate lifecycle actions, not snapshot edits.
 | Command contract | Typed arguments, stable names, Execute, Preview, Batch, Undo/Redo, grouping, no-op/redo preservation | Cross-family acceptance with dirty plugin state, asynchronous work and runtime failure; document refusal must precede every live side effect |
 | Track structure | Create/delete/move/rename/colour; Session track menus | Audit other entry points for direct mutations and duplicate commits |
 | Session scenes | Create/duplicate/move/rename/delete and Session add/menu/name UI | Native interaction/acceptance; shared reducer remains a follow-up to remove controller/Preview duplication |
-| Session clips | Empty MIDI creation, all-type independent duplication (claim #196), MIDI make-independent; all-type Session cell delete/clear; PasteClip/PasteLinkedClip and all-type MakeClipUnique; identity-preserving MoveClip and destination menu; CreateRackPattern/AssignRackClip and existing UI adoption (claim #198); RemoveClipAudio and Remove audio button (claim #203); ImportClipAudio with the Import audio button, browser and Explorer drops on Session cells, finished takes and tempo renders (import plan/result boundary, claim #205) | Other rack/channel edit wrappers |
+| Session clips | Empty MIDI creation, all-type independent duplication (claim #196), MIDI make-independent; all-type Session cell delete/clear; PasteClip/PasteLinkedClip and all-type MakeClipUnique; identity-preserving MoveClip and destination menu; CreateRackPattern/AssignRackClip and existing UI adoption (claim #198); RemoveClipAudio and Remove audio button (claim #203); ImportClipAudio with the Import audio button, browser and Explorer drops on Session cells, finished takes and tempo renders (import plan/result boundary, claim #205); AddRackChannel, AddRackSynthChannel, RemoveRackChannel, MoveRackChannel, DuplicateRackChannel, RenameRackChannel and SetRackChannelVolume/Pan/Mute/Solo/Output/Choke with the Channel Rack menus, buttons and knobs | Remaining rack edits still calling editRack: steps, patterns, swing, sound and plugin choice |
 | Mixer parameters/routing | Session/Mixer track volume/pan/mute/solo; SetMasterVolume and master-fader gestures; SetTrackSend/SetTrackSendMode with the Mixer send knobs and switches; CreateReturn/RenameReturn/DeleteReturn with the Add return button and return menu (claim #223); SetReturnVolume/SetReturnPan/SetReturnMute and SetBusVolume/SetBusPan/SetBusMute/SetBusSolo with the Mixer strips; CreateBus/RenameBus/DeleteBus with the Add bus button and bus menu (claim #226); SetTrackOutput with the Mixer output menu (a track's bus is also its group) and SetSidechain with the Plugins sidechain menu (claim #234) | Audit other entry points for direct mutations; native acceptance |
 | Devices | InsertDevice/RemoveDevice/MoveDevice/SetDeviceBypass with the Plugins Add, Remove, Move and Bypass buttons and a shared capture, execute and rebuild flow (claim #242) | Runtime load failure stays a status message, not a refusal; rack-channel instrument commands; native acceptance |
 | Automation/parameters | Existing saved send/plugin lanes and playback | Named lane/point edits and generic parameter targets; Preview must not instantiate or call plugins; account for the older stock-automation cache audit (#179) |
@@ -30,7 +30,7 @@ audition, and saving a file are separate lifecycle actions, not snapshot edits.
 ## Suggested implementation sequence
 
 1. Finish remaining Session clip operations and their UI entry points
-   (remaining rack/channel edit wrappers).
+   (remaining rack edit wrappers: steps, patterns, swing, sound and plugin choice).
 2. Add mixer parameter and routing families using pure document reducers and
    validated, noncommitting controller adapters.
 3. Add device/parameter/automation plans with explicit runtime failure behavior.

@@ -223,46 +223,36 @@ public:
         return controller.editRack(on ? "Add steps" : "Remove steps", [&](rack::Project& p) {
             return p.setStepOn(p.selectedPattern, row, step, on); }, key);
     }
-    bool changeChannel(int row, const juce::String& label, const std::function<void(rack::Channel&)>& change,
-                       const juce::String& key = {}) {
-        return controller.editRack(label, [&](rack::Project& p) {
-            if (!p.validChannel(row)) return false;
-            auto channel = p.channels[static_cast<std::size_t>(row)];
-            change(channel);
-            return p.setChannel(row, channel);
-        }, key);
+    // Commands as one undo step. A gesture's later steps stay quiet: one refusal is enough to say.
+    bool runCommands(const std::vector<command::Command>& commands, const juce::String& label, const juce::String& key = {}) {
+        if (commands.empty()) return false;
+        const auto result = command::CommandEngine(controller).batch(commands, label, key);
+        if (!result.ok && key.isEmpty() && onMessage) onMessage(result.error);
+        return result.changed;
+    }
+    template <class Make>
+    bool runForRows(const std::vector<int>& rows, const juce::String& label, Make&& make, const juce::String& key = {}) {
+        std::vector<command::Command> commands;
+        for (const int row : rows) commands.push_back(make(row));
+        return runCommands(commands, label, key);
     }
     // The channels an edit of `row` applies to: the whole selection when `row` is part of it, else just `row`.
     std::vector<int> targetsOf(int row) const {
         if (isChannelSelected(row)) return selectedChannels();
         return project().validChannel(row) ? std::vector<int>{row} : std::vector<int>{};
     }
-    // `change` applied to each of `rows`, as one undo step.
-    bool changeChannels(const std::vector<int>& rows, const juce::String& label, const std::function<void(int, rack::Channel&)>& change,
-                        const juce::String& key = {}) {
-        return controller.editRack(label, [&](rack::Project& p) {
-            bool any = false;
-            for (const int row : rows) {
-                if (!p.validChannel(row)) continue;
-                auto channel = p.channels[static_cast<std::size_t>(row)];
-                change(row, channel);
-                any = p.setChannel(row, channel) || any;
-            }
-            return any;
-        }, key);
-    }
     // Every target takes the clicked channel's new state, so a mixed selection ends up all muted (or all not).
     void toggleMute(int row) {
         if (!project().validChannel(row)) return;
         const bool on = !project().channels[static_cast<std::size_t>(row)].mute;
         const auto rows = targetsOf(row);
-        changeChannels(rows, plural("Mute channel", rows), [on](int, rack::Channel& c) { c.mute = on; }); repaint();
+        runForRows(rows, plural("Mute channel", rows), [on](int r) { return command::SetRackChannelMute{r, on}; }); repaint();
     }
     void toggleSolo(int row) {
         if (!project().validChannel(row)) return;
         const bool on = !project().channels[static_cast<std::size_t>(row)].solo;
         const auto rows = targetsOf(row);
-        changeChannels(rows, plural("Solo channel", rows), [on](int, rack::Channel& c) { c.solo = on; }); repaint();
+        runForRows(rows, plural("Solo channel", rows), [on](int r) { return command::SetRackChannelSolo{r, on}; }); repaint();
     }
     static juce::String plural(const juce::String& label, const std::vector<int>& rows) {
         return rows.size() > 1 ? label + "s" : label;
@@ -413,10 +403,9 @@ public:
             // From the bottom up, so each copy lands under its original; the copies become the selection.
             const int n = static_cast<int>(rows.size());
             if (project().channelCount + n > rack::maxChannels) return;
-            const bool done = controller.editRack(plural("Duplicate channel", rows), [&](rack::Project& p) {
-                for (auto r = rows.rbegin(); r != rows.rend(); ++r) if (!p.duplicateChannel(*r)) return false;
-                return true;
-            });
+            std::vector<command::Command> copies;
+            for (auto r = rows.rbegin(); r != rows.rend(); ++r) copies.push_back(command::DuplicateRackChannel{*r});
+            const bool done = runCommands(copies, plural("Duplicate channel", rows));
             if (done) {
                 marked = 0;
                 for (int i = 0; i < n; ++i) marked |= bit(rows[static_cast<std::size_t>(i)] + i + 1);
@@ -442,7 +431,7 @@ public:
                                            if (d.identityScope != scope) return;
                                            const int row = d.trackSlot(track, TrackRole::rack);
                                            if (row < 0) return;
-                                           controller.editRack("Rename channel", [&](rack::Project& p) { return p.renameChannel(row, name.toStdString()); });
+                                           runCommands({command::RenameRackChannel{row, name}}, "Rename channel");
                                            repaint(); if (onStructureChanged) onStructureChanged(); });
         } else if (id == cmdMute) toggleMute(row);
         else if (id == cmdSolo) toggleSolo(row);
@@ -452,21 +441,19 @@ public:
             // The selected channels move together, keeping their order and the gaps between them.
             const int delta = id == cmdMoveUp ? -1 : 1;
             if ((delta < 0 && rows.front() == 0) || (delta > 0 && rows.back() + 1 >= project().channelCount)) return;
-            const bool done = controller.editRack(plural("Move channel", rows), [&](rack::Project& p) {
-                if (delta < 0) { for (const int r : rows) if (!p.moveChannel(r, -1)) return false; }
-                else for (auto r = rows.rbegin(); r != rows.rend(); ++r) if (!p.moveChannel(*r, 1)) return false;
-                return true;
-            });
+            std::vector<command::Command> moves;
+            if (delta < 0) { for (const int r : rows) moves.push_back(command::MoveRackChannel{r, r - 1}); }
+            else for (auto r = rows.rbegin(); r != rows.rend(); ++r) moves.push_back(command::MoveRackChannel{*r, *r + 1});
+            const bool done = runCommands(moves, plural("Move channel", rows));
             if (done && isChannelSelected(row)) {
                 marked = delta < 0 ? marked >> 1 : marked << 1;
                 selected = row + delta; anchor = clampRow(anchor + delta);
             } else if (done) selectChannel(row + delta);
             changed();
         } else if (id == cmdDelete) {
-            const bool done = controller.editRack(plural("Delete channel", rows), [&](rack::Project& p) {
-                for (auto r = rows.rbegin(); r != rows.rend(); ++r) if (!p.removeChannel(*r)) return false;
-                return true;
-            });
+            std::vector<command::Command> removals;
+            for (auto r = rows.rbegin(); r != rows.rend(); ++r) removals.push_back(command::RemoveRackChannel{*r});
+            const bool done = runCommands(removals, plural("Delete channel", rows));
             if (done) {
                 // Deleting another channel keeps the selected one; deleting the selection selects the channel
                 // that took the place of the first one deleted.
@@ -502,11 +489,11 @@ public:
             changed(); preview(row);
         } else if (id == outputMaster || (id >= outputBase && id < outputBase + rack::maxOutputTrack + 1)) {
             const int output = id == outputMaster ? rack::masterOutput : id - outputBase;
-            changeChannels(rows, plural("Route channel", rows), [output](int, rack::Channel& c) { c.output = static_cast<std::int8_t>(output); });
+            runForRows(rows, plural("Route channel", rows), [output](int r) { return command::SetRackChannelOutput{r, output}; });
             repaint();
         } else if (id == chokeNone || (id >= chokeBase && id < chokeBase + rack::maxChokeGroup)) {
             const int group = id == chokeNone ? 0 : id - chokeBase + 1;
-            changeChannels(rows, "Change choke group", [group](int, rack::Channel& c) { c.chokeGroup = static_cast<std::uint8_t>(group); });
+            runForRows(rows, "Change choke group", [group](int r) { return command::SetRackChannelChoke{r, group}; });
             repaint();
         }
     }
@@ -514,7 +501,7 @@ public:
         if (project().channelCount >= rack::maxChannels) return;
         const auto* name = rack::builtinDisplayName(soundId.toStdString());
         if (name == nullptr) return;
-        if (controller.editRack("Add channel", [&](rack::Project& p) { return p.addChannel(name, "builtin:" + soundId.toStdString()); })) {
+        if (runCommands({command::AddRackChannel{soundId}}, "Add channel")) {
             selected = anchor = project().channelCount - 1; marked = bit(selected);
             preview(selected);
         }
@@ -522,13 +509,7 @@ public:
     }
     void addSynthChannel(int preset) {
         if (project().channelCount >= rack::maxChannels || preset < 0 || preset >= alien::presetCount) return;
-        if (controller.editRack("Add synth channel", [&](rack::Project& p) {
-            if (!p.addChannel(alien::presetNames[static_cast<std::size_t>(preset)], "")) return false;
-            const int channel = p.channelCount - 1;
-            p.setInstrumentPreset(channel, preset);
-            PianoRollPattern notes; notes.loopSteps = p.pattern(p.selectedPattern).length;
-            return p.setChannelNotes(p.selectedPattern, channel, notes);
-        })) {
+        if (runCommands({command::AddRackSynthChannel{preset}}, "Add synth channel")) {
             selected = anchor = project().channelCount - 1; marked = bit(selected);
             changed();
             if (onOpenPianoRoll) onOpenPianoRoll(selected);
@@ -536,7 +517,7 @@ public:
     }
     void addChannelWithFile() {
         if (project().channelCount >= rack::maxChannels) return;
-        if (controller.editRack("Add channel", [&](rack::Project& p) { return p.addChannel("Sampler", ""); })) {
+        if (runCommands({command::AddRackChannel{}}, "Add channel")) {
             selected = anchor = project().channelCount - 1; marked = bit(selected);
             changed();
             chooseSample(selected);
@@ -982,9 +963,12 @@ private:
     void moveKnobs(const std::vector<std::pair<int, float>>& starts, bool pan, float delta, const juce::String& key) {
         std::vector<int> rows;
         for (const auto& s : starts) rows.push_back(s.first);
-        changeChannels(rows, plural(pan ? "Change channel pan" : "Change channel volume", rows), [&](int r, rack::Channel& c) {
-            for (const auto& s : starts) if (s.first == r) (pan ? c.pan : c.volume) = knobValue(pan, s.second + delta);
-        }, key);
+        std::vector<command::Command> moves;
+        for (const auto& s : starts) {
+            const double value = knobValue(pan, s.second + delta);
+            moves.push_back(pan ? command::Command{command::SetRackChannelPan{s.first, value}} : command::Command{command::SetRackChannelVolume{s.first, value}});
+        }
+        runCommands(moves, plural(pan ? "Change channel pan" : "Change channel volume", rows), key);
         repaint(juce::Rectangle<int>(0, 0, headerWidth(), getHeight()));
     }
     void nudgeKnob(int row, bool pan, float delta) {
@@ -997,8 +981,9 @@ private:
     }
     void resetKnob(int row, bool pan) {
         const auto rows = targetsOf(row);
-        changeChannels(rows, plural(pan ? "Change channel pan" : "Change channel volume", rows),
-                       [pan](int, rack::Channel& c) { (pan ? c.pan : c.volume) = pan ? 0.0f : rack::defaultChannelVolume; });
+        runForRows(rows, plural(pan ? "Change channel pan" : "Change channel volume", rows), [pan](int r) {
+            return pan ? command::Command{command::SetRackChannelPan{r, 0.0}} : command::Command{command::SetRackChannelVolume{r, rack::defaultChannelVolume}};
+        });
         repaint(juce::Rectangle<int>(0, 0, headerWidth(), getHeight()));
     }
     void paintKnobReadout(juce::Graphics& g) const {

@@ -410,6 +410,12 @@ static void freezeWorkflow() {
         require(mapped.ok && mapped.changed && mapped.after.timeline.tempoChanges.size()==1 && mapped.after.timeline.frozenOriginals.empty() && c.isTrackFrozen(0),"SetTempoChange Preview predicts the unfreeze");
         require(commands.execute(alien::command::SetTempoChange{alien::timeline::ticksPerBar/2,90.0}).changed && !c.anyFrozenTrack() && alien::sameContent(mapped.after,c.document()),"SetTempoChange does what Preview said");
         require(c.undo() && c.isTrackFrozen(0) && c.timeline()==frozen,"one Undo restores the map and the freeze");
+        // A rack channel may not be routed into a frozen track, and a channel in one holds the rack's channels still.
+        require(commands.execute(alien::command::AddRackChannel{"kick"}).changed,"rack channel fixture");
+        const int channel=c.document().channelRack.channelCount-1;
+        require(!commands.execute(alien::command::SetRackChannelOutput{channel,0}).ok && c.document().channelRack.channels[static_cast<std::size_t>(channel)].output==alien::rack::masterOutput,"routing a rack channel into a frozen track is refused");
+        require(commands.preview(alien::command::SetRackChannelOutput{channel,0}).error.contains("Unfreeze"),"and says why");
+        require(c.undo() && c.timeline()==frozen,"rack channel fixture undoes");
         const auto metered=commands.preview(alien::command::SetMeterChange{0,3,4});
         require(metered.ok && metered.changed && !metered.after.timeline.frozenOriginals.empty(),"a time signature keeps the freeze");
         require(commands.execute(alien::command::SetMeterChange{0,3,4}).changed && c.isTrackFrozen(0) && alien::sameContent(metered.after,c.document()),"SetMeterChange does what Preview said");
