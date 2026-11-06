@@ -16,7 +16,7 @@ namespace alien::stock {
 inline constexpr const char* formatName = "AlienStock";
 
 struct Info { const char* id; const char* name; const char* summary; };
-inline constexpr std::array<Info, 15> catalog{{
+inline constexpr std::array<Info, 16> catalog{{
     {"eq", "Alien EQ", "Four-band equaliser with low and high shelves and two bells"},
     {"compressor", "Alien Compressor", "Stereo-linked compressor with soft knee and parallel mix"},
     {"reverb", "Alien Reverb", "Stereo room reverb with pre-delay"},
@@ -32,6 +32,7 @@ inline constexpr std::array<Info, 15> catalog{{
     {"imager", "Alien Stereo Imager", "Mid/side stereo width with parallel mix and output trim"},
     {"flanger", "Alien Flanger", "Short stereo modulated delay with rate, depth, signed feedback and mix"},
     {"deesser", "Alien De-Esser", "Stereo-linked high-band attenuation with frequency, threshold, reduction and mix"},
+    {"multiband", "Alien Multiband Compressor", "Three-band stereo-linked compression, fixed 250/2500 Hz splits, shared timing and parallel mix"},
 }};
 
 // Parameter identifiers, shared by the processors and their editors.
@@ -45,6 +46,11 @@ inline constexpr const char *threshold = "threshold", *ratio = "ratio", *attack 
 }
 namespace deesser {
 inline constexpr const char *frequency = "frequency", *threshold = "threshold", *reduction = "reduction", *mix = "mix";
+}
+namespace multiband {
+inline constexpr const char *low = "lowThreshold", *mid = "midThreshold", *high = "highThreshold",
+    *ratio = "ratio", *attack = "attack", *release = "release", *output = "output", *mix = "mix";
+inline constexpr std::array<const char*, 8> ids{low, mid, high, ratio, attack, release, output, mix};
 }
 namespace flanger {
 inline constexpr const char *rate = "rate", *depth = "depth", *feedback = "feedback", *mix = "mix";
@@ -815,6 +821,37 @@ private:
     dsp::DeEsser engine;
 };
 
+class MultibandEffect final : public Effect {
+public:
+    MultibandEffect() : Effect(catalog[15], layout()) {
+        for (std::size_t i = 0; i < controls.size(); ++i)
+            controls[i] = static_cast<juce::AudioParameterFloat*>(parameters.getParameter(multiband::ids[i]));
+    }
+    void prepareToPlay(double sampleRate, int) override { engine.prepare(sampleRate); prepared = true; }
+    void reset() override { engine.reset(); }
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
+        juce::ScopedNoDenormals noDenormals;
+        if (prepared && buffer.getNumChannels() >= 2) engine.process(buffer.getWritePointer(0), buffer.getWritePointer(1), buffer.getNumSamples(),
+            {{controls[0]->get(), controls[1]->get(), controls[2]->get()}, controls[3]->get(), controls[4]->get(), controls[5]->get(), controls[6]->get(), controls[7]->get()});
+    }
+    double getTailLengthSeconds() const override { return dsp::MultibandCompressor::tailSeconds; }
+private:
+    static Layout layout() {
+        Layout l;
+        l.add(floatParameter(multiband::low, "Low threshold", {-60, 0, 0}, -18, dbFormat(" dBFS")));
+        l.add(floatParameter(multiband::mid, "Mid threshold", {-60, 0, 0}, -18, dbFormat(" dBFS")));
+        l.add(floatParameter(multiband::high, "High threshold", {-60, 0, 0}, -18, dbFormat(" dBFS")));
+        l.add(floatParameter(multiband::ratio, "Ratio", {1, 20, 4}, 4, plainFormat(" : 1", 1)));
+        l.add(floatParameter(multiband::attack, "Attack", {.1f, 200, 10}, 10, millisecondsFormat()));
+        l.add(floatParameter(multiband::release, "Release", {5, 2000, 150}, 120, millisecondsFormat()));
+        l.add(floatParameter(multiband::output, "Output", {-12, 12, 0}, 0, dbFormat()));
+        l.add(floatParameter(multiband::mix, "Mix", {0, 1, 0}, 1, percentFormat()));
+        return l;
+    }
+    std::array<juce::AudioParameterFloat*, 8> controls{};
+    dsp::MultibandCompressor engine;
+};
+
 // ---- Catalogue and project-file identity -----------------------------------------
 
 inline std::unique_ptr<Effect> create(const juce::String& id) {
@@ -833,6 +870,7 @@ inline std::unique_ptr<Effect> create(const juce::String& id) {
     if (id == catalog[12].id) return std::make_unique<StereoImagerEffect>();
     if (id == catalog[13].id) return std::make_unique<FlangerEffect>();
     if (id == catalog[14].id) return std::make_unique<DeEsserEffect>();
+    if (id == catalog[15].id) return std::make_unique<MultibandEffect>();
     return {};
 }
 

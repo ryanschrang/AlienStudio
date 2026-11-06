@@ -79,7 +79,7 @@ static bool allFinite(const std::vector<float>& x) { for (float v : x) if (!dsp:
 
 // ---------------------------------------------------------------------------
 static void catalogueTests() {
-    check(stock::catalog.size() == 15, "fifteen stock effects");
+    check(stock::catalog.size() == 16, "sixteen stock effects");
     std::set<juce::String> names, ids;
     for (const auto& info : stock::catalog) {
         auto e = stock::create(info.id);
@@ -867,6 +867,18 @@ static void flangerParameterTests() {
     checkNear(feedback->convertFrom0to1(feedback->getValueForText("-65%")), -.65, 1e-6, "flanger accepts signed feedback percentages");
 }
 
+static void multibandParameterTests() {
+    auto effect = make("multiband");
+    check(effect->getLatencySamples() == 0 && effect->getTailLengthSeconds() == dsp::MultibandCompressor::tailSeconds, "multiband reports zero latency and bounded filter tail");
+    check(effect->getParameters().size() == 8, "multiband exposes eight stable controls");
+    auto* release = effect->parameters.getParameter(stock::multiband::release);
+    checkNear(release->convertFrom0to1(release->getValueForText("1 s")), 1000, .1, "multiband release accepts seconds");
+    auto* threshold = effect->parameters.getParameter(stock::multiband::mid);
+    checkNear(threshold->convertFrom0to1(threshold->getValueForText("-24 dBFS")), -24, .01, "multiband threshold accepts dBFS input");
+    setParam(*effect, stock::multiband::ratio, 1);
+    const auto input = noise(24000, .8); auto l = input, r = input; process(*effect, l, r);
+    check(l == input && r == input, "hosted multiband ratio one is exact unity");
+}
 static void deesserParameterTests() {
     auto effect = make("deesser");
     check(effect->getLatencySamples() == 0 && effect->getTailLengthSeconds() == dsp::DeEsser::tailSeconds, "de-esser reports zero latency and bounded filter tail");
@@ -876,6 +888,7 @@ static void deesserParameterTests() {
 
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    multibandParameterTests();
     flangerParameterTests();
     deesserParameterTests();
     catalogueTests();

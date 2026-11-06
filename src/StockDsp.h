@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace alien::dsp {
@@ -1077,6 +1078,77 @@ private:
     Smoother frequency, threshold, amount, mix;
     std::array<double, 2> state{};
     double rate{44100}, attack{}, release{}, gainRelease{}, split{}, previousFrequency{-1}, envelope{}, reduction{};
+    bool ready{}, snapNext{true};
+};
+
+// Complementary first-order splits at 250/2500 Hz. Low = LP250,
+// mid = LP2500 - LP250, high = input - LP2500. Gain deltas recombine
+// against dry, giving exact unity when all three band gains are one.
+class MultibandCompressor {
+public:
+    struct Settings {
+        std::array<double, 3> thresholdDb{-18, -18, -18};
+        double ratio{4}, attackMs{10}, releaseMs{120}, outputDb{}, mix{1};
+    };
+    static constexpr double tailSeconds = .1;
+    void prepare(double sampleRate) noexcept {
+        rate = std::isfinite(sampleRate) ? std::clamp(sampleRate, 8000.0, 192000.0) : 44100;
+        lowCoefficient = 1 - std::exp(-2 * pi * 250 / rate);
+        highCoefficient = 1 - std::exp(-2 * pi * 2500 / rate);
+        detectorFall = std::exp(-1 / (.01 * rate));
+        for (auto& t : thresholds) t.configure(rate, 5);
+        for (auto* t : {&ratio, &output, &mix}) t->configure(rate, 5);
+        ready = true; reset();
+    }
+    void reset() noexcept { low = {}; upper = {}; envelope = {}; reduction = {}; snapNext = true; }
+    double reductionDb(int band) const noexcept { return band >= 0 && band < 3 ? reduction[band] : 0; }
+    void process(float* left, float* right, int count, Settings s) noexcept {
+        if (!ready || count <= 0) return;
+        const auto bounded = [](double v, double lo, double hi, double def) { return std::isfinite(v) ? std::clamp(v, lo, hi) : def; };
+        for (auto& t : s.thresholdDb) t = bounded(t, -60, 0, -18);
+        s.ratio = bounded(s.ratio, 1, 20, 4); s.attackMs = bounded(s.attackMs, .1, 200, 10);
+        s.releaseMs = bounded(s.releaseMs, 5, 2000, 120);
+        s.outputDb = bounded(s.outputDb, -12, 12, 0); s.mix = bounded(s.mix, 0, 1, 1);
+        if (snapNext) {
+            for (int b = 0; b < 3; ++b) thresholds[b].reset(s.thresholdDb[b]);
+            ratio.reset(s.ratio); output.reset(s.outputDb); mix.reset(s.mix); snapNext = false;
+        }
+        for (int b = 0; b < 3; ++b) thresholds[b].setTarget(s.thresholdDb[b]);
+        ratio.setTarget(s.ratio); output.setTarget(s.outputDb); mix.setTarget(s.mix);
+        const double attack = std::exp(-1 / (s.attackMs * .001 * rate)), release = std::exp(-1 / (s.releaseMs * .001 * rate));
+        for (int i = 0; i < count; ++i) {
+            const std::array<double, 2> dry{finite(left[i]) ? left[i] : 0, finite(right[i]) ? right[i] : 0};
+            std::array<std::array<double, 2>, 3> bands{};
+            for (int c = 0; c < 2; ++c) {
+                low[c] += lowCoefficient * (dry[c] - low[c]); upper[c] += highCoefficient * (dry[c] - upper[c]);
+                if (std::abs(low[c]) < 1e-20) low[c] = 0;
+                if (std::abs(upper[c]) < 1e-20) upper[c] = 0;
+                bands[0][c] = low[c]; bands[1][c] = upper[c] - low[c]; bands[2][c] = dry[c] - upper[c];
+            }
+            std::array<double, 2> wet = dry;
+            const double currentRatio = ratio.advance(1);
+            for (int b = 0; b < 3; ++b) {
+                const double level = std::max(std::abs(bands[b][0]), std::abs(bands[b][1]));
+                envelope[b] = std::max(level, envelope[b] * detectorFall);
+                const double wanted = compressorReductionDb(gainToDb(envelope[b]), thresholds[b].advance(1), currentRatio, 6);
+                const double coefficient = wanted > reduction[b] ? attack : release;
+                reduction[b] = wanted + coefficient * (reduction[b] - wanted);
+                if (reduction[b] < 1e-9) reduction[b] = 0;
+                const double delta = dbToGain(-reduction[b]) - 1;
+                for (int c = 0; c < 2; ++c) wet[c] += bands[b][c] * delta;
+            }
+            const double amount = mix.advance(1), gain = dbToGain(output.advance(1));
+            const auto asFloat = [](double v) { constexpr double limit = std::numeric_limits<float>::max(); return static_cast<float>(std::clamp(v, -limit, limit)); };
+            left[i] = asFloat(dry[0] + amount * (wet[0] * gain - dry[0]));
+            right[i] = asFloat(dry[1] + amount * (wet[1] * gain - dry[1]));
+        }
+    }
+private:
+    double rate{44100}, lowCoefficient{}, highCoefficient{}, detectorFall{};
+    std::array<double, 2> low{}, upper{};
+    std::array<double, 3> envelope{}, reduction{};
+    std::array<Smoother, 3> thresholds;
+    Smoother ratio, output, mix;
     bool ready{}, snapNext{true};
 };
 
