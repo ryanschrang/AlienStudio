@@ -8,6 +8,7 @@
 #include "BusCommands.h"
 #include "SidechainCommands.h"
 #include "DeviceCommands.h"
+#include "TempoCommands.h"
 #include "ViewModes.h"
 #include "ToneEngine.h"
 #include "AudioClipImport.h"
@@ -1197,16 +1198,52 @@ public:
     // Frozen audio was rendered at the old tempo, so a tempo edit unfreezes every frozen track first.
     bool unfreezeForTempo() {
         if(!anyFrozenTrack())return false;
-        for(int t=0;t<doc.trackCount();++t)if(isTrackFrozen(t)) {
-            const auto scene=doc.tracks[static_cast<std::size_t>(t)].settings.freezeScene;
-            doc.timeline.unfreezeTrack(t);doc.tracks[static_cast<std::size_t>(t)].settings.freezeScene=-1;
-            if(doc.isValidCell(t,scene))doc.clearClip(t,scene);
-        }
-        doc.timeline.lengthBars=std::max(doc.timeline.freezeBaseLengthBars,doc.timeline.minLengthBars());
-        doc.timeline.freezeBaseLengthBars=0;
+        tempo_edit::unfreezeAll(doc);
         pushDocumentToEngine();
         status("Tracks unfrozen for tempo change.",{});
         return true;
+    }
+    bool hasWarpedAudio() const {
+        return std::any_of(doc.timeline.regions.begin(),doc.timeline.regions.end(),[](const auto& r){return !r.warp.empty();});
+    }
+    // Warped audio is prepared for one tempo, so nothing may change it while a take is being captured.
+    bool tempoLocked() const {
+        return hasWarpedAudio() && (isRecording() || engine.recording.phase.load()!=RecordControls::idle);
+    }
+    // Why the project's state, as opposed to the edit's arguments, refuses a tempo or time signature command.
+    juce::String tempoEditRefusal(const tempo_edit::Edit& e) const {
+        const bool meter=!tempo_edit::changesTempo(e);
+        const bool map=!meter && e.kind!=tempo_edit::Kind::projectTempo;
+        if(tempoLocked() || (map && isRecording()))return meter?"Stop recording before changing the time signature.":"Stop recording before changing the tempo.";
+        return {};
+    }
+    // Live side of the tempo and time signature commands. CommandEngine owns the history entry.
+    bool applyTempoCommand(const tempo_edit::Edit& e) {
+        if(busy || tempoEditRefusal(e).isNotEmpty() || tempo_edit::refusal(doc,e).isNotEmpty())return false;
+        if(tempo_edit::changesNothing(doc,e))return true;
+        const bool unfreezing=tempo_edit::changesTempo(e) && anyFrozenTrack();
+        if(e.kind==tempo_edit::Kind::projectTempo && hasWarpedAudio()){engine.arrangementPreparing.store(true);engine.playing.store(false);}
+        if(tempo_edit::apply(doc,e).isNotEmpty())return false;
+        engine.bpm.store(doc.bpm);
+        if(unfreezing){
+            pushDocumentToEngine();
+            status("Tracks unfrozen for tempo change.",{});
+            if(onDocumentRestored)onDocumentRestored();
+        }
+        return true;
+    }
+    // While the tempo control is dragged the engine follows it and the project does not change.
+    // The drag ends in SetTempo, so frozen tracks are unfrozen and the Undo step made only then.
+    void auditionTempo(int bpm) {
+        if(busy || tempoLocked())return;
+        const int value=juce::jlimit(tempo_edit::minProjectBpm,tempo_edit::maxProjectBpm,bpm);
+        if(value!=doc.bpm && hasWarpedAudio()){engine.arrangementPreparing.store(true);engine.playing.store(false);}
+        engine.bpm.store(value);
+    }
+    // Back to the project's tempo, and transport released if a drag returned to its start.
+    void endTempoAudition() {
+        engine.bpm.store(doc.bpm);
+        if(engine.arrangementPreparing.load() && !warpWorkActive)publishArrangement();
     }
     // The song's tempo map: its tempo changes after the project tempo.
     timeline::TempoMap songTempo() const noexcept { return {doc.timeline.tempoChanges, static_cast<double>(doc.bpm)}; }

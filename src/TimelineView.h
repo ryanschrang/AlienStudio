@@ -7,6 +7,7 @@
 // nothing from this file; a drag is previewed on a copy and committed once, so
 // each gesture is one undo step.
 #include "ClipBin.h"
+#include "CommandEngine.h"
 #include "ExternalFileDrop.h"
 #include "SampleDrag.h"
 #include "ProjectController.h"
@@ -646,13 +647,13 @@ public:
             edit("Rename marker", [&](timeline::Timeline& t) { return t.renameMarker(id, text.toStdString()); });
         });
     }
-    // Tempo changes go through the controller's tempo edits, which unfreeze frozen tracks first.
-    bool tempoEdit(const juce::String& label, const std::function<bool(timeline::Timeline&)>& change) {
-        if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return false; }
-        if (controller.isRecording()) { say("Stop recording before changing the tempo."); return false; }
-        const bool done = controller.editTempoMap(label, change);
-        if (done) afterEdit();
-        return done;
+    // Tempo and time signature edits are commands. A refusal is said here; the caller says why nothing changed.
+    command::Result tempoCommand(const command::Command& change) {
+        if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return {}; }
+        const auto result = command::CommandEngine(controller).execute(change);
+        if (!result.ok) say(result.error);
+        else if (result.changed) afterEdit();
+        return result;
     }
     // Asks for the tempo from `tick` on. Tick 0 is the project tempo, which the transport sets.
     void askTempo(std::int64_t tick) {
@@ -668,7 +669,7 @@ public:
                     say("Enter a tempo from 60 to 200 BPM.");
                     return;
                 }
-                if (!tempoEdit("Tempo change", [=](timeline::Timeline& t) { return t.setTempoChange(tick, bpm); }))
+                if (const auto done = tempoCommand(command::SetTempoChange{tick, bpm}); done.ok && !done.changed)
                     say("The tempo there is already " + tempoLabel(bpm) + ".");
             });
     }
@@ -689,7 +690,7 @@ public:
         return true;
     }
     bool removeTempoChange(std::int64_t tick) {
-        return tempoEdit("Remove tempo change", [=](timeline::Timeline& t) { return t.removeTempoChange(tick); });
+        return tempoCommand(command::RemoveTempoChange{tick}).changed;
     }
     // Asks for the time signature from bar `bar` (counting from 0) on, as "3/4" or "6/8".
     void askMeter(int bar) {
@@ -705,12 +706,12 @@ public:
                     say("Enter a time signature such as 3/4 or 6/8: 1 to " + juce::String(timeline::maxMeterNumerator) + " beats of a 2, 4, 8 or 16.");
                     return;
                 }
-                if (!edit("Time signature change", [=](timeline::Timeline& t) { return t.setMeterChange(bar, numerator, denominator); }))
+                if (const auto done = tempoCommand(command::SetMeterChange{bar, numerator, denominator}); done.ok && !done.changed)
                     say("Bar " + juce::String(bar + 1) + " is already in " + meterText({numerator, denominator}) + ".");
             });
     }
     bool removeMeterChange(int bar) {
-        return edit("Remove time signature change", [=](timeline::Timeline& t) { return t.removeMeterChange(bar); });
+        return tempoCommand(command::RemoveMeterChange{bar}).changed;
     }
     // Arrow keys: moves the selection by the grid (or a bar), or the play position when nothing is selected.
     bool nudge(int direction, bool bar = false) {
@@ -1305,6 +1306,7 @@ public:
             const auto from = drag.newAnchor;
             const auto to = snapTick(tickNow + drag.grabOffset, bypass);
             drag.label = "Move tempo change";
+            drag.tempoTo = to;
             drag.apply = [=](timeline::Timeline& t) { return to != from && t.moveTempoChange(from, to); };
             updatePreview(); break;
         }
@@ -1390,7 +1392,7 @@ public:
             break;
         case DragKind::tempo:
             if (active && finished.apply) {
-                if (!tempoEdit(finished.label, finished.apply) && hadPreview && !controller.isBusy()) say("A tempo change cannot go there.");
+                if (const auto done = tempoCommand(command::MoveTempoChange{finished.newAnchor, finished.tempoTo}); done.ok && !done.changed && hadPreview) say("A tempo change cannot go there.");
             } else if (!active) setCursor(finished.newAnchor);   // a click on a tempo change plays from there
             break;
         case DragKind::comp:
@@ -1519,6 +1521,7 @@ private:
         DragKind kind{DragKind::none};
         bool active{};
         std::size_t warpIndex{};
+        std::int64_t tempoTo{};
         juce::Point<int> origin;
         juce::ModifierKeys mods;
         double anchorTick{}, grabOffset{};
@@ -1726,9 +1729,9 @@ private:
             launch(std::move(menu), area, [this, tick](int id) {
                 if (id == cmdAddMarker) { setCursor(tick, false); addMarkerAtCursor(); }
                 else if (id == cmdTempo) askTempo(tick);
-                else if (id == cmdRemoveTempo) tempoEdit("Remove tempo changes", [](timeline::Timeline& t) { return t.clearTempoChanges(); });
+                else if (id == cmdRemoveTempo) tempoCommand(command::ClearTempoChanges{});
                 else if (id == cmdMeter) askMeter(static_cast<int>(committed().meterMap().barAt(static_cast<double>(tick)).index));
-                else if (id == cmdRemoveMeter) edit("Remove time signature changes", [](timeline::Timeline& t) { return t.clearMeterChanges(); });
+                else if (id == cmdRemoveMeter) tempoCommand(command::ClearMeterChanges{});
             });
         } else if (hit.zone == Zone::loopStrip) {
             juce::PopupMenu menu;

@@ -206,6 +206,7 @@ public:
     }
     void setTempo(int bpm) { tempo.setValue(bpm, juce::dontSendNotification); }
     bool isTempoDragging() const { return tempo.isMouseButtonDown(); }
+    int tempoValue() const { return static_cast<int>(tempo.getValue()); }
     void openRecordingOptions() { showRecordOptions(); }
 
     void setBusy(bool busy) {

@@ -449,11 +449,13 @@ static void continuousCommandTests() {
 #include "RoutingCommandTests.h"
 #include "DeviceCommandTests.h"
 #include "MasterVolumeCommandTests.h"
+#include "TempoCommandTests.h"
 #include "SceneCommandTests.h"
 
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     masterVolumeCommandChecks();
+    tempoCommandChecks();
     removeClipAudioChecks();
     sendCommandChecks();
     returnCommandChecks();

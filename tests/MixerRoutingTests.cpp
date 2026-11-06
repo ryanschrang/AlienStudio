@@ -6,6 +6,7 @@
 #include <limits>
 #include "PluginHost.h"
 #include "PluginPanel.h"
+#include "CommandEngine.h"
 #include "ProjectController.h"
 #include "TrackMixerPanel.h"
 #include "SessionTrackStrip.h"
@@ -391,6 +392,29 @@ static void freezeWorkflow() {
     require(c.setTempoChange(alien::timeline::ticksPerBar,90.0) && !c.anyFrozenTrack() && c.timeline().tempoChanges.size()==1
         && c.undoLabel()=="Tempo change","a tempo change on the song unfreezes too, in one undo step");
     require(c.undo() && c.isTrackFrozen(0) && c.timeline().tempoChanges.empty(),"undoing it restores the freeze");
+    // The commands: Preview predicts the unfreeze, execute does it in one Undo step, and nothing else thaws.
+    {
+        alien::command::CommandEngine commands(c);
+        const auto frozenDoc=c.document();
+        const auto predicted=commands.preview(alien::command::SetTempo{130});
+        require(predicted.ok && predicted.changed && c.isTrackFrozen(0) && predicted.after.timeline.frozenOriginals.empty() && predicted.after.tracks[0].settings.freezeScene==-1
+            && predicted.changes[0].contains("unfrozen"),"SetTempo Preview predicts the unfreeze and leaves the track frozen");
+        require(commands.execute(alien::command::SetTempo{130}).changed && !c.anyFrozenTrack() && alien::sameContent(predicted.after,c.document()) && c.undoLabel()=="Change tempo",
+            "SetTempo does what Preview said");
+        require(c.undo() && c.isTrackFrozen(0) && c.document().bpm==120 && c.timeline()==frozen,"one Undo restores the tempo and the freeze");
+        const auto history=c.undoLabel();
+        require(commands.execute(alien::command::SetTempo{120}).ok && c.isTrackFrozen(0) && c.undoLabel()==history,"an unchanged tempo does not unfreeze");
+        require(commands.execute(alien::command::RemoveTempoChange{alien::timeline::ticksPerBar}).ok && c.isTrackFrozen(0),"removing an absent tempo change does not unfreeze");
+        require(commands.execute(alien::command::ClearTempoChanges{}).ok && c.isTrackFrozen(0),"clearing no tempo changes does not unfreeze");
+        const auto mapped=commands.preview(alien::command::SetTempoChange{alien::timeline::ticksPerBar/2,90.0});
+        require(mapped.ok && mapped.changed && mapped.after.timeline.tempoChanges.size()==1 && mapped.after.timeline.frozenOriginals.empty() && c.isTrackFrozen(0),"SetTempoChange Preview predicts the unfreeze");
+        require(commands.execute(alien::command::SetTempoChange{alien::timeline::ticksPerBar/2,90.0}).changed && !c.anyFrozenTrack() && alien::sameContent(mapped.after,c.document()),"SetTempoChange does what Preview said");
+        require(c.undo() && c.isTrackFrozen(0) && c.timeline()==frozen,"one Undo restores the map and the freeze");
+        const auto metered=commands.preview(alien::command::SetMeterChange{0,3,4});
+        require(metered.ok && metered.changed && !metered.after.timeline.frozenOriginals.empty(),"a time signature keeps the freeze");
+        require(commands.execute(alien::command::SetMeterChange{0,3,4}).changed && c.isTrackFrozen(0) && alien::sameContent(metered.after,c.document()),"SetMeterChange does what Preview said");
+        require(c.undo() && alien::sameContent(frozenDoc,c.document()),"one Undo restores the time signature");
+    }
     require(alien::toProjectData(c.document()).valid(),"frozen controller state remains serializable");
     file.deleteFile();
 }
