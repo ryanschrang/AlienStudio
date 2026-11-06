@@ -844,6 +844,8 @@ static void patternBankAndToolbar() {
     require(rig.rack().patternCount == 2, "delete removes the selected pattern");
     while (rig.rack().patternCount > 1) v.patternCommand(ChannelRackView::deletePattern);
     v.patternCommand(ChannelRackView::deletePattern);
+    require(rig.rack().patternCount == 1 && v.hintText().contains("at least one pattern"), "deleting the last pattern is refused and says why");
+    v.patternCommand(ChannelRackView::deletePattern);
     require(rig.rack().patternCount == 1, "the last pattern cannot be deleted");
     require(!entry(entries(v.patternMenu()), ChannelRackView::deletePattern)->enabled, "and its menu entry is greyed out");
     require(v.subtitle().contains("Pattern") && v.subtitle().contains("16 steps") && v.subtitle().contains("swing 0%"), "the subtitle describes the pattern");
