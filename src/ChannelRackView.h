@@ -220,8 +220,7 @@ public:
 
     // ---- editing (the mouse handlers call these; tests may too) -------------------
     bool setStep(int row, int step, bool on, const juce::String& key) {
-        return controller.editRack(on ? "Add steps" : "Remove steps", [&](rack::Project& p) {
-            return p.setStepOn(p.selectedPattern, row, step, on); }, key);
+        return runCommands({command::SetRackStep{project().selectedPattern, row, step, on}}, on ? "Add steps" : "Remove steps", key);
     }
     // Commands as one undo step. A gesture's later steps stay quiet: one refusal is enough to say.
     bool runCommands(const std::vector<command::Command>& commands, const juce::String& label, const juce::String& key = {}) {
@@ -415,11 +414,11 @@ public:
             changed(); return;
         }
         if (id >= cmdFill2 && id <= cmdRepeat16) {
-            forEach("Edit channel steps", [=](rack::Project& p, int r) {
-                if (id == cmdFill2 || id == cmdFill4 || id == cmdFill8) return p.fillEvery(p.selectedPattern, r, id == cmdFill2 ? 2 : id == cmdFill4 ? 4 : 8);
-                if (id == cmdRotateLeft || id == cmdRotateRight) return p.rotateRow(p.selectedPattern, r, id == cmdRotateLeft ? -1 : 1);
-                if (id == cmdReverseRow) return p.reverseRow(p.selectedPattern, r);
-                return p.repeatRow(p.selectedPattern, r, id == cmdRepeat4 ? 4 : id == cmdRepeat8 ? 8 : 16);
+            runForRows(rows, "Edit channel steps", [id, pattern = project().selectedPattern](int r) -> command::Command {
+                if (id == cmdFill2 || id == cmdFill4 || id == cmdFill8) return command::FillRackSteps{pattern, r, id == cmdFill2 ? 2 : id == cmdFill4 ? 4 : 8};
+                if (id == cmdRotateLeft || id == cmdRotateRight) return command::RotateRackSteps{pattern, r, id == cmdRotateLeft ? -1 : 1};
+                if (id == cmdReverseRow) return command::ReverseRackSteps{pattern, r};
+                return command::RepeatRackSteps{pattern, r, id == cmdRepeat4 ? 4 : id == cmdRepeat8 ? 8 : 16};
             }); changed(); return;
         }
         if (id == cmdRename) {
@@ -436,7 +435,7 @@ public:
         } else if (id == cmdMute) toggleMute(row);
         else if (id == cmdSolo) toggleSolo(row);
         else if (id == cmdClearSteps) {
-            forEach(plural("Clear channel", rows), [](rack::Project& p, int r) { return p.clearChannelSteps(p.selectedPattern, r); }); repaint();
+            runForRows(rows, plural("Clear channel", rows), [pattern = project().selectedPattern](int r) { return command::ClearRackSteps{pattern, r}; }); repaint();
         } else if (id == cmdMoveUp || id == cmdMoveDown) {
             // The selected channels move together, keeping their order and the gaps between them.
             const int delta = id == cmdMoveUp ? -1 : 1;
@@ -1083,8 +1082,9 @@ public:
         if (!p.pattern(p.selectedPattern).steps[static_cast<std::size_t>(channel)][static_cast<std::size_t>(step)].on) return false;
         if (field == rack::StepField::pitch && snapPitch && scaleSnap.getToggleState())
             value = rack::snapStepPitchToScale(value, controller.document().musicalScale);
-        const bool changed = controller.editRack("Edit step " + juce::String(fieldLabel()), [&](rack::Project& q) {
-            return q.setStepField(q.selectedPattern, channel, step, field, value); }, key);
+        value = std::clamp(value, rack::fieldMinimum(field), rack::fieldMaximum(field));
+        const bool changed = command::CommandEngine(controller).batch({command::SetRackStepValue{p.selectedPattern, channel, step, rack_pattern::fieldName(field), value}},
+                                                                      "Edit step " + juce::String(fieldLabel()), key).changed;
         if (gestureActive && changed) gestureContent = controller.channelRack().patterns[static_cast<std::size_t>(gesturePattern)];
         return changed;
     }
@@ -1304,9 +1304,9 @@ public:
         lengthBox.onChange = [this] {
             if (updating) return;
             const int length = lengthBox.getSelectedId();
-            const bool changed = controller.editRack("Change pattern length", [&](rack::Project& p) { return p.setPatternLength(p.selectedPattern, length); });
+            const auto result = command::CommandEngine(controller).execute(command::SetRackPatternLength{controller.channelRack().selectedPattern, length});
             refresh();
-            hint.setText(changed ? "Pattern length changed." : "Length unchanged: move or shorten notes that extend past the chosen end.", juce::dontSendNotification);
+            hint.setText(result.changed ? juce::String("Pattern length changed.") : result.error, juce::dontSendNotification);
         };
         addAndMakeVisible(swing); swing.setName("Swing");
         swing.setTooltip("Delays every second sixteenth. 0% is straight; higher is more shuffled. Applies to all patterns.");
@@ -1316,8 +1316,7 @@ public:
         swing.setDoubleClickReturnValue(true, 0.0);
         swing.onValueChange = [this] {
             if (updating) return;
-            const float amount = static_cast<float>(swing.getValue() / 100.0);
-            controller.editRack("Change swing", [&](rack::Project& p) { return p.setSwing(amount); }, "rack-swing");
+            command::CommandEngine(controller).batch({command::SetRackSwing{swing.getValue() / 100.0}}, "Change swing", "rack-swing");
             if (onTitleChanged) onTitleChanged();
         };
         addAndMakeVisible(hint);
@@ -1416,10 +1415,13 @@ public:
                           starterGrooveBase = 1000 };
     void patternCommand(int id) {
         const int current = controller.channelRack().selectedPattern;
+        const auto run = [this](const command::Command& edit) {
+            if (const auto result = command::CommandEngine(controller).execute(edit); !result.ok) hint.setText(result.error, juce::dontSendNotification);
+        };
         if (id == newPattern) command::CommandEngine(controller).execute(command::CreateRackPattern{});
-        else if (id == clonePattern) controller.editRack("Clone pattern", [&](rack::Project& p) { return p.addPattern(current); });
-        else if (id == clearPattern) controller.editRack("Clear pattern", [](rack::Project& p) { return p.clearPattern(p.selectedPattern); });
-        else if (id == deletePattern) controller.deleteRackPattern(current);
+        else if (id == clonePattern) run(command::CloneRackPattern{current});
+        else if (id == clearPattern) run(command::ClearRackPattern{current});
+        else if (id == deletePattern) run(command::DeleteRackPattern{current});
         else if (id == importGroovePattern) { chooseGroove(); return; }
         else if (id >= starterGrooveBase) {
             const auto index = static_cast<std::size_t>(id - starterGrooveBase);
@@ -1429,7 +1431,7 @@ public:
         else if (id == renamePattern) {
             const auto name = juce::String::fromUTF8(controller.channelRack().patternNames[static_cast<std::size_t>(current)].c_str());
             grid.askForName("Rename pattern", name, [this, current](const juce::String& text) {
-                controller.editRack("Rename pattern", [&](rack::Project& p) { return p.renamePattern(current, text.toStdString()); });
+                if (const auto result = command::CommandEngine(controller).execute(command::RenameRackPattern{current, text}); !result.ok) hint.setText(result.error, juce::dontSendNotification);
                 refresh();
             });
             return;

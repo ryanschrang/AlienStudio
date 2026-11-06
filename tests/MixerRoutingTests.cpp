@@ -416,6 +416,19 @@ static void freezeWorkflow() {
         require(!commands.execute(alien::command::SetRackChannelOutput{channel,0}).ok && c.document().channelRack.channels[static_cast<std::size_t>(channel)].output==alien::rack::masterOutput,"routing a rack channel into a frozen track is refused");
         require(commands.preview(alien::command::SetRackChannelOutput{channel,0}).error.contains("Unfreeze"),"and says why");
         require(c.undo() && c.timeline()==frozen,"rack channel fixture undoes");
+        // A channel feeding a frozen track holds the rack's patterns still, though an edit that changes nothing is accepted.
+        {
+            auto held=c.document();
+            held.channelRack.channels[0].output=0;
+            const int shown=held.channelRack.selectedPattern;
+            using PatternKind=alien::rack_pattern::Kind;
+            alien::rack_pattern::Edit step; step.kind=PatternKind::setStep; step.pattern=shown; step.channel=0; step.step=0; step.on=!held.channelRack.pattern(shown).steps[0][0].on;
+            alien::rack_pattern::Edit swing; swing.kind=PatternKind::swing; swing.amount=held.channelRack.swing<.5f?.75:.25;
+            alien::rack_pattern::Edit same; same.kind=PatternKind::swing; same.amount=held.channelRack.swing;
+            require(alien::rack_pattern::refusal(held,step).contains("Unfreeze"),"a frozen receiver holds a channel's steps");
+            require(alien::rack_pattern::refusal(held,swing).contains("Unfreeze"),"and the rack's swing");
+            require(alien::rack_pattern::refusal(held,same).isEmpty(),"but an unchanged setting is accepted");
+        }
         const auto metered=commands.preview(alien::command::SetMeterChange{0,3,4});
         require(metered.ok && metered.changed && !metered.after.timeline.frozenOriginals.empty(),"a time signature keeps the freeze");
         require(commands.execute(alien::command::SetMeterChange{0,3,4}).changed && c.isTrackFrozen(0) && alien::sameContent(metered.after,c.document()),"SetMeterChange does what Preview said");

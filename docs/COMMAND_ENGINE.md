@@ -549,8 +549,34 @@ holds which plugin has changed.
 
 The Channel Rack's channel menu, add menu, mute and solo buttons, volume and pan knobs run these
 commands, one per selected channel in one batch, with the same Undo labels. A knob gesture merges
-under its key. A refusal now shows as a message, except during a knob gesture. Steps, patterns,
-swing, sound choice and plugin choice still call `editRack`.
+under its key. A refusal now shows as a message, except during a knob gesture.
+
+## Rack step, pattern and swing commands
+
+`SetRackStep {pattern, channel, step, on}`, `SetRackStepValue {pattern, channel, step, field, value}`,
+`FillRackSteps {pattern, channel, every}`, `RotateRackSteps {pattern, channel, distance}`,
+`ReverseRackSteps {pattern, channel}`, `RepeatRackSteps {pattern, channel, period}`,
+`ClearRackSteps {pattern, channel}`, `SetRackPatternLength {pattern, length}`, `SetRackSwing {amount}`,
+`CloneRackPattern {pattern}`, `ClearRackPattern {pattern}`, `RenameRackPattern {pattern, name}` and
+`DeleteRackPattern {pattern}` share a pure reducer in `RackPatternCommands.h`. Each names its pattern, so
+it does not depend on which one is shown. `field` is velocity, pan, pitch, probability, gate, nudge or
+ratchet.
+
+Refusals cover a missing pattern, channel or step, values out of range, a blank name, a full rack,
+deleting the last pattern or one the Session or Song uses, a shortening that would cut a note, and any
+edit while a rack channel feeds a frozen track (deleting a pattern excepted, as before). An edit that
+changes nothing preserves redo, and that includes step edits on a channel that plays notes, so a mixed
+selection still runs. A busy project refuses them. Recording does not, as the Channel Rack allowed these
+edits before.
+
+The step grid, the value graph, the channel menu's fill, rotate, reverse, repeat and clear items, the
+length and swing controls and the pattern menu's clone, clear, rename and delete items run these commands
+with the same Undo labels. A paint stroke, graph stroke or swing drag merges under its key. A refusal shows
+in the hint line, except during a gesture.
+
+Still calling `editRack`: pasting a row of steps, importing a drum groove, editing channel notes, and sound,
+sample, synth and plugin choice. `ProjectController::deleteRackPattern` stays for its tests until the final
+route cleanup.
 
 ## Master volume command
 
