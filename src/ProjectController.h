@@ -10,6 +10,7 @@
 #include "DeviceCommands.h"
 #include "TempoCommands.h"
 #include "RackChannelCommands.h"
+#include "RackPatternCommands.h"
 #include "ViewModes.h"
 #include "ToneEngine.h"
 #include "AudioClipImport.h"
@@ -2141,6 +2142,12 @@ public:
     // Live side of the rack channel commands. CommandEngine owns the history entry.
     bool applyRackChannelCommand(const rack_channel::Edit& e) {
         if (busy || rack_channel::apply(doc, e).isNotEmpty()) return false;
+        pushRackToEngine();
+        return true;
+    }
+    // Live side of the rack step and pattern commands. CommandEngine owns the history entry.
+    bool applyRackPatternCommand(const rack_pattern::Edit& e) {
+        if (busy || rack_pattern::apply(doc, e).isNotEmpty()) return false;
         pushRackToEngine();
         return true;
     }
