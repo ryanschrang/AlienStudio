@@ -3,6 +3,7 @@
 #include "SceneCommands.h"
 #include "DeviceCommands.h"
 #include "TempoCommands.h"
+#include "RackChannelCommands.h"
 #include <juce_core/juce_core.h>
 #include <array>
 #include <charconv>
@@ -97,12 +98,26 @@ struct SetMeterChange { int bar{}, numerator{}, denominator{}; };   // bars coun
 struct RemoveMeterChange { int bar{}; };
 struct ClearMeterChanges {};
 
-using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume, ImportClipAudio, SetTrackSend, SetTrackSendMode, CreateReturn, RenameReturn, DeleteReturn, SetReturnVolume, SetReturnPan, SetReturnMute, CreateBus, RenameBus, DeleteBus, SetBusVolume, SetBusPan, SetBusMute, SetBusSolo, SetTrackOutput, SetSidechain, InsertDevice, RemoveDevice, MoveDevice, SetDeviceBypass, SetTempo, SetTempoChange, MoveTempoChange, RemoveTempoChange, ClearTempoChanges, SetMeterChange, RemoveMeterChange, ClearMeterChanges>;
+// The Channel Rack's channels, zero-based. AddRackChannel takes a built-in sound id, or nothing for an empty sampler.
+struct AddRackChannel { juce::String sound; };
+struct AddRackSynthChannel { int preset{-1}; };
+struct RemoveRackChannel { int channel{-1}; };
+struct MoveRackChannel { int channel{-1}, to{-1}; };
+struct DuplicateRackChannel { int channel{-1}; std::uint64_t instance{rack_channel::freshInstance()}; };   // carries the copy's plugin identity
+struct RenameRackChannel { int channel{-1}; juce::String name; };
+struct SetRackChannelVolume { int channel{-1}; double volume{}; };
+struct SetRackChannelPan { int channel{-1}; double pan{}; };
+struct SetRackChannelMute { int channel{-1}; bool muted{}; };
+struct SetRackChannelSolo { int channel{-1}; bool soloed{}; };
+struct SetRackChannelOutput { int channel{-1}, output{rack::masterOutput}; };   // -1 is the master
+struct SetRackChannelChoke { int channel{-1}, group{}; };
+
+using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume, ImportClipAudio, SetTrackSend, SetTrackSendMode, CreateReturn, RenameReturn, DeleteReturn, SetReturnVolume, SetReturnPan, SetReturnMute, CreateBus, RenameBus, DeleteBus, SetBusVolume, SetBusPan, SetBusMute, SetBusSolo, SetTrackOutput, SetSidechain, InsertDevice, RemoveDevice, MoveDevice, SetDeviceBypass, SetTempo, SetTempoChange, MoveTempoChange, RemoveTempoChange, ClearTempoChanges, SetMeterChange, RemoveMeterChange, ClearMeterChanges, AddRackChannel, AddRackSynthChannel, RemoveRackChannel, MoveRackChannel, DuplicateRackChannel, RenameRackChannel, SetRackChannelVolume, SetRackChannelPan, SetRackChannelMute, SetRackChannelSolo, SetRackChannelOutput, SetRackChannelChoke>;
 
 namespace detail {
 // Indexed like Command's alternatives.
-inline constexpr std::array<const char*, 55> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume", "ImportClipAudio", "SetTrackSend", "SetTrackSendMode", "CreateReturn", "RenameReturn", "DeleteReturn", "SetReturnVolume", "SetReturnPan", "SetReturnMute", "CreateBus", "RenameBus", "DeleteBus", "SetBusVolume", "SetBusPan", "SetBusMute", "SetBusSolo", "SetTrackOutput", "SetSidechain", "InsertDevice", "RemoveDevice", "MoveDevice", "SetDeviceBypass", "SetTempo", "SetTempoChange", "MoveTempoChange", "RemoveTempoChange", "ClearTempoChanges", "SetMeterChange", "RemoveMeterChange", "ClearMeterChanges"};
-inline constexpr std::array<const char*, 55> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume", "Import audio", "Set send level", "Set send mode", "Add return", "Rename return", "Remove return", "Set return volume", "Set return pan", "Set return mute", "Add bus", "Rename bus", "Delete bus", "Set bus volume", "Set bus pan", "Set bus mute", "Set bus solo", "Set track output", "Set sidechain", "Insert device", "Remove device", "Move device", "Set device bypass", "Change tempo", "Tempo change", "Move tempo change", "Remove tempo change", "Remove tempo changes", "Time signature change", "Remove time signature change", "Remove time signature changes"};
+inline constexpr std::array<const char*, 67> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume", "ImportClipAudio", "SetTrackSend", "SetTrackSendMode", "CreateReturn", "RenameReturn", "DeleteReturn", "SetReturnVolume", "SetReturnPan", "SetReturnMute", "CreateBus", "RenameBus", "DeleteBus", "SetBusVolume", "SetBusPan", "SetBusMute", "SetBusSolo", "SetTrackOutput", "SetSidechain", "InsertDevice", "RemoveDevice", "MoveDevice", "SetDeviceBypass", "SetTempo", "SetTempoChange", "MoveTempoChange", "RemoveTempoChange", "ClearTempoChanges", "SetMeterChange", "RemoveMeterChange", "ClearMeterChanges", "AddRackChannel", "AddRackSynthChannel", "RemoveRackChannel", "MoveRackChannel", "DuplicateRackChannel", "RenameRackChannel", "SetRackChannelVolume", "SetRackChannelPan", "SetRackChannelMute", "SetRackChannelSolo", "SetRackChannelOutput", "SetRackChannelChoke"};
+inline constexpr std::array<const char*, 67> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume", "Import audio", "Set send level", "Set send mode", "Add return", "Rename return", "Remove return", "Set return volume", "Set return pan", "Set return mute", "Add bus", "Rename bus", "Delete bus", "Set bus volume", "Set bus pan", "Set bus mute", "Set bus solo", "Set track output", "Set sidechain", "Insert device", "Remove device", "Move device", "Set device bypass", "Change tempo", "Tempo change", "Move tempo change", "Remove tempo change", "Remove tempo changes", "Time signature change", "Remove time signature change", "Remove time signature changes", "Add channel", "Add synth channel", "Delete channel", "Move channel", "Duplicate channel", "Rename channel", "Change channel volume", "Change channel pan", "Mute channel", "Solo channel", "Route channel", "Change choke group"};
 static_assert(names.size() == std::variant_size_v<Command> && labels.size() == names.size());
 
 // The name the controller stores for `name` (it trims and caps track names).
@@ -230,6 +245,24 @@ inline std::optional<tempo_edit::Edit> tempoEdit(const Command& command) {
     return std::nullopt;
 }
 
+inline std::optional<rack_channel::Edit> rackChannelEdit(const Command& command) {
+    using Kind = rack_channel::Kind;
+    rack_channel::Edit e;
+    if (const auto* c = std::get_if<AddRackChannel>(&command)) { e.kind = Kind::add; e.text = c->sound; return e; }
+    if (const auto* c = std::get_if<AddRackSynthChannel>(&command)) { e.kind = Kind::addSynth; e.value = c->preset; return e; }
+    if (const auto* c = std::get_if<RemoveRackChannel>(&command)) { e.kind = Kind::remove; e.channel = c->channel; return e; }
+    if (const auto* c = std::get_if<MoveRackChannel>(&command)) { e.kind = Kind::move; e.channel = c->channel; e.value = c->to; return e; }
+    if (const auto* c = std::get_if<DuplicateRackChannel>(&command)) { e.kind = Kind::duplicate; e.channel = c->channel; e.instance = c->instance; return e; }
+    if (const auto* c = std::get_if<RenameRackChannel>(&command)) { e.kind = Kind::rename; e.channel = c->channel; e.text = c->name; return e; }
+    if (const auto* c = std::get_if<SetRackChannelVolume>(&command)) { e.kind = Kind::volume; e.channel = c->channel; e.level = c->volume; return e; }
+    if (const auto* c = std::get_if<SetRackChannelPan>(&command)) { e.kind = Kind::pan; e.channel = c->channel; e.level = c->pan; return e; }
+    if (const auto* c = std::get_if<SetRackChannelMute>(&command)) { e.kind = Kind::mute; e.channel = c->channel; e.on = c->muted; return e; }
+    if (const auto* c = std::get_if<SetRackChannelSolo>(&command)) { e.kind = Kind::solo; e.channel = c->channel; e.on = c->soloed; return e; }
+    if (const auto* c = std::get_if<SetRackChannelOutput>(&command)) { e.kind = Kind::output; e.channel = c->channel; e.value = c->output; return e; }
+    if (const auto* c = std::get_if<SetRackChannelChoke>(&command)) { e.kind = Kind::choke; e.channel = c->channel; e.value = c->group; return e; }
+    return std::nullopt;
+}
+
 inline std::optional<scene_edit::Edit> sceneEdit(const Command& command) {
     using Kind = scene_edit::Kind;
     if (std::holds_alternative<CreateScene>(command)) return scene_edit::Edit{Kind::create};
@@ -285,6 +318,7 @@ inline juce::String refusal(const ProjectDocument& d, const Command& command, co
     if (const auto edit = sidechainEdit(command)) return sidechain_edit::refusal(d, *edit);
     if (const auto edit = deviceEdit(command)) return device_edit::refusal(d, *edit);
     if (const auto edit = tempoEdit(command)) return tempo_edit::refusal(d, *edit);
+    if (const auto edit = rackChannelEdit(command)) return rack_channel::refusal(d, *edit);
     if (const auto* c = std::get_if<SetTrackOutput>(&command)) {
         if (const auto why = track(c->track); why.isNotEmpty()) return why;
         return c->bus == -1 || bus_edit::slotInUse(d, c->bus) ? juce::String{} : "Bus slot " + juce::String(c->bus) + " is not in use.";
@@ -327,6 +361,25 @@ inline juce::String refusal(const ProjectDocument& d, const Command& command, co
 inline juce::String describe(const ProjectDocument& d, const Command& command) {
     auto returnName = [&](int r) { return "\"" + d.returns[static_cast<std::size_t>(r)].name + "\""; };
     auto busName = [&](int b) { return "\"" + d.buses[static_cast<std::size_t>(b)].name + "\""; };
+    if (const auto edit = rackChannelEdit(command)) {
+        using Kind = rack_channel::Kind;
+        if (edit->kind == Kind::add) return edit->text.isEmpty() ? juce::String("Add an empty sampler channel") : "Add a channel playing \"" + edit->text + "\"";
+        if (edit->kind == Kind::addSynth) return "Add a synth channel playing " + juce::String(alien::presetNames[static_cast<std::size_t>(edit->value)]);
+        const auto channel = "rack channel " + juce::String(edit->channel + 1) + " \"" + juce::String::fromUTF8(d.channelRack.info[static_cast<std::size_t>(edit->channel)].name.c_str()) + "\"";
+        switch (edit->kind) {
+        case Kind::remove: return "Delete " + channel;
+        case Kind::move: return "Move " + channel + " to position " + juce::String(edit->value + 1);
+        case Kind::duplicate: return "Duplicate " + channel;
+        case Kind::rename: return "Rename " + channel + " to \"" + edit->text + "\"";
+        case Kind::volume: return "Set the volume of " + channel + " to " + juce::String(edit->level, 2);
+        case Kind::pan: return "Set the pan of " + channel + " to " + juce::String(edit->level, 2);
+        case Kind::mute: return juce::String(edit->on ? "Mute " : "Unmute ") + channel;
+        case Kind::solo: return juce::String(edit->on ? "Solo " : "Unsolo ") + channel;
+        case Kind::output: return "Route " + channel + (edit->value < 0 ? juce::String(" to the master") : " to " + detail::trackTitle(d, edit->value));
+        case Kind::choke: return "Put " + channel + (edit->value == 0 ? juce::String(" in no choke group") : " in choke group " + juce::String(edit->value));
+        case Kind::add: case Kind::addSynth: break;
+        }
+    }
     if (const auto edit = tempoEdit(command)) {
         const juce::String thawing = tempo_edit::changesTempo(*edit) && tempo_edit::anyFrozen(d) && !tempo_edit::changesNothing(d, *edit) ? " (frozen tracks are unfrozen first)" : "";
         if (const auto* c = std::get_if<SetTempo>(&command)) return "Set the project tempo to " + juce::String(c->bpm) + " BPM" + thawing;
@@ -417,6 +470,7 @@ inline juce::String applyTo(ProjectDocument& d, const Command& command, const cl
     if (const auto edit = sidechainEdit(command)) return sidechain_edit::apply(d, *edit);
     if (const auto edit = deviceEdit(command)) return device_edit::apply(d, *edit);
     if (const auto edit = tempoEdit(command)) return tempo_edit::apply(d, *edit);
+    if (const auto edit = rackChannelEdit(command)) return rack_channel::apply(d, *edit);
     if (const auto* c = std::get_if<SetTrackOutput>(&command)) { d.tracks[static_cast<std::size_t>(c->track)].settings.output = c->bus; return {}; }
     if (const auto* c = std::get_if<SetReturnVolume>(&command)) { d.returns[static_cast<std::size_t>(c->returnSlot)].settings.gain = static_cast<float>(c->gain); return {}; }
     if (const auto* c = std::get_if<SetReturnPan>(&command)) { d.returns[static_cast<std::size_t>(c->returnSlot)].settings.pan = static_cast<float>(c->pan); return {}; }
@@ -475,6 +529,18 @@ inline juce::var arguments(const Command& command) {
     auto* object = new juce::DynamicObject();
     juce::var result(object);
     if (const auto* c = std::get_if<SetTrackOutput>(&command)) { object->setProperty("track", c->track); object->setProperty("bus", c->bus); return result; }
+    if (const auto* c = std::get_if<AddRackChannel>(&command)) { object->setProperty("sound", c->sound); return result; }
+    if (const auto* c = std::get_if<AddRackSynthChannel>(&command)) { object->setProperty("preset", c->preset); return result; }
+    if (const auto* c = std::get_if<RemoveRackChannel>(&command)) { object->setProperty("channel", c->channel); return result; }
+    if (const auto* c = std::get_if<MoveRackChannel>(&command)) { object->setProperty("channel", c->channel); object->setProperty("to", c->to); return result; }
+    if (const auto* c = std::get_if<DuplicateRackChannel>(&command)) { object->setProperty("channel", c->channel); return result; }
+    if (const auto* c = std::get_if<RenameRackChannel>(&command)) { object->setProperty("channel", c->channel); object->setProperty("name", c->name); return result; }
+    if (const auto* c = std::get_if<SetRackChannelVolume>(&command)) { object->setProperty("channel", c->channel); object->setProperty("volume", c->volume); return result; }
+    if (const auto* c = std::get_if<SetRackChannelPan>(&command)) { object->setProperty("channel", c->channel); object->setProperty("pan", c->pan); return result; }
+    if (const auto* c = std::get_if<SetRackChannelMute>(&command)) { object->setProperty("channel", c->channel); object->setProperty("muted", c->muted); return result; }
+    if (const auto* c = std::get_if<SetRackChannelSolo>(&command)) { object->setProperty("channel", c->channel); object->setProperty("soloed", c->soloed); return result; }
+    if (const auto* c = std::get_if<SetRackChannelOutput>(&command)) { object->setProperty("channel", c->channel); object->setProperty("output", c->output); return result; }
+    if (const auto* c = std::get_if<SetRackChannelChoke>(&command)) { object->setProperty("channel", c->channel); object->setProperty("group", c->group); return result; }
     if (const auto* c = std::get_if<SetTempo>(&command)) { object->setProperty("bpm", c->bpm); return result; }
     if (const auto* c = std::get_if<SetTempoChange>(&command)) { object->setProperty("tick", static_cast<juce::int64>(c->tick)); object->setProperty("bpm", c->bpm); return result; }
     if (const auto* c = std::get_if<MoveTempoChange>(&command)) { object->setProperty("tick", static_cast<juce::int64>(c->tick)); object->setProperty("to", static_cast<juce::int64>(c->to)); return result; }
@@ -568,7 +634,7 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
     while (index < detail::names.size() && commandName != detail::names[index]) ++index;
     if (index >= detail::names.size()) { error = "Unknown command \"" + commandName + "\"."; return std::nullopt; }
     if (index == 25) { error = "ImportClipAudio takes decoded audio, which cannot be written as arguments."; return std::nullopt; }
-    static const std::array<juce::StringArray, 55> allowed{
+    static const std::array<juce::StringArray, 67> allowed{
         juce::StringArray{}, juce::StringArray{"track"}, juce::StringArray{"track", "to"},
         juce::StringArray{"track", "name"}, juce::StringArray{"track", "colour"},
         juce::StringArray{"track", "gain"}, juce::StringArray{"track", "pan"},
@@ -580,7 +646,8 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
         juce::StringArray{},juce::StringArray{"bus","name"},juce::StringArray{"bus"},
         juce::StringArray{"bus","gain"},juce::StringArray{"bus","pan"},juce::StringArray{"bus","muted"},juce::StringArray{"bus","soloed"},
         juce::StringArray{"track","bus"},juce::StringArray{"stage","rack","effect","from","source"},juce::StringArray{"stage","rack","slot","description"},juce::StringArray{"stage","rack","slot"},juce::StringArray{"stage","rack","slot","to"},juce::StringArray{"stage","rack","slot","bypassed"},
-        {"bpm"}, {"tick", "bpm"}, {"tick", "to"}, {"tick"}, {}, {"bar", "numerator", "denominator"}, {"bar"}, {}
+        {"bpm"}, {"tick", "bpm"}, {"tick", "to"}, {"tick"}, {}, {"bar", "numerator", "denominator"}, {"bar"}, {},
+        {"sound"}, {"preset"}, {"channel"}, {"channel", "to"}, {"channel"}, {"channel", "name"}, {"channel", "volume"}, {"channel", "pan"}, {"channel", "muted"}, {"channel", "soloed"}, {"channel", "output"}, {"channel", "group"}
     };
     const auto* object = args.getDynamicObject();
     if (object == nullptr && !args.isVoid()) { error = commandName + " takes an object of arguments."; return std::nullopt; }
@@ -633,6 +700,18 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
         return std::int64_t{};
     };
     switch (index) {
+        case 55: command = AddRackChannel{text("sound")}; break;
+        case 56: command = AddRackSynthChannel{integer("preset")}; break;
+        case 57: command = RemoveRackChannel{integer("channel")}; break;
+        case 58: { const int channel = integer("channel"); command = MoveRackChannel{channel, integer("to")}; break; }
+        case 59: command = DuplicateRackChannel{integer("channel")}; break;
+        case 60: { const int channel = integer("channel"); command = RenameRackChannel{channel, text("name")}; break; }
+        case 61: { const int channel = integer("channel"); command = SetRackChannelVolume{channel, number("volume")}; break; }
+        case 62: { const int channel = integer("channel"); command = SetRackChannelPan{channel, number("pan")}; break; }
+        case 63: { const int channel = integer("channel"); command = SetRackChannelMute{channel, boolean("muted")}; break; }
+        case 64: { const int channel = integer("channel"); command = SetRackChannelSolo{channel, boolean("soloed")}; break; }
+        case 65: { const int channel = integer("channel"); command = SetRackChannelOutput{channel, integer("output")}; break; }
+        case 66: { const int channel = integer("channel"); command = SetRackChannelChoke{channel, integer("group")}; break; }
         case 47: command = SetTempo{integer("bpm")}; break;
         case 48: { const auto tick = wide("tick"); command = SetTempoChange{tick, number("bpm")}; break; }
         case 49: { const auto tick = wide("tick"); command = MoveTempoChange{tick, wide("to")}; break; }
@@ -825,6 +904,7 @@ public:
         controller.commit(undoLabel.isNotEmpty() ? undoLabel : juce::String("Edit tracks"),
             focusTrack,focusScene,coalesceKey,continuous,
             selects?before.selectedTrack:-1,selects?before.selectedScene:-1);
+        controller.rackChannelsCommitted();
         return result;
     }
 
@@ -855,6 +935,7 @@ private:
         if (const auto edit = sidechainEdit(command)) return controller.applySidechainCommand(*edit);
         if (const auto edit = deviceEdit(command)) return controller.applyDeviceCommand(*edit);
         if (const auto edit = tempoEdit(command)) return controller.applyTempoCommand(*edit);
+        if (const auto edit = rackChannelEdit(command)) return controller.applyRackChannelCommand(*edit);
         if (std::holds_alternative<CreateReturn>(command)) return controller.addReturn() >= 0;
         if (const auto* c = std::get_if<RenameReturn>(&command)) {
             // An unchanged name is a no-op, not a failure: the rest of a batch still runs.

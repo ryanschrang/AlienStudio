@@ -9,6 +9,7 @@
 #include "SidechainCommands.h"
 #include "DeviceCommands.h"
 #include "TempoCommands.h"
+#include "RackChannelCommands.h"
 #include "ViewModes.h"
 #include "ToneEngine.h"
 #include "AudioClipImport.h"
@@ -2137,6 +2138,14 @@ public:
         notifyRackPlugins();
         return true;
     }
+    // Live side of the rack channel commands. CommandEngine owns the history entry.
+    bool applyRackChannelCommand(const rack_channel::Edit& e) {
+        if (busy || rack_channel::apply(doc, e).isNotEmpty()) return false;
+        pushRackToEngine();
+        return true;
+    }
+    // After a commit: the host rebuilds if which channel holds which plugin has changed.
+    void rackChannelsCommitted() { notifyRackPlugins(); }
     // The owner hosts the rack's plugin instruments: told when which channel holds which one has changed
     // (a plugin chosen or replaced, a channel added, removed, moved or duplicated, undo and redo).
     std::function<void()> onRackPluginsChanged;
