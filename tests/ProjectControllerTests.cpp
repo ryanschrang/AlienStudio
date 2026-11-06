@@ -1323,9 +1323,11 @@ static void transientHistoryTests() {
 #include "ProjectScaleTests.h"
 #include "DrumSliceControllerTests.h"
 #include "DrumTransientControllerTests.h"
+#include "EuclideanEditorTests.h"
 
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    euclideanEditorTests();
     drumTransientControllerTests();
     drumSliceBoundaryTests();
     drumSliceControllerTests();
