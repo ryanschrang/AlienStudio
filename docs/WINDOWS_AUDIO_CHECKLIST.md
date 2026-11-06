@@ -645,6 +645,10 @@ Not yet verified on native audio hardware.
 
 Listening, physical controller/device and display acceptance remain pending.
 
+## Alien Convolution Reverb (T2-02 / FX-02, claim #256)
+
+Native acceptance is pending. Follow the [listening, latency, export and display checks](CONVOLUTION_REVERB.md#manual-acceptance-not-yet-run) in the feature document.
+
 ## Alien Multiband Compressor (T2-02 / FX-02, claim #254)
 
 Native hardware listening and display checks remain pending.

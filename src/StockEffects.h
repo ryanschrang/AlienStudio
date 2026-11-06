@@ -5,6 +5,7 @@
 // Their parameters are ordinary host parameters, which is also what the upcoming
 // automation lanes will drive.
 #include "StockDsp.h"
+#include "ConvolutionReverb.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <array>
 #include <atomic>
@@ -16,7 +17,7 @@ namespace alien::stock {
 inline constexpr const char* formatName = "AlienStock";
 
 struct Info { const char* id; const char* name; const char* summary; };
-inline constexpr std::array<Info, 16> catalog{{
+inline constexpr std::array<Info, 17> catalog{{
     {"eq", "Alien EQ", "Four-band equaliser with low and high shelves and two bells"},
     {"compressor", "Alien Compressor", "Stereo-linked compressor with soft knee and parallel mix"},
     {"reverb", "Alien Reverb", "Stereo room reverb with pre-delay"},
@@ -33,6 +34,7 @@ inline constexpr std::array<Info, 16> catalog{{
     {"flanger", "Alien Flanger", "Short stereo modulated delay with rate, depth, signed feedback and mix"},
     {"deesser", "Alien De-Esser", "Stereo-linked high-band attenuation with frequency, threshold, reduction and mix"},
     {"multiband", "Alien Multiband Compressor", "Three-band stereo-linked compression, fixed 250/2500 Hz splits, shared timing and parallel mix"},
+    {"convolution", "Alien Convolution Reverb", "Original built-in stereo chamber impulse response with tone, wet output and aligned dry/wet mix"},
 }};
 
 // Parameter identifiers, shared by the processors and their editors.
@@ -46,6 +48,9 @@ inline constexpr const char *threshold = "threshold", *ratio = "ratio", *attack 
 }
 namespace deesser {
 inline constexpr const char *frequency = "frequency", *threshold = "threshold", *reduction = "reduction", *mix = "mix";
+}
+namespace convolution {
+inline constexpr const char *tone = "tone", *output = "output", *mix = "mix";
 }
 namespace multiband {
 inline constexpr const char *low = "lowThreshold", *mid = "midThreshold", *high = "highThreshold",
@@ -852,6 +857,33 @@ private:
     dsp::MultibandCompressor engine;
 };
 
+class ConvolutionEffect final : public Effect {
+public:
+    ConvolutionEffect() : Effect(catalog[16], layout()) {
+        tone = parameter(convolution::tone); output = parameter(convolution::output); mix = parameter(convolution::mix);
+    }
+    void prepareToPlay(double sampleRate, int) override {
+        engine.prepare(sampleRate); setLatencySamples(dsp::ConvolutionReverb::latency); prepared = true;
+    }
+    void reset() override { engine.reset(); }
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
+        juce::ScopedNoDenormals noDenormals;
+        if (prepared && buffer.getNumChannels() >= 2) engine.process(buffer.getWritePointer(0), buffer.getWritePointer(1), buffer.getNumSamples(), {tone->get(), output->get(), mix->get()});
+    }
+    double getTailLengthSeconds() const override { return engine.tailSeconds(); }
+private:
+    juce::AudioParameterFloat* parameter(const char* id) { return static_cast<juce::AudioParameterFloat*>(parameters.getParameter(id)); }
+    static Layout layout() {
+        Layout l;
+        l.add(floatParameter(convolution::tone, "Tone", {500, 16000, 4000}, 10000, frequencyFormat()));
+        l.add(floatParameter(convolution::output, "Wet output", {-12, 12, 0}, 0, dbFormat()));
+        l.add(floatParameter(convolution::mix, "Mix", {0, 1, 0}, .25f, percentFormat()));
+        return l;
+    }
+    juce::AudioParameterFloat *tone{}, *output{}, *mix{};
+    dsp::ConvolutionReverb engine;
+};
+
 // ---- Catalogue and project-file identity -----------------------------------------
 
 inline std::unique_ptr<Effect> create(const juce::String& id) {
@@ -871,6 +903,7 @@ inline std::unique_ptr<Effect> create(const juce::String& id) {
     if (id == catalog[13].id) return std::make_unique<FlangerEffect>();
     if (id == catalog[14].id) return std::make_unique<DeEsserEffect>();
     if (id == catalog[15].id) return std::make_unique<MultibandEffect>();
+    if (id == catalog[16].id) return std::make_unique<ConvolutionEffect>();
     return {};
 }
 

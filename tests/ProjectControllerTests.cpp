@@ -1273,6 +1273,29 @@ static void imagerHistoryTests() {
     require(reopened.tracks[0].plugins.effects[0].instanceId == state.instanceId && std::abs(mixOf(reopened.tracks[0].plugins.effects[0]) - .8f) < 1e-6, "save/reopen retains imager identity and parameters");
 }
 
+static void convolutionHistoryTests() {
+    ToneEngine engine; alien::ProjectController controller(engine);
+    auto effect = alien::stock::create("convolution"); require(effect != nullptr, "convolution available");
+    const auto stateFor = [&](float mix) {
+        auto* parameter = effect->parameters.getParameter(alien::stock::convolution::mix); parameter->setValueNotifyingHost(mix);
+        juce::MemoryBlock data; effect->getStateInformation(data); return data.toBase64Encoding();
+    };
+    std::vector<alien::PluginRackState> racks(static_cast<std::size_t>(controller.document().trackCount())); alien::PluginRackState master;
+    alien::PluginState state(alien::stock::describe(alien::stock::catalog[16]).createXml()->toString(), stateFor(.25f));
+    racks[0].effects = {state}; controller.setPluginRacks(racks, master);
+    racks[0].effects[0].stateBase64 = stateFor(.8f); controller.setPluginRacks(racks, master);
+    const auto mixOf = [&](const alien::PluginState& saved) {
+        juce::MemoryBlock data; require(data.fromBase64Encoding(saved.stateBase64), "convolution state base64"); effect->setStateInformation(data.getData(), static_cast<int>(data.getSize()));
+        return effect->parameters.getRawParameterValue(alien::stock::convolution::mix)->load();
+    };
+    controller.undo(); require(std::abs(mixOf(controller.document().tracks[0].plugins.effects[0]) - .25f) < 1e-6, "Undo restores convolution parameter state");
+    controller.redo(); require(std::abs(mixOf(controller.document().tracks[0].plugins.effects[0]) - .8f) < 1e-6, "Redo restores convolution parameter state");
+    alien::SessionProjectData parsed; juce::String error;
+    require(alien::parseSessionProject(alien::serializeSessionProject(alien::toProjectData(controller.document())), parsed, error), "convolution project serializes and parses");
+    const auto reopened = alien::fromProjectData(parsed);
+    require(reopened.tracks[0].plugins.effects[0].instanceId == state.instanceId && std::abs(mixOf(reopened.tracks[0].plugins.effects[0]) - .8f) < 1e-6, "save/reopen retains convolution identity and parameters");
+}
+
 static void multibandHistoryTests() {
     ToneEngine engine; alien::ProjectController controller(engine);
     auto effect = alien::stock::create("multiband"); require(effect != nullptr, "multiband available");
@@ -1357,6 +1380,7 @@ int main() {
     projectScaleTests();
     audioImportPlanChecks();
     transientHistoryTests();
+    convolutionHistoryTests();
     multibandHistoryTests();
     deesserHistoryTests();
     imagerHistoryTests();
