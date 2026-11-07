@@ -91,7 +91,9 @@ public:
             const auto choices = rackInstrumentChoices();
             if (index < 0 || index >= static_cast<int>(choices.size())) return;
             const auto& chosen = choices[static_cast<std::size_t>(index)];
-            if (!controller.setRackPlugin(channel, chosen.createXml()->toString(), chosen.name)) return;
+            const auto result = alien::command::CommandEngine(controller).execute(alien::command::SetRackChannelPlugin{channel, chosen.createXml()->toString(), chosen.name});
+            if (!result.ok) statusBar.setProjectStatus(result.error, result.error);
+            if (!result.changed) return;
             rackView.refresh();
             const auto problem = pluginHost.health(alien::PluginRuntime::channelBase + channel, -1);
             if (problem.isNotEmpty()) statusBar.setProjectStatus(chosen.name + ": " + problem, problem);

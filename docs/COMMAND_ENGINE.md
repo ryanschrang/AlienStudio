@@ -574,9 +574,20 @@ length and swing controls and the pattern menu's clone, clear, rename and delete
 with the same Undo labels. A paint stroke, graph stroke or swing drag merges under its key. A refusal shows
 in the hint line, except during a gesture.
 
-Still calling `editRack`: pasting a row of steps, importing a drum groove, editing channel notes, and sound,
-sample, synth and plugin choice. `ProjectController::deleteRackPattern` stays for its tests until the final
-route cleanup.
+## Rack sound and paste commands
+
+`SetRackChannelSound {channel, sound}`, `SilenceRackChannel {channel}`, `SetRackChannelSynth {channel, preset}` and
+`SetRackChannelPlugin {channel, description, name}` extend the rack channel reducer. `PasteRackSteps` extends the
+pattern reducer and carries the copied steps as data, so like `ImportClipAudio` it has no script form.
+`SetRackChannelPlugin` carries the new plugin's identity, so Preview and execute agree, and Preview never loads a
+plugin. The host rebuilds after the commit. An empty `name` keeps the channel's name.
+
+The channel menu's built-in sound, silence, synth preset, plugin and paste items run these commands, one per selected
+channel in one batch, with the same Undo labels. A refusal shows as a message.
+
+Still calling `editRack`: importing a drum groove, editing channel notes, and loading a sample file.
+`ProjectController::deleteRackPattern`, `setRackPlugin`, `setRackSynth` and `setRackBuiltin` stay for their tests until
+the final route cleanup.
 
 ## Master volume command
 

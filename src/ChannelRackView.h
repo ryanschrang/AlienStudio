@@ -384,19 +384,12 @@ public:
         if (!project().validChannel(row)) return;
         if (id == cmdPianoRoll) { selectChannel(row); if (onOpenPianoRoll) onOpenPianoRoll(row); return; }
         const auto rows = targetsOf(row);
-        // Each target in turn, as one undo step: true when anything changed.
-        const auto forEach = [&](const juce::String& label, const std::function<bool(rack::Project&, int)>& edit) {
-            return controller.editRack(label, [&](rack::Project& p) {
-                bool any = false;
-                for (const int r : rows) any = edit(p, r) || any;
-                return any;
-            });
-        };
         if (id == cmdCopyRow && project().isNoteChannel(project().selectedPattern, row)) return;
         if (id == cmdCopyRow) { rowClipboard = project().pattern(project().selectedPattern).steps[static_cast<std::size_t>(row)]; return; }
         if (id == cmdPasteRow && rowClipboard) {
-            const auto copied = *rowClipboard;
-            forEach("Paste steps", [&](rack::Project& p, int r) { return p.pasteRow(p.selectedPattern, r, copied); }); changed(); return;
+            runForRows(rows, "Paste steps", [pattern = project().selectedPattern, copied = std::make_shared<const rack::Project::StepRow>(*rowClipboard)](int r) {
+                return command::PasteRackSteps{pattern, r, copied}; });
+            changed(); return;
         }
         if (id == cmdDuplicate) {
             // From the bottom up, so each copy lands under its original; the copies become the selection.
@@ -462,7 +455,7 @@ public:
                 selectChannel(next);
             }
             changed();
-        } else if (id == cmdSilent) { forEach(plural("Silence channel", rows), [](rack::Project& p, int r) { return p.setSample(r, ""); }); changed(); }
+        } else if (id == cmdSilent) { runForRows(rows, plural("Silence channel", rows), [](int r) { return command::SilenceRackChannel{r}; }); changed(); }
         else if (id == cmdLoadSample) chooseSample(row);
         else if (id == cmdPluginEditor) { if (onOpenPluginEditor) onOpenPluginEditor(row); }
         else if (id >= starterBase) {
@@ -472,19 +465,12 @@ public:
         else if (id >= pluginBase) { if (onChoosePlugin) onChoosePlugin(row, id - pluginBase); changed(); }
         else if (id >= synthBase && id < synthBase + alien::presetCount) {
             const int preset = id - synthBase;
-            forEach("Change channel instrument", [&](rack::Project& p, int r) {
-                const bool done = p.setInstrumentPreset(r, preset);
-                if (done) p.renameChannel(r, alien::presetNames[static_cast<std::size_t>(preset)]);
-                return done;
-            }); changed(); preview(row);
+            runForRows(rows, "Change channel instrument", [preset](int r) { return command::SetRackChannelSynth{r, preset}; });
+            changed(); preview(row);
         }
         else if (id >= builtinBase && id < builtinBase + static_cast<int>(rack::builtinSounds.size())) {
             const auto& sound = rack::builtinSounds[static_cast<std::size_t>(id - builtinBase)];
-            if (rows.size() == 1) controller.setRackBuiltin(row, sound.id);
-            else forEach("Change channel sounds", [&](rack::Project& p, int r) {
-                const bool changedSound = p.setSample(r, std::string("builtin:") + sound.id);
-                return p.renameChannel(r, sound.name) || changedSound;
-            });
+            runForRows(rows, rows.size() == 1 ? "Change channel sound" : "Change channel sounds", [&sound](int r) { return command::SetRackChannelSound{r, sound.id}; });
             changed(); preview(row);
         } else if (id == outputMaster || (id >= outputBase && id < outputBase + rack::maxOutputTrack + 1)) {
             const int output = id == outputMaster ? rack::masterOutput : id - outputBase;
