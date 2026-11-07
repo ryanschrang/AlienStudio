@@ -18,8 +18,9 @@ menus/rename dialogs cannot change a replaced project or changed section.
 Sections keep musical ticks across tempo and meter changes. They prevent the
 song from being shortened past their ends. Metadata changes do not retime clips
 or affect playback; setting the playback loop remains a separate action. This
-increment does not move/copy the clips inside a section, reorder arrangements,
-or implement a chord track. CHORD-01 remains partial.
+increment does not move/copy the clips inside a section or reorder arrangements.
+The separate chord-track foundation is documented in SONG_CHORD_TRACK.md.
+CHORD-01 remains partial pending consumer adoption and clip rearrangement.
 
 Project format 35 adds a required `timeline.sections` array of objects with
 integer `start`/exclusive `end`, string `name` and byte `colour`. Runtime identities

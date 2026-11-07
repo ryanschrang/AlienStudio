@@ -2408,8 +2408,10 @@ static void explorerDropChecks() {
 }
 
 #include "SongSectionViewTests.h"
+#include "SongChordViewTests.h"
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    chordViewChecks();
     sectionViewChecks();
     sampleDropChecks();
     explorerDropChecks();
