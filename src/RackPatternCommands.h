@@ -2,13 +2,14 @@
 #include "ProjectDocument.h"
 #include <array>
 #include <cmath>
+#include <memory>
 #include <optional>
 
 // Pure document edits for the Channel Rack's steps and patterns, and its swing. The controller and
 // command Preview share them, so what Preview predicts is what the live edit does. Each edit names
 // its pattern, so it does not depend on which pattern happens to be shown when it runs.
 namespace alien::rack_pattern {
-enum class Kind { setStep, setStepValue, fill, rotate, reverse, repeat, clearSteps, length, swing, clone, clear, rename, remove };
+enum class Kind { setStep, setStepValue, fill, rotate, reverse, repeat, clearSteps, paste, length, swing, clone, clear, rename, remove };
 struct Edit {
     Kind kind{Kind::clear};
     int pattern{-1}, channel{-1}, step{-1};
@@ -16,6 +17,7 @@ struct Edit {
     double amount{};       // swing
     bool on{};             // setStep
     juce::String text;     // setStepValue: the field's name; rename: the name
+    std::shared_ptr<const rack::Project::StepRow> row;   // paste: the copied steps
 };
 
 // Indexed like rack::StepField.
@@ -39,6 +41,7 @@ inline bool editRack(rack::Project& p, const Edit& e) {
     case Kind::reverse: return p.reverseRow(e.pattern, e.channel);
     case Kind::repeat: return p.repeatRow(e.pattern, e.channel, e.value);
     case Kind::clearSteps: return p.clearChannelSteps(e.pattern, e.channel);
+    case Kind::paste: return e.row != nullptr && p.pasteRow(e.pattern, e.channel, *e.row);
     case Kind::length: return p.setPatternLength(e.pattern, e.value);
     case Kind::swing: return p.setSwing(static_cast<float>(e.amount));
     case Kind::clone: return p.addPattern(e.pattern);
@@ -55,7 +58,7 @@ inline juce::String refusal(const ProjectDocument& d, const Edit& e) {
         if (!std::isfinite(e.amount) || e.amount < 0 || e.amount > 1) return "Swing must be a finite number from 0 to 1.";
     } else if (!p.validPattern(e.pattern)) return "There is no rack pattern " + juce::String(e.pattern + 1) + ".";
     switch (e.kind) {
-    case Kind::setStep: case Kind::setStepValue: case Kind::fill: case Kind::rotate: case Kind::reverse: case Kind::repeat: case Kind::clearSteps:
+    case Kind::setStep: case Kind::setStepValue: case Kind::fill: case Kind::rotate: case Kind::reverse: case Kind::repeat: case Kind::clearSteps: case Kind::paste:
         if (!p.validChannel(e.channel)) return "There is no rack channel " + juce::String(e.channel + 1) + ".";
         break;
     default: break;
@@ -77,6 +80,9 @@ inline juce::String refusal(const ProjectDocument& d, const Edit& e) {
         break;
     case Kind::repeat:
         if (e.value < 1) return "Steps repeat over a period of at least 1.";
+        break;
+    case Kind::paste:
+        if (e.row == nullptr) return "There are no copied steps to paste.";
         break;
     case Kind::length:
         if (!rack::validLength(e.value)) return "A pattern has 16, 32, 64 or 128 steps.";

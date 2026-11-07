@@ -126,13 +126,19 @@ struct CloneRackPattern { int pattern{-1}; };
 struct ClearRackPattern { int pattern{-1}; };
 struct RenameRackPattern { int pattern{-1}; juce::String name; };
 struct DeleteRackPattern { int pattern{-1}; };
+// What a rack channel plays. A plugin's identity is carried, so Preview and execute agree. Copied steps exist only as data, so PasteRackSteps has no script form.
+struct SetRackChannelSound { int channel{-1}; juce::String sound; };
+struct SilenceRackChannel { int channel{-1}; };
+struct SetRackChannelSynth { int channel{-1}, preset{-1}; };
+struct SetRackChannelPlugin { int channel{-1}; juce::String description, name; std::uint64_t instance{rack_channel::freshInstance()}; };
+struct PasteRackSteps { int pattern{-1}, channel{-1}; std::shared_ptr<const rack::Project::StepRow> row; };
 
-using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume, ImportClipAudio, SetTrackSend, SetTrackSendMode, CreateReturn, RenameReturn, DeleteReturn, SetReturnVolume, SetReturnPan, SetReturnMute, CreateBus, RenameBus, DeleteBus, SetBusVolume, SetBusPan, SetBusMute, SetBusSolo, SetTrackOutput, SetSidechain, InsertDevice, RemoveDevice, MoveDevice, SetDeviceBypass, SetTempo, SetTempoChange, MoveTempoChange, RemoveTempoChange, ClearTempoChanges, SetMeterChange, RemoveMeterChange, ClearMeterChanges, AddRackChannel, AddRackSynthChannel, RemoveRackChannel, MoveRackChannel, DuplicateRackChannel, RenameRackChannel, SetRackChannelVolume, SetRackChannelPan, SetRackChannelMute, SetRackChannelSolo, SetRackChannelOutput, SetRackChannelChoke, SetRackStep, SetRackStepValue, FillRackSteps, RotateRackSteps, ReverseRackSteps, RepeatRackSteps, ClearRackSteps, SetRackPatternLength, SetRackSwing, CloneRackPattern, ClearRackPattern, RenameRackPattern, DeleteRackPattern>;
+using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume, ImportClipAudio, SetTrackSend, SetTrackSendMode, CreateReturn, RenameReturn, DeleteReturn, SetReturnVolume, SetReturnPan, SetReturnMute, CreateBus, RenameBus, DeleteBus, SetBusVolume, SetBusPan, SetBusMute, SetBusSolo, SetTrackOutput, SetSidechain, InsertDevice, RemoveDevice, MoveDevice, SetDeviceBypass, SetTempo, SetTempoChange, MoveTempoChange, RemoveTempoChange, ClearTempoChanges, SetMeterChange, RemoveMeterChange, ClearMeterChanges, AddRackChannel, AddRackSynthChannel, RemoveRackChannel, MoveRackChannel, DuplicateRackChannel, RenameRackChannel, SetRackChannelVolume, SetRackChannelPan, SetRackChannelMute, SetRackChannelSolo, SetRackChannelOutput, SetRackChannelChoke, SetRackStep, SetRackStepValue, FillRackSteps, RotateRackSteps, ReverseRackSteps, RepeatRackSteps, ClearRackSteps, SetRackPatternLength, SetRackSwing, CloneRackPattern, ClearRackPattern, RenameRackPattern, DeleteRackPattern, SetRackChannelSound, SilenceRackChannel, SetRackChannelSynth, SetRackChannelPlugin, PasteRackSteps>;
 
 namespace detail {
 // Indexed like Command's alternatives.
-inline constexpr std::array<const char*, 80> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume", "ImportClipAudio", "SetTrackSend", "SetTrackSendMode", "CreateReturn", "RenameReturn", "DeleteReturn", "SetReturnVolume", "SetReturnPan", "SetReturnMute", "CreateBus", "RenameBus", "DeleteBus", "SetBusVolume", "SetBusPan", "SetBusMute", "SetBusSolo", "SetTrackOutput", "SetSidechain", "InsertDevice", "RemoveDevice", "MoveDevice", "SetDeviceBypass", "SetTempo", "SetTempoChange", "MoveTempoChange", "RemoveTempoChange", "ClearTempoChanges", "SetMeterChange", "RemoveMeterChange", "ClearMeterChanges", "AddRackChannel", "AddRackSynthChannel", "RemoveRackChannel", "MoveRackChannel", "DuplicateRackChannel", "RenameRackChannel", "SetRackChannelVolume", "SetRackChannelPan", "SetRackChannelMute", "SetRackChannelSolo", "SetRackChannelOutput", "SetRackChannelChoke", "SetRackStep", "SetRackStepValue", "FillRackSteps", "RotateRackSteps", "ReverseRackSteps", "RepeatRackSteps", "ClearRackSteps", "SetRackPatternLength", "SetRackSwing", "CloneRackPattern", "ClearRackPattern", "RenameRackPattern", "DeleteRackPattern"};
-inline constexpr std::array<const char*, 80> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume", "Import audio", "Set send level", "Set send mode", "Add return", "Rename return", "Remove return", "Set return volume", "Set return pan", "Set return mute", "Add bus", "Rename bus", "Delete bus", "Set bus volume", "Set bus pan", "Set bus mute", "Set bus solo", "Set track output", "Set sidechain", "Insert device", "Remove device", "Move device", "Set device bypass", "Change tempo", "Tempo change", "Move tempo change", "Remove tempo change", "Remove tempo changes", "Time signature change", "Remove time signature change", "Remove time signature changes", "Add channel", "Add synth channel", "Delete channel", "Move channel", "Duplicate channel", "Rename channel", "Change channel volume", "Change channel pan", "Mute channel", "Solo channel", "Route channel", "Change choke group", "Edit step", "Edit step", "Edit channel steps", "Edit channel steps", "Edit channel steps", "Edit channel steps", "Clear channel", "Change pattern length", "Change swing", "Clone pattern", "Clear pattern", "Rename pattern", "Delete pattern"};
+inline constexpr std::array<const char*, 85> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume", "ImportClipAudio", "SetTrackSend", "SetTrackSendMode", "CreateReturn", "RenameReturn", "DeleteReturn", "SetReturnVolume", "SetReturnPan", "SetReturnMute", "CreateBus", "RenameBus", "DeleteBus", "SetBusVolume", "SetBusPan", "SetBusMute", "SetBusSolo", "SetTrackOutput", "SetSidechain", "InsertDevice", "RemoveDevice", "MoveDevice", "SetDeviceBypass", "SetTempo", "SetTempoChange", "MoveTempoChange", "RemoveTempoChange", "ClearTempoChanges", "SetMeterChange", "RemoveMeterChange", "ClearMeterChanges", "AddRackChannel", "AddRackSynthChannel", "RemoveRackChannel", "MoveRackChannel", "DuplicateRackChannel", "RenameRackChannel", "SetRackChannelVolume", "SetRackChannelPan", "SetRackChannelMute", "SetRackChannelSolo", "SetRackChannelOutput", "SetRackChannelChoke", "SetRackStep", "SetRackStepValue", "FillRackSteps", "RotateRackSteps", "ReverseRackSteps", "RepeatRackSteps", "ClearRackSteps", "SetRackPatternLength", "SetRackSwing", "CloneRackPattern", "ClearRackPattern", "RenameRackPattern", "DeleteRackPattern", "SetRackChannelSound", "SilenceRackChannel", "SetRackChannelSynth", "SetRackChannelPlugin", "PasteRackSteps"};
+inline constexpr std::array<const char*, 85> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume", "Import audio", "Set send level", "Set send mode", "Add return", "Rename return", "Remove return", "Set return volume", "Set return pan", "Set return mute", "Add bus", "Rename bus", "Delete bus", "Set bus volume", "Set bus pan", "Set bus mute", "Set bus solo", "Set track output", "Set sidechain", "Insert device", "Remove device", "Move device", "Set device bypass", "Change tempo", "Tempo change", "Move tempo change", "Remove tempo change", "Remove tempo changes", "Time signature change", "Remove time signature change", "Remove time signature changes", "Add channel", "Add synth channel", "Delete channel", "Move channel", "Duplicate channel", "Rename channel", "Change channel volume", "Change channel pan", "Mute channel", "Solo channel", "Route channel", "Change choke group", "Edit step", "Edit step", "Edit channel steps", "Edit channel steps", "Edit channel steps", "Edit channel steps", "Clear channel", "Change pattern length", "Change swing", "Clone pattern", "Clear pattern", "Rename pattern", "Delete pattern", "Change channel sound", "Silence channel", "Change channel instrument", "Change channel instrument", "Paste steps"};
 static_assert(names.size() == std::variant_size_v<Command> && labels.size() == names.size());
 
 // The name the controller stores for `name` (it trims and caps track names).
@@ -275,6 +281,10 @@ inline std::optional<rack_channel::Edit> rackChannelEdit(const Command& command)
     if (const auto* c = std::get_if<SetRackChannelSolo>(&command)) { e.kind = Kind::solo; e.channel = c->channel; e.on = c->soloed; return e; }
     if (const auto* c = std::get_if<SetRackChannelOutput>(&command)) { e.kind = Kind::output; e.channel = c->channel; e.value = c->output; return e; }
     if (const auto* c = std::get_if<SetRackChannelChoke>(&command)) { e.kind = Kind::choke; e.channel = c->channel; e.value = c->group; return e; }
+    if (const auto* c = std::get_if<SetRackChannelSound>(&command)) { e.kind = Kind::sound; e.channel = c->channel; e.text = c->sound; return e; }
+    if (const auto* c = std::get_if<SilenceRackChannel>(&command)) { e.kind = Kind::silence; e.channel = c->channel; return e; }
+    if (const auto* c = std::get_if<SetRackChannelSynth>(&command)) { e.kind = Kind::synth; e.channel = c->channel; e.value = c->preset; return e; }
+    if (const auto* c = std::get_if<SetRackChannelPlugin>(&command)) { e.kind = Kind::plugin; e.channel = c->channel; e.description = c->description; e.text = c->name; e.instance = c->instance; return e; }
     return std::nullopt;
 }
 
@@ -294,6 +304,7 @@ inline std::optional<rack_pattern::Edit> rackPatternEdit(const Command& command)
     if (const auto* c = std::get_if<ClearRackPattern>(&command)) { e.kind = Kind::clear; e.pattern = c->pattern; return e; }
     if (const auto* c = std::get_if<RenameRackPattern>(&command)) { e.kind = Kind::rename; e.pattern = c->pattern; e.text = c->name; return e; }
     if (const auto* c = std::get_if<DeleteRackPattern>(&command)) { e.kind = Kind::remove; e.pattern = c->pattern; return e; }
+    if (const auto* c = std::get_if<PasteRackSteps>(&command)) { e.kind = Kind::paste; e.pattern = c->pattern; e.channel = c->channel; e.row = c->row; return e; }
     return std::nullopt;
 }
 
@@ -412,6 +423,10 @@ inline juce::String describe(const ProjectDocument& d, const Command& command) {
         case Kind::solo: return juce::String(edit->on ? "Solo " : "Unsolo ") + channel;
         case Kind::output: return "Route " + channel + (edit->value < 0 ? juce::String(" to the master") : " to " + detail::trackTitle(d, edit->value));
         case Kind::choke: return "Put " + channel + (edit->value == 0 ? juce::String(" in no choke group") : " in choke group " + juce::String(edit->value));
+        case Kind::sound: return "Give " + channel + " the built-in sound \"" + edit->text + "\"";
+        case Kind::silence: return "Silence " + channel;
+        case Kind::synth: return "Give " + channel + " the synth preset " + juce::String(alien::presetNames[static_cast<std::size_t>(edit->value)]);
+        case Kind::plugin: return "Give " + channel + " the plugin instrument \"" + edit->text + "\"";
         case Kind::add: case Kind::addSynth: break;
         }
     }
@@ -428,6 +443,7 @@ inline juce::String describe(const ProjectDocument& d, const Command& command) {
         case Kind::reverse: return "Reverse the steps of " + channel;
         case Kind::repeat: return "Repeat the first " + juce::String(edit->value) + " steps of " + channel;
         case Kind::clearSteps: return "Clear the steps of " + channel;
+        case Kind::paste: return "Paste copied steps into " + channel;
         case Kind::length: return "Set the length of " + pattern + " to " + juce::String(edit->value) + " steps";
         case Kind::clone: return "Clone " + pattern;
         case Kind::clear: return "Clear " + pattern;
@@ -611,6 +627,11 @@ inline juce::var arguments(const Command& command) {
     if (const auto* c = std::get_if<ClearRackPattern>(&command)) { object->setProperty("pattern", c->pattern); return result; }
     if (const auto* c = std::get_if<RenameRackPattern>(&command)) { object->setProperty("pattern", c->pattern); object->setProperty("name", c->name); return result; }
     if (const auto* c = std::get_if<DeleteRackPattern>(&command)) { object->setProperty("pattern", c->pattern); return result; }
+    if (const auto* c = std::get_if<SetRackChannelSound>(&command)) { object->setProperty("channel", c->channel); object->setProperty("sound", c->sound); return result; }
+    if (const auto* c = std::get_if<SilenceRackChannel>(&command)) { object->setProperty("channel", c->channel); return result; }
+    if (const auto* c = std::get_if<SetRackChannelSynth>(&command)) { object->setProperty("channel", c->channel); object->setProperty("preset", c->preset); return result; }
+    if (const auto* c = std::get_if<SetRackChannelPlugin>(&command)) { object->setProperty("channel", c->channel); object->setProperty("description", c->description); object->setProperty("name", c->name); return result; }
+    if (const auto* c = std::get_if<PasteRackSteps>(&command)) { object->setProperty("pattern", c->pattern); object->setProperty("channel", c->channel); return result; }
     if (const auto* c = std::get_if<SetTempo>(&command)) { object->setProperty("bpm", c->bpm); return result; }
     if (const auto* c = std::get_if<SetTempoChange>(&command)) { object->setProperty("tick", static_cast<juce::int64>(c->tick)); object->setProperty("bpm", c->bpm); return result; }
     if (const auto* c = std::get_if<MoveTempoChange>(&command)) { object->setProperty("tick", static_cast<juce::int64>(c->tick)); object->setProperty("to", static_cast<juce::int64>(c->to)); return result; }
@@ -704,7 +725,8 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
     while (index < detail::names.size() && commandName != detail::names[index]) ++index;
     if (index >= detail::names.size()) { error = "Unknown command \"" + commandName + "\"."; return std::nullopt; }
     if (index == 25) { error = "ImportClipAudio takes decoded audio, which cannot be written as arguments."; return std::nullopt; }
-    static const std::array<juce::StringArray, 80> allowed{
+    if (index == 84) { error = "PasteRackSteps takes copied steps, which cannot be written as arguments."; return std::nullopt; }
+    static const std::array<juce::StringArray, 85> allowed{
         juce::StringArray{}, juce::StringArray{"track"}, juce::StringArray{"track", "to"},
         juce::StringArray{"track", "name"}, juce::StringArray{"track", "colour"},
         juce::StringArray{"track", "gain"}, juce::StringArray{"track", "pan"},
@@ -719,7 +741,8 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
         {"bpm"}, {"tick", "bpm"}, {"tick", "to"}, {"tick"}, {}, {"bar", "numerator", "denominator"}, {"bar"}, {},
         {"sound"}, {"preset"}, {"channel"}, {"channel", "to"}, {"channel"}, {"channel", "name"}, {"channel", "volume"}, {"channel", "pan"}, {"channel", "muted"}, {"channel", "soloed"}, {"channel", "output"}, {"channel", "group"},
         {"pattern", "channel", "step", "on"}, {"pattern", "channel", "step", "field", "value"}, {"pattern", "channel", "every"}, {"pattern", "channel", "distance"}, {"pattern", "channel"}, {"pattern", "channel", "period"}, {"pattern", "channel"},
-        {"pattern", "length"}, {"amount"}, {"pattern"}, {"pattern"}, {"pattern", "name"}, {"pattern"}
+        {"pattern", "length"}, {"amount"}, {"pattern"}, {"pattern"}, {"pattern", "name"}, {"pattern"},
+        {"channel", "sound"}, {"channel"}, {"channel", "preset"}, {"channel", "description", "name"}, {}
     };
     const auto* object = args.getDynamicObject();
     if (object == nullptr && !args.isVoid()) { error = commandName + " takes an object of arguments."; return std::nullopt; }
@@ -797,6 +820,10 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
         case 77: command = ClearRackPattern{integer("pattern")}; break;
         case 78: { const int pattern = integer("pattern"); command = RenameRackPattern{pattern, text("name")}; break; }
         case 79: command = DeleteRackPattern{integer("pattern")}; break;
+        case 80: { const int channel = integer("channel"); command = SetRackChannelSound{channel, text("sound")}; break; }
+        case 81: command = SilenceRackChannel{integer("channel")}; break;
+        case 82: { const int channel = integer("channel"); command = SetRackChannelSynth{channel, integer("preset")}; break; }
+        case 83: { const int channel = integer("channel"); const auto description = text("description"); command = SetRackChannelPlugin{channel, description, text("name")}; break; }
         case 47: command = SetTempo{integer("bpm")}; break;
         case 48: { const auto tick = wide("tick"); command = SetTempoChange{tick, number("bpm")}; break; }
         case 49: { const auto tick = wide("tick"); command = MoveTempoChange{tick, wide("to")}; break; }

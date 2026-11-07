@@ -428,6 +428,8 @@ static void freezeWorkflow() {
             require(alien::rack_pattern::refusal(held,step).contains("Unfreeze"),"a frozen receiver holds a channel's steps");
             require(alien::rack_pattern::refusal(held,swing).contains("Unfreeze"),"and the rack's swing");
             require(alien::rack_pattern::refusal(held,same).isEmpty(),"but an unchanged setting is accepted");
+            alien::rack_channel::Edit sound; sound.kind=alien::rack_channel::Kind::sound; sound.channel=0; sound.text=held.channelRack.info[0].sample=="builtin:hat"?"kick":"hat";
+            require(alien::rack_channel::refusal(held,sound).contains("Unfreeze"),"and what a channel plays");
         }
         const auto metered=commands.preview(alien::command::SetMeterChange{0,3,4});
         require(metered.ok && metered.changed && !metered.after.timeline.frozenOriginals.empty(),"a time signature keeps the freeze");
