@@ -41,8 +41,12 @@ of the Scale tool's local settings and follow/snap toggles. An undefined project
 key leaves the pitch chromatic. Changing the key later never retunes generated
 notes. Generator settings are local and do not change the project format.
 
-Note-based rack rows can use the Piano Roll's existing follow option. Other generator adoption, chord track,
-arrangement sections and automatic key inference remain future increments. This does not complete MIDI-06 or CHORD-01.
+Note-based rack rows can use the Piano Roll's existing follow option. Song sections
+and the editable chord-track context are documented in SONG_SECTIONS.md and
+SONG_CHORD_TRACK.md. Chord creation seeds its root from the saved key, but its
+explicit quality and subsequent edits remain independent of that key. Other
+generator adoption, automatic accompaniment and section-driven clip rearrangement
+remain future increments. This does not complete MIDI-06 or CHORD-01.
 
 Verification: SessionProjectTests covers strict format validation and migration;
 ProjectControllerTests drives the actual Scale controls and history/scoped guards;

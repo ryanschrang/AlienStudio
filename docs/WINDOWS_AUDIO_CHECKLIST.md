@@ -645,6 +645,10 @@ Not yet verified on native audio hardware.
 
 Listening, physical controller/device and display acceptance remain pending.
 
+## Song chord track (T2-04 / CHORD-01, format 36)
+
+Native acceptance is pending. Follow the [chord editing, navigation and display checks](SONG_CHORD_TRACK.md#manual-acceptance-not-yet-run) in the feature document.
+
 ## Song arrangement sections (T2-04 / CHORD-01, format 35)
 
 Native acceptance is pending. Follow the [section editing, navigation and display checks](SONG_SECTIONS.md#manual-acceptance-not-yet-run) in the feature document.

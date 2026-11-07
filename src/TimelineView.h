@@ -53,13 +53,14 @@ class TimelineCanvas final : public juce::Component, public juce::DragAndDropTar
 public:
     static constexpr int headerWidth = 156, markerStripHeight = 20, loopStripHeight = 16, rulerHeight = 24;
     static constexpr int sectionStripHeight = 20, sectionTop = markerStripHeight + loopStripHeight + rulerHeight;
-    static constexpr int topHeight = sectionTop + sectionStripHeight;
+    static constexpr int chordStripHeight = 20, chordTop = sectionTop + sectionStripHeight;
+    static constexpr int topHeight = chordTop + chordStripHeight;
     static constexpr int rowHeight = 46, edgeGrab = 6, dragThreshold = 3;
     static constexpr int takeLaneHeight = 30;   // one recording take under its track, when the track shows its take lanes
     static constexpr float fadeHandleHeight = 10.0f;   // the top strip of an audio clip where its fade handles are grabbed
     static constexpr double minPixelsPerTick = 0.00001, maxPixelsPerTick = 0.6, defaultPixelsPerTick = 64.0 / 3840.0;
 
-    enum class Zone { none, corner, header, markerStrip, loopStrip, ruler, region, lane, take, sectionStrip };
+    enum class Zone { none, corner, header, markerStrip, loopStrip, ruler, region, lane, take, sectionStrip, chordStrip };
     enum class Edge { none, left, right };
     struct Hit {
         Zone zone{Zone::none};
@@ -74,6 +75,7 @@ public:
         int warp{-1}; // index of a marker handle along the bottom of the region
         int takeLane{-1};         // which of the track's take lanes, from 0
         std::uint32_t section{};
+        std::uint32_t chord{};
     };
 
     explicit TimelineCanvas(ProjectController& projectController) : controller(projectController) {
@@ -81,7 +83,8 @@ public:
         setHelpText("Alt-drag an audio clip's body to slip its source without moving its boundaries. "
                     "Drag right to reveal later source audio; drag left to reveal earlier audio. "
                     "Slip is unsnapped. Edges trim and top-corner handles edit fades. Right-click audio for warp markers; drag their bottom handles to retime source audio. "
-                    "Right-click the Sections strip to create a named section from the loop, or edit, colour, navigate and loop an existing section.");
+                    "Right-click the Sections strip to create a named section from the loop, or edit, colour, navigate and loop an existing section. "
+                    "Right-click Chords to create a chord range from the loop or change its root and quality. Chords describe harmony; they do not retune or play notes.");
         setWantsKeyboardFocus(true);
         setMouseClickGrabsKeyboardFocus(true);
     }
@@ -102,6 +105,35 @@ public:
 
     // ---- the document, as the view sees it ------------------------------------------------------------
     const timeline::Timeline& committed() const noexcept { return controller.timeline(); }
+    juce::Rectangle<float> chordBounds(const timeline::SongChord& c) const {
+        return {static_cast<float>(xForTick(c.start)), static_cast<float>(chordTop + 2),
+            static_cast<float>(std::max(2.0, xForTick(c.end) - xForTick(c.start))), static_cast<float>(chordStripHeight - 4)};
+    }
+    bool addChordFromLoop(int root, ChordType quality = ChordType::major) {
+        const auto start = committed().loopStart, end = committed().loopEnd;
+        const bool done = edit("Add Song chord", [=](timeline::Timeline& t) { return t.addChord(start, end, root, quality) != 0; });
+        if (!done && !controller.isBusy()) say("Chord unchanged: use a non-overlapping loop range inside the song (maximum 256 chords).");
+        return done;
+    }
+    bool updateChord(const timeline::SongChord& expected, timeline::SongChord next, std::uint32_t scope) {
+        const auto* current = committed().findChord(expected.id);
+        if (scope != controller.document().identityScope || !current || *current != expected || next.id != expected.id) return false;
+        const bool done = edit("Edit Song chord", [=](timeline::Timeline& t) { return t.setChord(next); });
+        if (!done && !controller.isBusy() && next != expected) say("Chord unchanged: keep a valid root/quality and non-overlapping range inside the song.");
+        return done;
+    }
+    bool removeChord(const timeline::SongChord& expected, std::uint32_t scope) {
+        const auto* current = committed().findChord(expected.id);
+        if (scope != controller.document().identityScope || !current || *current != expected) return false;
+        return edit("Delete Song chord", [=](timeline::Timeline& t) { return t.removeChord(expected.id); });
+    }
+    bool loopChord(const timeline::SongChord& expected, std::uint32_t scope) {
+        const auto* current = committed().findChord(expected.id);
+        if (scope != controller.document().identityScope || !current || *current != expected) return false;
+        return edit("Loop Song chord", [=](timeline::Timeline& t) {
+            const bool range = t.setLoop(expected.start, expected.end), enabled = t.setLoopEnabled(true); return range || enabled;
+        });
+    }
     juce::Rectangle<float> sectionBounds(const timeline::Section& s) const {
         return {static_cast<float>(xForTick(s.start)), static_cast<float>(sectionTop + 2),
             static_cast<float>(std::max(2.0, xForTick(s.end) - xForTick(s.start))), static_cast<float>(sectionStripHeight - 4)};
@@ -1048,6 +1080,11 @@ public:
                 else if (x > loop.getX() && x < loop.getRight()) hit.loopPart = Hit::LoopPart::body;
                 return hit;
             }
+            if (p.y >= chordTop) {
+                hit.zone = Zone::chordStrip;
+                for (const auto& c : shown().chords) if (chordBounds(c).contains(p.toFloat())) { hit.chord = c.id; break; }
+                return hit;
+            }
             if (p.y >= sectionTop) {
                 hit.zone = Zone::sectionStrip;
                 for (const auto& s : shown().sections) if (sectionBounds(s).contains(p.toFloat())) { hit.section = s.id; break; }
@@ -1165,6 +1202,9 @@ public:
             }
             drag.kind = DragKind::scrub; drag.active = true;
             setCursor(snapTick(drag.anchorTick, bypass));
+            break;
+        case Zone::chordStrip:
+            if (const auto* c = committed().findChord(hit.chord)) setCursor(c->start);
             break;
         case Zone::sectionStrip:
             if (const auto* s = committed().findSection(hit.section)) setCursor(s->start);
@@ -1721,6 +1761,39 @@ private:
                 else if (id == cmdPaste) paste(tick);
                 else if (id == cmdSelectAll) selectAll();
                 else if (id == cmdAddMarker) { setCursor(tick, false); addMarkerAtCursor(); }
+            });
+        } else if (hit.zone == Zone::chordStrip) {
+            enum { add = 8001, jump, loop, resize, remove, rootBase = 8100, qualityBase = 8200 };
+            const auto scope = controller.document().identityScope;
+            const auto* found = committed().findChord(hit.chord);
+            const auto expected = found ? *found : timeline::SongChord{};
+            const auto start = committed().loopStart, end = committed().loopEnd;
+            const auto& key = controller.document().musicalScale;
+            const int createRoot = key.defined && key.valid() ? key.rootPitchClass : 0;
+            juce::PopupMenu menu, roots, qualities;
+            menu.addItem(add, "Create " + juce::String(timeline::chordRootName(createRoot)) + " Major chord from loop", !found);
+            if (found) {
+                for (int r = 0; r < 12; ++r) roots.addItem(rootBase + r, timeline::chordRootName(r), true, expected.root == r);
+                for (int q = 0; q < 9; ++q) qualities.addItem(qualityBase + q, timeline::chordQualityName(static_cast<ChordType>(q)), true, static_cast<int>(expected.quality) == q);
+                menu.addSubMenu("Root", roots); menu.addSubMenu("Quality", qualities);
+                menu.addItem(jump, "Go to chord start"); menu.addItem(loop, "Loop this chord");
+                menu.addItem(resize, "Use current loop as chord range"); menu.addItem(remove, "Delete chord");
+            }
+            launch(std::move(menu), area, [this, scope, expected, start, end, createRoot](int id) {
+                if (scope != controller.document().identityScope) return;
+                if (id == add) {
+                    if (committed().loopStart == start && committed().loopEnd == end) addChordFromLoop(createRoot);
+                    return;
+                }
+                const auto* now = committed().findChord(expected.id);
+                if (!now || *now != expected) return;
+                auto next = expected;
+                if (id == jump) setCursor(expected.start);
+                else if (id == loop) loopChord(expected, scope);
+                else if (id == remove) removeChord(expected, scope);
+                else if (id == resize && committed().loopStart == start && committed().loopEnd == end) { next.start = start; next.end = end; updateChord(expected, next, scope); }
+                else if (id >= rootBase && id < rootBase + 12) { next.root = id - rootBase; updateChord(expected, next, scope); }
+                else if (id >= qualityBase && id < qualityBase + 9) { next.quality = static_cast<ChordType>(id - qualityBase); updateChord(expected, next, scope); }
             });
         } else if (hit.zone == Zone::sectionStrip) {
             enum { add = 7001, jump, loop, rename, resize, remove };
@@ -2376,8 +2449,16 @@ private:
         g.drawText("LOOP", 12, markerStripHeight, headerWidth - 16, loopStripHeight, juce::Justification::centredLeft);
         g.drawText("BARS", 12, markerStripHeight + loopStripHeight, headerWidth - 16, rulerHeight, juce::Justification::centredLeft);
         g.drawText("SECTIONS", 12, sectionTop, headerWidth - 16, sectionStripHeight, juce::Justification::centredLeft);
+        g.drawText("CHORDS", 12, chordTop, headerWidth - 16, chordStripHeight, juce::Justification::centredLeft);
         juce::Graphics::ScopedSaveState state(g);
         g.reduceClipRegion(headerWidth, 0, getWidth() - headerWidth, topHeight);
+        g.setColour(col::inset); g.fillRect(headerWidth, chordTop, getWidth() - headerWidth, chordStripHeight);
+        for (const auto& c : t.chords) {
+            const auto bounds = chordBounds(c);
+            g.setColour(ui::trackColour(c.root % 8).withAlpha(.6f)); g.fillRoundedRectangle(bounds, 2);
+            const auto label = juce::String(timeline::chordRootName(c.root)) + " " + timeline::chordQualityName(c.quality);
+            g.setColour(col::text); g.drawFittedText(label, bounds.reduced(4, 0).toNearestInt(), juce::Justification::centredLeft, 1);
+        }
         g.setColour(col::inset); g.fillRect(headerWidth, sectionTop, getWidth() - headerWidth, sectionStripHeight);
         for (const auto& s : t.sections) {
             const auto bounds = sectionBounds(s);

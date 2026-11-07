@@ -844,7 +844,9 @@ static void warpMarkerChecks() {
 }
 
 #include "SongSectionModelTests.h"
+#include "SongChordModelTests.h"
 int main() {
+    chordModelTests();
     sectionModelTests();
     warpMarkerChecks();
     freezeModelChecks();

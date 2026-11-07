@@ -15,6 +15,7 @@
 //
 // Message-thread value type. The audio thread only ever reads an immutable copy.
 #include "PianoRollSequence.h"
+#include "SongChord.h"
 #include "Automation.h"
 #include "RackModel.h"
 #include "SessionCapacity.h"
@@ -50,7 +51,7 @@ inline constexpr int rowFromSaved(int row, int lane, bool legacyRows) noexcept {
         return row < legacySavedRackRowBase + rackLanes ? rackRowBase + row - legacySavedRackRowBase : -1;
     return row < rackRowBase ? row : -1;
 }
-inline constexpr std::size_t maxRegions = 1024, maxMarkers = 128, maxTakes = 256, maxSections = 64;
+inline constexpr std::size_t maxRegions = 1024, maxMarkers = 128, maxTakes = 256, maxSections = 64, maxChords = 256;
 inline constexpr int maxMarkerNameBytes = 32;
 
 inline constexpr bool isTrackRow(int row) noexcept { return row >= 0 && row < rackRowBase; }
@@ -359,6 +360,7 @@ struct Timeline {
     std::vector<Region> takes; // Preserved recording passes, not played directly.
     std::vector<Marker> markers;   // ascending by tick
     std::vector<Section> sections; // ascending, non-overlapping ranges
+    std::vector<SongChord> chords; // independent shared harmonic context, ascending/non-overlapping
     std::vector<automation::Lane> automationLanes;
     // Missing plugins retain their lanes; an orphan must never bind to a replacement.
     static constexpr std::size_t maxParameterLanes = 1024;
@@ -424,6 +426,7 @@ struct Timeline {
         for (const auto& r : frozenOriginals) end = std::max(end, r.end());
         for (const auto& m : markers) end = std::max(end, m.tick);
         for (const auto& s : sections) end = std::max(end, s.end);
+        for (const auto& c : chords) end = std::max(end, c.end);
         for (const auto& c : tempoChanges) end = std::max(end, c.tick);
         for (const auto& lane : automationLanes) if (!lane.points.empty()) end = std::max(end, lane.points.back().tick);
         for (const auto& lane : parameterLanes) if (!lane.points.empty()) end = std::max(end, lane.points.back().tick);
@@ -438,7 +441,7 @@ struct Timeline {
 
     // ---- whole-timeline rules -----------------------------------------------------
     bool valid(int tracks = maxSessionTracks, int scenes = maxSessionScenes, int patterns = rack::maxPatterns) const {
-        if (lengthBars < 1 || lengthBars > maxBars || regions.size() > maxRegions || markers.size() > maxMarkers || sections.size() > maxSections) return false;
+        if (lengthBars < 1 || lengthBars > maxBars || regions.size() > maxRegions || markers.size() > maxMarkers || sections.size() > maxSections || chords.size() > maxChords) return false;
         if (freezeBaseLengthBars < 0 || freezeBaseLengthBars > maxBars || frozenOriginals.size() > maxRegions) return false;
         if (!frozenOriginals.empty()) {
             for (const auto& r : frozenOriginals) if (r.isPattern()) return false;
@@ -507,6 +510,12 @@ struct Timeline {
                 || s.name.empty() || cleanName(s.name) != s.name) return false;
             sectionEnd = s.end; ids.push_back(s.id);
         }
+        std::int64_t chordEnd = 0;
+        for (const auto& c : chords) {
+            if (!c.id || c.start < chordEnd || c.start < 0 || c.start > length() || c.end > length() || c.end < c.start
+                || c.end - c.start < ticksPerStep || !validChordRoot(c.root) || !validChordQuality(c.quality)) return false;
+            chordEnd = c.end; ids.push_back(c.id);
+        }
         std::sort(ids.begin(), ids.end());
         if (std::adjacent_find(ids.begin(), ids.end()) != ids.end()) return false;
         ids.clear();
@@ -525,7 +534,7 @@ struct Timeline {
     bool operator==(const Timeline& o) const noexcept {
         return lengthBars == o.lengthBars && loopEnabled == o.loopEnabled && loopStart == o.loopStart
             && loopEnd == o.loopEnd && regions == o.regions && frozenOriginals == o.frozenOriginals && freezeBaseLengthBars == o.freezeBaseLengthBars && takes == o.takes && markers == o.markers && automationLanes == o.automationLanes && parameterLanes == o.parameterLanes
-            && tempoChanges == o.tempoChanges && meterChanges == o.meterChanges && sections == o.sections;
+            && tempoChanges == o.tempoChanges && meterChanges == o.meterChanges && sections == o.sections && chords == o.chords;
     }
     // Would the audio engine play these two identically? Names, colours, ids and
     // groups do not change the sound, so editing them must not republish the song.
@@ -919,6 +928,30 @@ struct Timeline {
     }
 
     // ---- song length, loop and markers --------------------------------------------------
+    const SongChord* findChord(std::uint32_t id) const noexcept {
+        for (const auto& c : chords) if (c.id == id) return &c;
+        return nullptr;
+    }
+    const SongChord* chordAt(std::int64_t tick) const noexcept {
+        for (const auto& c : chords) if (tick >= c.start && tick < c.end) return &c;
+        return nullptr; // gaps have no assumed chord, regardless of project key
+    }
+    std::uint32_t addChord(std::int64_t start, std::int64_t end, int root, ChordType quality) {
+        if (chords.size() >= maxChords || !validChordRoot(root) || !validChordQuality(quality) || start < 0 || start > length()
+            || end < start || end > length() || end - start < ticksPerStep) return 0;
+        for (const auto& c : chords) if (start < c.end && end > c.start) return 0;
+        SongChord value{newId(), start, end, root, quality};
+        chords.insert(std::lower_bound(chords.begin(), chords.end(), start, [](const SongChord& c, auto tick) { return c.start < tick; }), value);
+        return value.id;
+    }
+    bool setChord(SongChord value) {
+        if (!findChord(value.id)) return false;
+        auto next = *this;
+        for (auto& c : next.chords) if (c.id == value.id) c = value;
+        std::sort(next.chords.begin(), next.chords.end(), [](const SongChord& a, const SongChord& b) { return a.start < b.start; });
+        return next != *this && adopt(std::move(next));
+    }
+    bool removeChord(std::uint32_t id) { return std::erase_if(chords, [=](const SongChord& c) { return c.id == id; }) != 0; }
     const Section* findSection(std::uint32_t id) const noexcept {
         for (const auto& s : sections) if (s.id == id) return &s;
         return nullptr;
