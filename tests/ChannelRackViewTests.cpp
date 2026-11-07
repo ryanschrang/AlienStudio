@@ -447,7 +447,7 @@ static void headerControls() {
             const std::atomic<bool> cancel{false};
             juce::String error;
             require(alien::writeClipWav(file, *clip, cancel, error), "test setup: a sample file can be written");
-            rig.controller.loadRackSample(file, 1);
+            alien::command::loadRackSample(rig.controller, file, 1);
             const auto path = file.getFullPathName().toStdString();
             for (int i = 0; i < 600 && rig.controller.channelRack().info[1].sample != path; ++i)
                 juce::MessageManager::getInstance()->runDispatchLoopUntil(10);

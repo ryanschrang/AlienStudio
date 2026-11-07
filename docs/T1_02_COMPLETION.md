@@ -1,6 +1,6 @@
 # T1-02 completion audit
 
-CMD-01 is **not complete**. The Command Engine currently exposes 85 commands:
+CMD-01 is **not complete**. The Command Engine currently exposes 88 commands:
 five structural track commands, four Session track mix commands, three Session
 MIDI creation plus all-type duplication/independence, one Session clip delete
 command (claim #186), two clipboard paste commands (claim #189),
@@ -8,7 +8,7 @@ one Session MoveClip command (claim #192),
 five Session scene commands (claim #181), and CreateRackPattern/AssignRackClip
 (claim #198), RemoveClipAudio (claim #203), SetMasterVolume (claim #208),
 ImportClipAudio, five send and return commands (claim #223), and ten return strip
-and bus commands (claim #226), SetTrackOutput and SetSidechain (claim #234), four device commands (claim #242), eight tempo and time signature commands (claim #250), twelve rack channel commands, thirteen rack step, pattern and swing commands, and five rack sound and paste commands.
+and bus commands (claim #226), SetTrackOutput and SetSidechain (claim #234), four device commands (claim #242), eight tempo and time signature commands (claim #250), twelve rack channel commands, thirteen rack step, pattern and swing commands, five rack sound and paste commands, and three rack notes, groove and sample commands.
 
 The existing roadmap examples are a target catalog, not proof that every
 operation already has a command. Completion requires both a validated command
@@ -29,8 +29,7 @@ audition, and saving a file are separate lifecycle actions, not snapshot edits.
 
 ## Suggested implementation sequence
 
-1. Finish remaining Session clip operations and their UI entry points
-   (remaining rack edit wrappers: drum groove import, channel notes and sample file loading).
+1. Finish remaining Session clip operations and their UI entry points.
 2. Add mixer parameter and routing families using pure document reducers and
    validated, noncommitting controller adapters.
 3. Add device/parameter/automation plans with explicit runtime failure behavior.

@@ -595,8 +595,10 @@ private:
             if (rollTarget.rack) {
                 if (loadingClip) return;
                 const auto& rack = controller.channelRack();
-                controller.setRackChannelNotes(rack.selectedPattern, rollTarget.channel, pianoRoll.getPattern(),
-                                               "rack-roll-" + juce::String(rollGesture), &rollFit);
+                const auto result = alien::command::CommandEngine(controller).execute(
+                    alien::command::SetRackChannelNotes{rack.selectedPattern, rollTarget.channel, std::make_shared<const alien::PianoRollPattern>(pianoRoll.getPattern())},
+                    "rack-roll-" + juce::String(rollGesture));
+                if (!result.ok) { rollEditRefused = true; statusBar.setProjectStatus(result.error, {}); }
                 rackView.refresh();
                 return;
             }
@@ -617,6 +619,8 @@ private:
             if (rollTarget.rack) {
                 // The stored note sequence is authoritative; do not reload a lossy step conversion.
                 ++rollGesture;
+                // Except after a refusal: the roll is showing notes the project did not take.
+                if (rollEditRefused) { rollEditRefused = false; loadSelectedClip(); }
                 return;
             }
             if (rollTarget.placement != 0) { controller.commit("Edit notes"); timelineView.refresh(); return; }
@@ -969,7 +973,7 @@ private:
     void openRackChannel(int channel) {
         if (!controller.channelRack().validChannel(channel) || controller.isRecording()) return;
         rollTarget = {true, channel};
-        rollFit = {};
+        rollEditRefused = false;
         loadSelectedClip();
         showView(1);
         const int mode = modeForTab(1);
@@ -1935,7 +1939,7 @@ private:
     alien::PianoRollAuditionRouter auditions;   // where each held piano-roll preview note plays   // the Session clips the piano roll edits together, while that is on
     RollTarget rollTarget;
     int rollGesture{};                  // one undo step per piano-roll gesture on a rack channel
-    alien::rack::ChannelNotesFit rollFit;
+    bool rollEditRefused{};             // the roll shows an edit the project refused; put it back when the gesture ends
     int statusTicks{};
     alien::DrumSamplerPanel drumPanel;
     alien::TimelineView timelineView{controller};

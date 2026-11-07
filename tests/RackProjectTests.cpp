@@ -2,6 +2,7 @@
 // track deletes and moves, saving (plain and portable), reopening, missing
 // samples and relinking. No audio device or window is needed.
 #include "ProjectController.h"
+#include "CommandEngine.h"
 #include "AudioFileWrite.h"
 #include "WavExport.h"
 #include <cmath>
@@ -378,7 +379,7 @@ static void reloadAndRelinkEdgeCases() {
         ToneEngine engine; engine.prepare(48000);
         alien::ProjectController c(engine);
         c.pushDocumentToEngine();
-        c.loadRackSample(file, 0); waitIdle(c);
+        alien::command::loadRackSample(c, file, 0); waitIdle(c);
         c.editRack("Step", [](Project& p) { return p.setStepOn(0, 0, 0, true); });
         startRackPlayback(engine);
         const double before = peakOf(engine, 3000);
@@ -387,7 +388,7 @@ static void reloadAndRelinkEdgeCases() {
         require(before > 0.1 && oldClip != nullptr, "the first decode plays");
         require(file.deleteFile() && alien::writeClipWav(file, *toneClip(0.2f), cancel, error), "rewrite the file with quieter audio");
         const auto history = c.undoLabel();
-        c.loadRackSample(file, 0); waitIdle(c);
+        alien::command::loadRackSample(c, file, 0); waitIdle(c);
         require(engine.rackSamples[0].load() != oldClip && c.undoLabel() == history, "loading the same path again swaps the sound without making another undo step");
         startRackPlayback(engine);
         const double after = peakOf(engine, 3000);
@@ -457,7 +458,7 @@ static void saveOpenAndRelink() {
         ToneEngine engine; engine.prepare(48000);
         alien::ProjectController c(engine);
         c.pushDocumentToEngine();
-        c.loadRackSample(boom, 0); waitIdle(c);
+        alien::command::loadRackSample(c, boom, 0); waitIdle(c);
         require(c.channelRack().info[0].sample == boom.getFullPathName().toStdString() && c.channelRack().info[0].name == "boom",
                 "loading a sample sets the channel's file and names the channel after it");
         require(!c.rackChannelOffline(0) && c.missingMedia().empty(), "a loaded file is not offline");
@@ -465,7 +466,7 @@ static void saveOpenAndRelink() {
         c.editRack("Add", [&](Project& p) { return p.addChannel("Snap", snap.getFullPathName().toStdString()); });
         // The file was never loaded, only named: it is offline right away.
         require(c.rackChannelOffline(4) && c.missingMedia().size() == 1 && c.missingMedia()[0].rackChannel, "a file the rack names but never loaded is offline");
-        c.loadRackSample(snap, 4); waitIdle(c);
+        alien::command::loadRackSample(c, snap, 4); waitIdle(c);
         require(!c.rackChannelOffline(4) && c.missingMedia().empty(), "loading it brings it online");
         c.editRack("Steps", [](Project& p) { bool a = p.setStepOn(0, 0, 0, true); bool b = p.setStepOn(0, 4, 4, true); bool s = p.setSwing(0.25f); return a || b || s; });
         saved = c.channelRack();
@@ -606,7 +607,7 @@ static void exportHandOff() {
     std::atomic<bool> cancel{false}; juce::String error;
     const auto file = root.getChildFile("export-tone.wav");
     require(alien::writeClipWav(file, *toneClip(0.5f), cancel, error), "write a sample");
-    c.loadRackSample(file, 1); waitIdle(c);
+    alien::command::loadRackSample(c, file, 1); waitIdle(c);
     keep.clear();
     clips = c.rackClipsForExport(keep);
     require(clips[1] != nullptr && clips[1] == engine.rackSamples[1].load() && clips[1]->frames == 6000, "a loaded file is what channel 2 exports");

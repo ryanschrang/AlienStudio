@@ -1,5 +1,7 @@
 #pragma once
 #include "ProjectDocument.h"
+#include "RackChannelNotes.h"
+#include "RackGrooveImport.h"
 #include <array>
 #include <cmath>
 #include <memory>
@@ -9,15 +11,17 @@
 // command Preview share them, so what Preview predicts is what the live edit does. Each edit names
 // its pattern, so it does not depend on which pattern happens to be shown when it runs.
 namespace alien::rack_pattern {
-enum class Kind { setStep, setStepValue, fill, rotate, reverse, repeat, clearSteps, paste, length, swing, clone, clear, rename, remove };
+enum class Kind { setStep, setStepValue, fill, rotate, reverse, repeat, clearSteps, paste, notes, groove, length, swing, clone, clear, rename, remove };
 struct Edit {
     Kind kind{Kind::clear};
     int pattern{-1}, channel{-1}, step{-1};
     int value{};           // step value; fill interval; rotate distance; repeat period; length
     double amount{};       // swing
     bool on{};             // setStep
-    juce::String text;     // setStepValue: the field's name; rename: the name
+    juce::String text;     // setStepValue: the field's name; rename, groove: the name
     std::shared_ptr<const rack::Project::StepRow> row;   // paste: the copied steps
+    std::shared_ptr<const PianoRollPattern> notes;       // notes: the channel's whole note sequence
+    std::shared_ptr<const midi_import::ImportedClip> groove;   // groove: the MIDI file's contents
 };
 
 // Indexed like rack::StepField.
@@ -42,6 +46,11 @@ inline bool editRack(rack::Project& p, const Edit& e) {
     case Kind::repeat: return p.repeatRow(e.pattern, e.channel, e.value);
     case Kind::clearSteps: return p.clearChannelSteps(e.pattern, e.channel);
     case Kind::paste: return e.row != nullptr && p.pasteRow(e.pattern, e.channel, *e.row);
+    case Kind::notes:
+        // Opening a step channel in the piano roll shows its steps as notes. Those same notes change nothing.
+        return e.notes != nullptr && !rack::Pattern::sameNotes(rack::channelNotes(p.pattern(e.pattern), e.channel), *e.notes)
+            && p.setChannelNotes(e.pattern, e.channel, *e.notes);
+    case Kind::groove: return e.groove != nullptr && rack_groove::importGroove(p, *e.groove, e.text.toStdString());
     case Kind::length: return p.setPatternLength(e.pattern, e.value);
     case Kind::swing: return p.setSwing(static_cast<float>(e.amount));
     case Kind::clone: return p.addPattern(e.pattern);
@@ -56,9 +65,9 @@ inline juce::String refusal(const ProjectDocument& d, const Edit& e) {
     const auto& p = d.channelRack;
     if (e.kind == Kind::swing) {
         if (!std::isfinite(e.amount) || e.amount < 0 || e.amount > 1) return "Swing must be a finite number from 0 to 1.";
-    } else if (!p.validPattern(e.pattern)) return "There is no rack pattern " + juce::String(e.pattern + 1) + ".";
+    } else if (e.kind != Kind::groove && !p.validPattern(e.pattern)) return "There is no rack pattern " + juce::String(e.pattern + 1) + ".";
     switch (e.kind) {
-    case Kind::setStep: case Kind::setStepValue: case Kind::fill: case Kind::rotate: case Kind::reverse: case Kind::repeat: case Kind::clearSteps: case Kind::paste:
+    case Kind::setStep: case Kind::setStepValue: case Kind::fill: case Kind::rotate: case Kind::reverse: case Kind::repeat: case Kind::clearSteps: case Kind::paste: case Kind::notes:
         if (!p.validChannel(e.channel)) return "There is no rack channel " + juce::String(e.channel + 1) + ".";
         break;
     default: break;
@@ -84,6 +93,14 @@ inline juce::String refusal(const ProjectDocument& d, const Edit& e) {
     case Kind::paste:
         if (e.row == nullptr) return "There are no copied steps to paste.";
         break;
+    case Kind::notes:
+        if (e.notes == nullptr || !e.notes->valid()) return "Those notes cannot be stored.";
+        if (e.notes->loopSteps != p.pattern(e.pattern).length) return "Those notes were written for a pattern of another length.";
+        break;
+    case Kind::groove:
+        if (e.groove == nullptr || !e.groove->ok()) return "There is no drum groove to import.";
+        if (!rack_groove::hasDrums(*e.groove)) return e.text + " has no drum notes on MIDI channel 10. Import it in the piano roll instead.";
+        break;
     case Kind::length:
         if (!rack::validLength(e.value)) return "A pattern has 16, 32, 64 or 128 steps.";
         break;
@@ -101,6 +118,7 @@ inline juce::String refusal(const ProjectDocument& d, const Edit& e) {
     auto next = p;
     if (!editRack(next, e)) {
         if (e.kind == Kind::length && p.pattern(e.pattern).length != e.value) return "Length unchanged: move or shorten notes that extend past the chosen end.";
+        if (e.kind == Kind::groove) return "The rack has no room for another pattern or the channels the groove needs.";
         return {};   // an edit that changes nothing is accepted
     }
     if (!next.valid()) return "The Channel Rack cannot take that edit.";

@@ -9,7 +9,7 @@
 // mixing them. The controller and command Preview share them, so what Preview predicts is
 // what the live edit does. They never touch a plugin; the host rebuilds after the commit.
 namespace alien::rack_channel {
-enum class Kind { add, addSynth, remove, move, duplicate, rename, volume, pan, mute, solo, output, choke, sound, silence, synth, plugin };
+enum class Kind { add, addSynth, remove, move, duplicate, rename, volume, pan, mute, solo, output, choke, sound, silence, synth, plugin, sample };
 struct Edit {
     Kind kind{Kind::remove};
     int channel{-1};
@@ -17,8 +17,8 @@ struct Edit {
     double level{};              // volume or pan
     bool on{};                   // mute or solo
     std::uint64_t instance{};    // duplicate, plugin: the new plugin identity, so Preview and execute agree
-    juce::String text;           // rename: the name; add: a built-in sound id, or empty for an empty sampler; sound: a built-in sound id; plugin: the name
-    juce::String description;    // plugin: its description from the plugin list
+    juce::String text;           // rename: the name; add: a built-in sound id, or empty for an empty sampler; sound: a built-in sound id; plugin, sample: the name
+    juce::String description;    // plugin: its description from the plugin list; sample: the file's path
 };
 
 inline std::uint64_t freshInstance() {
@@ -81,6 +81,10 @@ inline bool editRack(rack::Project& p, const Edit& e) {
         if (changed && e.text.isNotEmpty()) p.renameChannel(e.channel, e.text.toStdString());
         return changed;
     }
+    case Kind::sample: {
+        const bool changed = p.setSample(e.channel, e.description.toStdString());
+        return p.renameChannel(e.channel, e.text.toStdString()) || changed;
+    }
     }
     return false;
 }
@@ -127,6 +131,10 @@ inline juce::String refusal(const ProjectDocument& d, const Edit& e) {
     case Kind::plugin:
         if (e.description.isEmpty() || e.description.toStdString().size() > rack::Project::maxPluginDescriptionBytes) return "A plugin instrument needs a description from the plugin list.";
         if (e.instance == 0) return "A plugin instrument needs an identity of its own.";
+        break;
+    case Kind::sample:
+        if (e.description.isEmpty()) return "A sample needs a file.";
+        if (e.description.toStdString().size() > static_cast<std::size_t>(rack::maxSampleBytes)) return "That file's path is too long to store in a project.";
         break;
     case Kind::remove: case Kind::mute: case Kind::solo: case Kind::silence: break;
     }

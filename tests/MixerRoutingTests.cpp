@@ -430,6 +430,14 @@ static void freezeWorkflow() {
             require(alien::rack_pattern::refusal(held,same).isEmpty(),"but an unchanged setting is accepted");
             alien::rack_channel::Edit sound; sound.kind=alien::rack_channel::Kind::sound; sound.channel=0; sound.text=held.channelRack.info[0].sample=="builtin:hat"?"kick":"hat";
             require(alien::rack_channel::refusal(held,sound).contains("Unfreeze"),"and what a channel plays");
+            alien::rack_channel::Edit sample; sample.kind=alien::rack_channel::Kind::sample; sample.channel=0; sample.description="C:/samples/held.wav"; sample.text="held";
+            require(alien::rack_channel::refusal(held,sample).contains("Unfreeze"),"and which sample a channel loads");
+            auto heldNotes=alien::rack::channelNotes(held.channelRack.pattern(shown),0); heldNotes.add(60,1.0,1.0);
+            alien::rack_pattern::Edit notes; notes.kind=PatternKind::notes; notes.pattern=shown; notes.channel=0; notes.notes=std::make_shared<const alien::PianoRollPattern>(heldNotes);
+            require(alien::rack_pattern::refusal(held,notes).contains("Unfreeze"),"and a channel's notes");
+            alien::midi_import::ImportedClip beat; beat.lengthTicks=alien::PianoRollPattern::ticksPerStep*16; beat.notes.push_back({alien::midi_import::gmDrumChannel,36,0,60,.8f});
+            alien::rack_pattern::Edit groove; groove.kind=PatternKind::groove; groove.groove=std::make_shared<const alien::midi_import::ImportedClip>(beat); groove.text="Beat";
+            require(alien::rack_pattern::refusal(held,groove).contains("Unfreeze"),"and a groove, as a new pattern can play through that channel");
         }
         const auto metered=commands.preview(alien::command::SetMeterChange{0,3,4});
         require(metered.ok && metered.changed && !metered.after.timeline.frozenOriginals.empty(),"a time signature keeps the freeze");

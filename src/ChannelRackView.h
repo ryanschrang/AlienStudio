@@ -460,7 +460,7 @@ public:
         else if (id == cmdPluginEditor) { if (onOpenPluginEditor) onOpenPluginEditor(row); }
         else if (id >= starterBase) {
             const auto index = static_cast<std::size_t>(id - starterBase);
-            if (index < starterSamples.size()) controller.loadRackSample(starterSamples[index].file, row);
+            if (index < starterSamples.size()) command::loadRackSample(controller, starterSamples[index].file, row);
         }
         else if (id >= pluginBase) { if (onChoosePlugin) onChoosePlugin(row, id - pluginBase); changed(); }
         else if (id >= synthBase && id < synthBase + alien::presetCount) {
@@ -535,7 +535,7 @@ public:
         juce::Component::SafePointer<ChannelRackGrid> safe(this);
         chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
             [safe, row](const juce::FileChooser& result) {
-                if (safe != nullptr && result.getResult().existsAsFile()) safe->controller.loadRackSample(result.getResult(), row);
+                if (safe != nullptr && result.getResult().existsAsFile()) command::loadRackSample(safe->controller, result.getResult(), row);
             });
     }
     void askForName(const juce::String& title, const juce::String& current, std::function<void(const juce::String&)> done) {
@@ -1434,13 +1434,13 @@ public:
         juce::String message;
         bool done = false;
         if (!clip.ok()) message = "No changes: " + clip.error;
-        else if (!rack_groove::hasDrums(clip)) message = "No changes: " + name + " has no drum notes on MIDI channel 10. Import it in the piano roll instead.";
         else {
-            done = controller.editRack("Import drum groove", [&](rack::Project& p) {
-                return rack_groove::importGroove(p, clip, name.toStdString(), &report);
-            });
-            message = done ? rack_groove::describe(controller.channelRack(), report, name, clip)
-                           : "No changes: the rack has no room for another pattern or the channels the groove needs.";
+            // The import is deterministic, so a trial on a copy gives the report for the hint line.
+            auto trial = controller.channelRack();
+            rack_groove::importGroove(trial, clip, name.toStdString(), &report);
+            const auto result = command::CommandEngine(controller).execute(command::ImportRackGroove{std::make_shared<const midi_import::ImportedClip>(clip), name});
+            done = result.changed;
+            message = done ? rack_groove::describe(controller.channelRack(), report, name, clip) : "No changes: " + result.error;
         }
         refresh();
         hint.setText(message, juce::dontSendNotification);

@@ -585,8 +585,25 @@ plugin. The host rebuilds after the commit. An empty `name` keeps the channel's 
 The channel menu's built-in sound, silence, synth preset, plugin and paste items run these commands, one per selected
 channel in one batch, with the same Undo labels. A refusal shows as a message.
 
-Still calling `editRack`: importing a drum groove, editing channel notes, and loading a sample file.
-`ProjectController::deleteRackPattern`, `setRackPlugin`, `setRackSynth` and `setRackBuiltin` stay for their tests until
+## Rack notes, groove and sample commands
+
+`SetRackChannelNotes {pattern, channel, notes}` stores a channel's whole note sequence, and `ImportRackGroove
+{groove, name}` adds a read MIDI file as a new selected pattern. Both extend the pattern reducer. `LoadRackSample
+{channel, path, name, clip}` extends the channel reducer. All three carry their content as data, so none has a script
+form.
+
+The piano roll runs `SetRackChannelNotes` under one key per gesture, so a drag is one Undo step. Notes that match what
+the channel already shows change nothing, so opening a step channel does not turn it into a note channel. When the
+project refuses an edit, the status bar says why and the roll goes back to the stored notes when the gesture ends.
+
+The pattern menu, browser drags and Explorer drops all import grooves through `ImportRackGroove`.
+
+`command::loadRackSample` decodes the file off the message thread, then runs `LoadRackSample`. Preview and refusal do
+not retain audio, and the audio is retained only for an accepted edit. Loading the file a channel already names makes
+no Undo step, but the new decode replaces the old one.
+
+No rack edit in product code calls `editRack` now.
+`ProjectController::setRackChannelNotes`, `deleteRackPattern`, `setRackPlugin`, `setRackSynth` and `setRackBuiltin` stay for their tests until
 the final route cleanup.
 
 ## Master volume command
