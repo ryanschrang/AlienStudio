@@ -2151,6 +2151,21 @@ public:
         pushRackToEngine();
         return true;
     }
+    // Live side of LoadRackSample. The file's decoded audio becomes available as the channel starts naming it.
+    bool applyRackSampleCommand(const rack_channel::Edit& e, const std::shared_ptr<SessionAudioClip>& clip) {
+        if (busy || clip == nullptr || rack_channel::refusal(doc, e).isNotEmpty() || !retain(clip)) return false;
+        if (rack_channel::apply(doc, e).isNotEmpty()) return false;
+        rackAudio[e.description.toStdString()] = clip;
+        pushRackToEngine();
+        return true;
+    }
+    // A new decode of a file the channel already names: no edit and no Undo step, but it is what plays from now on.
+    bool replaceRackSampleAudio(const std::string& path, const std::shared_ptr<SessionAudioClip>& clip) {
+        if (clip == nullptr || !retain(clip)) return false;
+        rackAudio[path] = clip;
+        pushRackToEngine();
+        return true;
+    }
     // After a commit: the host rebuilds if which channel holds which plugin has changed.
     void rackChannelsCommitted() { notifyRackPlugins(); }
     // The owner hosts the rack's plugin instruments: told when which channel holds which one has changed
@@ -2234,34 +2249,24 @@ public:
             return p.renameChannel(channel, name) || changed;
         });
     }
-    // Decodes an audio file off the message thread and gives it to a channel.
-    void loadRackSample(const juce::File& file, int channel) {
-        if (busy || !doc.channelRack.validChannel(channel)) return;
+    // Rack samples arrive through command::loadRackSample: decode off the message
+    // thread, then run LoadRackSample on the result. The project is busy until then.
+    void decodeRackSample(const juce::File& file, std::function<void(const AudioClipImportResult&)> done) {
         setBusy(true);
         std::weak_ptr<int> token = alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, file, channel] {
+        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, file, done = std::move(done)] {
             auto result = std::make_shared<AudioClipImportResult>(decodeSessionAudioClip(file));
-            juce::MessageManager::callAsync([this, token, file, channel, result] {
-                if (!token.lock()) return;
-                setBusy(false);
-                const auto path = file.getFullPathName().toStdString();
-                if (path.size() > static_cast<std::size_t>(rack::maxSampleBytes)) { importStatus("That file's path is too long to store in a project", file.getFullPathName()); return; }
-                if (!result->clip || !retain(result->clip)) {
-                    importStatus(result->clip ? "Session audio storage is full (512 MiB limit)" : "Could not load sample: " + result->error, file.getFullPathName());
-                    return;
-                }
-                rackAudio[path] = result->clip;
-                editRack("Load channel sample", [&](rack::Project& p) {
-                    bool changed = p.setSample(channel, path);
-                    return p.renameChannel(channel, file.getFileNameWithoutExtension().toStdString()) || changed;
-                });
-                pushRackToEngine(); // the same file loaded again is a new decode
-                importStatus("Loaded " + file.getFileName(), file.getFullPathName());
-                if (onDocumentRestored) onDocumentRestored();
+            juce::MessageManager::callAsync([this, token, result, done] {
+                if (token.lock()) { setBusy(false); done(*result); }
             });
             return juce::ThreadPoolJob::jobHasFinished;
         };
         pool.addJob(std::move(job));
+    }
+    // What the person sees once the command has run or been refused.
+    void rackSampleFinished(const juce::File& file, const juce::String& refused) {
+        importStatus(refused.isNotEmpty() ? refused : "Loaded " + file.getFileName(), file.getFullPathName());
+        if (refused.isEmpty() && onDocumentRestored) onDocumentRestored();
     }
     // True when the channel names a file that is not loaded (moved or deleted).
     bool rackChannelOffline(int channel) const {
