@@ -26,7 +26,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 34;   // 34: shared project musical scale; 33: shared drum sample slices; 32: Song rack lanes saved apart from track rows (T1-04 C2); 31: VST3 instruments on Channel Rack channels; 30: Song warp anchors; 29: persistent universal track registry and checked document bindings; 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings; 27: fade shapes; 28: independent rack launch slots per Session row
+inline constexpr int sessionProjectFormatVersion = 35;   // 35: named Song sections; 34: shared project musical scale; 33: shared drum sample slices; 32: Song rack lanes saved apart from track rows (T1-04 C2); 31: VST3 instruments on Channel Rack channels; 30: Song warp anchors; 29: persistent universal track registry and checked document bindings; 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings; 27: fade shapes; 28: independent rack launch slots per Session row
 
 // A group bus slot. Slots keep their index while other buses come and go, so a track's output
 // (TrackSettings::output) and the bus's FX rack never need renumbering.
@@ -621,6 +621,14 @@ inline juce::String serializeSessionProject(const SessionProjectData& source) {
             markers.add(value);
         }
         timelineObject->setProperty("markers", juce::var(markers));
+        juce::Array<juce::var> sections;
+        for (const auto& s : project.timeline.sections) {
+            auto value = juce::var(new juce::DynamicObject()); auto* o = value.getDynamicObject();
+            o->setProperty("start", static_cast<int>(s.start)); o->setProperty("end", static_cast<int>(s.end));
+            o->setProperty("name", juce::String::fromUTF8(s.name.c_str())); o->setProperty("colour", static_cast<int>(s.colour));
+            sections.add(value);
+        }
+        timelineObject->setProperty("sections", sections);
 
         juce::Array<juce::var> tempoChanges;
         for (const auto& c : project.timeline.tempoChanges) {
@@ -727,7 +735,7 @@ inline bool parseProjectClip(const juce::DynamicObject* clipObject, SessionProje
 // Reads the "timeline" object of a version 8 project. Region and marker ids are made up
 // fresh (they only identify things while the program runs); saved group numbers become groups.
 inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce::String& error,
-                          bool requireAudioEdits = true, bool requireAutomation = false, bool legacyRows = false) {
+                          bool requireAudioEdits = true, bool requireAutomation = false, bool legacyRows = false, bool requireSections = false) {
     const auto* object = value.getDynamicObject();
     if (object == nullptr) { error = "The project's timeline is missing."; return false; }
     const auto length = object->getProperty("lengthBars"), loopStart = object->getProperty("loopStart"),
@@ -836,6 +844,21 @@ inline bool parseTimeline(const juce::var& value, timeline::Timeline& out, juce:
         marker.name = m->getProperty("name").toString().toStdString();
         marker.colour = static_cast<std::uint8_t>(juce::jlimit(0, 255, static_cast<int>(m->getProperty("colour"))));
         parsed.markers.push_back(marker);
+    }
+    if (requireSections) {
+        const auto sectionValue = object->getProperty("sections");
+        const auto* sections = sectionValue.getArray();
+        if (!sections || sections->size() > static_cast<int>(timeline::maxSections)) { error = "Invalid Song sections."; return false; }
+        for (const auto& item : *sections) {
+            const auto* s = item.getDynamicObject();
+            if (!s || !s->getProperty("start").isInt() || !s->getProperty("end").isInt()
+                || !s->getProperty("name").isString() || !s->getProperty("colour").isInt()
+                || static_cast<int>(s->getProperty("colour")) < 0 || static_cast<int>(s->getProperty("colour")) > 255) {
+                error = "Invalid Song section fields."; return false;
+            }
+            parsed.sections.push_back({timeline::newId(), static_cast<int>(s->getProperty("start")), static_cast<int>(s->getProperty("end")),
+                s->getProperty("name").toString().toStdString(), static_cast<std::uint8_t>(static_cast<int>(s->getProperty("colour")))});
+        }
     }
     // Absent before version 20: 4/4 throughout. Validated with the rest of the timeline.
     const auto meterValue = object->getProperty("meterChanges");
@@ -1171,7 +1194,7 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
     }
 
     if (formatVersion >= 8) {
-        if (!parseTimeline(rootObject->getProperty("timeline"), parsed.timeline, error, formatVersion >= 9, formatVersion >= 10, formatVersion < 32)) return false;
+        if (!parseTimeline(rootObject->getProperty("timeline"), parsed.timeline, error, formatVersion >= 9, formatVersion >= 10, formatVersion < 32, formatVersion >= 35)) return false;
         for (const auto* list : {&parsed.timeline.regions, &parsed.timeline.frozenOriginals, &parsed.timeline.takes})
             for (const auto& region : *list)
                 if (region.clip != 0 && (formatVersion < 24 || list == &parsed.timeline.takes)) { error = "A timeline region names an invalid clip."; return false; }

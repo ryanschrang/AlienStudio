@@ -50,7 +50,7 @@ inline constexpr int rowFromSaved(int row, int lane, bool legacyRows) noexcept {
         return row < legacySavedRackRowBase + rackLanes ? rackRowBase + row - legacySavedRackRowBase : -1;
     return row < rackRowBase ? row : -1;
 }
-inline constexpr std::size_t maxRegions = 1024, maxMarkers = 128, maxTakes = 256;
+inline constexpr std::size_t maxRegions = 1024, maxMarkers = 128, maxTakes = 256, maxSections = 64;
 inline constexpr int maxMarkerNameBytes = 32;
 
 inline constexpr bool isTrackRow(int row) noexcept { return row >= 0 && row < rackRowBase; }
@@ -341,6 +341,14 @@ struct Clipboard {
     }
 };
 
+struct Section {
+    std::uint32_t id{};
+    std::int64_t start{}, end{}; // musical ticks, end exclusive
+    std::string name;
+    std::uint8_t colour{};
+    bool operator==(const Section&) const = default;
+};
+
 struct Timeline {
     int lengthBars{defaultBars};
     bool loopEnabled{false};
@@ -350,6 +358,7 @@ struct Timeline {
     int freezeBaseLengthBars{};
     std::vector<Region> takes; // Preserved recording passes, not played directly.
     std::vector<Marker> markers;   // ascending by tick
+    std::vector<Section> sections; // ascending, non-overlapping ranges
     std::vector<automation::Lane> automationLanes;
     // Missing plugins retain their lanes; an orphan must never bind to a replacement.
     static constexpr std::size_t maxParameterLanes = 1024;
@@ -414,6 +423,7 @@ struct Timeline {
         for (const auto& r : takes) end = std::max(end, r.end());
         for (const auto& r : frozenOriginals) end = std::max(end, r.end());
         for (const auto& m : markers) end = std::max(end, m.tick);
+        for (const auto& s : sections) end = std::max(end, s.end);
         for (const auto& c : tempoChanges) end = std::max(end, c.tick);
         for (const auto& lane : automationLanes) if (!lane.points.empty()) end = std::max(end, lane.points.back().tick);
         for (const auto& lane : parameterLanes) if (!lane.points.empty()) end = std::max(end, lane.points.back().tick);
@@ -428,7 +438,7 @@ struct Timeline {
 
     // ---- whole-timeline rules -----------------------------------------------------
     bool valid(int tracks = maxSessionTracks, int scenes = maxSessionScenes, int patterns = rack::maxPatterns) const {
-        if (lengthBars < 1 || lengthBars > maxBars || regions.size() > maxRegions || markers.size() > maxMarkers) return false;
+        if (lengthBars < 1 || lengthBars > maxBars || regions.size() > maxRegions || markers.size() > maxMarkers || sections.size() > maxSections) return false;
         if (freezeBaseLengthBars < 0 || freezeBaseLengthBars > maxBars || frozenOriginals.size() > maxRegions) return false;
         if (!frozenOriginals.empty()) {
             for (const auto& r : frozenOriginals) if (r.isPattern()) return false;
@@ -491,6 +501,12 @@ struct Timeline {
             if (order[i]->row == order[i - 1]->row && order[i]->start < order[i - 1]->end()) return false;
         std::vector<std::uint32_t> ids;
         for (const auto& r : regions) ids.push_back(r.id);
+        std::int64_t sectionEnd = 0;
+        for (const auto& s : sections) {
+            if (!s.id || s.start < sectionEnd || s.start < 0 || s.start > length() || s.end > length() || s.end < s.start || s.end - s.start < ticksPerStep
+                || s.name.empty() || cleanName(s.name) != s.name) return false;
+            sectionEnd = s.end; ids.push_back(s.id);
+        }
         std::sort(ids.begin(), ids.end());
         if (std::adjacent_find(ids.begin(), ids.end()) != ids.end()) return false;
         ids.clear();
@@ -509,7 +525,7 @@ struct Timeline {
     bool operator==(const Timeline& o) const noexcept {
         return lengthBars == o.lengthBars && loopEnabled == o.loopEnabled && loopStart == o.loopStart
             && loopEnd == o.loopEnd && regions == o.regions && frozenOriginals == o.frozenOriginals && freezeBaseLengthBars == o.freezeBaseLengthBars && takes == o.takes && markers == o.markers && automationLanes == o.automationLanes && parameterLanes == o.parameterLanes
-            && tempoChanges == o.tempoChanges && meterChanges == o.meterChanges;
+            && tempoChanges == o.tempoChanges && meterChanges == o.meterChanges && sections == o.sections;
     }
     // Would the audio engine play these two identically? Names, colours, ids and
     // groups do not change the sound, so editing them must not republish the song.
@@ -903,6 +919,29 @@ struct Timeline {
     }
 
     // ---- song length, loop and markers --------------------------------------------------
+    const Section* findSection(std::uint32_t id) const noexcept {
+        for (const auto& s : sections) if (s.id == id) return &s;
+        return nullptr;
+    }
+    std::uint32_t addSection(std::int64_t start, std::int64_t end, std::string name, std::uint8_t colour = 0) {
+        name = cleanName(std::move(name));
+        if (sections.size() >= maxSections || name.empty() || start < 0 || start > length() || end > length()
+            || end < start || end - start < ticksPerStep) return 0;
+        for (const auto& s : sections) if (start < s.end && end > s.start) return 0;
+        Section made{newId(), start, end, std::move(name), colour};
+        sections.insert(std::lower_bound(sections.begin(), sections.end(), start,
+            [](const Section& s, auto tick) { return s.start < tick; }), made);
+        return made.id;
+    }
+    bool setSection(Section value) {
+        if (!findSection(value.id)) return false;
+        value.name = cleanName(std::move(value.name));
+        auto next = *this;
+        for (auto& s : next.sections) if (s.id == value.id) s = value;
+        std::sort(next.sections.begin(), next.sections.end(), [](const Section& a, const Section& b) { return a.start < b.start; });
+        return next != *this && adopt(std::move(next));
+    }
+    bool removeSection(std::uint32_t id) { return std::erase_if(sections, [=](const Section& s) { return s.id == id; }) != 0; }
     bool setLengthBars(int bars) {
         bars = std::clamp(bars, minLengthBars(), maxBars);
         if (bars == lengthBars) return false;
