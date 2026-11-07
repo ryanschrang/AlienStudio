@@ -576,7 +576,9 @@ static void projectScaleSerializationTests() {
     }
 }
 
+#include "SongSectionFormatTests.h"
 int main() {
+    sectionFormatTests();
     projectScaleSerializationTests();
     drumSliceProjectTests();
     songRowFormatTests();

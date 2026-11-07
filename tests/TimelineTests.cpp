@@ -843,7 +843,9 @@ static void warpMarkerChecks() {
     const auto same=t;check(t.move({rightId},ticksPerBeat) && t.find(rightId)->warp==anchors && !t.playbackEquals(same),"move retains markers but changes playback");
 }
 
+#include "SongSectionModelTests.h"
 int main() {
+    sectionModelTests();
     warpMarkerChecks();
     freezeModelChecks();
     constantsAndDefaults();

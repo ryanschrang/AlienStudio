@@ -2407,8 +2407,10 @@ static void explorerDropChecks() {
     c.undo(); require(c.timeline().regions.empty(), "an Explorer drop has one Undo step");
 }
 
+#include "SongSectionViewTests.h"
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    sectionViewChecks();
     sampleDropChecks();
     explorerDropChecks();
     warpRenderChecks();
