@@ -9,6 +9,7 @@
 #include "SidechainCommands.h"
 #include "DeviceCommands.h"
 #include "TempoCommands.h"
+#include "SongMarkerCommands.h"
 #include "RackChannelCommands.h"
 #include "RackPatternCommands.h"
 #include "ViewModes.h"
@@ -1218,6 +1219,17 @@ public:
         const bool map=!meter && e.kind!=tempo_edit::Kind::projectTempo;
         if(tempoLocked() || (map && isRecording()))return meter?"Stop recording before changing the time signature.":"Stop recording before changing the tempo.";
         return {};
+    }
+    // Why the project's state, as opposed to the edit's arguments, refuses a Song marker or loop command.
+    // Markers never change playback; the loop does, so it waits like the tempo while warped audio records.
+    juce::String songEditRefusal(const song_edit::Edit& e) const {
+        if(song_edit::changesLoop(e) && tempoLocked() && !song_edit::changesNothing(doc,e))return "Stop recording before changing the loop while the song has warped audio.";
+        return {};
+    }
+    // Live side of the Song marker and loop commands. CommandEngine owns the history entry, and its commit plays the new loop.
+    bool applySongCommand(const song_edit::Edit& e) {
+        if(busy || songEditRefusal(e).isNotEmpty())return false;
+        return song_edit::apply(doc,e).isEmpty();
     }
     // Live side of the tempo and time signature commands. CommandEngine owns the history entry.
     bool applyTempoCommand(const tempo_edit::Edit& e) {

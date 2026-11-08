@@ -115,6 +115,10 @@ static void warpEditorChecks() {
         rig->engine.recording.phase.store(alien::RecordControls::recording);
         alien::command::CommandEngine commands(c);
         require(!commands.execute(alien::command::SetTempo{111}).ok && !commands.execute(alien::command::SetMeterChange{0,3,4}).ok && c.document().bpm==100,"warped audio refuses tempo and time signature edits while recording");
+        const auto loop=c.timeline();
+        const auto loopEdit=commands.execute(alien::command::SetSongLoop{loop.loopStart,loop.loopEnd,!loop.loopEnabled});
+        require(!loopEdit.ok && loopEdit.error.contains("loop") && c.timeline().loopEnabled==loop.loopEnabled,"and the loop, which changes playback too");
+        require(commands.execute(alien::command::SetSongLoop{loop.loopStart,loop.loopEnd,loop.loopEnabled}).ok,"an unchanged loop is no edit rather than a refusal");
         c.auditionTempo(111);
         require(rig->engine.bpm.load()==100,"and a drag while recording");
         rig->engine.recording.phase.store(alien::RecordControls::idle);
