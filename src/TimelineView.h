@@ -1763,23 +1763,30 @@ private:
                 else if (id == cmdAddMarker) { setCursor(tick, false); addMarkerAtCursor(); }
             });
         } else if (hit.zone == Zone::chordStrip) {
-            enum { add = 8001, jump, loop, resize, remove, rootBase = 8100, qualityBase = 8200 };
+            enum { add = 8001, jump, loop, resize, remove, rootBase = 8100, qualityBase = 8200, trackBase = 8300 };
             const auto scope = controller.document().identityScope;
             const auto* found = committed().findChord(hit.chord);
             const auto expected = found ? *found : timeline::SongChord{};
             const auto start = committed().loopStart, end = committed().loopEnd;
             const auto& key = controller.document().musicalScale;
             const int createRoot = key.defined && key.valid() ? key.rootPitchClass : 0;
-            juce::PopupMenu menu, roots, qualities;
+            juce::PopupMenu menu, roots, qualities, destinations;
+            std::vector<TrackId> tracks;
             menu.addItem(add, "Create " + juce::String(timeline::chordRootName(createRoot)) + " Major chord from loop", !found);
             if (found) {
                 for (int r = 0; r < 12; ++r) roots.addItem(rootBase + r, timeline::chordRootName(r), true, expected.root == r);
                 for (int q = 0; q < 9; ++q) qualities.addItem(qualityBase + q, timeline::chordQualityName(static_cast<ChordType>(q)), true, static_cast<int>(expected.quality) == q);
                 menu.addSubMenu("Root", roots); menu.addSubMenu("Quality", qualities);
+                for (int row = 0; row < controller.document().trackCount(); ++row) {
+                    tracks.push_back(controller.document().trackId(TrackRole::session, row));
+                    destinations.addItem(trackBase + row, juce::String(row + 1) + ". " + laneName(row),
+                                         !controller.isTrackFrozen(row) && controller.canEditMidiClips());
+                }
+                menu.addSubMenu("Create MIDI clip on", destinations);
                 menu.addItem(jump, "Go to chord start"); menu.addItem(loop, "Loop this chord");
                 menu.addItem(resize, "Use current loop as chord range"); menu.addItem(remove, "Delete chord");
             }
-            launch(std::move(menu), area, [this, scope, expected, start, end, createRoot](int id) {
+            launch(std::move(menu), area, [this, scope, expected, start, end, createRoot, tracks = std::move(tracks)](int id) {
                 if (scope != controller.document().identityScope) return;
                 if (id == add) {
                     if (committed().loopStart == start && committed().loopEnd == end) addChordFromLoop(createRoot);
@@ -1794,6 +1801,13 @@ private:
                 else if (id == resize && committed().loopStart == start && committed().loopEnd == end) { next.start = start; next.end = end; updateChord(expected, next, scope); }
                 else if (id >= rootBase && id < rootBase + 12) { next.root = id - rootBase; updateChord(expected, next, scope); }
                 else if (id >= qualityBase && id < qualityBase + 9) { next.quality = static_cast<ChordType>(id - qualityBase); updateChord(expected, next, scope); }
+                else if (id >= trackBase && id - trackBase < static_cast<int>(tracks.size())) {
+                    std::uint32_t regionId = 0;
+                    const auto error = controller.placeChordMidi(expected, tracks[id - trackBase], scope, regionId);
+                    if (error.isNotEmpty()) { say(error); return; }
+                    afterEdit();
+                    setSelection({regionId});
+                }
             });
         } else if (hit.zone == Zone::sectionStrip) {
             enum { add = 7001, jump, loop, rename, resize, remove };

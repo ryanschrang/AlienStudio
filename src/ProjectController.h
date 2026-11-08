@@ -1797,6 +1797,49 @@ public:
         if (sceneAddedOut != nullptr) *sceneAddedOut = needsScene;
         return true;
     }
+    juce::String placeChordMidi(const timeline::SongChord& expected, TrackId track,
+                               std::uint32_t scope, std::uint32_t& regionId) {
+        if (!canEditMidiClips()) return "Wait until recording or project work finishes.";
+        const auto* chord = doc.timeline.findChord(expected.id);
+        const int row = doc.trackSlot(track, TrackRole::session);
+        if (scope != doc.identityScope || !chord || *chord != expected || row < 0)
+            return "The chord or destination track changed.";
+        if (isTrackFrozen(row)) return "Unfreeze the destination track first.";
+        const auto ticks = chord->end - chord->start;
+        if (ticks > PianoRollPattern::maxLoopSteps * PianoRollPattern::ticksPerStep)
+            return "The chord exceeds the MIDI clip limit of 256 sixteenth notes.";
+        for (const auto& region : doc.timeline.regions)
+            if (region.row == row && region.start < chord->end && region.end() > chord->start)
+                return "The chord needs an empty range on the destination track.";
+
+        PianoRollPattern pattern;
+        pattern.loopSteps = static_cast<int>((ticks + pattern.ticksPerStep - 1) / pattern.ticksPerStep);
+        ChordStampSettings stamp;
+        stamp.root = 60 + chord->root;
+        stamp.type = chord->quality;
+        stamp.lengthSteps = PianoRollPattern::fromTicks(static_cast<int>(ticks));
+        if (!stampChord(pattern, 0, stamp).changed()) return "The chord could not be voiced.";
+
+        const auto name = juce::String(timeline::chordRootName(chord->root)) + " " + timeline::chordQualityName(chord->quality);
+        auto candidate = doc;
+        const auto clip = candidate.addPlacementClip(std::make_shared<const PianoRollPattern>(pattern), name);
+        if (!clip) return "The project has no room for another clip.";
+        timeline::Region region;
+        region.row = row;
+        region.source = -1;
+        region.start = chord->start;
+        region.length = ticks;
+        region.clip = clip.value;
+        std::uint32_t made = 0;
+        if (!candidate.timeline.place(region, &made)
+            || !candidate.timeline.valid(candidate.trackCount(), candidate.sceneCount(), candidate.channelRack.patternCount))
+            return "The chord clip could not be placed.";
+
+        doc = std::move(candidate);
+        commit("Create chord MIDI clip");
+        regionId = made;
+        return {};
+    }
     // A finished Song-view audio take on one track: its file, the loaded (or streamed) audio, and
     // where it goes on the timeline.
     struct RecordedTake {
