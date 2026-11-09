@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "DrumSampler.h"
+#include "DrumSliceWaveform.h"
 #include "SessionCapacity.h"
 #include <functional>
 
@@ -10,7 +11,7 @@ public:
     DrumSamplerPanel() : filter("*.wav;*.mp3", "*", "Audio samples"),
         browser(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
             juce::File{}, &filter, nullptr) {
-        for (auto* c : std::array<juce::Component*, 17>{&track, &pad, &load, &clear, &audition, &slice, &autoSlice,
+        for (auto* c : std::array<juce::Component*, 18>{&track, &pad, &load, &clear, &audition, &slice, &autoSlice, &waveform,
             &route, &status, &browser, &startLabel, &endLabel, &startFrame, &endFrame, &applySlice, &wholeSample, &sourceLength}) addAndMakeVisible(c);
         for (int i = 0; i < 4; ++i) track.addItem("Track " + juce::String(i + 1), i + 1);
         for (int i = 0; i < drumPadCount; ++i) pad.addItem("Pad " + juce::String(i + 1)
@@ -94,10 +95,14 @@ public:
         applySlice.setBounds(432, 72, 110, 26); wholeSample.setBounds(550, 72, 125, 26);
         sourceLength.setBounds(683, 72, w - 695, 26);
         browser.setBounds(12, 108, w / 2 - 20, getHeight() - 120);
-        const int padWidth = (w / 2 - 28) / 4;
+        auto padArea = juce::Rectangle<int>(w / 2 + 8, 108, std::max(0, w - w / 2 - 20), std::max(0, getHeight() - 120));
+        waveform.setBounds(padArea.removeFromTop(std::min(96, padArea.getHeight() / 3)));
+        padArea.removeFromTop(std::min(10, padArea.getHeight()));
+        const int padWidth = padArea.getWidth() / 4;
+        const int padRowHeight = std::min(85, padArea.getHeight() / 2);
         for (int i = 0; i < drumPadCount; ++i)
-            pads[static_cast<std::size_t>(i)].setBounds(w / 2 + 8 + (i % 4) * padWidth,
-                118 + (i / 4) * 85, padWidth - 6, 75);
+            pads[static_cast<std::size_t>(i)].setBounds(padArea.getX() + (i % 4) * padWidth,
+                padArea.getY() + (i / 4) * padRowHeight, std::max(0, padWidth - 6), std::max(0, padRowHeight - 10));
     }
 private:
     void updateSliceEnabled() {
@@ -111,6 +116,7 @@ private:
         const auto& next = targets[t][p]; const auto range = slices[t][p];
         if (!hasShownTarget || next != editingTarget || range != shownRange) {
             editingTarget = next; shownRange = range; hasShownTarget = true;
+            waveform.setAsset(next.asset);
             const auto asset = next.asset;
             const auto source = asset && asset->sliceSource ? asset->sliceSource : asset;
             const int frames = source ? static_cast<int>(source->frames) : 0;
@@ -145,6 +151,7 @@ private:
     juce::Label status, startLabel, endLabel, sourceLength;
     juce::TextEditor startFrame, endFrame;
     juce::TextButton applySlice, wholeSample;
+    DrumSliceWaveform waveform;
     std::array<std::array<DrumSliceTarget, drumPadCount>, maxSessionTracks> targets{};
     DrumSliceTarget editingTarget;
     DrumSlice shownRange;

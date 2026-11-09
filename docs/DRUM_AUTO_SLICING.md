@@ -1,5 +1,9 @@
 # Automatic drum-pad slicing (T2-01 / INST-07)
 
+The Drums panel shows the selected pad's original waveform and highlights its
+applied frame range. The right edge marks the exclusive end frame. Apply a
+range to see it in the preview, or use Undo to see the restored range.
+
 In Drums, select a loaded pad and press **Auto slice**. This replaces the entire
 eight-pad kit with up to eight chronological slices of that pad's selected range.
 Unused pads are cleared. One Undo restores the old kit; Redo restores the slices.

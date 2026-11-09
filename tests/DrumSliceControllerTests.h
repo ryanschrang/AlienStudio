@@ -120,6 +120,15 @@ static void drumSliceBoundaryTests() {
         };
         auto* start = dynamic_cast<juce::TextEditor*>(child("Slice start frame")); auto* end = dynamic_cast<juce::TextEditor*>(child("Slice end frame"));
         auto* apply = dynamic_cast<juce::TextButton*>(child("Apply drum slice range")); auto* whole = dynamic_cast<juce::TextButton*>(child("Restore whole drum sample"));
+        auto* waveform = child("Drum slice waveform");
+        require(panel.getLocalBounds().contains(waveform->getBounds()) && waveform->getHeight() > 40,
+            "the waveform fits in the drum panel");
+        const auto highlightPixel = [&](double position) {
+            const auto image = waveform->createComponentSnapshot(waveform->getLocalBounds());
+            const int x = 6 + static_cast<int>(position * (image.getWidth() - 12));
+            return image.getPixelAt(x, image.getHeight() - 6);
+        };
+        const auto wholeHighlight = highlightPixel(.8);
         require(start && end && apply && whole && apply->isEnabled() && start->getText() == "0" && end->getText() == "83", "loaded range controls show source frames");
         for (auto* control : std::array<juce::Component*, 4>{start, end, apply, whole}) require(panel.getLocalBounds().contains(control->getBounds()), "boundary controls laid out within panel");
         for (const char* invalid : {"", "-1", "3.5", "text", "9999999999999999"}) {
@@ -132,9 +141,12 @@ static void drumSliceBoundaryTests() {
         apply->onClick();
         const auto edited = c.document().tracks[0].drumAssets[0];
         require(calls == 1 && c.document().tracks[0].drumSlices[0] == alien::DrumSlice{5, 19} && edited->sliceSource == original && edited->frames == 14, "Apply edits selected pad using shared original source");
+        require(highlightPixel(.14) == wholeHighlight && highlightPixel(.8) == alien::ui::colours::inset,
+            "the applied slice highlights its original source interval");
         require(c.document().tracks[0].drumAssets[1] == neighbour && c.availableAudioBytes() == bytes && engine.drumKits[0].samples[0].load() == edited.get(), "other pads and PCM budget stay unchanged while engine gets edited view");
         require(!c.editDrumSlice(target, {6, 20}), "replaced view refuses stale target");
         c.undo(); require(c.document().tracks[0].drumAssets[0] == original, "one Undo restores previous range");
+        require(highlightPixel(.8) == wholeHighlight, "Undo restores the full waveform highlight");
         const auto redo = c.redoLabel();
         require(c.editDrumSlice(c.drumSliceTarget(0, 0), {0, 83}) && c.redoLabel() == redo && c.document().tracks[0].drumSlices[0].whole(), "full-source no-op preserves redo and canonical whole state");
         c.redo(); require(c.document().tracks[0].drumAssets[0] == edited, "Redo restores edited range identity");
