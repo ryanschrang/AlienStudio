@@ -60,8 +60,24 @@ inline constexpr bool isPatternRow(int row) noexcept { return row >= rackRowBase
 // Process-unique identity for regions, groups and markers, so a selection can
 // tell "the same region" from "a different one that reused a slot" across edits
 // and undo. Message thread only.
+namespace id_stream {
+inline std::uint32_t& counter() noexcept { static std::uint32_t next = 0; return next; }
+inline thread_local std::uint32_t* scoped = nullptr;
+// While one lives, newId() draws from a local copy of the stream, which is dropped
+// with it. A command Preview uses one, so it hands out the ids the live edit will
+// hand out next; a check that only asks "would this work?" uses one so it hands out none.
+class Scope {
+public:
+    Scope() noexcept : previous(scoped), local(previous != nullptr ? *previous : counter()) { scoped = &local; }
+    ~Scope() { scoped = previous; }
+    Scope(const Scope&) = delete;
+    Scope& operator=(const Scope&) = delete;
+private:
+    std::uint32_t* previous; std::uint32_t local;
+};
+}
 inline std::uint32_t newId() noexcept {
-    static std::uint32_t next = 0;
+    auto& next = id_stream::scoped != nullptr ? *id_stream::scoped : id_stream::counter();
     if (++next == 0) ++next;
     return next;
 }

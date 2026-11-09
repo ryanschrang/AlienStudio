@@ -5,17 +5,18 @@
 #include <optional>
 
 // Pure document edits for the clips placed in the Song: moving, trimming, slipping, deleting, muting,
-// gain, fades, crossfades, groups and audio source looping and reversing. The controller and command
-// Preview share them, so what Preview predicts is what the live edit does. None creates a clip.
+// gain, fades, crossfades, groups, audio source looping and reversing, and splitting, duplicating and
+// copying them. The controller and command Preview share them, so what Preview predicts is what the live
+// edit does. New clips take the next Song ids; a Preview hands out the same ones (timeline::id_stream).
 namespace alien::song_clip {
 enum class Kind { move, trimStart, trimEnd, slip, remove, mute, gain, fades, fadeIn, fadeOut, fadeShape, clearFades,
-                  crossfade, group, ungroup, loopSource, reverse };
+                  crossfade, group, ungroup, loopSource, reverse, split, duplicate, copy };
 struct Edit {
     Kind kind{Kind::move};
     timeline::Ids clips;            // the clips, by region id; trims and fade handles use one, a crossfade left then right
-    std::int64_t ticks{};           // a move or slip distance, a trim's new edge, a fade or crossfade length (fades: fade in)
+    std::int64_t ticks{};           // a move, slip or copy distance, a trim's new edge or split tick, a fade or crossfade length (fades: fade in)
     std::int64_t fadeOut{};         // fades
-    int lanes{};                    // move: rack lanes
+    int lanes{};                    // move, copy: rack lanes
     double gain{1.0};               // gain
     bool on{};                      // mute, loopSource, reverse
     timeline::FadeEdge edge{};      // fadeShape
@@ -28,6 +29,7 @@ inline bool audioOnly(Kind k) noexcept {
         || k == Kind::clearFades || k == Kind::crossfade || k == Kind::loopSource || k == Kind::reverse;
 }
 inline bool oneClip(Kind k) noexcept { return k == Kind::trimStart || k == Kind::trimEnd || k == Kind::fadeIn || k == Kind::fadeOut; }
+inline bool creates(Kind k) noexcept { return k == Kind::split || k == Kind::duplicate || k == Kind::copy; }
 
 // Either why the edit is refused, or the Song it leaves (none when it changes nothing).
 struct Outcome { juce::String why; std::optional<timeline::Timeline> next; };
@@ -71,6 +73,11 @@ inline Outcome outcome(const ProjectDocument& d, const Edit& e) {
         if (left->isPattern() || right->isPattern() || left->row != right->row || left->end() != right->start)
             return refuse("A crossfade needs two touching audio clips on the same track.");
     }
+    if (e.kind == Kind::split && std::none_of(e.clips.begin(), e.clips.end(), [&](std::uint32_t id) { const auto* r = song.find(id); return e.ticks > r->start && e.ticks < r->end(); }))
+        return refuse("Put the play position inside a clip to split it.");
+    std::int64_t first = maxLength;
+    for (const auto id : e.clips) first = std::min(first, song.find(id)->start);
+    if (e.kind == Kind::copy && first + e.ticks < 0) return refuse("That does not fit there.");
 
     Timeline next = song;
     next.tempo = d.bpm;
@@ -94,7 +101,11 @@ inline Outcome outcome(const ProjectDocument& d, const Edit& e) {
     case Kind::ungroup: done = next.ungroup(ids); break;
     case Kind::loopSource: done = next.setLoopSource(ids, e.on); break;
     case Kind::reverse: done = next.setReversed(ids, e.on); break;
+    case Kind::split: done = next.split(ids, e.ticks); break;
+    case Kind::duplicate: done = next.duplicate(ids); break;
+    case Kind::copy: done = next.paste(song.copy(ids), first + e.ticks, e.lanes); break;
     }
+    if (!done && creates(e.kind)) return refuse("That does not fit there.");
     if (!done) return {};
     if (!next.valid(d.trackCount(), d.sceneCount(), d.channelRack.patternCount)) return refuse("That does not fit there.");
     if (next == song) return {};
@@ -114,9 +125,10 @@ inline Outcome outcome(const ProjectDocument& d, const Edit& e) {
     return o;
 }
 
-inline juce::String refusal(const ProjectDocument& d, const Edit& e) { return outcome(d, e).why; }
+// These two only ask, so the ids a new clip would take are handed back (the live edit takes them).
+inline juce::String refusal(const ProjectDocument& d, const Edit& e) { timeline::id_stream::Scope asking; return outcome(d, e).why; }
 // True when the edit would leave the document as it is. Only meaningful for an edit that is not refused.
-inline bool changesNothing(const ProjectDocument& d, const Edit& e) { return !outcome(d, e).next.has_value(); }
+inline bool changesNothing(const ProjectDocument& d, const Edit& e) { timeline::id_stream::Scope asking; return !outcome(d, e).next.has_value(); }
 
 inline juce::String apply(ProjectDocument& d, const Edit& e) {
     auto o = outcome(d, e);

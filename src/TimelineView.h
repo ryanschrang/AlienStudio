@@ -555,9 +555,9 @@ public:
     bool duplicateSelection() {
         if (selected.empty()) return false;
         const auto ids = selected;
-        auto made = std::make_shared<timeline::Ids>();
-        const bool done = edit("Duplicate", [=](timeline::Timeline& t) { made->clear(); return t.duplicate(ids, made.get()); });
-        if (done) { selected = *made; stateChanged(); }
+        const auto before = clipIds();
+        const bool done = clipCommand(command::DuplicateSongClips{ids}).changed;
+        if (done) { selected = clipsSince(before); stateChanged(); }
         return done;
     }
     bool groupSelection() {
@@ -579,11 +579,9 @@ public:
         timeline::Ids ids = selected;
         if (ids.empty()) for (const auto& r : committed().regions) if (cursor > r.start && cursor < r.end()) ids.push_back(r.id);
         if (ids.empty()) { say("Put the play position inside a clip to split it."); return false; }
-        const auto tick = cursor;
-        auto made = std::make_shared<timeline::Ids>();
-        const bool done = edit("Split", [=](timeline::Timeline& t) { made->clear(); return t.split(ids, tick, made.get()); });
-        if (done) { for (const auto id : *made) selected.push_back(id); selected = committed().expandGroups(selected); stateChanged(); }
-        else say("Put the play position inside a clip to split it.");
+        const auto before = clipIds();
+        const bool done = clipCommand(command::SplitSongClips{ids, cursor}).changed;
+        if (done) { for (const auto id : clipsSince(before)) selected.push_back(id); selected = committed().expandGroups(selected); stateChanged(); }
         return done;
     }
     bool toggleMuteSelection() {
@@ -732,6 +730,17 @@ public:
     }
     command::Result clipCommand(const command::Command& change, const juce::String& undoLabel = {}, const juce::String& key = {}) {
         return clipCommands({change}, undoLabel.isNotEmpty() ? undoLabel : command::label(change), key);
+    }
+    // The Song's clips now, and the ones added since: what a split, duplicate or copy made, in the order it made them.
+    timeline::Ids clipIds() const {
+        timeline::Ids ids;
+        for (const auto& r : committed().regions) ids.push_back(r.id);
+        return ids;
+    }
+    timeline::Ids clipsSince(const timeline::Ids& before) const {
+        timeline::Ids made;
+        for (const auto& r : committed().regions) if (!timeline::contains(before, r.id)) made.push_back(r.id);
+        return made;
     }
     command::Result songCommand(const command::Command& change, const juce::String& undoLabel = {}) {
         if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return {}; }
@@ -1367,10 +1376,9 @@ public:
                 for (const auto& r : clip.regions) if (r.isPattern()) firstLane = std::min(firstLane, r.row);
                 const int laneDelta = firstLane < timeline::rowCount ? std::clamp(rows, timeline::rackRowBase - firstLane, timeline::rowCount - 1 - firstLane) : 0;
                 const auto at = std::max<std::int64_t>(0, first + delta);
-                drag.created = std::make_shared<timeline::Ids>();
-                auto made = drag.created;
                 drag.label = ids.size() == 1 ? "Copy clip" : "Copy clips";
-                drag.apply = [=](timeline::Timeline& t) { made->clear(); return t.paste(clip, at, laneDelta, made.get()); };
+                drag.apply = [=](timeline::Timeline& t) { return t.paste(clip, at, laneDelta); };
+                drag.change = command::CopySongClips{ids, at - first, laneDelta};
             }
             updatePreview(); break;
         }
@@ -1470,11 +1478,12 @@ public:
         case DragKind::move: case DragKind::copy: case DragKind::slip: case DragKind::trimStart: case DragKind::trimEnd:
         case DragKind::warp: case DragKind::fadeIn: case DragKind::fadeOut:
             if (active && finished.apply) {
-                // Clip drags run their command; copies and warp markers still edit the Song directly.
+                // Clip drags run their command; warp markers and comps still edit the Song directly.
                 bool done = false, said = false;
+                const auto before = clipIds();
                 if (finished.change) { const auto r = clipCommand(*finished.change, finished.label); done = r.changed; said = !r.ok; }
                 else done = edit(finished.label, finished.apply);
-                if (done && kind == DragKind::copy && finished.created) { selected = *finished.created; stateChanged(); }
+                if (done && kind == DragKind::copy) { selected = clipsSince(before); stateChanged(); }
                 if (!done && !said && hadPreview && !controller.isBusy()) say("That does not fit there.");
             } else if (!active) {
                 if (kind == DragKind::copy && finished.pendingToggle != 0) {
@@ -1652,7 +1661,6 @@ private:
         std::optional<timeline::Timeline> base;
         std::function<bool(timeline::Timeline&)> apply;
         std::optional<command::Command> change;   // a clip drag's command, run on release (`apply` draws its preview)
-        std::shared_ptr<timeline::Ids> created;
         juce::String label;
         juce::Rectangle<int> marquee;
     };

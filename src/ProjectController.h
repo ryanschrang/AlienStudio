@@ -1231,6 +1231,7 @@ public:
     // Why the project's state refuses a Song clip command: while warped audio records, nothing that plays may change.
     juce::String songClipRefusal(const song_clip::Edit& e) const {
         if(!isRecording() && engine.recording.phase.load()==RecordControls::idle)return {};
+        timeline::id_stream::Scope asking;   // a split or copy's new ids are the live edit's to take
         const auto o=song_clip::outcome(doc,e);
         if(!o.next)return {};
         const bool warp=hasWarpedAudio() || std::any_of(o.next->regions.begin(),o.next->regions.end(),[](const auto& r){return !r.warp.empty();});
