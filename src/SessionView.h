@@ -275,6 +275,8 @@ public:
         const auto ownerTrack=d.tracks[static_cast<std::size_t>(track)].id;
         const auto ownerScene=d.scenes[static_cast<std::size_t>(scene)].id;
         const auto ownerClip=d.cellClip(track,scene);
+        const auto sourceClip = d.clip(track, scene);
+        constexpr int sliceToPads = 8;
         const bool canEdit=controller.canEditMidiClips() && !d.tracks[static_cast<std::size_t>(track)].settings.frozen();
         int freeScene=-1;
         for(int n=1;n<d.sceneCount();++n) {const int s=(scene+n)%d.sceneCount();if(!d.cellClip(track,s) && command::refusal(d, command::DuplicateClip{track,scene,track,s}).isEmpty()){freeScene=s;break;}}
@@ -309,18 +311,27 @@ public:
         }
         menu.addSubMenu("Assign rack clip (linked)", rackMenu);
         menu.addItem(5, "Place rack clip at Song playhead", d.selectedClip().rackClip != 0);
+        if (sourceClip.isAudioClip())
+            menu.addItem(sliceToPads, "Slice audio to 8 drum pads (replace track kit)", controller.canSliceSessionAudio(track, scene));
         juce::Component::SafePointer<SessionView> safe(this);
-        auto done = [safe, track, scene, ownerTrack, ownerScene, ownerClip, rackIds = std::move(rackIds), moveTargets = std::move(moveTargets)](int choice) {
+        auto done = [safe, track, scene, ownerTrack, ownerScene, ownerClip, audio = sourceClip.audio, path = sourceClip.audioFilePath,
+                     rackIds = std::move(rackIds), moveTargets = std::move(moveTargets)](int choice) {
             if (safe == nullptr || choice == 0) return;
             auto& c = safe->controller;
             bool changed = false;
             const bool moving = choice >= 2000 && choice < 2000 + static_cast<int>(moveTargets.size());
-            if (moving || choice == 1 || choice == 2 || choice == 3 || choice == 4 || choice == 6 || choice == 7 || (choice >= 1000 && choice < 1000 + static_cast<int>(rackIds.size()))) {
+            if (moving || choice == 1 || choice == 2 || choice == 3 || choice == 4 || choice == 6 || choice == 7 || choice == sliceToPads || (choice >= 1000 && choice < 1000 + static_cast<int>(rackIds.size()))) {
                 const auto& now = c.document();
                 if (!now.isValidCell(track, scene) || now.tracks[static_cast<std::size_t>(track)].id != ownerTrack
                     || now.scenes[static_cast<std::size_t>(scene)].id != ownerScene || now.cellClip(track, scene) != ownerClip) {
                     safe->setImportStatus("That cell changed while the menu was open. Open the menu again.", {}); return;
                 }
+            }
+            if (choice == sliceToPads) {
+                const auto clip = c.document().clip(track, scene);
+                if (clip.audio != audio || clip.audioFilePath != path || !c.sliceSessionAudio(track, scene))
+                    safe->setImportStatus("The audio or track changed while the menu was open. Open the menu again.", {});
+                return;
             }
             if (moving) {
                 const auto target = moveTargets[static_cast<std::size_t>(choice - 2000)]; const auto& now = c.document();
