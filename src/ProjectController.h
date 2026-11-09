@@ -1222,10 +1222,11 @@ public:
         if(tempoLocked() || (map && isRecording()))return meter?"Stop recording before changing the time signature.":"Stop recording before changing the tempo.";
         return {};
     }
-    // Why the project's state, as opposed to the edit's arguments, refuses a Song marker or loop command.
-    // Markers never change playback; the loop does, so it waits like the tempo while warped audio records.
+    // Why the project's state, as opposed to the edit's arguments, refuses a Song marker, loop or length command.
+    // Markers never change playback; the loop and the length do, so they wait like the tempo while warped audio records.
     juce::String songEditRefusal(const song_edit::Edit& e) const {
         if(song_edit::changesLoop(e) && tempoLocked() && !song_edit::changesNothing(doc,e))return "Stop recording before changing the loop while the song has warped audio.";
+        if(song_edit::changesLength(e) && tempoLocked() && !song_edit::changesNothing(doc,e))return "Stop recording before changing the song length while the song has warped audio.";
         return {};
     }
     // Why the project's state refuses a Song clip command: while warped audio records, nothing that plays may change.

@@ -1820,6 +1820,17 @@ static void toolbarChecks() {
     length->setValue(2, juce::sendNotificationSync);
     require(rig.t().lengthBars == 3 && rig.t().lengthBars == rig.t().minLengthBars(), "it cannot be shorter than the last clip (which ends at bar 3)");
     require(static_cast<int>(length->getValue()) == rig.t().lengthBars, "and the control shows the real length");
+    require(rig.controller.undoLabel() == "Change song length", "the length control runs SetSongLength under its old Undo name");
+    rig.messages.clear();
+    length->setValue(1, juce::sendNotificationSync);
+    require(rig.t().lengthBars == 3 && static_cast<int>(length->getValue()) == 3 && !rig.messages.empty() && rig.messages.back().contains("shorter than 3 bars"),
+            "asking for less than the shortest says why");
+    {
+        const auto before = rig.t().lengthBars;
+        length->setValue(before + 5, juce::sendNotificationSync);
+        require(rig.t().lengthBars == before + 5 && rig.controller.undo() && rig.t().lengthBars != before + 5 && rig.controller.redo() && rig.t().lengthBars == before + 5,
+                "a length change undoes and redoes (quick changes are one step)");
+    }
     require(rig.view.subtitle().contains("bars") && rig.view.subtitle().contains("4 clips") && rig.view.subtitle().contains("loop off"), "the screen's subtitle summarizes the song");
     // Zoom buttons.
     const double ppt = c.pixelsPerTick();
