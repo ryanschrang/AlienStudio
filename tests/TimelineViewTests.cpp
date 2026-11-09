@@ -2413,6 +2413,7 @@ int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     chordViewChecks();
     sectionViewChecks();
+    sectionProgressionChecks();
     sampleDropChecks();
     explorerDropChecks();
     warpRenderChecks();

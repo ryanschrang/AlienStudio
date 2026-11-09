@@ -936,6 +936,12 @@ struct Timeline {
         for (const auto& c : chords) if (tick >= c.start && tick < c.end) return &c;
         return nullptr; // gaps have no assumed chord, regardless of project key
     }
+    std::vector<SongChord> chordsOverlapping(std::int64_t start, std::int64_t end) const {
+        std::vector<SongChord> result;
+        for (const auto& chord : chords)
+            if (chord.start < end && chord.end > start) result.push_back(chord);
+        return result;
+    }
     std::uint32_t addChord(std::int64_t start, std::int64_t end, int root, ChordType quality) {
         if (chords.size() >= maxChords || !validChordRoot(root) || !validChordQuality(quality) || start < 0 || start > length()
             || end < start || end > length() || end - start < ticksPerStep) return 0;
