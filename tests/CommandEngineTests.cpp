@@ -455,6 +455,7 @@ static void continuousCommandTests() {
 #include "RackSoundCommandTests.h"
 #include "RackContentCommandTests.h"
 #include "SongMarkerCommandTests.h"
+#include "SongClipCommandTests.h"
 #include "SceneCommandTests.h"
 
 int main() {
@@ -466,6 +467,7 @@ int main() {
     rackSoundCommandChecks();
     rackContentCommandChecks();
     songMarkerCommandChecks();
+    songClipCommandChecks();
     removeClipAudioChecks();
     sendCommandChecks();
     returnCommandChecks();

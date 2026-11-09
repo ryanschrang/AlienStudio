@@ -627,6 +627,30 @@ drags and double-click, the Loop button and L / Shift+L run these commands with 
 "Loop off" name the toggle). A refusal shows as a message. Sections and chords still set the loop through their own
 edits.
 
+## Song clip commands
+
+`MoveSongClips {clips, ticks, lanes}`, `TrimSongClipStart {clip, tick}`, `TrimSongClipEnd {clip, tick}`, `SlipSongClips
+{clips, ticks}`, `DeleteSongClips {clips}`, `SetSongClipsMuted {clips, muted}`, `SetSongClipGain {clips, gain}`,
+`SetSongClipFades {clips, fadeIn, fadeOut}`, `SetSongClipFadeIn {clip, ticks}`, `SetSongClipFadeOut {clip, ticks}`,
+`SetSongClipFadeShape {clips, edge, curve}`, `RemoveSongClipFades {clips}`, `CrossfadeSongClips {left, right, ticks}`,
+`GroupSongClips {clips}`, `UngroupSongClips {clips}`, `LoopSongClips {clips, looped}` and `ReverseSongClips {clips,
+reversed}` edit the clips placed in the Song. They share a pure reducer in `SongClipCommands.h`, which runs the same
+`Timeline` edit for Preview and execute. None of them creates a clip.
+
+A clip is named by its region id, which lasts while the project is open. In a script `clips` is a list of positive ids.
+`GroupSongClips` carries its new group's id, so Preview and execute agree, and a script-read one gets a fresh one.
+`edge` is `in`, `out` or `crossfade` and `curve` is 0 (linear) to 4 (S-curve).
+
+Refused: an empty clip list, a clip that is not in the song, gain outside 0-64, a negative fade, an unknown fade shape, a
+crossfade whose clips do not touch on one track, grouping fewer than two clips, a fade or audio edit on rack patterns only,
+an edit that would leave the Song invalid, and any clip on a frozen track. While warped audio records, an edit that would
+change playback is refused like a tempo edit. A move or trim that clamps to where the clip already is changes nothing.
+
+The Song view's clip drags (move, trim either edge, slip, fade handles), Delete and Cut, arrow-key nudges and lane moves,
+Slip left/right, mute, group and ungroup, fades, fade shapes, crossfade, Remove fades, Normalize (one `SetSongClipGain` per clip,
+as one step), source loop and reverse run these commands with their old Undo names. Copy-drags, Paste, Duplicate, Split,
+warp markers, sections and chords still edit the Song directly.
+
 ## Master volume command
 
 `SetMasterVolume {gain}` accepts a finite linear gain from 0 through 4 (1 is unity),
