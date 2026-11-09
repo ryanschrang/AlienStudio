@@ -1,6 +1,7 @@
 #pragma once
 #include "StockDsp.h"
 #include <complex>
+#include <span>
 
 namespace alien::dsp {
 // Uniform overlap-add FIR convolution. All spectra/history storage is allocated
@@ -9,9 +10,35 @@ class ConvolutionReverb {
 public:
     static constexpr int partition = 512, fftSize = partition * 2, latency = partition;
     static constexpr double responseSeconds = .3;
+    static constexpr double maxCustomResponseSeconds = 1.0;
     struct Settings { double toneHz{10000}, outputDb{}, mix{.25}; };
     using Spectrum = std::array<std::complex<double>, fftSize>;
     void prepare(double sampleRate) {
+        prepareResponse(sampleRate, 48000, 14400, chamberSample);
+    }
+
+    // Call only while processing is stopped. An empty right channel mirrors mono.
+    // Invalid data leaves the current kernel and playback state intact.
+    bool prepareCustom(double sampleRate, double sourceRate, std::span<const float> left,
+                       std::span<const float> right = {}) {
+        if (!std::isfinite(sourceRate) || sourceRate < 8000 || sourceRate > 192000 ||
+            left.empty() || left.size() > sourceRate * maxCustomResponseSeconds ||
+            (!right.empty() && right.size() != left.size())) return false;
+        const auto valid = [](float coefficient) {
+            return std::isfinite(coefficient) && std::abs(coefficient) <= 1.0f;
+        };
+        if (!std::all_of(left.begin(), left.end(), valid) || !std::all_of(right.begin(), right.end(), valid))
+            return false;
+        if (right.empty()) right = left;
+        prepareResponse(sampleRate, sourceRate, static_cast<int>(left.size()), [left, right](int channel, int frame) {
+            return (channel == 0 ? left : right)[frame];
+        });
+        return true;
+    }
+
+private:
+    template<typename Sample>
+    void prepareResponse(double sampleRate, double sourceRate, int sourceFrames, Sample sample) {
         ready = false;
         rate = std::isfinite(sampleRate) ? std::clamp(sampleRate, 8000.0, 192000.0) : 44100;
         for (int i = 0; i < fftSize; ++i) {
@@ -20,20 +47,21 @@ public:
             reversal[i] = reversed;
         }
         for (int i = 0; i < partition; ++i) roots[i] = std::polar(1.0, -2 * pi * i / fftSize);
-        const int frames = static_cast<int>(std::ceil(rate * responseSeconds));
+        responseDuration = sourceFrames / sourceRate;
+        const int frames = static_cast<int>(std::ceil(rate * responseDuration));
         partitions = (frames + partition - 1) / partition;
         for (int c = 0; c < 2; ++c) {
             impulse[c].resize(frames); kernels[c].assign(partitions, {}); history[c].assign(partitions, {});
             for (int f = 0; f < frames; ++f) {
-                double at = f * 48000.0 / rate;
-                const double end = (f + 1) * 48000.0 / rate;
+                double at = f * sourceRate / rate;
+                const double end = std::min((f + 1) * sourceRate / rate, static_cast<double>(sourceFrames));
                 double area = 0;
                 // Integrate canonical coefficient bins: narrow early reflections
                 // retain their area even when the target rate skips source frames.
                 while (at < end) {
                     const int frame = static_cast<int>(std::floor(at));
                     const double next = std::min(end, static_cast<double>(frame + 1));
-                    area += chamberSample(c, frame) * (next - at); at = next;
+                    area += sample(c, frame) * (next - at); at = next;
                 }
                 impulse[c][f] = area;
                 kernels[c][f / partition][f % partition] = impulse[c][f];
@@ -43,11 +71,12 @@ public:
         for (auto* control : {&tone, &output, &mix}) control->configure(rate, 5);
         ready = true; reset();
     }
+public:
     void reset() noexcept {
         for (auto& channel : history) for (auto& spectrum : channel) spectrum.fill({});
         input = {}; wet = {}; overlap = {}; dryDelay = {}; toneState = {}; cursor = 0; head = 0; snapNext = true;
     }
-    double tailSeconds() const noexcept { return responseSeconds + .05 + latency / rate; }
+    double tailSeconds() const noexcept { return responseDuration + .05 + latency / rate; }
     const std::vector<double>& impulseResponse(int channel) const noexcept { return impulse[channel == 1 ? 1 : 0]; }
     void process(float* left, float* right, int count, Settings s) noexcept {
         if (!ready || count <= 0) return;
@@ -119,7 +148,7 @@ private:
     std::array<std::complex<double>, partition> roots{};
     Spectrum scratch{};
     Smoother tone, output, mix;
-    double rate{44100}; int partitions{}, cursor{}, head{};
+    double rate{44100}, responseDuration{responseSeconds}; int partitions{}, cursor{}, head{};
     bool ready{}, snapNext{true};
 };
 } // namespace alien::dsp
