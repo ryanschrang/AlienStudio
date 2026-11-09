@@ -1003,6 +1003,42 @@ static void snapshots() {
 }
 
 // The Copy / link menu for the selected cell (T1-03 B2a).
+static void sliceSessionAudioMenu() {
+    Rig rig;
+    auto& c = rig.controller;
+    const auto path = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("menu-slice.wav");
+    const auto install = [&](float sample) {
+        auto audio = std::make_shared<SessionAudioClip>();
+        audio->sampleRate = 8000; audio->channels = 1; audio->frames = 80;
+        audio->left.assign(80, sample); audio->buildWaveform();
+        require(c.installAudio(path, 0, 0, audio), "install Session slice menu fixture");
+        return audio;
+    };
+    install(.2f);
+    c.selectClip(0, 0);
+    std::function<void(int)> choose;
+    rig.view.linkMenuLauncher = [&](juce::PopupMenu menu, std::function<void(int)> done) {
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+            if (it.getItem().itemID == 8 && it.getItem().isEnabled) { choose = std::move(done); return; }
+        }
+        require(false, "slice action is enabled for decoded Session audio");
+    };
+    rig.view.showLinkMenu();
+    const auto current = install(.3f);
+    choose(8);
+    require(!c.document().tracks[0].drumAssets[0], "menu refuses a replaced audio asset");
+    rig.view.showLinkMenu();
+    rig.engine.recording.phase.store(RecordControls::countIn);
+    choose(8);
+    require(!c.document().tracks[0].drumAssets[0], "queued menu refuses during count-in");
+    rig.engine.recording.phase.store(RecordControls::idle);
+    rig.view.showLinkMenu();
+    choose(8);
+    require(c.document().tracks[0].drumAssets[7] &&
+            c.document().tracks[0].drumAssets[7]->sliceSource == current &&
+            c.undoLabel() == "Slice sample to 8 pads", "Session menu publishes the current sample as one kit edit");
+}
+
 static void linkMenu() {
     Rig rig;
     auto& c = rig.controller;
@@ -1377,6 +1413,7 @@ int main() {
     tileLook();
     sceneAndTrackLook();
     linkMenu();
+    sliceSessionAudioMenu();
     rackLaunchMenu();
     savedRackAssignmentMenu();
     snapshots();

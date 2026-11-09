@@ -36,3 +36,12 @@ mono, deterministic selection, silence, steady audio and view ranges.
 `ProjectControllerTests` covers the panel action, shared publication, one-step
 Undo/Redo, persistence, subranges and stale-result refusal. These tests do not
 establish detection quality on real recordings or native listening acceptance.
+
+## Session audio to drum pads
+
+Open **Copy / link** on a loaded, decoded Session audio clip and choose
+**Slice audio to 8 drum pads (replace track kit)**. This switches the clip’s
+track to Drums, replaces its eight pads with equal frame ranges and keeps
+the original Session clip in place. Undo restores the previous kit and
+instrument. The pad views share the decoded source with the Session clip,
+including after saving and reopening. Streamed and offline clips are ineligible.
