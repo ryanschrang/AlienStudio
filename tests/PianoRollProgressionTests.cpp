@@ -50,5 +50,26 @@ int main() {
     pattern = {};
     require(insertProgression(pattern, 0.25, settings).changed() && pattern.valid()
             && pattern.notes[3].startStep == 1.25, "fractional inputs share a rounded tick grid without gaps");
+    settings.tonic = 52;
+    settings.degrees = {3, 3, 3, 3};
+    pattern = {};
+    require(insertProgression(pattern, 0, settings, ProjectMusicalScale{true, 2, ScaleType::harmonicMinor}).changed()
+            && pattern.notes[0].pitch == 53 && pattern.notes[1].pitch == 57 && pattern.notes[2].pitch == 61,
+            "D harmonic minor generates an augmented third-degree triad in the selected octave");
+    for (auto type : {ScaleType::major, ScaleType::naturalMinor, ScaleType::harmonicMinor,
+                      ScaleType::melodicMinor, ScaleType::dorian, ScaleType::mixolydian}) {
+        for (int degree = 1; degree <= 7; ++degree) {
+            pattern = {};
+            settings.degrees.fill(degree);
+            require(insertProgression(pattern, 0, settings, ProjectMusicalScale{true, 2, type}).changed(),
+                    "every degree can generate in each supported scale");
+            for (std::size_t i = 0; i < pattern.count; ++i)
+                require(isPitchInScale(pattern.notes[i].pitch, {2, type}), "all generated notes belong to the project scale");
+        }
+    }
+    const auto unchanged = pattern;
+    for (const auto scale : {ProjectMusicalScale{}, ProjectMusicalScale{true, 2, ScaleType::minorPentatonic}})
+        require(!insertProgression(pattern, 0, settings, scale).changed() && samePianoRollPattern(pattern, unchanged),
+                "unsupported project scales leave notes and IDs unchanged");
     std::cout << "PASS: progression harmony, timing, selection and atomic limits\n";
 }

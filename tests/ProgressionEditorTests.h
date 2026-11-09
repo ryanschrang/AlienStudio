@@ -48,4 +48,21 @@ static void progressionEditorChecks(const juce::File& preview = {}) {
     clickButton(*cancel);
     require(!find("Progression scale")->isVisible() && !find("Progression chord 1")->isVisible(),
             "cancel hides progression controls");
+
+    editor.setPattern({});
+    clickButton(*open);
+    auto* scale = dynamic_cast<juce::ComboBox*>(find("Progression scale"));
+    require(scale != nullptr, "progression scale is accessible");
+    scale->setSelectedId(3, juce::sendNotificationSync);
+    tonic->setValue(48, juce::sendNotificationSync);
+    clickButton(*apply);
+    require(editor.isProcessingPanelOpen() && editor.getPattern().count == 0,
+            "undefined project scale refuses without falling back");
+    editor.setProjectScaleContext({true, 2, alien::ScaleType::dorian}, 1);
+    clickButton(*apply);
+    require(editor.getPattern().count == 12 && editor.getPattern().notes[0].pitch == 50 &&
+            editor.getPattern().notes[1].pitch == 53 && !editor.isProcessingPanelOpen(),
+            "Apply reads the current project root and mode");
+    editor.undo();
+    require(editor.getPattern().count == 0, "project scale progression is one undo step");
 }
