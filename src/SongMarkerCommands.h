@@ -1,14 +1,15 @@
 #pragma once
 #include "ProjectDocument.h"
+#include <algorithm>
 #include <cstdint>
 #include <string>
 
-// Pure document edits for the Song's markers and loop range. The controller and command
+// Pure document edits for the Song's markers, loop range and length. The controller and command
 // Preview share them, so what Preview predicts is what the live edit does.
 namespace alien::song_edit {
 inline constexpr int markerColours = 8;
 
-enum class Kind { addMarker, moveMarker, renameMarker, colourMarker, removeMarker, setLoop };
+enum class Kind { addMarker, moveMarker, renameMarker, colourMarker, removeMarker, setLoop, setLength };
 struct Edit {
     Kind kind{Kind::addMarker};
     std::uint32_t marker{};          // the marker's id (a new marker's id for addMarker)
@@ -16,9 +17,11 @@ struct Edit {
     std::string name;                // addMarker, renameMarker
     int colour{};                    // addMarker, colourMarker
     bool enabled{};                  // setLoop
+    int bars{};                      // setLength
 };
 
 inline bool changesLoop(const Edit& e) noexcept { return e.kind == Kind::setLoop; }
+inline bool changesLength(const Edit& e) noexcept { return e.kind == Kind::setLength; }
 
 // True when the edit would leave the document as it is. Only meaningful for an edit with valid arguments.
 inline bool changesNothing(const ProjectDocument& d, const Edit& e) {
@@ -29,6 +32,7 @@ inline bool changesNothing(const ProjectDocument& d, const Edit& e) {
     case Kind::renameMarker: return m != nullptr && m->name == timeline::Timeline::markerName(e.name);
     case Kind::colourMarker: return m != nullptr && m->colour == e.colour;
     case Kind::setLoop: return song.loopStart == e.tick && song.loopEnd == e.end && song.loopEnabled == e.enabled;
+    case Kind::setLength: return song.lengthBars == e.bars;
     case Kind::addMarker: case Kind::removeMarker: break;
     }
     return false;
@@ -50,6 +54,12 @@ inline juce::String refusal(const ProjectDocument& d, const Edit& e) {
     if (e.kind == Kind::setLoop) {
         if (e.tick < 0 || e.end > song.length() || e.end - e.tick < timeline::ticksPerStep)
             return "The loop must be inside the song and at least one step long.";
+        return {};
+    }
+    if (e.kind == Kind::setLength) {
+        if (e.bars < 1 || e.bars > timeline::maxBars) return "A song is from 1 to " + juce::String(timeline::maxBars) + " bars long.";
+        if (const int shortest = song.minLengthBars(); e.bars < shortest)
+            return "The song cannot be shorter than " + juce::String(shortest) + (shortest == 1 ? " bar" : " bars") + ": its clips, markers or changes reach that far.";
         return {};
     }
     if (song.findMarker(e.marker) == nullptr) return "There is no marker " + juce::String(static_cast<juce::int64>(e.marker)) + " in the song.";
@@ -74,6 +84,13 @@ inline juce::String apply(ProjectDocument& d, const Edit& e) {
         const bool range = song.setLoop(e.tick, e.end);
         const bool enabled = song.setLoopEnabled(e.enabled);
         done = range || enabled;
+        break;
+    }
+    case Kind::setLength: {
+        // A shorter song pulls the loop in with it. A frozen track's render keeps the length it was made for.
+        done = song.setLengthBars(e.bars);
+        const bool frozen = std::any_of(d.tracks.begin(), d.tracks.end(), [](const auto& t) { return t.settings.frozen(); });
+        if (done && frozen) song.freezeBaseLengthBars = song.lengthBars;
         break;
     }
     }

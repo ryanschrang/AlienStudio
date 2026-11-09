@@ -627,6 +627,18 @@ drags and double-click, the Loop button and L / Shift+L run these commands with 
 "Loop off" name the toggle). A refusal shows as a message. Sections and chords still set the loop through their own
 edits.
 
+## Song length command
+
+`SetSongLength {bars}` sets how many bars the song lasts. It shares the marker and loop reducer. A length outside 1 to
+16384 bars, or shorter than the song's content (its clips, markers, sections, chords, tempo and time signature changes
+and automation), is refused with the shortest length it could be. A shorter song pulls the loop in with it, and Undo
+puts both back. With a frozen track the song also records the new length as the one its render was made for, as the
+direct edit did. The length changes playback, so while warped audio records it is refused like the loop.
+
+The Song toolbar's length control runs it with its old Undo name, "Change song length". Its buttons share one
+coalescing key, so quick clicks are one Undo step. A typed length below the shortest makes the song as short as it can
+be; asking for less when it already is says why not.
+
 ## Song clip commands
 
 `MoveSongClips {clips, ticks, lanes}`, `TrimSongClipStart {clip, tick}`, `TrimSongClipEnd {clip, tick}`, `SlipSongClips

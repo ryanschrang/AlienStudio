@@ -674,6 +674,13 @@ public:
         if (gains.empty()) { say("Waveform peaks are still loading or the selected clips are silent."); return false; }
         return clipCommands(gains, "Normalize clips").changed;
     }
+    // The song length is a command (SetSongLength); quick repeats are one undo step. A number below the shortest
+    // the song can be makes it that short; asking for less when it already is says why not.
+    bool setSongLength(int bars) {
+        const auto& t = committed();
+        if (const int shortest = t.minLengthBars(); bars < shortest && t.lengthBars > shortest) bars = shortest;
+        return songCommand(command::SetSongLength{bars}, {}, "timeline-length").changed;
+    }
     // The loop and markers are commands (SetSongLoop and the marker commands); a refusal is said.
     bool toggleLoop() {
         const auto& t = committed();
@@ -742,10 +749,11 @@ public:
         for (const auto& r : committed().regions) if (!timeline::contains(before, r.id)) made.push_back(r.id);
         return made;
     }
-    command::Result songCommand(const command::Command& change, const juce::String& undoLabel = {}) {
+    // `coalesceKey` joins quick repeats (the length buttons) into one undo step.
+    command::Result songCommand(const command::Command& change, const juce::String& undoLabel = {}, const juce::String& coalesceKey = {}) {
         if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return {}; }
         command::CommandEngine commands(controller);
-        const auto result = undoLabel.isEmpty() ? commands.execute(change) : commands.batch({change}, undoLabel);
+        const auto result = undoLabel.isEmpty() ? commands.execute(change, coalesceKey) : commands.batch({change}, undoLabel, coalesceKey);
         if (!result.ok) say(result.error);
         else if (result.changed) afterEdit();
         return result;
@@ -3024,7 +3032,7 @@ public:
         lengthSlider.onValueChange = [this] {
             if (updating) return;
             const int bars = static_cast<int>(lengthSlider.getValue());
-            controller.editTimeline("Change song length", [bars](timeline::Timeline& t) { return t.setLengthBars(bars); }, "timeline-length");
+            canvas.setSongLength(bars);
             refresh();
         };
         addAndMakeVisible(readout); addAndMakeVisible(help);
