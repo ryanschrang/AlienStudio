@@ -1001,12 +1001,24 @@ struct Timeline {
 
     // Returns the new marker's id, or 0 when there is no room or the tick is off the timeline.
     std::uint32_t addMarker(std::int64_t tick, std::string name, std::uint8_t colour = 0) {
-        if (markers.size() >= maxMarkers || tick < 0 || tick > length()) return 0;
-        Marker m{newId(), tick, cleanName(std::move(name)), colour};
+        const auto id = newId();
+        return addMarkerWithId(id, tick, std::move(name), colour) ? id : 0;
+    }
+    // A marker command carries its marker's id, so its Preview and the live edit agree.
+    // False when the id is 0 or taken, there is no room, or the tick is off the timeline.
+    bool addMarkerWithId(std::uint32_t id, std::int64_t tick, std::string name, std::uint8_t colour = 0) {
+        if (id == 0 || findMarker(id) != nullptr || markers.size() >= maxMarkers || tick < 0 || tick > length()) return false;
+        Marker m{id, tick, cleanName(std::move(name)), colour};
         markers.insert(std::upper_bound(markers.begin(), markers.end(), tick,
             [](std::int64_t t, const Marker& other) { return t < other.tick; }), m);
-        return m.id;
+        return true;
     }
+    const Marker* findMarker(std::uint32_t id) const noexcept {
+        const auto it = std::find_if(markers.begin(), markers.end(), [id](const Marker& m) { return m.id == id; });
+        return it == markers.end() ? nullptr : &*it;
+    }
+    // The name a marker stores for `text`: trimmed and cut to fit, never inside a UTF-8 character.
+    static std::string markerName(std::string text) { return cleanName(std::move(text)); }
     bool moveMarker(std::uint32_t id, std::int64_t tick) {
         auto it = std::find_if(markers.begin(), markers.end(), [&](const Marker& m) { return m.id == id; });
         if (it == markers.end()) return false;

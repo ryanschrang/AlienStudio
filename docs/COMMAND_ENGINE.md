@@ -606,6 +606,27 @@ No rack edit in product code calls `editRack` now.
 `ProjectController::setRackChannelNotes`, `deleteRackPattern`, `setRackPlugin`, `setRackSynth` and `setRackBuiltin` stay for their tests until
 the final route cleanup.
 
+## Song marker and loop commands
+
+`AddSongMarker {tick, name, colour}`, `MoveSongMarker {marker, tick}`, `RenameSongMarker {marker, name}`,
+`ColourSongMarker {marker, colour}` and `RemoveSongMarker {marker}` edit the Song's markers, and `SetSongLoop
+{start, end, enabled}` sets the loop range and switches it on or off in one step. They share a pure reducer in
+`SongMarkerCommands.h`.
+
+A marker is named by its id. Ids last while the project is open; a project gives its markers new ids when it opens.
+`AddSongMarker` carries its new marker's id, so Preview and execute agree, and reading it from a script gives it a
+fresh one. Names are trimmed and cut to 32 bytes; an empty name, a tick outside the song, a colour outside 0-7, a
+missing marker and a 129th marker are refused. The loop must be inside the song and at least one step long; it is
+refused, not clamped.
+
+Markers never change playback. The loop does, so while warped audio records it is refused like a tempo edit. The
+commit publishes the new loop to the engine.
+
+The marker strip's add, rename, colour, delete and drag, the marker menu, the K and Delete keys, the loop strip's
+drags and double-click, the Loop button and L / Shift+L run these commands with the same Undo labels ("Loop on" and
+"Loop off" name the toggle). A refusal shows as a message. Sections and chords still set the loop through their own
+edits.
+
 ## Master volume command
 
 `SetMasterVolume {gain}` accepts a finite linear gain from 0 through 4 (1 is unity),

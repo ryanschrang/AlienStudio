@@ -674,48 +674,55 @@ public:
         if (!changed) { say("Waveform peaks are still loading or the selected clips are silent."); return false; }
         return edit("Normalize clips", [next = std::move(next)](timeline::Timeline& t) mutable { t = std::move(next); return true; });
     }
+    // The loop and markers are commands (SetSongLoop and the marker commands); a refusal is said.
     bool toggleLoop() {
-        const bool on = !committed().loopEnabled;
-        return edit(on ? "Loop on" : "Loop off", [on](timeline::Timeline& t) { return t.setLoopEnabled(on); });
+        const auto& t = committed();
+        const bool on = !t.loopEnabled;
+        return songCommand(command::SetSongLoop{t.loopStart, t.loopEnd, on}, on ? "Loop on" : "Loop off").changed;
     }
     // Makes the loop cover the selected clips (or the song if none are selected) and switches it on.
     bool loopSelection() {
         std::int64_t from = timeline::maxLength, to = 0;
         for (const auto id : selected) if (const auto* r = committed().find(id)) { from = std::min(from, r->start); to = std::max(to, r->end()); }
         if (to <= from) { from = 0; to = committed().length(); }
-        return edit("Set loop", [=](timeline::Timeline& t) { const bool a = t.setLoop(from, to); const bool b = t.setLoopEnabled(true); return a || b; });
+        return setLoopRange(from, to);
     }
+    // The range is kept inside the song; `enable` false leaves the loop on or off as it is.
     bool setLoopRange(std::int64_t from, std::int64_t to, bool enable = true) {
-        return edit("Set loop", [=](timeline::Timeline& t) { const bool a = t.setLoop(from, to); const bool b = enable && t.setLoopEnabled(true); return a || b; });
+        const auto& t = committed();
+        if (to < from) std::swap(from, to);
+        from = std::clamp<std::int64_t>(from, 0, t.length()); to = std::clamp<std::int64_t>(to, 0, t.length());
+        return songCommand(command::SetSongLoop{from, to, enable || t.loopEnabled}).changed;
     }
     bool addMarkerAtCursor(const juce::String& name = {}) {
-        const auto tick = cursor;
-        const auto text = name.isNotEmpty() ? name : "Marker " + juce::String(committed().markers.size() + 1);
-        auto made = std::make_shared<std::uint32_t>(0);
-        const bool done = edit("Add marker", [=](timeline::Timeline& t) { *made = t.addMarker(tick, text.toStdString(), static_cast<std::uint8_t>(t.markers.size() % 8)); return *made != 0; });
-        if (done) { selected.clear(); selectedMarker = *made; stateChanged(); } else say("No room for another marker there.");
+        const auto& t = committed();
+        const command::AddSongMarker add{cursor, name.isNotEmpty() ? name : "Marker " + juce::String(t.markers.size() + 1), static_cast<int>(t.markers.size() % 8)};
+        const bool done = songCommand(add).changed;
+        if (done) { selected.clear(); selectedMarker = add.marker; stateChanged(); }
         return done;
     }
     bool removeMarker(std::uint32_t id) {
-        const bool done = edit("Delete marker", [=](timeline::Timeline& t) { return t.removeMarker(id); });
+        const bool done = songCommand(command::RemoveSongMarker{id}).changed;
         if (done && selectedMarker == id) selectedMarker = 0;
         stateChanged();
         return done;
     }
     bool colourMarker(std::uint32_t id, int colour) {
-        return edit("Colour marker", [=](timeline::Timeline& t) { return t.colourMarker(id, static_cast<std::uint8_t>(colour)); });
+        return songCommand(command::ColourSongMarker{id, colour}).changed;
     }
     void renameMarker(std::uint32_t id) {
-        const auto* m = committed().markers.empty() ? nullptr : [&]() -> const timeline::Marker* { for (const auto& x : committed().markers) if (x.id == id) return &x; return nullptr; }();
+        const auto* m = committed().findMarker(id);
         if (m == nullptr) return;
         askForName("Rename marker", juce::String::fromUTF8(m->name.c_str()), [this, id](const juce::String& text) {
-            edit("Rename marker", [&](timeline::Timeline& t) { return t.renameMarker(id, text.toStdString()); });
+            songCommand(command::RenameSongMarker{id, text});
         });
     }
-    // Tempo and time signature edits are commands. A refusal is said here; the caller says why nothing changed.
-    command::Result tempoCommand(const command::Command& change) {
+    // Song edits that are commands: tempo, time signature, markers and the loop. A refusal is said here;
+    // the caller says why nothing changed. `undoLabel` replaces the command's own Undo name.
+    command::Result songCommand(const command::Command& change, const juce::String& undoLabel = {}) {
         if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return {}; }
-        const auto result = command::CommandEngine(controller).execute(change);
+        command::CommandEngine commands(controller);
+        const auto result = undoLabel.isEmpty() ? commands.execute(change) : commands.batch({change}, undoLabel);
         if (!result.ok) say(result.error);
         else if (result.changed) afterEdit();
         return result;
@@ -734,7 +741,7 @@ public:
                     say("Enter a tempo from 60 to 200 BPM.");
                     return;
                 }
-                if (const auto done = tempoCommand(command::SetTempoChange{tick, bpm}); done.ok && !done.changed)
+                if (const auto done = songCommand(command::SetTempoChange{tick, bpm}); done.ok && !done.changed)
                     say("The tempo there is already " + tempoLabel(bpm) + ".");
             });
     }
@@ -755,7 +762,7 @@ public:
         return true;
     }
     bool removeTempoChange(std::int64_t tick) {
-        return tempoCommand(command::RemoveTempoChange{tick}).changed;
+        return songCommand(command::RemoveTempoChange{tick}).changed;
     }
     // Asks for the time signature from bar `bar` (counting from 0) on, as "3/4" or "6/8".
     void askMeter(int bar) {
@@ -771,12 +778,12 @@ public:
                     say("Enter a time signature such as 3/4 or 6/8: 1 to " + juce::String(timeline::maxMeterNumerator) + " beats of a 2, 4, 8 or 16.");
                     return;
                 }
-                if (const auto done = tempoCommand(command::SetMeterChange{bar, numerator, denominator}); done.ok && !done.changed)
+                if (const auto done = songCommand(command::SetMeterChange{bar, numerator, denominator}); done.ok && !done.changed)
                     say("Bar " + juce::String(bar + 1) + " is already in " + meterText({numerator, denominator}) + ".");
             });
     }
     bool removeMeterChange(int bar) {
-        return tempoCommand(command::RemoveMeterChange{bar}).changed;
+        return songCommand(command::RemoveMeterChange{bar}).changed;
     }
     // Arrow keys: moves the selection by the grid (or a bar), or the play position when nothing is selected.
     bool nudge(int direction, bool bar = false) {
@@ -1380,6 +1387,7 @@ public:
             const auto id = drag.grabbed;
             const auto to = snapTick(tickNow + drag.grabOffset, bypass);
             drag.label = "Move marker";
+            drag.toTick = to;
             drag.apply = [=](timeline::Timeline& t) { return t.moveMarker(id, to); };
             updatePreview(); break;
         }
@@ -1404,6 +1412,7 @@ public:
             }
             if (to - from < timeline::ticksPerStep) break;
             drag.label = "Set loop";
+            drag.fromTick = from; drag.toTick = to;
             drag.apply = [=](timeline::Timeline& t) { const bool a = t.setLoop(from, to); const bool b = t.setLoopEnabled(true); return a || b; };
             updatePreview(); break;
         }
@@ -1442,7 +1451,7 @@ public:
         preview.reset();
         switch (kind) {
         case DragKind::move: case DragKind::copy: case DragKind::slip: case DragKind::trimStart: case DragKind::trimEnd:
-        case DragKind::warp: case DragKind::fadeIn: case DragKind::fadeOut: case DragKind::marker: case DragKind::loopNew: case DragKind::loopStart: case DragKind::loopEnd: case DragKind::loopMove:
+        case DragKind::warp: case DragKind::fadeIn: case DragKind::fadeOut:
             if (active && finished.apply) {
                 const bool done = edit(finished.label, finished.apply);
                 if (done && kind == DragKind::copy && finished.created) { selected = *finished.created; stateChanged(); }
@@ -1457,12 +1466,20 @@ public:
                     stateChanged();
                 } else if (kind == DragKind::move && finished.collapseOnClick) {
                     setSelection({finished.grabbed});
-                } else if (kind == DragKind::marker && finished.grabbed != 0) {
-                    if (const auto* m = markerById(finished.grabbed)) setCursor(m->tick);   // a click on a marker jumps there
-                } else if ((kind == DragKind::loopNew || kind == DragKind::loopStart || kind == DragKind::loopEnd || kind == DragKind::loopMove)) {
-                    // A click on the loop strip with no drag: nothing changes.
                 }
             }
+            break;
+        case DragKind::marker:
+            if (active && finished.apply) {
+                if (const auto done = songCommand(command::MoveSongMarker{finished.grabbed, finished.toTick}); done.ok && !done.changed && hadPreview) say("That does not fit there.");
+            } else if (!active && finished.grabbed != 0) {
+                if (const auto* m = markerById(finished.grabbed)) setCursor(m->tick);   // a click on a marker jumps there
+            }
+            break;
+        case DragKind::loopNew: case DragKind::loopStart: case DragKind::loopEnd: case DragKind::loopMove:
+            // A click on the loop strip with no drag changes nothing.
+            if (active && finished.apply)
+                if (const auto done = songCommand(command::SetSongLoop{finished.fromTick, finished.toTick, true}); done.ok && !done.changed && hadPreview) say("That does not fit there.");
             break;
         case DragKind::marquee:
             if (!active) {
@@ -1473,7 +1490,7 @@ public:
             break;
         case DragKind::tempo:
             if (active && finished.apply) {
-                if (const auto done = tempoCommand(command::MoveTempoChange{finished.newAnchor, finished.tempoTo}); done.ok && !done.changed && hadPreview) say("A tempo change cannot go there.");
+                if (const auto done = songCommand(command::MoveTempoChange{finished.newAnchor, finished.tempoTo}); done.ok && !done.changed && hadPreview) say("A tempo change cannot go there.");
             } else if (!active) setCursor(finished.newAnchor);   // a click on a tempo change plays from there
             break;
         case DragKind::comp:
@@ -1603,6 +1620,7 @@ private:
         bool active{};
         std::size_t warpIndex{};
         std::int64_t tempoTo{};
+        std::int64_t fromTick{}, toTick{};   // a marker drag's target tick; a loop drag's range
         juce::Point<int> origin;
         juce::ModifierKeys mods;
         double anchorTick{}, grabOffset{};
@@ -1889,9 +1907,9 @@ private:
             launch(std::move(menu), area, [this, tick](int id) {
                 if (id == cmdAddMarker) { setCursor(tick, false); addMarkerAtCursor(); }
                 else if (id == cmdTempo) askTempo(tick);
-                else if (id == cmdRemoveTempo) tempoCommand(command::ClearTempoChanges{});
+                else if (id == cmdRemoveTempo) songCommand(command::ClearTempoChanges{});
                 else if (id == cmdMeter) askMeter(static_cast<int>(committed().meterMap().barAt(static_cast<double>(tick)).index));
-                else if (id == cmdRemoveMeter) tempoCommand(command::ClearMeterChanges{});
+                else if (id == cmdRemoveMeter) songCommand(command::ClearMeterChanges{});
             });
         } else if (hit.zone == Zone::loopStrip) {
             juce::PopupMenu menu;
