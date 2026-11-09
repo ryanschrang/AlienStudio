@@ -11,6 +11,7 @@ public:
     static constexpr int partition = 512, fftSize = partition * 2, latency = partition;
     static constexpr double responseSeconds = .3;
     static constexpr double maxCustomResponseSeconds = 1.0;
+    static constexpr int maxSourceRate = 192000;
     struct Settings { double toneHz{10000}, outputDb{}, mix{.25}; };
     using Spectrum = std::array<std::complex<double>, fftSize>;
     void prepare(double sampleRate) {
@@ -21,19 +22,23 @@ public:
     // Invalid data leaves the current kernel and playback state intact.
     bool prepareCustom(double sampleRate, double sourceRate, std::span<const float> left,
                        std::span<const float> right = {}) {
-        if (!std::isfinite(sourceRate) || sourceRate < 8000 || sourceRate > 192000 ||
-            left.empty() || left.size() > sourceRate * maxCustomResponseSeconds ||
-            (!right.empty() && right.size() != left.size())) return false;
-        const auto valid = [](float coefficient) {
-            return std::isfinite(coefficient) && std::abs(coefficient) <= 1.0f;
-        };
-        if (!std::all_of(left.begin(), left.end(), valid) || !std::all_of(right.begin(), right.end(), valid))
-            return false;
+        if (!validCustomResponse(sourceRate, left, right)) return false;
         if (right.empty()) right = left;
         prepareResponse(sampleRate, sourceRate, static_cast<int>(left.size()), [left, right](int channel, int frame) {
             return (channel == 0 ? left : right)[frame];
         });
         return true;
+    }
+
+    static bool validCustomResponse(double sourceRate, std::span<const float> left,
+                                    std::span<const float> right) {
+        if (!std::isfinite(sourceRate) || sourceRate < 8000 || sourceRate > maxSourceRate ||
+            left.empty() || left.size() > sourceRate * maxCustomResponseSeconds ||
+            (!right.empty() && right.size() != left.size())) return false;
+        const auto valid = [](float coefficient) {
+            return std::isfinite(coefficient) && std::abs(coefficient) <= 1.0f;
+        };
+        return std::all_of(left.begin(), left.end(), valid) && std::all_of(right.begin(), right.end(), valid);
     }
 
 private:

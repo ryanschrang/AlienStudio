@@ -35,8 +35,11 @@ The DSP can also prepare an in-memory response while processing is stopped
 at 8 to 192 kHz, with one channel mirrored to stereo or two equal-length
 channels processed independently. It integrates coefficient bins at the
 device rate and rejects invalid data before replacing the current kernel.
-The stock plugin still selects the chamber. File decoding, an editor control
-and project persistence are needed to expose custom responses.
+The stock effect can persist these coefficients in its existing plugin state
+(claim #276). The host restores the state before preparing the kernel, so no
+external file is needed at project reopen. Chamber-only legacy state or an
+invalid embedded response prepares the chamber. File decoding and an editor
+control are needed to let users select a custom response.
 
 ## Manual acceptance (not yet run)
 
