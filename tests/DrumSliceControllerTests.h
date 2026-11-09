@@ -62,6 +62,32 @@ static void drumSliceControllerTests() {
         require(c.sliceDrum(0, 7), "a selected slice can itself be subdivided");
         require(c.document().tracks[0].drumSlices[0].start == 72 && c.document().tracks[0].drumSlices[7].end == 83 && !c.document().tracks[0].drumAssets[0]->sliceSource->sliceSource, "reslicing flattens absolute boundaries into original source");
     }
+    const auto sessionProject = root.getChildFile("SessionKit.alienstudio");
+    {
+        ToneEngine engine; alien::ProjectController c(engine);
+        require(c.installAudio(wav, 0, 0, audio), "install Session source");
+        const auto bytes = c.availableAudioBytes();
+        require(c.sliceSessionAudio(0, 0), "slice the Session source directly");
+        checkKit(c);
+        require(c.document().tracks[0].drumAssets[0]->sliceSource == audio &&
+                c.document().clip(0, 0).audio == audio && c.availableAudioBytes() == bytes,
+                "pads share Session PCM and leave the clip intact");
+        require(c.undo() && !c.document().tracks[0].drumAssets[0] && c.document().clip(0, 0).audio == audio,
+                "one Undo removes the kit and keeps the clip");
+        require(c.redo(), "redo the Session kit");
+        bool done = false, ok = false;
+        c.writeProject(sessionProject, false, [&](bool value) { ok = value; done = true; });
+        for (int i = 0; i < 400 && !done; ++i) pump(10);
+        require(done && ok, "save Session clip and derived kit");
+    }
+    {
+        ToneEngine engine; alien::ProjectController c(engine);
+        const auto bytes = c.availableAudioBytes();
+        c.openProject(sessionProject); wait(c); checkKit(c);
+        require(c.document().clip(0, 0).audio == c.document().tracks[0].drumAssets[0]->sliceSource &&
+                bytes - c.availableAudioBytes() == audio->decodedBytes(),
+                "project reopen shares one decode across the Session clip and drum pads");
+    }
     const auto moved = root.getChildFile("moved"); require(moved.createDirectory().wasOk() && wav.moveFileTo(moved.getChildFile("source.wav")), "move source away");
     {
         ToneEngine engine; alien::ProjectController c(engine); c.openProject(project); wait(c);

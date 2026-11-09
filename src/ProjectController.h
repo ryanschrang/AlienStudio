@@ -2089,12 +2089,29 @@ public:
     }
     bool sliceDrum(int track, int pad) {
         if (busy || isRecording() || engine.recording.active() || isTrackFrozen(track) || track < 0 || track >= doc.trackCount() || pad < 0 || pad >= drumPadCount) return false;
-        auto& owner = doc.tracks[track];
-        const auto selected = owner.drumAssets[pad];
-        const auto path = owner.drumPaths[pad];
-        if (!selected || selected->streamed() || selected->frames < drumPadCount || path.isEmpty()) {
+        const auto& owner = doc.tracks[track];
+        if (!canSliceDrumSource(owner.drumAssets[pad], owner.drumPaths[pad])) {
             importStatus("Load a sample with at least eight frames before slicing.", {}); return false;
         }
+        return sliceDrumSource(track, owner.drumAssets[pad], owner.drumPaths[pad]);
+    }
+    bool canSliceSessionAudio(int track, int scene) const {
+        if (!doc.isValidCell(track, scene) || !canEditMidiClips() || isTrackFrozen(track)) return false;
+        const auto clip = doc.clip(track, scene);
+        return canSliceDrumSource(clip.audio, clip.audioFilePath);
+    }
+    bool sliceSessionAudio(int track, int scene) {
+        if (!canSliceSessionAudio(track, scene)) return false;
+        const auto clip = doc.clip(track, scene);
+        return sliceDrumSource(track, clip.audio, clip.audioFilePath);
+    }
+
+private:
+    static bool canSliceDrumSource(const std::shared_ptr<const SessionAudioClip>& audio, const juce::String& path) {
+        return audio && !audio->streamed() && audio->frames >= drumPadCount && path.isNotEmpty();
+    }
+    bool sliceDrumSource(int track, std::shared_ptr<const SessionAudioClip> selected, juce::String path) {
+        auto& owner = doc.tracks[track];
         const auto source = selected->sliceSource ? selected->sliceSource : selected;
         const auto offset = selected->sliceSource ? selected->sliceOffset : 0;
         std::array<DrumSlice, drumPadCount> ranges{};
@@ -2115,6 +2132,7 @@ public:
         importStatus("Sample split into eight pads. Undo restores the previous kit.", {});
         return true;
     }
+public:
     void clearDrum(int track, int pad) {
         if(isTrackFrozen(track))return;
         if (track < 0 || track >= doc.trackCount() || pad < 0 || pad >= drumPadCount) return;
@@ -2636,6 +2654,8 @@ private:
         if (!parseSessionProject(file.loadFileAsString(), result.project, result.error)) return result;
         const int tracks = result.project.trackCount(), scenes = result.project.sceneCount();
         result.audio.resize(static_cast<std::size_t>(tracks * scenes));
+        std::map<juce::String, AudioClipImportResult> drumSources;
+        std::set<const SessionAudioClip*> drumCounted;
         for (int s = 0; s < scenes; ++s)
             for (int t = 0; t < tracks; ++t) {
                 const auto& clip = result.project.clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
@@ -2655,10 +2675,13 @@ private:
                 }
                 result.decodedBytes += bytes;
                 result.audio[static_cast<std::size_t>(s * tracks + t)] = decoded.clip;
+                // Kits made from Session clips can reuse their decoded file.
+                if (!decoded.clip->streamed()) {
+                    drumSources.try_emplace(location.getFullPathName(), decoded);
+                    drumCounted.insert(decoded.clip.get());
+                }
             }
         result.drums.resize(tracks);
-        std::map<juce::String, AudioClipImportResult> drumSources;
-        std::set<const SessionAudioClip*> drumCounted;
         const auto drumBudget = maxSessionAudioBytes - result.decodedBytes;
         std::size_t cachedDrumBytes{};
         for (int t = 0; t < tracks; ++t) for (int p = 0; p < drumPadCount; ++p) {
