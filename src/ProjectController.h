@@ -566,6 +566,17 @@ public:
     // Writes the key to the document only. The caller commits, and the host rebuilds the plugin racks.
     bool applySidechainCommand(const sidechain_edit::Edit& edit) { return !busy && sidechain_edit::apply(doc, edit).isEmpty(); }
     bool applyDeviceCommand(const device_edit::Edit& edit) { return !busy && device_edit::apply(doc, edit).isEmpty(); }
+    bool setConvolutionResponseState(RackStage stage, int rack, int slot, std::uint64_t instance, juce::String state) {
+        auto* target = sidechain_edit::rackOf(doc, stage, rack);
+        if (!canEditMidiClips() || (stage == RackStage::track && isTrackFrozen(rack)) ||
+            !target || slot < 0 || slot >= static_cast<int>(target->effects.size())) return false;
+        auto& effect = target->effects[slot];
+        if (!instance || effect.instanceId != instance || effect.stateBase64 == state ||
+            state.length() > maxPluginStateChars) return false;
+        effect.stateBase64 = std::move(state);
+        commit("Change convolution response");
+        return true;
+    }
 
     // Message-thread command setters. Only the addressed control changes; the
     // caller commits after the complete command/batch, just like track renaming.

@@ -121,6 +121,22 @@ static void browserTests() {
 
 int main() {
     juce::ScopedJuceInitialiser_GUI juceInit;
+    {
+        PluginPanel responsePanel; responsePanel.setSize(900, 500);
+        juce::KnownPluginList known;
+        PluginRackState effects;
+        effects.effects = {{stock::describe(stock::catalog[16]).createXml()->toString(), {}}, vst3("Other")};
+        responsePanel.refresh({"Track 1"}, effects, known);
+        auto* impulse = button(responsePanel, "Impulse response…");
+        auto* sidechain = button(responsePanel, "Sidechain...");
+        auto* selection = combos(responsePanel)[1];
+        selection->setSelectedId(2, juce::dontSendNotification); selection->onChange();
+        check(impulse && impulse->isVisible() && impulse->getWidth() > 0 && sidechain && !sidechain->isVisible(),
+              "selected convolution slot shows its response control");
+        selection->setSelectedId(3, juce::dontSendNotification); selection->onChange();
+        check(impulse && !impulse->isVisible() && sidechain && sidechain->isVisible(),
+              "other effects show the ordinary sidechain control");
+    }
     PluginPanel panel; panel.setSize(900, 400);
     auto boxes = combos(panel);
     check(boxes.size() == 3, "the panel has a destination, a slot and a live MIDI chooser beside its plugin browser");

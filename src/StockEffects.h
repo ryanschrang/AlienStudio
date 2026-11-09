@@ -876,6 +876,13 @@ public:
         responseRight = std::move(right);
         return true;
     }
+    bool useChamberForNextPrepare() {
+        if (responseLeft.empty()) return false;
+        responseLeft.clear();
+        responseRight.clear();
+        responseRate = 0;
+        return true;
+    }
     void getStateInformation(juce::MemoryBlock& destination) override {
         Effect::getStateInformation(destination);
         if (responseLeft.empty()) return;
@@ -895,9 +902,7 @@ public:
         const auto xml = getXmlFromBinary(data, size);
         if (!xml || !xml->hasTagName(parameters.state.getType())) return;
         const auto* response = xml->getChildByName(responseTag);
-        responseLeft.clear();
-        responseRight.clear();
-        responseRate = 0;
+        useChamberForNextPrepare();
         if (response) restoreResponse(response->getAllSubText());
         xml->deleteAllChildElementsWithTagName(responseTag);
         parameters.replaceState(juce::ValueTree::fromXml(*xml));

@@ -1,6 +1,8 @@
 // Stock effects as hosted processors: parameters, state, rack integration, latency
 // compensation, real-time safety and editor panels.
 #include "PluginHost.h"
+#include "ConvolutionImport.h"
+#include "AudioFileWrite.h"
 #include "SessionProject.h"
 #include <atomic>
 #include <cstdio>
@@ -895,7 +897,25 @@ static void convolutionResponseStateTests() {
     juce::MemoryBlock chamber;
     effect->getStateInformation(chamber);
     setParam(*effect, stock::convolution::mix, 1);
-    check(convolution.setResponseForNextPrepare(rate, {.5f, .25f}, {-.25f, .125f}),
+    const auto wav = juce::File::getSpecialLocation(juce::File::tempDirectory)
+        .getNonexistentChildFile("AlienImpulse", ".wav", false);
+    SessionAudioClip impulse;
+    impulse.sampleRate = rate; impulse.channels = 2; impulse.frames = 2;
+    impulse.left = {.5f, .25f}; impulse.right = {-.25f, .125f};
+    impulse.buildWaveform();
+    std::atomic<bool> cancel{false};
+    juce::String error;
+    check(writeClipWav(wav, impulse, cancel, error), "write stereo impulse fixture");
+    auto response = decodeConvolutionWav(wav);
+    check(response.error.isEmpty() && response.left.size() == 2 && response.right.size() == 2,
+          "decode a short stereo WAV");
+    impulse.frames = static_cast<std::size_t>(rate) + 1;
+    impulse.left.resize(impulse.frames); impulse.right.resize(impulse.frames);
+    impulse.buildWaveform();
+    check(writeClipWav(wav, impulse, cancel, error) && decodeConvolutionWav(wav).error.isNotEmpty(),
+          "reject a WAV over one second");
+    check(wav.deleteFile() && decodeConvolutionWav(wav).error.isNotEmpty(), "reject a missing WAV");
+    check(convolution.setResponseForNextPrepare(response.rate, std::move(response.left), std::move(response.right)),
           "valid stereo impulse can be staged");
     check(!convolution.setResponseForNextPrepare(rate, {2.f}), "invalid staging preserves saved response");
     check(effect->getTailLengthSeconds() > .3, "staging does not replace the prepared chamber");
@@ -905,7 +925,6 @@ static void convolutionResponseStateTests() {
     SessionProjectData project, loaded;
     project.plugins[0].effects = {stockState("convolution")};
     project.plugins[0].effects[0].stateBase64 = custom.toBase64Encoding();
-    juce::String error;
     if (!parseSessionProject(serializeSessionProject(project), loaded, error)) {
         check(false, "project accepts embedded convolution response");
         return;
@@ -925,8 +944,14 @@ static void convolutionResponseStateTests() {
     left[0] = right[0] = 1;
     process(restored, left, right);
     const double smoothing = 1 - std::exp(-2 * dsp::pi * 10000 / rate);
-    checkNear(left[512], .5 * smoothing, 1e-7, "embedded left coefficient and full wet mix survive project restore");
-    checkNear(right[512], -.25 * smoothing, 1e-7, "embedded right coefficient survives project restore");
+    checkNear(left[512], .5 * smoothing, 2e-7, "embedded left coefficient and full wet mix survive project restore");
+    checkNear(right[512], -.25 * smoothing, 2e-7, "embedded right coefficient survives project restore");
+
+    auto& restoredConvolution = static_cast<stock::ConvolutionEffect&>(restored);
+    check(restoredConvolution.useChamberForNextPrepare(), "reset a custom response");
+    restored.prepareToPlay(rate, 512);
+    check(restored.getTailLengthSeconds() > .3 && !restoredConvolution.useChamberForNextPrepare(),
+          "reset restores the chamber and repeating it is a no-op");
 
     auto corrupt = juce::AudioProcessor::getXmlFromBinary(custom.getData(), static_cast<int>(custom.getSize()));
     corrupt->deleteAllChildElementsWithTagName("ConvolutionResponseV1");

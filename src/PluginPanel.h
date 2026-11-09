@@ -19,7 +19,8 @@ public:
     // Choice ids: stock effects are stockBase + catalog index; scanned VST3 plugins are index + 1.
     static constexpr int stockBase = PluginBrowser::stockBase;
     PluginPanel() {
-        for (auto* c:std::array<juce::Component*,15>{&target,&browser,&slot,&liveInput,&scan,&cancelScan,&addInstrument,&addEffect,&open,&bypass,&sidechain,&up,&down,&remove,&status}) addAndMakeVisible(c);
+        for (auto* c:std::array<juce::Component*,16>{&target,&browser,&slot,&liveInput,&scan,&cancelScan,&addInstrument,&addEffect,&open,&bypass,&sidechain,&impulse,&up,&down,&remove,&status}) addAndMakeVisible(c);
+        impulse.setVisible(false);
         cancelScan.setVisible(false);
         scan.setButtonText("Scan VST3..."); cancelScan.setButtonText("Cancel scan"); addInstrument.setButtonText("Use instrument"); addEffect.setButtonText("Add FX");
         open.setButtonText("Open editor"); bypass.setButtonText("Bypass / enable"); up.setButtonText("Move FX up"); down.setButtonText("Move FX down"); remove.setButtonText("Remove");
@@ -50,6 +51,8 @@ public:
         sidechain.setButtonText("Sidechain..."); sidechain.setName("Sidechain source");
         sidechain.setTooltip("Key this effect from another track: a compressor then ducks this sound whenever that track plays (for example a bass ducking to the kick).");
         sidechain.onClick=[this]{showSidechainMenu();};
+        impulse.setButtonText("Impulse response…");
+        impulse.onClick=[this]{showImpulseMenu();};
         slot.onChange=[this]{updateSidechainButton();};
         setStatus("Pick a destination and add one of Alien Studio's stock effects (EQ, compressor, saturator, reverb, delay, limiter, filter), or scan a 64-bit .vst3 bundle for an instrument or FX. Choose a Live MIDI destination below to play an instrument with your MIDI controller or piano keyboard.");
     }
@@ -81,6 +84,7 @@ public:
     std::function<bool(const juce::PluginDescription&)> isBlocked;
     PluginBrowser& pluginBrowser() noexcept { return browser; }
     std::function<void(int,int)> onAction;
+    std::function<void(int,std::uint64_t,bool)> onImpulseResponse;
     // Whether the effect in (destination, effect index) has a sidechain input; and the choice of key:
     // (effect index, what kind of key, its track, bus or return slot, or -1 for none).
     std::function<bool(int,int)> hasSidechainInput;
@@ -129,6 +133,14 @@ public:
         updateAddButtons();
         trackNames=names; keyBusNames=busNames; keyReturnNames=returnNames;
         keyOf.clear(); for(const auto& effect:rack.effects) keyOf.push_back({effect.sidechainFrom,effect.sidechain});
+        convolutionSlots.clear();
+        for (const auto& effect : rack.effects) {
+            juce::PluginDescription description;
+            const auto xml = juce::parseXML(effect.descriptionXml);
+            const bool convolution = xml && description.loadFromXml(*xml) && stock::isStock(description)
+                && description.fileOrIdentifier == stock::catalog[16].id;
+            convolutionSlots.push_back(convolution ? effect.instanceId : 0);
+        }
         updateSidechainButton();
     }
     // The menu of keys for the selected effect: Off, then what the mix has made by the time this rack runs.
@@ -244,6 +256,7 @@ public:
         addInstrument.setBounds(row.removeFromLeft(150));row.removeFromLeft(10);addEffect.setBounds(row.removeFromLeft(120));
         r.removeFromTop(20);slot.setBounds(r.removeFromTop(30));r.removeFromTop(12);row=r.removeFromTop(32);
         for(auto* b:{&open,&bypass,&sidechain,&up,&down,&remove}){b->setBounds(row.removeFromLeft(118));row.removeFromLeft(8);}
+        impulse.setBounds(sidechain.getBounds());
         r.removeFromTop(16);status.setBounds(r.removeFromTop(110));
     }
 private:
@@ -256,7 +269,23 @@ private:
     }
     void updateSidechainButton(){
         const int index=slot.getSelectedId()-2;
+        const bool convolution = index >= 0 && index < static_cast<int>(convolutionSlots.size()) && convolutionSlots[index] != 0;
+        impulse.setVisible(convolution);
+        sidechain.setVisible(!convolution);
         sidechain.setEnabled(index>=0 && hasSidechainInput && hasSidechainInput(destination(),index));
+    }
+    void showImpulseMenu() {
+        const int index = slot.getSelectedId() - 2, where = destination();
+        if (index < 0 || index >= static_cast<int>(convolutionSlots.size()) || !convolutionSlots[index]) return;
+        const auto instance = convolutionSlots[index];
+        juce::PopupMenu menu;
+        menu.addItem(1, "Load WAV impulse response…");
+        menu.addItem(2, "Use built-in chamber");
+        juce::Component::SafePointer<PluginPanel> safe(this);
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&impulse), [safe, where, index, instance](int choice) {
+            if (safe && choice && safe->destination() == where && safe->onImpulseResponse)
+                safe->onImpulseResponse(index, instance, choice == 2);
+        });
     }
     void action(int op){if(onAction && slot.getSelectedId()>0)onAction(op,slot.getSelectedId()-2);}
     // Use instrument takes an instrument on a track; Add FX takes an effect anywhere. A blocked plugin takes neither.
@@ -272,7 +301,8 @@ private:
     static constexpr int belowStackedBrowser=12+32+20+30+12+32+16+72;
     juce::ComboBox target,slot,liveInput;
     PluginBrowser browser;
-    juce::TextButton scan,cancelScan,addInstrument,addEffect,open,bypass,sidechain,up,down,remove;
+    juce::TextButton scan,cancelScan,addInstrument,addEffect,open,bypass,sidechain,impulse,up,down,remove;
+    std::vector<std::uint64_t> convolutionSlots;
     juce::String keyName(KeySource from,int i) const {
         const auto slotName=[&](const auto& names,const juce::String& fallback){
             const auto& n=names[static_cast<std::size_t>(i)]; return n.isNotEmpty()?n:fallback; };

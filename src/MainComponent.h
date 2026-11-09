@@ -27,6 +27,7 @@
 #include "StreamingTempoWarp.h"
 #include "WavExport.h"
 #include "PluginHost.h"
+#include "ConvolutionImport.h"
 #include "PluginPanel.h"
 #include "PluginPreflight.h"
 #include "PluginBlocklist.h"
@@ -151,6 +152,9 @@ public:
         pluginPanel.onTarget = [this](int) { refreshPlugins(); };
         pluginPanel.onAdd = [this](bool instrument, int choice) { addPlugin(instrument,choice); };
         pluginPanel.onAction = [this](int op,int slot) { pluginAction(op,slot); };
+        pluginPanel.onImpulseResponse = [this](int slot, std::uint64_t instance, bool chamber) {
+            chooseConvolutionResponse(slot, instance, chamber);
+        };
         pluginPanel.hasSidechainInput = [this](int rack,int slot) { return pluginHost.hasSidechainInput(rack,slot); };
         pluginPanel.onSidechain = [this](int slot,alien::KeySource from,int source) { setSidechain(slot,from,source); };
         if (auto xml = juce::parseXML(pluginListFile())) knownPlugins.recreateFromXml(*xml);
@@ -562,7 +566,7 @@ private:
             drumPanel.setBusy(busy || projectBusy);
             updateStatusState();
         };
-        controller.beforeDocumentReplaced = [this] { releaseNotes(); rollTarget = {}; };
+        controller.beforeDocumentReplaced = [this] { ++impulseRequest; releaseNotes(); rollTarget = {}; };
         controller.onDocumentReplaced = [this] {
             restorePlugins(true);
             refreshAll();
@@ -1715,6 +1719,66 @@ private:
         if(const auto edit=alien::command::pluginPanelCommand(controller.document(),stage,rack,op,slot))runPluginCommand(*edit);
     }
 
+    void chooseConvolutionResponse(int slot, std::uint64_t instance, bool chamber) {
+        if (projectBusy || !controller.canEditMidiClips() || controller.isTrackFrozen(pluginTarget())) {
+            pluginPanel.setStatus("Stop recording, finish project work or unfreeze the track before changing its response.");
+            return;
+        }
+        const auto [stage, rack] = pluginRackAddress();
+        const auto request = ++impulseRequest;
+        if (chamber) { applyConvolutionResponse(stage, rack, slot, instance, {}); return; }
+
+        impulseChooser = std::make_unique<juce::FileChooser>("Load a WAV impulse response", juce::File{}, "*.wav");
+        juce::Component::SafePointer<MainComponent> safe(this);
+        impulseChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+            [safe, stage, rack, slot, instance, request](const juce::FileChooser& chooser) {
+                const auto file = chooser.getResult();
+                if (!safe || safe->impulseRequest != request || file == juce::File{}) return;
+                safe->pluginPanel.setStatus("Reading impulse response…");
+                std::function<juce::ThreadPoolJob::JobStatus()> job = [safe, stage, rack, slot, instance, request, file] {
+                    auto result = alien::decodeConvolutionWav(file);
+                    juce::MessageManager::callAsync([safe, stage, rack, slot, instance, request, result = std::move(result)]() mutable {
+                        if (!safe || safe->impulseRequest != request) return;
+                        if (result.error.isNotEmpty()) safe->pluginPanel.setStatus(result.error);
+                        else safe->applyConvolutionResponse(stage, rack, slot, instance, std::move(result));
+                    });
+                    return juce::ThreadPoolJob::jobHasFinished;
+                };
+                safe->audioWorkPool.addJob(std::move(job));
+            });
+    }
+
+    void applyConvolutionResponse(alien::RackStage stage, int rack, int slot, std::uint64_t instance,
+                                  alien::ConvolutionImport response) {
+        const auto currentEffect = [&]() -> const alien::PluginState* {
+            const auto* target = alien::sidechain_edit::rackOf(controller.document(), stage, rack);
+            if (!target || slot < 0 || slot >= static_cast<int>(target->effects.size())) return nullptr;
+            const auto& effect = target->effects[slot];
+            return effect.instanceId == instance ? &effect : nullptr;
+        };
+        if (projectBusy || !controller.canEditMidiClips() || !currentEffect() ||
+            (stage == alien::RackStage::track && controller.isTrackFrozen(rack))) {
+            pluginPanel.setStatus("The effect is no longer available for this edit.");
+            return;
+        }
+        snapshotPlugins(SnapshotReason::always);
+        const auto* effect = currentEffect();
+        if (!effect) return;
+        juce::String error;
+        auto processor = alien::instantiateStock(alien::stock::describe(alien::stock::catalog[16]), *effect, false, error);
+        if (!processor) { pluginPanel.setStatus(error); return; }
+        auto& convolution = static_cast<alien::stock::ConvolutionEffect&>(*processor);
+        const bool chamber = response.left.empty();
+        const bool changed = chamber ? convolution.useChamberForNextPrepare()
+            : convolution.setResponseForNextPrepare(response.rate, std::move(response.left), std::move(response.right));
+        if (!changed) { pluginPanel.setStatus(chamber ? "The built-in chamber is already selected." : "Invalid impulse response."); return; }
+        juce::MemoryBlock bytes;
+        convolution.getStateInformation(bytes);
+        if (!controller.setConvolutionResponseState(stage, rack, slot, instance, bytes.toBase64Encoding())) return;
+        restorePlugins();
+        pluginPanel.setStatus(chamber ? "Using the built-in chamber." : "Custom impulse response loaded and embedded in the project.");
+    }
+
     // Keys the effect in `slot` of the shown rack from a track (before its FX or after its fader), a bus or a
     // return (`source` -1: no key). Only a key the mix makes before this rack runs is accepted.
     void setSidechain(int slot,alien::KeySource from,int source) {
@@ -1916,6 +1980,8 @@ private:
     alien::BusRacks loadedBuses;
 
     std::unique_ptr<juce::FileChooser> pluginChooser, relinkChooser;
+    std::unique_ptr<juce::FileChooser> impulseChooser;
+    std::uint64_t impulseRequest{};
     alien::TopBar topBar;
     alien::ApplicationToolbar applicationToolbar;
     alien::StatusBar statusBar;
