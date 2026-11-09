@@ -1,11 +1,15 @@
 # Alien Convolution Reverb (T2-02 / FX-02)
 
-Choose **Alien Convolution Reverb** in the stock plugin browser. It uses a fixed,
-original synthetic stereo chamber impulse response: sparse early reflections
-and a decorrelated, exponentially decaying diffuse tail, lasting 300 ms. This is
-not a recording of a physical room. There are no third-party samples or external
-dependencies. The two channels have different responses but do not crossfeed
-(dual-mono convolution). Mono input mirrored to stereo produces different tails.
+Choose **Alien Convolution Reverb** in the stock plugin browser. Its default
+synthetic stereo chamber combines sparse early reflections with a decorrelated
+300 ms diffuse tail. The two channels are processed independently.
+
+In **Plugins**, select the effect slot, then choose **Impulse response →
+Load WAV impulse response** (claim #282). Choose a mono or stereo WAV at
+8 to 192 kHz and at most one second long. Mono responses are mirrored to both
+channels. The project embeds the coefficients, and **Use built-in chamber**
+restores the default. Both changes support Undo and preserve the three effect
+controls. Changing responses reloads the plugin racks.
 
 | Automatable control | Range | Default |
 | --- | --- | --- |
@@ -16,7 +20,7 @@ dependencies. The two channels have different responses but do not crossfeed
 Controls use 5 ms smoothing. Uniform FFT partitions add **512 samples of latency**
 (about 10.7 ms at 48 kHz). The dry signal is delayed by the same amount, even at
 Mix zero; the host compensates other tracks. The reported tail includes the
-300 ms FIR, the partition delay and a conservative 50 ms tone-filter allowance.
+selected FIR's duration, the partition delay and a conservative 50 ms tone-filter allowance.
 Reset clears all spectra, overlap, filters and delay history.
 
 Preparation builds the canonical 48 kHz response, integrates coefficient bins to
@@ -26,9 +30,8 @@ allocation or locking. The response and controls are deterministic. Stable stock
 identifier `convolution` and ordinary plugin state preserve automation, saved
 controls and history with no project format change. Existing stock IDs remain.
 
-This first increment has one built-in response. User impulse-response file import,
-IR selection, true-stereo cross-channel responses and longer room libraries remain
-future work. The response itself is fixed; Tone does not change its decay length.
+Tone filters the wet signal. True-stereo cross-channel responses and longer room
+libraries remain future work.
 
 The DSP can also prepare an in-memory response while processing is stopped
 (claim #273). It accepts up to one second of finite coefficients in [-1, 1]
@@ -38,8 +41,7 @@ device rate and rejects invalid data before replacing the current kernel.
 The stock effect can persist these coefficients in its existing plugin state
 (claim #276). The host restores the state before preparing the kernel, so no
 external file is needed at project reopen. Chamber-only legacy state or an
-invalid embedded response prepares the chamber. File decoding and an editor
-control are needed to let users select a custom response.
+invalid embedded response prepares the chamber.
 
 ## Manual acceptance (not yet run)
 
