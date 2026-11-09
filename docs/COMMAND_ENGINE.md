@@ -627,6 +627,23 @@ drags and double-click, the Loop button and L / Shift+L run these commands with 
 "Loop off" name the toggle). A refusal shows as a message. Sections and chords still set the loop through their own
 edits.
 
+## Song section and chord commands
+
+`AddSongSection {start, end, name, colour}`, `EditSongSection {section, start, end, name, colour}`, `RemoveSongSection
+{section}`, `AddSongChord {start, end, root, quality}`, `EditSongChord {chord, start, end, root, quality}` and
+`RemoveSongChord {chord}` edit the Song's section and chord strips. They share the marker and loop reducer in
+`SongMarkerCommands.h`. A section or chord is named by its id, like a marker, and an add carries its new id, so Preview and
+execute agree; a script-read add gets a fresh one. A range runs from `start` to `end` in ticks (end exclusive). `root` is 0
+(C) to 11 (B) and `quality` is a chord type from 0 to 8. An edit sets the whole section or chord, so an unchanged one
+changes nothing and keeps Redo.
+
+Refused: a range outside the song or shorter than one step, a range that overlaps another section (or chord), a section
+with no name or a colour outside 0-7, a bad root or quality, an id that is not in the song (or, for an add, is already),
+and a 65th section or 257th chord. Sections and chords do not change what plays, so they are not refused while recording.
+
+The section and chord strips' Add, Edit (rename, recolour, resize, root and quality) and Delete menu items run these
+commands with their old Undo names. Their Loop items run `SetSongLoop` named "Loop Song section" and "Loop Song chord".
+
 ## Song clip commands
 
 `MoveSongClips {clips, ticks, lanes}`, `TrimSongClipStart {clip, tick}`, `TrimSongClipEnd {clip, tick}`, `SlipSongClips
@@ -657,7 +674,7 @@ change playback is refused like a tempo edit. A move or trim that clamps to wher
 The Song view's clip drags (move, trim either edge, slip, fade handles), Delete and Cut, arrow-key nudges and lane moves,
 Slip left/right, mute, group and ungroup, fades, fade shapes, crossfade, Remove fades, Normalize (one `SetSongClipGain` per clip,
 as one step), source loop and reverse, Split, Duplicate and Ctrl-drag copies run these commands with their old Undo names.
-Paste (which may bring back a cut placement clip), warp markers, sections and chords still edit the Song directly.
+Paste (which may bring back a cut placement clip) and warp markers still edit the Song directly.
 
 ## Master volume command
 

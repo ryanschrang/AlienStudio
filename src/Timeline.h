@@ -961,12 +961,17 @@ struct Timeline {
         return result;
     }
     std::uint32_t addChord(std::int64_t start, std::int64_t end, int root, ChordType quality) {
-        if (chords.size() >= maxChords || !validChordRoot(root) || !validChordQuality(quality) || start < 0 || start > length()
-            || end < start || end > length() || end - start < ticksPerStep) return 0;
-        for (const auto& c : chords) if (start < c.end && end > c.start) return 0;
-        SongChord value{newId(), start, end, root, quality};
+        const auto id = newId();
+        return addChordWithId(id, start, end, root, quality) ? id : 0;
+    }
+    // A chord or section command carries its new id, so its Preview and the live edit agree.
+    bool addChordWithId(std::uint32_t id, std::int64_t start, std::int64_t end, int root, ChordType quality) {
+        if (id == 0 || findChord(id) != nullptr || chords.size() >= maxChords || !validChordRoot(root) || !validChordQuality(quality) || start < 0 || start > length()
+            || end < start || end > length() || end - start < ticksPerStep) return false;
+        for (const auto& c : chords) if (start < c.end && end > c.start) return false;
+        SongChord value{id, start, end, root, quality};
         chords.insert(std::lower_bound(chords.begin(), chords.end(), start, [](const SongChord& c, auto tick) { return c.start < tick; }), value);
-        return value.id;
+        return true;
     }
     bool setChord(SongChord value) {
         if (!findChord(value.id)) return false;
@@ -981,14 +986,18 @@ struct Timeline {
         return nullptr;
     }
     std::uint32_t addSection(std::int64_t start, std::int64_t end, std::string name, std::uint8_t colour = 0) {
+        const auto id = newId();
+        return addSectionWithId(id, start, end, std::move(name), colour) ? id : 0;
+    }
+    bool addSectionWithId(std::uint32_t id, std::int64_t start, std::int64_t end, std::string name, std::uint8_t colour = 0) {
         name = cleanName(std::move(name));
-        if (sections.size() >= maxSections || name.empty() || start < 0 || start > length() || end > length()
-            || end < start || end - start < ticksPerStep) return 0;
-        for (const auto& s : sections) if (start < s.end && end > s.start) return 0;
-        Section made{newId(), start, end, std::move(name), colour};
+        if (id == 0 || findSection(id) != nullptr || sections.size() >= maxSections || name.empty() || start < 0 || start > length() || end > length()
+            || end < start || end - start < ticksPerStep) return false;
+        for (const auto& s : sections) if (start < s.end && end > s.start) return false;
+        Section made{id, start, end, std::move(name), colour};
         sections.insert(std::lower_bound(sections.begin(), sections.end(), start,
             [](const Section& s, auto tick) { return s.start < tick; }), made);
-        return made.id;
+        return true;
     }
     bool setSection(Section value) {
         if (!findSection(value.id)) return false;
