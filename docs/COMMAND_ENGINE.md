@@ -652,7 +652,14 @@ commands with their old Undo names. Their Loop items run `SetSongLoop` named "Lo
 `SetSongClipFadeShape {clips, edge, curve}`, `RemoveSongClipFades {clips}`, `CrossfadeSongClips {left, right, ticks}`,
 `GroupSongClips {clips}`, `UngroupSongClips {clips}`, `LoopSongClips {clips, looped}` and `ReverseSongClips {clips,
 reversed}` edit the clips placed in the Song. They share a pure reducer in `SongClipCommands.h`, which runs the same
-`Timeline` edit for Preview and execute. None of them creates a clip.
+`Timeline` edit for Preview and execute.
+
+`SplitSongClips {clips, tick}`, `DuplicateSongClips {clips}` and `CopySongClips {clips, ticks, lanes}` make clips: a
+split cuts every listed clip that spans `tick`, a duplicate copies the clips to just after themselves, and a copy puts
+them `ticks` later (earlier when negative) with rack patterns `lanes` lanes down. Copies get groups of their own. New
+clips take the next Song ids. A command Preview draws Song ids from a local copy of the id stream (as it already did
+for track and scene ids), and checks that only ask whether an edit would work hand theirs back, so execute makes the
+same ids Preview showed.
 
 A clip is named by its region id, which lasts while the project is open. In a script `clips` is a list of positive ids.
 `GroupSongClips` carries its new group's id, so Preview and execute agree, and a script-read one gets a fresh one.
@@ -660,13 +667,14 @@ A clip is named by its region id, which lasts while the project is open. In a sc
 
 Refused: an empty clip list, a clip that is not in the song, gain outside 0-64, a negative fade, an unknown fade shape, a
 crossfade whose clips do not touch on one track, grouping fewer than two clips, a fade or audio edit on rack patterns only,
+a split where no listed clip spans the tick, a copy that would start before the song,
 an edit that would leave the Song invalid, and any clip on a frozen track. While warped audio records, an edit that would
 change playback is refused like a tempo edit. A move or trim that clamps to where the clip already is changes nothing.
 
 The Song view's clip drags (move, trim either edge, slip, fade handles), Delete and Cut, arrow-key nudges and lane moves,
 Slip left/right, mute, group and ungroup, fades, fade shapes, crossfade, Remove fades, Normalize (one `SetSongClipGain` per clip,
-as one step), source loop and reverse run these commands with their old Undo names. Copy-drags, Paste, Duplicate, Split,
-warp markers still edit the Song directly.
+as one step), source loop and reverse, Split, Duplicate and Ctrl-drag copies run these commands with their old Undo names.
+Paste (which may bring back a cut placement clip) and warp markers still edit the Song directly.
 
 ## Master volume command
 
