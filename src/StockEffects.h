@@ -863,7 +863,44 @@ public:
         tone = parameter(convolution::tone); output = parameter(convolution::output); mix = parameter(convolution::mix);
     }
     void prepareToPlay(double sampleRate, int) override {
-        engine.prepare(sampleRate); setLatencySamples(dsp::ConvolutionReverb::latency); prepared = true;
+        if (!engine.prepareCustom(sampleRate, responseRate, responseLeft, responseRight))
+            engine.prepare(sampleRate);
+        setLatencySamples(dsp::ConvolutionReverb::latency); prepared = true;
+    }
+    // State and preparation run on the host control path. Audio processing only
+    // reads the prepared engine, so staging a response never changes a live kernel.
+    bool setResponseForNextPrepare(double sourceRate, std::vector<float> left, std::vector<float> right = {}) {
+        if (!dsp::ConvolutionReverb::validCustomResponse(sourceRate, left, right)) return false;
+        responseRate = sourceRate;
+        responseLeft = std::move(left);
+        responseRight = std::move(right);
+        return true;
+    }
+    void getStateInformation(juce::MemoryBlock& destination) override {
+        Effect::getStateInformation(destination);
+        if (responseLeft.empty()) return;
+        if (auto xml = getXmlFromBinary(destination.getData(), static_cast<int>(destination.getSize()))) {
+            juce::MemoryOutputStream data;
+            data.writeDouble(responseRate);
+            data.writeInt(static_cast<int>(responseLeft.size()));
+            data.writeInt(responseRight.empty() ? 1 : 2);
+            for (float sample : responseLeft) data.writeFloat(sample);
+            for (float sample : responseRight) data.writeFloat(sample);
+            xml->createNewChildElement(responseTag)->addTextElement(
+                juce::Base64::toBase64(data.getData(), data.getDataSize()));
+            copyXmlToBinary(*xml, destination);
+        }
+    }
+    void setStateInformation(const void* data, int size) override {
+        const auto xml = getXmlFromBinary(data, size);
+        if (!xml || !xml->hasTagName(parameters.state.getType())) return;
+        const auto* response = xml->getChildByName(responseTag);
+        responseLeft.clear();
+        responseRight.clear();
+        responseRate = 0;
+        if (response) restoreResponse(response->getAllSubText());
+        xml->deleteAllChildElementsWithTagName(responseTag);
+        parameters.replaceState(juce::ValueTree::fromXml(*xml));
     }
     void reset() override { engine.reset(); }
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
@@ -872,6 +909,25 @@ public:
     }
     double getTailLengthSeconds() const override { return engine.tailSeconds(); }
 private:
+    static constexpr auto responseTag = "ConvolutionResponseV1";
+    void restoreResponse(const juce::String& encoded) {
+        constexpr int headerBytes = 16;
+        constexpr int maxFrames = dsp::ConvolutionReverb::maxSourceRate *
+            dsp::ConvolutionReverb::maxCustomResponseSeconds;
+        constexpr int maxBytes = headerBytes + 2 * maxFrames * sizeof(float);
+        if (encoded.length() > 4 * ((maxBytes + 2) / 3)) return;
+        juce::MemoryOutputStream decoded;
+        if (!juce::Base64::convertFromBase64(decoded, encoded) || decoded.getDataSize() < headerBytes) return;
+        juce::MemoryInputStream input(decoded.getData(), decoded.getDataSize(), false);
+        const double sourceRate = input.readDouble();
+        const int frames = input.readInt(), channels = input.readInt();
+        if (frames <= 0 || frames > maxFrames || (channels != 1 && channels != 2) ||
+            decoded.getDataSize() != headerBytes + frames * channels * sizeof(float)) return;
+        std::vector<float> left(frames), right(channels == 2 ? frames : 0);
+        for (auto& sample : left) sample = input.readFloat();
+        for (auto& sample : right) sample = input.readFloat();
+        setResponseForNextPrepare(sourceRate, std::move(left), std::move(right));
+    }
     juce::AudioParameterFloat* parameter(const char* id) { return static_cast<juce::AudioParameterFloat*>(parameters.getParameter(id)); }
     static Layout layout() {
         Layout l;
@@ -881,6 +937,8 @@ private:
         return l;
     }
     juce::AudioParameterFloat *tone{}, *output{}, *mix{};
+    double responseRate{};
+    std::vector<float> responseLeft, responseRight;
     dsp::ConvolutionReverb engine;
 };
 

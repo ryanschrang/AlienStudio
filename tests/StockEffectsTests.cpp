@@ -888,6 +888,59 @@ static void convolutionHostTests() {
     checkNear(runtime->tracks[0].getSample(0, 0), .5, 1e-7, "convolution dry impulse arrives after one partition");
     checkNear(runtime->tracks[1].getSample(0, 0), .5, 1e-7, "host compensation aligns the other track exactly");
 }
+
+static void convolutionResponseStateTests() {
+    auto effect = make("convolution");
+    auto& convolution = static_cast<stock::ConvolutionEffect&>(*effect);
+    juce::MemoryBlock chamber;
+    effect->getStateInformation(chamber);
+    setParam(*effect, stock::convolution::mix, 1);
+    check(convolution.setResponseForNextPrepare(rate, {.5f, .25f}, {-.25f, .125f}),
+          "valid stereo impulse can be staged");
+    check(!convolution.setResponseForNextPrepare(rate, {2.f}), "invalid staging preserves saved response");
+    check(effect->getTailLengthSeconds() > .3, "staging does not replace the prepared chamber");
+
+    juce::MemoryBlock custom;
+    effect->getStateInformation(custom);
+    SessionProjectData project, loaded;
+    project.plugins[0].effects = {stockState("convolution")};
+    project.plugins[0].effects[0].stateBase64 = custom.toBase64Encoding();
+    juce::String error;
+    if (!parseSessionProject(serializeSessionProject(project), loaded, error)) {
+        check(false, "project accepts embedded convolution response");
+        return;
+    }
+    auto runtime = std::make_unique<PluginRuntime>();
+    runtime->prepare(rate);
+    PluginHost host(*runtime);
+    const std::vector<PluginRackState> racks{loaded.plugins[0]};
+    if (host.restore(racks, loaded.masterPlugins, rate).isNotEmpty()) {
+        check(false, "host restores a project with an embedded response");
+        return;
+    }
+    auto& restored = *runtime->racks[0].effects[0].processor;
+    checkNear(restored.getTailLengthSeconds(), .05 + (512 + 2) / rate, 1e-12, "host prepares the restored custom tail");
+    check(restored.getLatencySamples() == dsp::ConvolutionReverb::latency, "custom response preserves host latency");
+    std::vector<float> left(1024), right(1024);
+    left[0] = right[0] = 1;
+    process(restored, left, right);
+    const double smoothing = 1 - std::exp(-2 * dsp::pi * 10000 / rate);
+    checkNear(left[512], .5 * smoothing, 1e-7, "embedded left coefficient and full wet mix survive project restore");
+    checkNear(right[512], -.25 * smoothing, 1e-7, "embedded right coefficient survives project restore");
+
+    auto corrupt = juce::AudioProcessor::getXmlFromBinary(custom.getData(), static_cast<int>(custom.getSize()));
+    corrupt->deleteAllChildElementsWithTagName("ConvolutionResponseV1");
+    corrupt->createNewChildElement("ConvolutionResponseV1")->addTextElement("AAAA");
+    juce::MemoryBlock damaged;
+    juce::AudioProcessor::copyXmlToBinary(*corrupt, damaged);
+    for (const auto* state : {&damaged, &chamber}) {
+        restored.setStateInformation(state->getData(), static_cast<int>(state->getSize()));
+        restored.prepareToPlay(rate, 512);
+        check(restored.getTailLengthSeconds() > .3, "malformed or legacy state prepares the chamber");
+        restored.setStateInformation(custom.getData(), static_cast<int>(custom.getSize()));
+        restored.prepareToPlay(rate, 512);
+    }
+}
 static void multibandParameterTests() {
     auto effect = make("multiband");
     check(effect->getLatencySamples() == 0 && effect->getTailLengthSeconds() == dsp::MultibandCompressor::tailSeconds, "multiband reports zero latency and bounded filter tail");
@@ -910,6 +963,7 @@ static void deesserParameterTests() {
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     convolutionHostTests();
+    convolutionResponseStateTests();
     multibandParameterTests();
     flangerParameterTests();
     deesserParameterTests();
