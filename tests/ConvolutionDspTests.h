@@ -1,6 +1,42 @@
 #pragma once
 #include "ConvolutionReverb.h"
+static void customConvolutionTests() {
+    using C = alien::dsp::ConvolutionReverb;
+    C engine;
+    const std::array<float, 3> left{.5f, -.25f, .75f}, right{-.25f, .5f, .125f};
+    check(engine.prepareCustom(24000, 48000, left, right), "custom stereo response prepares");
+    check(engine.impulseResponse(0) == std::vector<double>{.25, .75} &&
+          engine.impulseResponse(1) == std::vector<double>{.25, .125},
+          "downsampling integrates source bins including the last partial bin");
+    near(engine.tailSeconds(), 3.0 / 48000 + .05 + C::latency / 24000.0, 1e-12, "custom response reports its own tail");
+
+    std::vector<float> l(C::latency + 3), r(l.size());
+    l[0] = r[0] = 1;
+    engine.process(l.data(), r.data(), C::latency, {10000, 0, 1});
+    const std::array<float, 1> nonfinite{std::numeric_limits<float>::quiet_NaN()};
+    const std::vector<float> oversized(48001);
+    check(!engine.prepareCustom(48000, 48000, {}) &&
+          !engine.prepareCustom(48000, 48000, left, nonfinite) &&
+          !engine.prepareCustom(48000, 48000, nonfinite) &&
+          !engine.prepareCustom(48000, 48000, oversized) &&
+          !engine.prepareCustom(48000, 7999, left), "invalid custom responses are rejected");
+    engine.process(l.data() + C::latency, r.data() + C::latency, 3, {10000, 0, 1});
+    const double pole = std::exp(-2 * pi * 10000 / 24000);
+    near(l[C::latency], (1 - pole) * .25, 1e-7, "rejected response preserves pending wet output");
+    near(l[C::latency + 1], (1 - pole) * (.25 * pole + .75), 1e-7, "left response reaches left output");
+    near(r[C::latency + 1], (1 - pole) * (.25 * pole + .125), 1e-7, "right response reaches right output");
+
+    check(engine.prepareCustom(96000, 48000, left), "custom mono response prepares");
+    const std::vector<double> doubled{.25, .25, -.125, -.125, .375, .375};
+    check(engine.impulseResponse(0) == doubled && engine.impulseResponse(1) == doubled,
+          "upsampling preserves coefficient area and mirrors mono");
+    engine.prepare(48000);
+    check(engine.impulseResponse(0).size() == 14400 && engine.impulseResponse(0) != engine.impulseResponse(1),
+          "ordinary preparation restores the built-in stereo chamber");
+}
+
 static void convolutionTests() {
+    customConvolutionTests();
     using C = alien::dsp::ConvolutionReverb;
     // Sparse direct convolution is independent of the FFT implementation. Hits
     // straddle partitions and run beyond the history ring to test wrap/overlap.

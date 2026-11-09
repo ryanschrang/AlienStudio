@@ -30,6 +30,14 @@ This first increment has one built-in response. User impulse-response file impor
 IR selection, true-stereo cross-channel responses and longer room libraries remain
 future work. The response itself is fixed; Tone does not change its decay length.
 
+The DSP can also prepare an in-memory response while processing is stopped
+(claim #273). It accepts up to one second of finite coefficients in [-1, 1]
+at 8 to 192 kHz, with one channel mirrored to stereo or two equal-length
+channels processed independently. It integrates coefficient bins at the
+device rate and rejects invalid data before replacing the current kernel.
+The stock plugin still selects the chamber. File decoding, an editor control
+and project persistence are needed to expose custom responses.
+
 ## Manual acceptance (not yet run)
 
 - Add it to a track, return, bus and Master FX. Listen to drums, vocals and a
