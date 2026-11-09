@@ -26,11 +26,18 @@ so future consumers can use the same quality definitions as the Piano Roll.
 The document owns this context; future audio consumers must compile it into their
 immutable playback snapshots rather than read a changing document on the callback.
 
-This increment describes harmony. It does **not** play a chord, retune existing
-MIDI/audio, change the project scale, detect harmony or generate accompaniment.
-Automatic consumer adoption, chord-command wrappers and section-driven clip
-rearrangement remain follow-ups. Annotation-only changes are excluded from
-playback equality. Choosing Loop this chord explicitly changes the playback loop.
+Use **Create MIDI clip on** in a chord's menu to choose a Song track and turn the
+chord into an editable MIDI clip. The clip uses the existing Piano Roll voicing
+rooted at MIDI 60 plus the pitch class, with notes sustained for the exact chord
+range. The clip belongs to the Song and its notes are independent of later chord
+edits. One Undo removes the clip.
+
+Creation requires an empty range on the destination track and supports up to
+256 sixteenth notes. Recording, busy or frozen targets refuse the operation.
+The menu resolves the chosen track by identity, including after track reorder.
+Automatic accompaniment, chord-command wrappers and section-driven clip
+rearrangement remain follow-ups. Annotation edits are excluded from playback
+equality. Choosing Loop this chord explicitly changes the playback loop.
 
 Format 36 saves required `timeline.chords` objects with integer start/exclusive end,
 root and quality. Runtime identities regenerate on load like sections/markers.
