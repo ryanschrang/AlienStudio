@@ -1,5 +1,5 @@
 #pragma once
-// Song clip edits (move, trim, slip, delete, mute, gain, fades, crossfades, groups, loop and reverse).
+// Song clip edits (move, trim, slip, delete, mute, gain, fades, crossfades, groups, loop, reverse, split, duplicate, copy).
 // TimelineViewTests drives the real drags, keys and menus that now run them.
 static void songClipCommandChecks() {
     namespace tl = alien::timeline;
@@ -97,6 +97,10 @@ static void songClipCommandChecks() {
         says(cmd::CrossfadeSongClips{b, a, quarter}, "touching");
         says(cmd::GroupSongClips{{a}}, "two or more");
         says(cmd::GroupSongClips{{a, x}, 0}, "already");
+        says(cmd::SplitSongClips{{a}, 40 * bar}, "inside a clip");
+        says(cmd::SplitSongClips{{a}, at(a)->start}, "inside a clip");
+        says(cmd::CopySongClips{{a}, -bar - 1}, "does not fit");
+        says(cmd::DuplicateSongClips{{}}, "at least one");
         require(alien::sameContent(before, c.document()) && historyOf(c) == history, "refusals change nothing");
 
         c.setExternalBusy(true);
@@ -111,6 +115,27 @@ static void songClipCommandChecks() {
         require(alien::song_clip::refusal(frozen, *cmd::songClipEdit(cmd::MoveSongClips{{a}, bar})).isEmpty(), "other tracks' clips are not");
     }
 
+    // Split, duplicate and copy make clips. Their new ids are the same in Preview and execute (step checks the
+    // whole Song, ids included), and a Preview, or a check that is refused, hands none of them out.
+    {
+        const auto count = song.regions.size();
+        const auto onRow = [&](int row, std::int64_t start) {
+            return std::any_of(song.regions.begin(), song.regions.end(), [&](const tl::Region& r) { return r.row == row && r.start == start; });
+        };
+        const auto xStart = at(x)->start;
+        step(cmd::SplitSongClips{{a}, quarter}, "Split", [&] { return song.regions.size() == count + 1 && at(a)->end() == quarter && onRow(0, quarter); }, "SplitSongClips");
+        step(cmd::DuplicateSongClips{{b}}, "Duplicate", [&] { return song.regions.size() == count + 2 && onRow(0, 2 * bar); }, "DuplicateSongClips");
+        step(cmd::CopySongClips{{x}, 4 * bar}, "Copy clips", [&] { return song.regions.size() == count + 3 && onRow(1, xStart + 4 * bar) && at(x)->start == xStart; },
+             "CopySongClips");
+        const cmd::Command again = cmd::DuplicateSongClips{{x}};
+        const auto first = commands.preview(again);
+        (void) commands.preview(cmd::SplitSongClips{{x}, 40 * bar});   // refused
+        const auto second = commands.preview(again);
+        require(first.ok && second.ok && alien::sameContent(first.after, second.after), "a Preview hands out no clip ids");
+        require(commands.execute(again).changed && alien::sameContent(first.after, c.document()), "so execute makes the clips Preview showed, with the same ids");
+        require(c.undo() && c.undo() && c.undo() && c.undo() && song.regions.size() == count, "Undo takes the made clips away");
+    }
+
     // Script form: clip ids round-trip; a read GroupSongClips gets a fresh group id.
     juce::String error;
     for (const auto& command : std::vector<cmd::Command>{
@@ -118,7 +143,8 @@ static void songClipCommandChecks() {
              cmd::DeleteSongClips{{3, 4}}, cmd::SetSongClipsMuted{{3}, true}, cmd::SetSongClipGain{{3}, 0.5}, cmd::SetSongClipFades{{3}, 120, 240},
              cmd::SetSongClipFadeIn{3, 60}, cmd::SetSongClipFadeOut{3, 90}, cmd::SetSongClipFadeShape{{3}, tl::FadeEdge::crossfade, tl::FadeCurve::fast},
              cmd::RemoveSongClipFades{{3}}, cmd::CrossfadeSongClips{3, 4, 480}, cmd::GroupSongClips{{3, 4}}, cmd::UngroupSongClips{{3}},
-             cmd::LoopSongClips{{3}, true}, cmd::ReverseSongClips{{4}, false}}) {
+             cmd::LoopSongClips{{3}, true}, cmd::ReverseSongClips{{4}, false}, cmd::SplitSongClips{{3, 4}, 480}, cmd::DuplicateSongClips{{3}},
+             cmd::CopySongClips{{3}, -960, 2}}) {
         error.clear();
         const auto parsed = cmd::parse(cmd::name(command), juce::JSON::parse(juce::JSON::toString(cmd::arguments(command))), error);
         require(parsed.has_value() && parsed->index() == command.index() && juce::JSON::toString(cmd::arguments(*parsed)) == juce::JSON::toString(cmd::arguments(command)),

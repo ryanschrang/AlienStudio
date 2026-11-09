@@ -33,6 +33,7 @@ public:
     PreviewScope& operator=(const PreviewScope&) = delete;
 private:
     std::uint32_t* previous; std::uint32_t local;
+    timeline::id_stream::Scope songIds;   // Song regions, groups and markers too
 };
 }
 inline std::uint32_t newObjectId() {
