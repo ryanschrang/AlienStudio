@@ -909,11 +909,13 @@ struct Timeline {
         return changed && adopt(std::move(next));
     }
     // Ties the listed regions (and everything already grouped with them) together.
-    bool group(const Ids& ids) {
+    bool group(const Ids& ids) { return groupAs(ids, newId()); }
+    // The same, under a group id the caller chose (a command carries it, so Preview and execute agree).
+    bool groupAs(const Ids& ids, std::uint32_t g) {
+        if (g == 0) return false;
         Timeline next = *this;
         const Ids all = next.expandGroups(ids);
         if (all.size() < 2) return false;
-        const auto g = newId();
         for (auto& r : next.regions) if (contains(all, r.id)) r.group = g;
         return adopt(std::move(next));
     }

@@ -10,6 +10,7 @@
 #include "DeviceCommands.h"
 #include "TempoCommands.h"
 #include "SongMarkerCommands.h"
+#include "SongClipCommands.h"
 #include "RackChannelCommands.h"
 #include "RackPatternCommands.h"
 #include "ViewModes.h"
@@ -1225,6 +1226,20 @@ public:
     juce::String songEditRefusal(const song_edit::Edit& e) const {
         if(song_edit::changesLoop(e) && tempoLocked() && !song_edit::changesNothing(doc,e))return "Stop recording before changing the loop while the song has warped audio.";
         return {};
+    }
+    // Why the project's state refuses a Song clip command: while warped audio records, nothing that plays may change.
+    juce::String songClipRefusal(const song_clip::Edit& e) const {
+        if(!isRecording() && engine.recording.phase.load()==RecordControls::idle)return {};
+        const auto o=song_clip::outcome(doc,e);
+        if(!o.next)return {};
+        const bool warp=hasWarpedAudio() || std::any_of(o.next->regions.begin(),o.next->regions.end(),[](const auto& r){return !r.warp.empty();});
+        if(warp && !o.next->playbackEquals(doc.timeline))return "Stop recording before changing Song clips while the song has warped audio.";
+        return {};
+    }
+    // Live side of the Song clip commands. CommandEngine owns the history entry, and its commit plays the result.
+    bool applySongClipCommand(const song_clip::Edit& e) {
+        if(busy || songClipRefusal(e).isNotEmpty())return false;
+        return song_clip::apply(doc,e).isEmpty();
     }
     // Live side of the Song marker and loop commands. CommandEngine owns the history entry, and its commit plays the new loop.
     bool applySongCommand(const song_edit::Edit& e) {

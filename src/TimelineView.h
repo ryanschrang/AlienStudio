@@ -503,7 +503,7 @@ public:
         if (selectedMarker != 0 && selected.empty()) return removeMarker(selectedMarker);
         if (selected.empty()) return false;
         const auto ids = selected;
-        const bool done = edit(ids.size() == 1 ? "Delete clip" : "Delete clips", [&](timeline::Timeline& t) { return t.remove(ids); });
+        const bool done = clipCommand(command::DeleteSongClips{ids}, ids.size() == 1 ? "Delete clip" : "Delete clips").changed;
         if (done) { selected.clear(); stateChanged(); }
         return done;
     }
@@ -519,7 +519,7 @@ public:
         // Remembered before the edit: cutting the last region of a placement clip drops the clip.
         const auto before = std::make_pair(clipboard(), clipboardOrigin());
         remember(committed().copy(ids));
-        const bool done = edit(ids.size() == 1 ? "Cut clip" : "Cut clips", [&](timeline::Timeline& t) { return t.remove(ids); });
+        const bool done = clipCommand(command::DeleteSongClips{ids}, ids.size() == 1 ? "Cut clip" : "Cut clips").changed;
         if (done) { selected.clear(); stateChanged(); }
         else { clipboard() = before.first; clipboardOrigin() = before.second; }
         return done;
@@ -562,13 +562,15 @@ public:
     }
     bool groupSelection() {
         const auto ids = selected;
-        const bool done = edit("Group clips", [&](timeline::Timeline& t) { return t.group(ids); });
-        if (done) { selected = committed().expandGroups(ids); stateChanged(); } else say("Select two or more clips to group them.");
+        if (ids.empty()) { say("Select two or more clips to group them."); return false; }
+        const bool done = clipCommand(command::GroupSongClips{ids}).changed;
+        if (done) { selected = committed().expandGroups(ids); stateChanged(); }
         return done;
     }
     bool ungroupSelection() {
         const auto ids = selected;
-        const bool done = edit("Ungroup clips", [&](timeline::Timeline& t) { return t.ungroup(ids); });
+        if (ids.empty()) return false;
+        const bool done = clipCommand(command::UngroupSongClips{ids}).changed;
         if (done) stateChanged();
         return done;
     }
@@ -589,12 +591,12 @@ public:
         const auto ids = selected;
         bool allMuted = true;
         for (const auto id : ids) { const auto* r = committed().find(id); allMuted = allMuted && r != nullptr && r->muted; }
-        return edit(allMuted ? "Unmute clips" : "Mute clips", [&](timeline::Timeline& t) { return t.setMuted(ids, !allMuted); });
+        return clipCommand(command::SetSongClipsMuted{ids, !allMuted}, allMuted ? "Unmute clips" : "Mute clips").changed;
     }
     bool slipSelection(std::int64_t ticks) {
         if (selected.empty()) return false;
         const auto ids = selected;
-        return edit(ticks < 0 ? "Slip clips left" : "Slip clips right", [=](timeline::Timeline& t) { return t.slip(ids, ticks); }, "timeline-slip");
+        return clipCommand(command::SlipSongClips{ids, ticks}, ticks < 0 ? "Slip clips left" : "Slip clips right", "timeline-slip").changed;
     }
     bool selectedStreamedAudio() const {
         const auto& d = controller.document();
@@ -609,17 +611,17 @@ public:
         if (selected.empty()) return false;
         if (selectedStreamedAudio()) { say("Source looping for streamed clips is not available yet."); return false; }
         bool all = true; for (const auto id : selected) { const auto* r = committed().find(id); all = all && r != nullptr && r->loopSource; }
-        const auto ids = selected; return edit(all ? "Disable clip loop" : "Loop clip source", [=](timeline::Timeline& t) { return t.setLoopSource(ids, !all); });
+        const auto ids = selected; return clipCommand(command::LoopSongClips{ids, !all}, all ? "Disable clip loop" : "Loop clip source").changed;
     }
     bool toggleReverseSelection() {
         if (selected.empty()) return false;
         if (selectedStreamedAudio()) { say("Reverse for streamed clips is not available yet."); return false; }
         bool all = true; for (const auto id : selected) { const auto* r = committed().find(id); all = all && r != nullptr && r->reversed; }
-        const auto ids = selected; return edit(all ? "Forward clips" : "Reverse clips", [=](timeline::Timeline& t) { return t.setReversed(ids, !all); });
+        const auto ids = selected; return clipCommand(command::ReverseSongClips{ids, !all}, all ? "Forward clips" : "Reverse clips").changed;
     }
     bool fadeSelection() {
         if (selected.empty()) return false; const auto ids = selected;
-        return edit("Fade clips", [=](timeline::Timeline& t) { return t.setFades(ids, timeline::ticksPerBeat, timeline::ticksPerBeat); });
+        return clipCommand(command::SetSongClipFades{ids, timeline::ticksPerBeat, timeline::ticksPerBeat}).changed;
     }
     // Crosses two selected touching clips, or one selected clip with the clip that ends where it starts.
     // The menu id for giving one fade a shape.
@@ -631,7 +633,7 @@ public:
         timeline::Ids ids;
         for (const auto id : selected) if (const auto* r = committed().find(id); r != nullptr && isAudioRegion(*r)) ids.push_back(id);
         if (ids.empty()) { say("Select audio clips to shape their fades."); return false; }
-        const bool done = edit("Fade shape", [=](timeline::Timeline& t) { return t.setFadeCurve(ids, edge, curve); });
+        const bool done = clipCommand(command::SetSongClipFadeShape{ids, edge, curve}).changed;
         if (done) say(juce::String(edge == timeline::FadeEdge::in ? "Fade in" : edge == timeline::FadeEdge::out ? "Fade out" : "Crossfade")
                       + ": " + timeline::fadeCurveLabel(curve) + ".");
         return done;
@@ -645,12 +647,11 @@ public:
         }
         if (a == nullptr || b == nullptr) { say("Select two touching clips on the same track to crossfade."); return false; }
         const auto left = a->id, right = b->id;
-        const bool done = edit("Crossfade clips", [=](timeline::Timeline& t) { return t.crossfade(left, right, timeline::ticksPerBeat); });
-        if (!done) say("Crossfade needs two touching audio clips on the same track."); return done;
+        return clipCommand(command::CrossfadeSongClips{left, right, timeline::ticksPerBeat}).changed;
     }
     bool removeFadesSelection() {
         if (selected.empty()) return false; const auto ids = selected;
-        return edit("Remove fades", [=](timeline::Timeline& t) { return t.clearFades(ids); });
+        return clipCommand(command::RemoveSongClipFades{ids}).changed;
     }
     bool selectionHasFades() const {
         for (const auto id : selected) if (const auto* r = committed().find(id); r != nullptr && (r->fadeIn > 0 || r->fadeOut > 0 || r->crossfade > 0)) return true;
@@ -664,15 +665,16 @@ public:
     }
     bool normalizeSelection() {
         if (selected.empty()) return false;
-        auto next = committed(); bool changed = false;
+        // One SetSongClipGain per clip, as one Undo step.
+        std::vector<command::Command> gains;
         const auto& d = controller.document();
-        for (const auto id : selected) if (const auto* r = next.find(id); r != nullptr && !r->isPattern() && d.isValidCell(r->row, r->source)) {
+        for (const auto id : selected) if (const auto* r = committed().find(id); r != nullptr && !r->isPattern() && d.isValidCell(r->row, r->source)) {
             const auto& clip = d.clip(r->row, r->source); if (clip.audio == nullptr || clip.audio->waveformCount == 0) continue;
             float peak = 0.0f; for (std::size_t i = 0; i < clip.audio->waveformCount; ++i) { const auto& p = clip.audio->waveform[i]; peak = std::max({peak, std::abs(p.leftMin), std::abs(p.leftMax), std::abs(p.rightMin), std::abs(p.rightMax)}); }
-            if (peak > 1.0e-6f) changed = next.setGain({id}, std::min(64.0, 1.0 / static_cast<double>(peak))) || changed;
+            if (peak > 1.0e-6f) gains.push_back(command::SetSongClipGain{{id}, std::min(64.0, 1.0 / static_cast<double>(peak))});
         }
-        if (!changed) { say("Waveform peaks are still loading or the selected clips are silent."); return false; }
-        return edit("Normalize clips", [next = std::move(next)](timeline::Timeline& t) mutable { t = std::move(next); return true; });
+        if (gains.empty()) { say("Waveform peaks are still loading or the selected clips are silent."); return false; }
+        return clipCommands(gains, "Normalize clips").changed;
     }
     // The loop and markers are commands (SetSongLoop and the marker commands); a refusal is said.
     bool toggleLoop() {
@@ -719,6 +721,18 @@ public:
     }
     // Song edits that are commands: tempo, time signature, markers and the loop. A refusal is said here;
     // the caller says why nothing changed. `undoLabel` replaces the command's own Undo name.
+    // The Song clip edits are commands too; a refusal is said. Several run as one Undo step named `undoLabel`.
+    command::Result clipCommands(const std::vector<command::Command>& changes, const juce::String& undoLabel, const juce::String& key = {}) {
+        if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return {}; }
+        command::CommandEngine commands(controller);
+        const auto result = commands.batch(changes, undoLabel, key);
+        if (!result.ok) say(result.error);
+        else if (result.changed) afterEdit();
+        return result;
+    }
+    command::Result clipCommand(const command::Command& change, const juce::String& undoLabel = {}, const juce::String& key = {}) {
+        return clipCommands({change}, undoLabel.isNotEmpty() ? undoLabel : command::label(change), key);
+    }
     command::Result songCommand(const command::Command& change, const juce::String& undoLabel = {}) {
         if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return {}; }
         command::CommandEngine commands(controller);
@@ -791,13 +805,12 @@ public:
         const auto step = (bar ? committed().meterMap().barAt(static_cast<double>(from)).meter.barTicks() : gridTicks()) * direction;
         if (selected.empty()) { setCursor(cursor + step); return true; }
         const auto ids = selected;
-        return edit("Nudge clips", [&](timeline::Timeline& t) { return t.move(ids, step); }, "timeline-nudge");
+        return clipCommand(command::MoveSongClips{ids, step}, "Nudge clips", "timeline-nudge").changed;
     }
     bool moveSelectionLanes(int direction) {
         if (selected.empty()) { moveFocus(direction); return true; }
         const auto ids = selected;
-        const bool done = edit("Move to another lane", [&](timeline::Timeline& t) { return t.move(ids, 0, direction); });
-        return done;
+        return clipCommand(command::MoveSongClips{ids, 0, direction}, "Move to another lane").changed;
     }
     void moveFocus(int direction) {
         const int d = std::clamp(displayRowOf(focus) + direction, 0, displayRowCount() - 1);
@@ -1332,6 +1345,7 @@ public:
             const auto ids = drag.ids;
             drag.label = ids.size() == 1 ? "Slip audio clip" : "Slip audio clips";
             drag.apply = [=](timeline::Timeline& t) { return t.slip(ids, delta); };
+            drag.change = command::SlipSongClips{ids, delta};
             updatePreview(); break;
         }
         case DragKind::move: case DragKind::copy: {
@@ -1344,6 +1358,7 @@ public:
             if (drag.kind == DragKind::move) {
                 drag.label = ids.size() == 1 ? "Move clip" : "Move clips";
                 drag.apply = [=](timeline::Timeline& t) { return t.move(ids, delta, rows); };
+                drag.change = command::MoveSongClips{ids, delta, rows};
             } else {
                 const auto clip = drag.base->copy(ids);
                 std::int64_t first = timeline::maxLength;
@@ -1363,8 +1378,8 @@ public:
             const auto id = drag.grabbed;
             const auto edgeNow = snapTick(tickNow + drag.grabOffset, bypass);
             drag.label = drag.kind == DragKind::trimStart ? "Trim clip start" : "Resize clip";
-            if (drag.kind == DragKind::trimStart) drag.apply = [=](timeline::Timeline& t) { return t.trimStart(id, edgeNow); };
-            else drag.apply = [=](timeline::Timeline& t) { return t.trimEnd(id, edgeNow); };
+            if (drag.kind == DragKind::trimStart) { drag.apply = [=](timeline::Timeline& t) { return t.trimStart(id, edgeNow); }; drag.change = command::TrimSongClipStart{id, edgeNow}; }
+            else { drag.apply = [=](timeline::Timeline& t) { return t.trimEnd(id, edgeNow); }; drag.change = command::TrimSongClipEnd{id, edgeNow}; }
             updatePreview(); break;
         }
         case DragKind::fadeIn: case DragKind::fadeOut: {
@@ -1376,10 +1391,12 @@ public:
                 const auto ticks = at - r->start;
                 drag.label = r->crossfade > 0 ? "Crossfade" : "Fade in";
                 drag.apply = [=](timeline::Timeline& t) { return t.setFadeIn(id, ticks); };
+                drag.change = command::SetSongClipFadeIn{id, ticks};
             } else {
                 const auto ticks = r->end() - at;
                 drag.label = "Fade out";
                 drag.apply = [=](timeline::Timeline& t) { return t.setFadeOut(id, ticks); };
+                drag.change = command::SetSongClipFadeOut{id, ticks};
             }
             updatePreview(); break;
         }
@@ -1453,9 +1470,12 @@ public:
         case DragKind::move: case DragKind::copy: case DragKind::slip: case DragKind::trimStart: case DragKind::trimEnd:
         case DragKind::warp: case DragKind::fadeIn: case DragKind::fadeOut:
             if (active && finished.apply) {
-                const bool done = edit(finished.label, finished.apply);
+                // Clip drags run their command; copies and warp markers still edit the Song directly.
+                bool done = false, said = false;
+                if (finished.change) { const auto r = clipCommand(*finished.change, finished.label); done = r.changed; said = !r.ok; }
+                else done = edit(finished.label, finished.apply);
                 if (done && kind == DragKind::copy && finished.created) { selected = *finished.created; stateChanged(); }
-                if (!done && hadPreview && !controller.isBusy()) say("That does not fit there.");
+                if (!done && !said && hadPreview && !controller.isBusy()) say("That does not fit there.");
             } else if (!active) {
                 if (kind == DragKind::copy && finished.pendingToggle != 0) {
                     // A Ctrl-click adds a clip to the selection, or takes it out if it was in.
@@ -1631,6 +1651,7 @@ private:
         timeline::Ids ids, previousSelection;
         std::optional<timeline::Timeline> base;
         std::function<bool(timeline::Timeline&)> apply;
+        std::optional<command::Command> change;   // a clip drag's command, run on release (`apply` draws its preview)
         std::shared_ptr<timeline::Ids> created;
         juce::String label;
         juce::Rectangle<int> marquee;

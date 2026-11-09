@@ -119,6 +119,9 @@ static void warpEditorChecks() {
         const auto loopEdit=commands.execute(alien::command::SetSongLoop{loop.loopStart,loop.loopEnd,!loop.loopEnabled});
         require(!loopEdit.ok && loopEdit.error.contains("loop") && c.timeline().loopEnabled==loop.loopEnabled,"and the loop, which changes playback too");
         require(commands.execute(alien::command::SetSongLoop{loop.loopStart,loop.loopEnd,loop.loopEnabled}).ok,"an unchanged loop is no edit rather than a refusal");
+        const auto clipEdit=commands.execute(alien::command::SetSongClipsMuted{{id},!c.timeline().find(id)->muted});
+        require(!clipEdit.ok && clipEdit.error.contains("Stop recording") && !c.timeline().find(id)->muted,"and Song clip edits that change playback");
+        require(commands.execute(alien::command::SetSongClipsMuted{{id},false}).ok,"an unchanged clip edit is no edit rather than a refusal");
         c.auditionTempo(111);
         require(rig->engine.bpm.load()==100,"and a drag while recording");
         rig->engine.recording.phase.store(alien::RecordControls::idle);
