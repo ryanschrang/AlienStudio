@@ -15,6 +15,13 @@ that exact loop range as one undoable edit; **Go to section start** only seeks.
 Other section edits each have one Undo/Redo step. Busy edits refuse and stale
 menus/rename dialogs cannot change a replaced project or changed section.
 
+Choose **Create progression MIDI on** from a section's menu to turn its
+overlapping chords into one editable Song clip. Notes stop at the section
+boundaries, and gaps remain silent. The clip spans the full section, uses the
+Piano Roll voicings rooted at MIDI 60 plus each pitch class, and takes one Undo
+to remove. Choose an empty range on a track. Sections longer than 256 sixteenth
+notes exceed the clip limit.
+
 Sections keep musical ticks across tempo and meter changes. They prevent the
 song from being shortened past their ends. Metadata changes do not retime clips
 or affect playback; setting the playback loop remains a separate action. This

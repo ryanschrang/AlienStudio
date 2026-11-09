@@ -1828,20 +1828,28 @@ private:
                 }
             });
         } else if (hit.zone == Zone::sectionStrip) {
-            enum { add = 7001, jump, loop, rename, resize, remove };
+            enum { add = 7001, jump, loop, rename, resize, remove, trackBase = 7100 };
             const auto scope = controller.document().identityScope;
             const auto* found = committed().findSection(hit.section);
             const auto expected = found ? *found : timeline::Section{};
             const auto start = committed().loopStart, end = committed().loopEnd;
-            juce::PopupMenu menu, colours;
+            juce::PopupMenu menu, colours, destinations;
+            std::vector<TrackId> tracks;
+            const auto chords = found ? committed().chordsOverlapping(found->start, found->end) : std::vector<timeline::SongChord>{};
             menu.addItem(add, "Create section from loop", !found);
             if (found) {
                 menu.addItem(jump, "Go to section start"); menu.addItem(loop, "Loop this section");
                 menu.addItem(rename, "Rename section..."); menu.addItem(resize, "Use current loop as section range");
                 for (int c = 0; c < 8; ++c) colours.addColouredItem(cmdColourBase + c, "Colour " + juce::String(c + 1), ui::trackColour(c));
                 menu.addSubMenu("Colour", colours); menu.addItem(remove, "Delete section");
+                for (int row = 0; row < controller.document().trackCount(); ++row) {
+                    tracks.push_back(controller.document().trackId(TrackRole::session, row));
+                    destinations.addItem(trackBase + row, juce::String(row + 1) + ". " + laneName(row),
+                                         !controller.isTrackFrozen(row) && controller.canEditMidiClips());
+                }
+                menu.addSubMenu("Create progression MIDI on", destinations, !chords.empty());
             }
-            launch(std::move(menu), area, [this, scope, expected, start, end](int id) {
+            launch(std::move(menu), area, [this, scope, expected, start, end, chords, tracks = std::move(tracks)](int id) {
                 if (scope != controller.document().identityScope) return;
                 if (id == add) {
                     if (committed().loopStart == start && committed().loopEnd == end) addSectionFromLoop();
@@ -1853,6 +1861,13 @@ private:
                 if (id == jump) setCursor(expected.start);
                 else if (id == loop) loopSection(expected, scope);
                 else if (id == remove) removeSection(expected, scope);
+                else if (id >= trackBase && id - trackBase < static_cast<int>(tracks.size())) {
+                    std::uint32_t regionId = 0;
+                    const auto error = controller.placeSectionMidi(expected, chords, tracks[id - trackBase], scope, regionId);
+                    if (error.isNotEmpty()) { say(error); return; }
+                    afterEdit();
+                    setSelection({regionId});
+                }
                 else if (id == resize && committed().loopStart == start && committed().loopEnd == end) { next.start = start; next.end = end; updateSection(expected, next, scope); }
                 else if (id >= cmdColourBase && id < cmdColourBase + 8) { next.colour = static_cast<std::uint8_t>(id - cmdColourBase); updateSection(expected, next, scope); }
                 else if (id == rename) askForName("Rename section", juce::String::fromUTF8(expected.name.c_str()), [this, expected, scope](const juce::String& text) {

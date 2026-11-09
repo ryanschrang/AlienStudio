@@ -1,4 +1,51 @@
 #pragma once
+static void sectionProgressionChecks() {
+    Rig rig;
+    require(rig.controller.editTimeline("Set up progression", [](tl::Timeline& t) {
+        return t.addSection(bar, 4 * bar, "Verse")
+            && t.addChord(0, 3 * bar / 2, 0, alien::ChordType::major)
+            && t.addChord(2 * bar, 5 * bar, 7, alien::ChordType::minor7);
+    }), "prepare a section with two clipped chords and a gap");
+    const auto point = juce::Point<int>{juce::roundToInt(rig.c.xForTick(2 * bar)), TimelineCanvas::sectionTop + 8};
+    const auto destination = "1. " + rig.controller.document().tracks[0].name;
+    const auto chooseTrack = [&] {
+        for (const auto& item : rig.menu.items()) {
+            if (item.text == destination && item.enabled) {
+                auto done = rig.menu.done;
+                done(item.id);
+                return;
+            }
+        }
+        require(false, "section menu offers the destination track");
+    };
+    rig.rightClick(point);
+    chooseTrack();
+    require(rig.t().regions.size() == 1, "progression creates one placement");
+    const auto region = rig.t().regions[0];
+    require(region.ownsClip() && region.row == 0 && region.start == bar && region.end() == 4 * bar,
+        "progression placement covers the section");
+    const auto notes = rig.controller.document().contentOf(alien::library::ClipId{region.clip}).pattern;
+    require(notes->count == 7 && notes->notes[0].startStep == 0 && notes->notes[0].lengthSteps == 8
+        && notes->notes[3].startStep == 16 && notes->notes[3].lengthSteps == 32
+        && notes->notes[3].pitch == 67, "progression clips both ends and preserves the gap");
+    rig.rightClick(point);
+    chooseTrack();
+    require(rig.t().regions.size() == 1 && rig.t().regions[0] == region, "occupied destination preserves the placement");
+    rig.controller.undo(); rig.view.refresh();
+    require(rig.t().regions.empty() && rig.t().chords.size() == 2, "one Undo removes only the generated clip");
+    rig.controller.redo(); rig.view.refresh();
+    require(rig.t().regions.size() == 1 && rig.t().regions[0] == region, "Redo restores the progression placement");
+    rig.controller.undo(); rig.view.refresh();
+    rig.rightClick(point);
+    require(rig.controller.editTimeline("Change chord", [](tl::Timeline& t) {
+        auto chord = t.chords[0];
+        chord.root = 2;
+        return t.setChord(chord);
+    }), "change the progression while the menu is open");
+    chooseTrack();
+    require(rig.t().regions.empty(), "stale progression menu refuses changed chord context");
+}
+
 static void sectionViewChecks() {
     Rig rig; auto& c = rig.c;
     const auto at = [&](std::int64_t tick) { return juce::Point<int>{juce::roundToInt(c.xForTick(tick)), TimelineCanvas::sectionTop + 8}; };
