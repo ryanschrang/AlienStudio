@@ -111,28 +111,22 @@ public:
     }
     bool addChordFromLoop(int root, ChordType quality = ChordType::major) {
         const auto start = committed().loopStart, end = committed().loopEnd;
-        const bool done = edit("Add Song chord", [=](timeline::Timeline& t) { return t.addChord(start, end, root, quality) != 0; });
-        if (!done && !controller.isBusy()) say("Chord unchanged: use a non-overlapping loop range inside the song (maximum 256 chords).");
-        return done;
+        return songCommand(command::AddSongChord{start, end, root, quality}).changed;
     }
     bool updateChord(const timeline::SongChord& expected, timeline::SongChord next, std::uint32_t scope) {
         const auto* current = committed().findChord(expected.id);
         if (scope != controller.document().identityScope || !current || *current != expected || next.id != expected.id) return false;
-        const bool done = edit("Edit Song chord", [=](timeline::Timeline& t) { return t.setChord(next); });
-        if (!done && !controller.isBusy() && next != expected) say("Chord unchanged: keep a valid root/quality and non-overlapping range inside the song.");
-        return done;
+        return songCommand(command::EditSongChord{next.id, next.start, next.end, next.root, next.quality}).changed;
     }
     bool removeChord(const timeline::SongChord& expected, std::uint32_t scope) {
         const auto* current = committed().findChord(expected.id);
         if (scope != controller.document().identityScope || !current || *current != expected) return false;
-        return edit("Delete Song chord", [=](timeline::Timeline& t) { return t.removeChord(expected.id); });
+        return songCommand(command::RemoveSongChord{expected.id}).changed;
     }
     bool loopChord(const timeline::SongChord& expected, std::uint32_t scope) {
         const auto* current = committed().findChord(expected.id);
         if (scope != controller.document().identityScope || !current || *current != expected) return false;
-        return edit("Loop Song chord", [=](timeline::Timeline& t) {
-            const bool range = t.setLoop(expected.start, expected.end), enabled = t.setLoopEnabled(true); return range || enabled;
-        });
+        return songCommand(command::SetSongLoop{expected.start, expected.end, true}, "Loop Song chord").changed;
     }
     juce::Rectangle<float> sectionBounds(const timeline::Section& s) const {
         return {static_cast<float>(xForTick(s.start)), static_cast<float>(sectionTop + 2),
@@ -141,28 +135,22 @@ public:
     bool addSectionFromLoop(const juce::String& name = {}) {
         const auto start = committed().loopStart, end = committed().loopEnd;
         const auto text = name.isEmpty() ? "Section " + juce::String(committed().sections.size() + 1) : name;
-        const bool done = edit("Add Song section", [=](timeline::Timeline& t) { return t.addSection(start, end, text.toStdString(), static_cast<std::uint8_t>(t.sections.size() % 8)) != 0; });
-        if (!done) say("Section unchanged: use a non-overlapping loop range inside the song (maximum 64 sections).");
-        return done;
+        return songCommand(command::AddSongSection{start, end, text, static_cast<int>(committed().sections.size() % 8)}).changed;
     }
     bool updateSection(const timeline::Section& expected, timeline::Section next, std::uint32_t scope) {
         const auto* current = committed().findSection(expected.id);
         if (scope != controller.document().identityScope || !current || *current != expected || next.id != expected.id) return false;
-        const bool done = edit("Edit Song section", [=](timeline::Timeline& t) { return t.setSection(next); });
-        if (!done && !controller.isBusy() && next != expected) say("Section unchanged: keep a name and a non-overlapping range inside the song.");
-        return done;
+        return songCommand(command::EditSongSection{next.id, next.start, next.end, juce::String::fromUTF8(next.name.c_str()), next.colour}).changed;
     }
     bool removeSection(const timeline::Section& expected, std::uint32_t scope) {
         const auto* current = committed().findSection(expected.id);
         if (scope != controller.document().identityScope || !current || *current != expected) return false;
-        return edit("Delete Song section", [=](timeline::Timeline& t) { return t.removeSection(expected.id); });
+        return songCommand(command::RemoveSongSection{expected.id}).changed;
     }
     bool loopSection(const timeline::Section& expected, std::uint32_t scope) {
         const auto* current = committed().findSection(expected.id);
         if (scope != controller.document().identityScope || !current || *current != expected) return false;
-        return edit("Loop Song section", [=](timeline::Timeline& t) {
-            const bool range = t.setLoop(expected.start, expected.end), enabled = t.setLoopEnabled(true); return range || enabled;
-        });
+        return songCommand(command::SetSongLoop{expected.start, expected.end, true}, "Loop Song section").changed;
     }
     const timeline::Timeline& shown() const noexcept { return preview ? *preview : controller.timeline(); }
     int trackCount() const noexcept { return controller.document().trackCount(); }
