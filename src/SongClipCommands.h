@@ -2,17 +2,26 @@
 #include "ProjectDocument.h"
 #include <cmath>
 #include <cstdint>
+#include <map>
+#include <memory>
 #include <optional>
 
 // Pure document edits for the clips placed in the Song: placing a Session cell or rack pattern, moving, trimming, slipping, deleting, muting,
 // gain, fades, crossfades, groups, audio source looping and reversing, warp markers, and splitting, duplicating and
-// copying them, and comping or forgetting recorded takes. The controller and command Preview share them, so
+// copying and pasting them, and comping or forgetting recorded takes. The controller and command Preview share them, so
 // what Preview predicts is what the live edit does. New clips take the next Song ids; a Preview hands out the
 // same ones (timeline::id_stream).
 namespace alien::song_clip {
 enum class Kind { move, trimStart, trimEnd, slip, remove, mute, gain, fades, fadeIn, fadeOut, fadeShape, clearFades,
                   crossfade, group, ungroup, loopSource, reverse, split, duplicate, copy, comp, forget,
-                  setWarp, addWarp, moveWarp, removeWarp, place };
+                  setWarp, addWarp, moveWarp, removeWarp, place, paste };
+// What a Song Paste carries: the copied clips, with rows and sources already this project's and starts relative to
+// the earliest, and the placement clips' notes and names as they were copied, so a paste can bring back one that was
+// cut (or edited since) as part of its own edit.
+struct Pasted {
+    timeline::Clipboard clips;
+    std::map<std::uint64_t, std::pair<std::shared_ptr<const PianoRollPattern>, juce::String>> placements;
+};
 struct Edit {
     Kind kind{Kind::move};
     timeline::Ids clips;            // the clips, by region id; trims and fade handles use one, a crossfade left then right
@@ -30,6 +39,7 @@ struct Edit {
     int index{};                    // moveWarp, removeWarp: which marker; addWarp and moveWarp use `ticks` as its source tick
     int row{}, source{};            // place: a track and scene, or a rack lane row and pattern; `ticks` is the start
     std::int64_t length{};          // place: in ticks; 0 is the clip's natural length
+    std::shared_ptr<const Pasted> pasted;   // paste: what is pasted; `ticks` is where and `lanes` moves rack patterns
 };
 
 inline bool audioOnly(Kind k) noexcept {
@@ -38,7 +48,7 @@ inline bool audioOnly(Kind k) noexcept {
 }
 inline bool warpEdit(Kind k) noexcept { return k == Kind::setWarp || k == Kind::addWarp || k == Kind::moveWarp || k == Kind::removeWarp; }
 inline bool oneClip(Kind k) noexcept { return k == Kind::trimStart || k == Kind::trimEnd || k == Kind::fadeIn || k == Kind::fadeOut || warpEdit(k); }
-inline bool creates(Kind k) noexcept { return k == Kind::split || k == Kind::duplicate || k == Kind::copy || k == Kind::comp || k == Kind::place; }
+inline bool creates(Kind k) noexcept { return k == Kind::split || k == Kind::duplicate || k == Kind::copy || k == Kind::comp || k == Kind::place || k == Kind::paste; }
 inline bool takeEdit(Kind k) noexcept { return k == Kind::comp || k == Kind::forget; }
 
 // What a placement of `source` on `row` really places: a Session cell that holds a rack clip places that clip's rack
@@ -80,8 +90,9 @@ inline std::uint32_t placedClip(const ProjectDocument& d, const timeline::Timeli
     return 0;
 }
 
-// Either why the edit is refused, or the Song it leaves (none when it changes nothing).
-struct Outcome { juce::String why; std::optional<timeline::Timeline> next; };
+// Either why the edit is refused, or the Song it leaves (none when it changes nothing), and for a paste that brings
+// back placement clips, the clip library that holds them. A paste also names the clips it pasted.
+struct Outcome { juce::String why; std::optional<timeline::Timeline> next; std::optional<library::Library> library; timeline::Ids made; };
 
 inline Outcome outcome(const ProjectDocument& d, const Edit& e) {
     using namespace timeline;
@@ -152,6 +163,36 @@ inline Outcome outcome(const ProjectDocument& d, const Edit& e) {
         next.tempo = d.bpm;
         const bool done = next.place(r);
         return settle(std::move(next), done);
+    }
+    if (e.kind == Kind::paste) {
+        // A pasted placement clip shares the copied one while that still holds what was copied; otherwise (it was cut,
+        // or edited since) the paste brings back a clip of its own with the copied notes. What it lands on is replaced.
+        if (e.pasted == nullptr || e.pasted->clips.empty()) return refuse("Nothing to paste.");
+        if (e.ticks < 0 || e.ticks >= maxLength) return refuse("Paste inside the song.");
+        auto clip = e.pasted->clips;
+        std::optional<library::Library> made;
+        std::map<std::uint64_t, std::uint64_t> restored;
+        for (auto& r : clip.regions) {
+            if (!r.ownsClip()) continue;
+            const auto copied = e.pasted->placements.find(r.clip);
+            const library::ClipId id{r.clip};
+            if (d.library.clip(id) != nullptr && (copied == e.pasted->placements.end() || d.contentOf(id).pattern == copied->second.first)) continue;
+            if (copied == e.pasted->placements.end() || copied->second.first == nullptr || !copied->second.first->valid())
+                return refuse("A copied clip is no longer in the project.");
+            auto& clipId = restored[r.clip];
+            if (clipId == 0) {
+                if (!made) made = d.library;
+                clipId = ProjectDocument::addPlacementClipTo(*made, copied->second.first, copied->second.second).value;
+            }
+            r.clip = clipId;
+        }
+        Timeline next = song;
+        next.tempo = d.bpm;
+        timeline::Ids pasted;
+        if (!next.paste(clip, e.ticks, e.lanes, &pasted)) return refuse("Those clips do not fit there.");
+        auto o = settle(std::move(next), true);
+        if (o.next) { o.library = std::move(made); o.made = std::move(pasted); }
+        return o;
     }
     if (e.clips.empty()) return refuse("Choose at least one Song clip.");
     if (oneClip(e.kind) && e.clips.size() != 1) return refuse("Choose one Song clip.");
@@ -245,7 +286,7 @@ inline Outcome outcome(const ProjectDocument& d, const Edit& e) {
     case Kind::addWarp: done = next.addWarpMarker(ids[0], e.ticks); break;
     case Kind::moveWarp: done = next.moveWarpMarker(ids[0], static_cast<std::size_t>(e.index), e.ticks); break;
     case Kind::removeWarp: done = next.removeWarpMarker(ids[0], static_cast<std::size_t>(e.index)); break;
-    case Kind::place: break;   // handled above
+    case Kind::place: case Kind::paste: break;   // handled above
     }
     return settle(std::move(next), done);
 }
@@ -255,10 +296,15 @@ inline juce::String refusal(const ProjectDocument& d, const Edit& e) { timeline:
 // True when the edit would leave the document as it is. Only meaningful for an edit that is not refused.
 inline bool changesNothing(const ProjectDocument& d, const Edit& e) { timeline::id_stream::Scope asking; return !outcome(d, e).next.has_value(); }
 
+// The ids a paste gives the clips it pastes, which the live edit gives them too (what it lands on may be cut in two,
+// and the cut-off part takes a new id as well), or none when it is refused.
+inline timeline::Ids pastedClips(const ProjectDocument& d, const Edit& e) { timeline::id_stream::Scope asking; return outcome(d, e).made; }
+
 inline juce::String apply(ProjectDocument& d, const Edit& e) {
     auto o = outcome(d, e);
     if (o.why.isNotEmpty()) return o.why;
     if (!o.next) return {};
+    if (o.library) d.library = std::move(*o.library);
     d.timeline = std::move(*o.next);
     d.prune();   // a placement clip no region plays any more is gone (Undo keeps it)
     return {};

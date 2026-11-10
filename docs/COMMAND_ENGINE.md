@@ -754,6 +754,29 @@ The Song view's double-click, drop and Place menu placements and the Session cel
 Undo names, "Place clip" and "Place pattern". `ProjectController::placeRegion` is the same reducer, for code that needs
 no command.
 
+## Pasting clips in the Song
+
+`PasteSongClips {clips, at, lanes}` pastes copied Song clips at tick `at`, over whatever they land on, and moves the rack
+patterns among them `lanes` lanes down (up when negative). `clips` is a `song_clip::Pasted`: the copied regions, with
+rows and sources already resolved to this project's tracks, scenes and rack patterns and starts relative to the
+earliest, and the notes and name of every placement clip they play, as they were when copied. A placement clip that
+still holds what was copied is shared by the paste; one that was cut (and so dropped) or edited since comes back as a
+clip of its own with the copied notes. That clip is added inside the paste, so one Undo takes away both the pasted
+clips and the clip brought back for them; the old controller route added it outside the history. Copies of one cut
+clip in a single paste share the one clip brought back. The pasted clips get new groups of their own.
+
+The copied clips exist only as data, so like PasteRackSteps it has no script form: `parse` refuses it and `arguments`
+writes only `at`, `lanes` and how many clips there are. It is a Song clip edit, sharing `SongClipCommands.h`.
+`song_clip::pastedClips` names the clips a paste will paste, the same ids the live edit gives them. A clip the paste
+lands in the middle of is cut in two, and its cut-off part has a new id too, so "every new id" is not the selection.
+
+Refused: nothing to paste, an `at` outside the song, a placement clip that is neither in the project nor carried,
+clips that do not fit (past the song's maximum length, or a rack pattern moved off the rack lanes) and a clip on a
+frozen track. While warped audio records it is refused like the other Song clip edits.
+
+The Song view's Ctrl+V and its Paste menu item run it under the old Undo name, "Paste", and select what was pasted.
+Which tracks and scenes the clipboard means is still worked out by the view, by identity, before the command is made.
+
 ## Song take commands
 
 `CompSongTake {take, start, end}` plays ticks `start` to `end` of a recorded take on its track, over what is there, as a

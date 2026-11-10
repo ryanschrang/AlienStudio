@@ -459,6 +459,7 @@ static void continuousCommandTests() {
 #include "SongClipCommandTests.h"
 #include "SongWarpCommandTests.h"
 #include "SongPlaceCommandTests.h"
+#include "SongPasteCommandTests.h"
 #include "AutomationCommandTests.h"
 #include "SongLengthCommandTests.h"
 #include "SongTakeCommandTests.h"
@@ -479,6 +480,7 @@ int main() {
     songClipCommandChecks();
     songWarpCommandChecks();
     songPlaceCommandChecks();
+    songPasteCommandChecks();
     automationCommandChecks();
     removeClipAudioChecks();
     sendCommandChecks();

@@ -824,9 +824,6 @@ static void placementClipTests() {
             "a placement clip nothing plays is dropped");
     require(c.undo() && d.library.clip(alien::library::ClipId{clip}) != nullptr && d.placementContent(*d.timeline.find(a)).notes().notes[0].pitch == 55,
             "undo restores it with its notes");
-    // A paste can bring a cut clip back as a new one.
-    const auto restored = c.restorePlacementClip(std::make_shared<const alien::PianoRollPattern>(patternWith(62)), "Scene 9");
-    require(restored != 0 && restored != clip && d.placementName(restored) == "Scene 9", "a clip restored for a paste");
     require(!c.editTimeline("Bad", [&](alien::timeline::Timeline& t) { t.regions[0].clip = 0x7777; t.regions[0].source = -1; return true; }),
             "a region naming a clip the project does not have is refused");
     std::puts("PASS: placement clips (copies, engine, scenes, pruning)");
