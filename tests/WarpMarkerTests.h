@@ -86,10 +86,10 @@ static void warpEditorChecks() {
     const auto marked=c.timeline().find(id)->warp;
     require(c.setTempoChange(bar,90),"change Song tempo after warp");require(c.isBusy() && rig->engine.arrangementPreparing.load(),"tempo edits prepare a replacement cache before playback");waitForWarp(c);
     require(c.timeline().find(id)->warp==marked,"tempo edit preserves musical marker anchors");
-    c.setExternalBusy(true);require(!c.enableRegionWarp(id),"busy warp edits refuse");c.setExternalBusy(false);
-    require(c.editTimeline("Disable audio warp",[=](auto& t){return t.setWarp(id,{});}) && !c.isBusy(),"disabling warp restores ordinary playback without a render");
+    c.setExternalBusy(true);require(!alien::tlui::enableWarp(c,id).ok,"busy warp edits refuse");c.setExternalBusy(false);
+    require(alien::command::CommandEngine(c).execute(alien::command::SetSongClipWarp{id,{}}).changed && !c.isBusy(),"disabling warp restores ordinary playback without a render");
     juce::String lastStatus;c.onProjectStatus=[&](const auto& text,const auto&){lastStatus=text;};
-    require(c.enableRegionWarp(id) && c.cancelWarpPreparation(),"cancel a pending warp job");waitForWarp(c);
+    require(alien::tlui::enableWarp(c,id).changed && c.cancelWarpPreparation(),"cancel a pending warp job");waitForWarp(c);
     require(!rig->engine.arrangementPreparing.load() && lastStatus.containsIgnoreCase("cancelled") && !c.timeline().find(id)->warp.empty(),"cancellation keeps editable markers, reports its result and releases transport gate");
     require(c.retryWarpPreparation(),"retry cache preparation");waitForWarp(c);
     require(lastStatus=="Warped audio ready","rebuild recovers a cancelled cache");

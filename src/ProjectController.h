@@ -1693,34 +1693,38 @@ public:
         };
         pool.addJob(std::move(job));
     }
-    void detectRegionTransients(std::uint32_t id) {
+    // Finds transients in a warped clip's audio in the background. `found` gets the new marker list on the
+    // message thread (the caller runs SetSongClipWarp with it); nothing is edited here.
+    using WarpFound=std::function<void(std::uint32_t,std::vector<timeline::WarpMarker>)>;
+    void detectRegionTransients(std::uint32_t id,WarpFound found) {
         const auto* r=doc.timeline.find(id);
         if(busy || isRecording() || engine.recording.phase.load()!=RecordControls::idle || !r || r->warp.empty() || !doc.isValidCell(r->row,r->source))return;
         const auto audio=doc.clip(r->row,r->source).audio;if(!audio)return;
         const auto map=r->warp;setBusy(true);warpWorkActive=true;warpCancelled.store(false);status("Detecting transients...","Escape cancels analysis.");
         std::weak_ptr<int> token=alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job=[this,token,id,audio,map] {
+        std::function<juce::ThreadPoolJob::JobStatus()> job=[this,token,id,audio,map,found=std::move(found)] {
             juce::String error;std::vector<timeline::WarpMarker> result;
             try {result=detectWarpTransients(*audio,map,warpCancelled,error);}catch(...){error="Transient analysis failed.";}
-            juce::MessageManager::callAsync([this,token,id,result=std::move(result),error] {
+            juce::MessageManager::callAsync([this,token,id,result=std::move(result),error,found] {
                 if(!token.lock())return;warpWorkActive=false;setBusy(false);
                 if(warpCancelled.load()){status("Transient analysis cancelled",{});return;}
-                if(result.size()>2 && error.isEmpty()) editTimeline("Detect warp transients",[=](auto& t){return t.setWarp(id,result);});
+                if(result.size()>2 && error.isEmpty()){if(found)found(id,result);}
                 else status(error.isEmpty()?"No additional transients found":error,{});
             });return juce::ThreadPoolJob::jobHasFinished;
         };pool.addJob(std::move(job));
     }
     bool retryWarpPreparation() { if (busy) return false; published.known=false; publishArrangement(); return true; }
     bool cancelWarpPreparation() { if (!warpWorkActive) return false; warpCancelled.store(true); status("Cancelling warp preparation...",{}); return true; }
-    bool enableRegionWarp(std::uint32_t id) {
+    // The two markers that fit an unwarped audio clip's source, from where it starts playing to the file's end,
+    // to the clip; none when it has no audio left to fit. SetSongClipWarp with them turns warp on.
+    std::optional<std::vector<timeline::WarpMarker>> fittedWarp(std::uint32_t id) const {
         const auto* r = doc.timeline.find(id);
-        if (busy || isRecording() || engine.recording.phase.load()!=RecordControls::idle || !r || r->isPattern() || !r->warp.empty() || !doc.isValidCell(r->row,r->source)) return false;
+        if (!r || r->isPattern() || !r->warp.empty() || !doc.isValidCell(r->row,r->source)) return std::nullopt;
         const auto audio=doc.clip(r->row,r->source).audio;
-        if (!audio) return false;
+        if (!audio || audio->sampleRate <= 0) return std::nullopt;
         const double end=static_cast<double>(audio->frames)/audio->sampleRate;
-        if (r->audioOffset >= end || r->offset > timeline::maxLength-r->length) return false;
-        const std::vector<timeline::WarpMarker> markers{{r->offset,r->audioOffset},{r->offset+r->length,end}};
-        return editTimeline("Enable audio warp", [=](auto& t){return t.setWarp(id,markers);});
+        if (r->audioOffset >= end || r->offset > timeline::maxLength-r->length) return std::nullopt;
+        return std::vector<timeline::WarpMarker>{{r->offset,r->audioOffset},{r->offset+r->length,end}};
     }
     // The Arrangement timeline ------------------------------------------------------
     const alien::timeline::Timeline& timeline() const noexcept { return doc.timeline; }
