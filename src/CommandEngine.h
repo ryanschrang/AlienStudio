@@ -180,13 +180,20 @@ struct ReverseSongClips { timeline::Ids clips; bool reversed{}; };
 struct SplitSongClips { timeline::Ids clips; std::int64_t tick{}; };
 struct DuplicateSongClips { timeline::Ids clips; };
 struct CopySongClips { timeline::Ids clips; std::int64_t ticks{}; int lanes{}; };
+// Warp markers pin an audio clip's source seconds to ticks of its content (counted like Region::offset).
+// SetSongClipWarp sets the whole list: none turns warp off, two or more turn it on. The first and last markers
+// bound the warped audio, so Add puts one between them and Move and Remove leave those two alone.
+struct SetSongClipWarp { std::uint32_t clip{}; std::vector<timeline::WarpMarker> markers; };
+struct AddSongWarpMarker { std::uint32_t clip{}; std::int64_t tick{}; };
+struct MoveSongWarpMarker { std::uint32_t clip{}; int marker{}; std::int64_t tick{}; };
+struct RemoveSongWarpMarker { std::uint32_t clip{}; int marker{}; };
 
-using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume, ImportClipAudio, SetTrackSend, SetTrackSendMode, CreateReturn, RenameReturn, DeleteReturn, SetReturnVolume, SetReturnPan, SetReturnMute, CreateBus, RenameBus, DeleteBus, SetBusVolume, SetBusPan, SetBusMute, SetBusSolo, SetTrackOutput, SetSidechain, InsertDevice, RemoveDevice, MoveDevice, SetDeviceBypass, SetTempo, SetTempoChange, MoveTempoChange, RemoveTempoChange, ClearTempoChanges, SetMeterChange, RemoveMeterChange, ClearMeterChanges, AddRackChannel, AddRackSynthChannel, RemoveRackChannel, MoveRackChannel, DuplicateRackChannel, RenameRackChannel, SetRackChannelVolume, SetRackChannelPan, SetRackChannelMute, SetRackChannelSolo, SetRackChannelOutput, SetRackChannelChoke, SetRackStep, SetRackStepValue, FillRackSteps, RotateRackSteps, ReverseRackSteps, RepeatRackSteps, ClearRackSteps, SetRackPatternLength, SetRackSwing, CloneRackPattern, ClearRackPattern, RenameRackPattern, DeleteRackPattern, SetRackChannelSound, SilenceRackChannel, SetRackChannelSynth, SetRackChannelPlugin, PasteRackSteps, SetRackChannelNotes, ImportRackGroove, LoadRackSample, AddSongMarker, MoveSongMarker, RenameSongMarker, ColourSongMarker, RemoveSongMarker, SetSongLoop, MoveSongClips, TrimSongClipStart, TrimSongClipEnd, SlipSongClips, DeleteSongClips, SetSongClipsMuted, SetSongClipGain, SetSongClipFades, SetSongClipFadeIn, SetSongClipFadeOut, SetSongClipFadeShape, RemoveSongClipFades, CrossfadeSongClips, GroupSongClips, UngroupSongClips, LoopSongClips, ReverseSongClips, SplitSongClips, DuplicateSongClips, CopySongClips, AddSongSection, EditSongSection, RemoveSongSection, AddSongChord, EditSongChord, RemoveSongChord, SetSongLength>;
+using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume, ImportClipAudio, SetTrackSend, SetTrackSendMode, CreateReturn, RenameReturn, DeleteReturn, SetReturnVolume, SetReturnPan, SetReturnMute, CreateBus, RenameBus, DeleteBus, SetBusVolume, SetBusPan, SetBusMute, SetBusSolo, SetTrackOutput, SetSidechain, InsertDevice, RemoveDevice, MoveDevice, SetDeviceBypass, SetTempo, SetTempoChange, MoveTempoChange, RemoveTempoChange, ClearTempoChanges, SetMeterChange, RemoveMeterChange, ClearMeterChanges, AddRackChannel, AddRackSynthChannel, RemoveRackChannel, MoveRackChannel, DuplicateRackChannel, RenameRackChannel, SetRackChannelVolume, SetRackChannelPan, SetRackChannelMute, SetRackChannelSolo, SetRackChannelOutput, SetRackChannelChoke, SetRackStep, SetRackStepValue, FillRackSteps, RotateRackSteps, ReverseRackSteps, RepeatRackSteps, ClearRackSteps, SetRackPatternLength, SetRackSwing, CloneRackPattern, ClearRackPattern, RenameRackPattern, DeleteRackPattern, SetRackChannelSound, SilenceRackChannel, SetRackChannelSynth, SetRackChannelPlugin, PasteRackSteps, SetRackChannelNotes, ImportRackGroove, LoadRackSample, AddSongMarker, MoveSongMarker, RenameSongMarker, ColourSongMarker, RemoveSongMarker, SetSongLoop, MoveSongClips, TrimSongClipStart, TrimSongClipEnd, SlipSongClips, DeleteSongClips, SetSongClipsMuted, SetSongClipGain, SetSongClipFades, SetSongClipFadeIn, SetSongClipFadeOut, SetSongClipFadeShape, RemoveSongClipFades, CrossfadeSongClips, GroupSongClips, UngroupSongClips, LoopSongClips, ReverseSongClips, SplitSongClips, DuplicateSongClips, CopySongClips, AddSongSection, EditSongSection, RemoveSongSection, AddSongChord, EditSongChord, RemoveSongChord, SetSongLength, SetSongClipWarp, AddSongWarpMarker, MoveSongWarpMarker, RemoveSongWarpMarker>;
 
 namespace detail {
 // Indexed like Command's alternatives.
-inline constexpr std::array<const char*, 121> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume", "ImportClipAudio", "SetTrackSend", "SetTrackSendMode", "CreateReturn", "RenameReturn", "DeleteReturn", "SetReturnVolume", "SetReturnPan", "SetReturnMute", "CreateBus", "RenameBus", "DeleteBus", "SetBusVolume", "SetBusPan", "SetBusMute", "SetBusSolo", "SetTrackOutput", "SetSidechain", "InsertDevice", "RemoveDevice", "MoveDevice", "SetDeviceBypass", "SetTempo", "SetTempoChange", "MoveTempoChange", "RemoveTempoChange", "ClearTempoChanges", "SetMeterChange", "RemoveMeterChange", "ClearMeterChanges", "AddRackChannel", "AddRackSynthChannel", "RemoveRackChannel", "MoveRackChannel", "DuplicateRackChannel", "RenameRackChannel", "SetRackChannelVolume", "SetRackChannelPan", "SetRackChannelMute", "SetRackChannelSolo", "SetRackChannelOutput", "SetRackChannelChoke", "SetRackStep", "SetRackStepValue", "FillRackSteps", "RotateRackSteps", "ReverseRackSteps", "RepeatRackSteps", "ClearRackSteps", "SetRackPatternLength", "SetRackSwing", "CloneRackPattern", "ClearRackPattern", "RenameRackPattern", "DeleteRackPattern", "SetRackChannelSound", "SilenceRackChannel", "SetRackChannelSynth", "SetRackChannelPlugin", "PasteRackSteps", "SetRackChannelNotes", "ImportRackGroove", "LoadRackSample", "AddSongMarker", "MoveSongMarker", "RenameSongMarker", "ColourSongMarker", "RemoveSongMarker", "SetSongLoop", "MoveSongClips", "TrimSongClipStart", "TrimSongClipEnd", "SlipSongClips", "DeleteSongClips", "SetSongClipsMuted", "SetSongClipGain", "SetSongClipFades", "SetSongClipFadeIn", "SetSongClipFadeOut", "SetSongClipFadeShape", "RemoveSongClipFades", "CrossfadeSongClips", "GroupSongClips", "UngroupSongClips", "LoopSongClips", "ReverseSongClips", "SplitSongClips", "DuplicateSongClips", "CopySongClips", "AddSongSection", "EditSongSection", "RemoveSongSection", "AddSongChord", "EditSongChord", "RemoveSongChord", "SetSongLength"};
-inline constexpr std::array<const char*, 121> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume", "Import audio", "Set send level", "Set send mode", "Add return", "Rename return", "Remove return", "Set return volume", "Set return pan", "Set return mute", "Add bus", "Rename bus", "Delete bus", "Set bus volume", "Set bus pan", "Set bus mute", "Set bus solo", "Set track output", "Set sidechain", "Insert device", "Remove device", "Move device", "Set device bypass", "Change tempo", "Tempo change", "Move tempo change", "Remove tempo change", "Remove tempo changes", "Time signature change", "Remove time signature change", "Remove time signature changes", "Add channel", "Add synth channel", "Delete channel", "Move channel", "Duplicate channel", "Rename channel", "Change channel volume", "Change channel pan", "Mute channel", "Solo channel", "Route channel", "Change choke group", "Edit step", "Edit step", "Edit channel steps", "Edit channel steps", "Edit channel steps", "Edit channel steps", "Clear channel", "Change pattern length", "Change swing", "Clone pattern", "Clear pattern", "Rename pattern", "Delete pattern", "Change channel sound", "Silence channel", "Change channel instrument", "Change channel instrument", "Paste steps", "Edit channel notes", "Import drum groove", "Load channel sample", "Add marker", "Move marker", "Rename marker", "Colour marker", "Delete marker", "Set loop", "Move clips", "Trim clip start", "Resize clip", "Slip clips", "Delete clips", "Mute clips", "Set clip gain", "Fade clips", "Fade in", "Fade out", "Fade shape", "Remove fades", "Crossfade clips", "Group clips", "Ungroup clips", "Loop clip source", "Reverse clips", "Split", "Duplicate", "Copy clips", "Add Song section", "Edit Song section", "Delete Song section", "Add Song chord", "Edit Song chord", "Delete Song chord", "Change song length"};
+inline constexpr std::array<const char*, 125> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume", "ImportClipAudio", "SetTrackSend", "SetTrackSendMode", "CreateReturn", "RenameReturn", "DeleteReturn", "SetReturnVolume", "SetReturnPan", "SetReturnMute", "CreateBus", "RenameBus", "DeleteBus", "SetBusVolume", "SetBusPan", "SetBusMute", "SetBusSolo", "SetTrackOutput", "SetSidechain", "InsertDevice", "RemoveDevice", "MoveDevice", "SetDeviceBypass", "SetTempo", "SetTempoChange", "MoveTempoChange", "RemoveTempoChange", "ClearTempoChanges", "SetMeterChange", "RemoveMeterChange", "ClearMeterChanges", "AddRackChannel", "AddRackSynthChannel", "RemoveRackChannel", "MoveRackChannel", "DuplicateRackChannel", "RenameRackChannel", "SetRackChannelVolume", "SetRackChannelPan", "SetRackChannelMute", "SetRackChannelSolo", "SetRackChannelOutput", "SetRackChannelChoke", "SetRackStep", "SetRackStepValue", "FillRackSteps", "RotateRackSteps", "ReverseRackSteps", "RepeatRackSteps", "ClearRackSteps", "SetRackPatternLength", "SetRackSwing", "CloneRackPattern", "ClearRackPattern", "RenameRackPattern", "DeleteRackPattern", "SetRackChannelSound", "SilenceRackChannel", "SetRackChannelSynth", "SetRackChannelPlugin", "PasteRackSteps", "SetRackChannelNotes", "ImportRackGroove", "LoadRackSample", "AddSongMarker", "MoveSongMarker", "RenameSongMarker", "ColourSongMarker", "RemoveSongMarker", "SetSongLoop", "MoveSongClips", "TrimSongClipStart", "TrimSongClipEnd", "SlipSongClips", "DeleteSongClips", "SetSongClipsMuted", "SetSongClipGain", "SetSongClipFades", "SetSongClipFadeIn", "SetSongClipFadeOut", "SetSongClipFadeShape", "RemoveSongClipFades", "CrossfadeSongClips", "GroupSongClips", "UngroupSongClips", "LoopSongClips", "ReverseSongClips", "SplitSongClips", "DuplicateSongClips", "CopySongClips", "AddSongSection", "EditSongSection", "RemoveSongSection", "AddSongChord", "EditSongChord", "RemoveSongChord", "SetSongLength", "SetSongClipWarp", "AddSongWarpMarker", "MoveSongWarpMarker", "RemoveSongWarpMarker"};
+inline constexpr std::array<const char*, 125> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume", "Import audio", "Set send level", "Set send mode", "Add return", "Rename return", "Remove return", "Set return volume", "Set return pan", "Set return mute", "Add bus", "Rename bus", "Delete bus", "Set bus volume", "Set bus pan", "Set bus mute", "Set bus solo", "Set track output", "Set sidechain", "Insert device", "Remove device", "Move device", "Set device bypass", "Change tempo", "Tempo change", "Move tempo change", "Remove tempo change", "Remove tempo changes", "Time signature change", "Remove time signature change", "Remove time signature changes", "Add channel", "Add synth channel", "Delete channel", "Move channel", "Duplicate channel", "Rename channel", "Change channel volume", "Change channel pan", "Mute channel", "Solo channel", "Route channel", "Change choke group", "Edit step", "Edit step", "Edit channel steps", "Edit channel steps", "Edit channel steps", "Edit channel steps", "Clear channel", "Change pattern length", "Change swing", "Clone pattern", "Clear pattern", "Rename pattern", "Delete pattern", "Change channel sound", "Silence channel", "Change channel instrument", "Change channel instrument", "Paste steps", "Edit channel notes", "Import drum groove", "Load channel sample", "Add marker", "Move marker", "Rename marker", "Colour marker", "Delete marker", "Set loop", "Move clips", "Trim clip start", "Resize clip", "Slip clips", "Delete clips", "Mute clips", "Set clip gain", "Fade clips", "Fade in", "Fade out", "Fade shape", "Remove fades", "Crossfade clips", "Group clips", "Ungroup clips", "Loop clip source", "Reverse clips", "Split", "Duplicate", "Copy clips", "Add Song section", "Edit Song section", "Delete Song section", "Add Song chord", "Edit Song chord", "Delete Song chord", "Change song length", "Set warp markers", "Add warp marker", "Move warp marker", "Remove warp marker"};
 static_assert(names.size() == std::variant_size_v<Command> && labels.size() == names.size());
 
 // SetSongClipFadeShape's "edge" argument.
@@ -371,6 +378,10 @@ inline std::optional<song_clip::Edit> songClipEdit(const Command& command) {
     if (const auto* c = std::get_if<SplitSongClips>(&command)) { e.kind = Kind::split; e.clips = c->clips; e.ticks = c->tick; return e; }
     if (const auto* c = std::get_if<DuplicateSongClips>(&command)) { e.kind = Kind::duplicate; e.clips = c->clips; return e; }
     if (const auto* c = std::get_if<CopySongClips>(&command)) { e.kind = Kind::copy; e.clips = c->clips; e.ticks = c->ticks; e.lanes = c->lanes; return e; }
+    if (const auto* c = std::get_if<SetSongClipWarp>(&command)) { e.kind = Kind::setWarp; e.clips = {c->clip}; e.warp = c->markers; return e; }
+    if (const auto* c = std::get_if<AddSongWarpMarker>(&command)) { e.kind = Kind::addWarp; e.clips = {c->clip}; e.ticks = c->tick; return e; }
+    if (const auto* c = std::get_if<MoveSongWarpMarker>(&command)) { e.kind = Kind::moveWarp; e.clips = {c->clip}; e.index = c->marker; e.ticks = c->tick; return e; }
+    if (const auto* c = std::get_if<RemoveSongWarpMarker>(&command)) { e.kind = Kind::removeWarp; e.clips = {c->clip}; e.index = c->marker; return e; }
     return std::nullopt;
 }
 
@@ -599,6 +610,10 @@ inline juce::String describe(const ProjectDocument& d, const Command& command) {
         case Kind::split: return "Split " + clips + " at tick " + ticks;
         case Kind::duplicate: return "Duplicate " + clips;
         case Kind::copy: return "Copy " + clips + " " + ticks + " ticks later" + (edit->lanes != 0 ? " and " + juce::String(edit->lanes) + " lanes down" : juce::String{});
+        case Kind::setWarp: return edit->warp.empty() ? "Turn off warp for " + clips : "Warp " + clips + " with " + juce::String(static_cast<int>(edit->warp.size())) + " markers";
+        case Kind::addWarp: return "Add a warp marker to " + clips + " at content tick " + ticks;
+        case Kind::moveWarp: return "Move warp marker " + juce::String(edit->index) + " of " + clips + " to content tick " + ticks;
+        case Kind::removeWarp: return "Remove warp marker " + juce::String(edit->index) + " of " + clips;
         }
     }
     if (const auto edit = rackPatternEdit(command)) {
@@ -837,6 +852,21 @@ inline juce::var arguments(const Command& command) {
             object->setProperty("left", id(edit->clips[0])); object->setProperty("right", id(edit->clips[1]));
             object->setProperty("ticks", static_cast<juce::int64>(edit->ticks)); return result;
         }
+        if (song_clip::warpEdit(edit->kind)) {
+            object->setProperty("clip", id(edit->clips[0]));
+            if (edit->kind == Kind::setWarp) {
+                juce::Array<juce::var> markers;
+                for (const auto& m : edit->warp) {
+                    auto* marker = new juce::DynamicObject;
+                    marker->setProperty("tick", static_cast<juce::int64>(m.tick)); marker->setProperty("seconds", m.seconds);
+                    markers.add(juce::var(marker));
+                }
+                object->setProperty("markers", markers);
+            }
+            if (edit->kind == Kind::moveWarp || edit->kind == Kind::removeWarp) object->setProperty("marker", edit->index);
+            if (edit->kind == Kind::addWarp || edit->kind == Kind::moveWarp) object->setProperty("tick", static_cast<juce::int64>(edit->ticks));
+            return result;
+        }
         if (song_clip::oneClip(edit->kind)) {
             object->setProperty("clip", id(edit->clips[0]));
             object->setProperty(edit->kind == Kind::trimStart || edit->kind == Kind::trimEnd ? "tick" : "ticks", static_cast<juce::int64>(edit->ticks));
@@ -949,7 +979,7 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
     if (index == 85) { error = "SetRackChannelNotes takes a note sequence, which cannot be written as arguments."; return std::nullopt; }
     if (index == 86) { error = "ImportRackGroove takes a read MIDI file, which cannot be written as arguments."; return std::nullopt; }
     if (index == 87) { error = "LoadRackSample takes decoded audio, which cannot be written as arguments."; return std::nullopt; }
-    static const std::array<juce::StringArray, 121> allowed{
+    static const std::array<juce::StringArray, 125> allowed{
         juce::StringArray{}, juce::StringArray{"track"}, juce::StringArray{"track", "to"},
         juce::StringArray{"track", "name"}, juce::StringArray{"track", "colour"},
         juce::StringArray{"track", "gain"}, juce::StringArray{"track", "pan"},
@@ -969,7 +999,8 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
         {"tick", "name", "colour"}, {"marker", "tick"}, {"marker", "name"}, {"marker", "colour"}, {"marker"}, {"start", "end", "enabled"},
         {"clips", "ticks", "lanes"}, {"clip", "tick"}, {"clip", "tick"}, {"clips", "ticks"}, {"clips"}, {"clips", "muted"}, {"clips", "gain"}, {"clips", "fadeIn", "fadeOut"}, {"clip", "ticks"}, {"clip", "ticks"}, {"clips", "edge", "curve"}, {"clips"}, {"left", "right", "ticks"}, {"clips"}, {"clips"}, {"clips", "looped"}, {"clips", "reversed"},
         {"clips", "tick"}, {"clips"}, {"clips", "ticks", "lanes"},
-        {"start", "end", "name", "colour"}, {"section", "start", "end", "name", "colour"}, {"section"}, {"start", "end", "root", "quality"}, {"chord", "start", "end", "root", "quality"}, {"chord"}, {"bars"}
+        {"start", "end", "name", "colour"}, {"section", "start", "end", "name", "colour"}, {"section"}, {"start", "end", "root", "quality"}, {"chord", "start", "end", "root", "quality"}, {"chord"}, {"bars"},
+        {"clip", "markers"}, {"clip", "tick"}, {"clip", "marker", "tick"}, {"clip", "marker"}
     };
     static_assert(std::tuple_size_v<std::remove_cvref_t<decltype(allowed)>> == detail::names.size(), "every command lists its arguments");
     const auto* object = args.getDynamicObject();
@@ -1092,6 +1123,27 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
         }
         case 119: command = RemoveSongChord{marker("chord")}; break;
         case 120: command = SetSongLength{integer("bars")}; break;
+        case 121: {
+            const auto id = marker("clip");
+            std::vector<timeline::WarpMarker> markers;
+            const auto list = object != nullptr ? object->getProperty("markers") : juce::var{};
+            if (ok && !list.isArray()) { error = commandName + " needs a \"markers\" list of {tick, seconds}."; ok = false; }
+            if (ok) for (const auto& item : *list.getArray()) {
+                const auto* m = item.getDynamicObject();
+                const auto tick = m != nullptr ? m->getProperty("tick") : juce::var{};
+                const auto seconds = m != nullptr ? m->getProperty("seconds") : juce::var{};
+                const bool numeric = seconds.isInt() || seconds.isInt64() || seconds.isDouble();
+                if (m == nullptr || m->getProperties().size() != 2 || !(tick.isInt() || tick.isInt64()) || !numeric || !std::isfinite(static_cast<double>(seconds))) {
+                    error = commandName + " needs each marker to be {tick: whole number, seconds: finite number}."; ok = false; break;
+                }
+                markers.push_back({static_cast<std::int64_t>(static_cast<juce::int64>(tick)), static_cast<double>(seconds)});
+            }
+            command = SetSongClipWarp{id, std::move(markers)};
+            break;
+        }
+        case 122: { const auto id = marker("clip"); command = AddSongWarpMarker{id, wide("tick")}; break; }
+        case 123: { const auto id = marker("clip"); const int index = integer("marker"); command = MoveSongWarpMarker{id, index, wide("tick")}; break; }
+        case 124: { const auto id = marker("clip"); command = RemoveSongWarpMarker{id, integer("marker")}; break; }
         case 55: command = AddRackChannel{text("sound")}; break;
         case 56: command = AddRackSynthChannel{integer("preset")}; break;
         case 57: command = RemoveRackChannel{integer("channel")}; break;

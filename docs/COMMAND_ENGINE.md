@@ -686,7 +686,31 @@ change playback is refused like a tempo edit. A move or trim that clamps to wher
 The Song view's clip drags (move, trim either edge, slip, fade handles), Delete and Cut, arrow-key nudges and lane moves,
 Slip left/right, mute, group and ungroup, fades, fade shapes, crossfade, Remove fades, Normalize (one `SetSongClipGain` per clip,
 as one step), source loop and reverse, Split, Duplicate and Ctrl-drag copies run these commands with their old Undo names.
-Paste (which may bring back a cut placement clip) and warp markers still edit the Song directly.
+Paste (which may bring back a cut placement clip) still edits the Song directly.
+
+## Song warp marker commands
+
+`SetSongClipWarp {clip, markers}`, `AddSongWarpMarker {clip, tick}`, `MoveSongWarpMarker {clip, marker, tick}` and
+`RemoveSongWarpMarker {clip, marker}` edit an audio clip's warp markers. Each marker pins a source time in seconds to a
+tick of the clip's content, counted like the clip's offset, so trims and splits keep it on the same audio. In a script
+`markers` is a list of `{tick, seconds}` objects and `marker` is a marker's index, from 0.
+
+`SetSongClipWarp` sets the whole list: an empty list turns warp off, and 2 to 256 markers that rise in both tick and
+seconds turn it on. The first and last markers bound the warped audio. `AddSongWarpMarker` puts one between them at the
+source time the clip plays there now, `MoveSongWarpMarker` moves an inner one between its neighbours and keeps its source
+time, and `RemoveSongWarpMarker` removes an inner one. They share the Song clip reducer.
+
+Refused: a clip that is not in the song, markers for a clip with no audio, a marker list out of order or of the wrong
+size, adding, moving or removing on a clip without warp, a 257th marker, a marker that is not on the clip, moving or
+removing the first or last marker, moving one past a neighbour, and a clip on a frozen track. They change playback, so
+while warped audio records they are refused like the other clip edits. A warp change prepares the warped audio in the
+background, as the direct edit did.
+
+The Song view's audio clip menu (Enable warp, Add warp marker here, Remove warp marker, Detect transients as warp
+markers and Disable warp) and the marker handle drag run these commands with their old Undo names: "Enable audio warp",
+"Add warp marker", "Remove warp marker", "Detect warp transients", "Disable audio warp" and "Move warp marker". Enable
+warp asks the controller for the two markers that fit the clip's source to it; transient detection finds the new
+markers on a worker thread and runs `SetSongClipWarp` when it finishes.
 
 ## Master volume command
 

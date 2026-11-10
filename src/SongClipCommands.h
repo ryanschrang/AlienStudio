@@ -5,12 +5,13 @@
 #include <optional>
 
 // Pure document edits for the clips placed in the Song: moving, trimming, slipping, deleting, muting,
-// gain, fades, crossfades, groups, audio source looping and reversing, and splitting, duplicating and
-// copying them. The controller and command Preview share them, so what Preview predicts is what the live
+// gain, fades, crossfades, groups, audio source looping and reversing, warp markers, and splitting, duplicating
+// and copying them. The controller and command Preview share them, so what Preview predicts is what the live
 // edit does. New clips take the next Song ids; a Preview hands out the same ones (timeline::id_stream).
 namespace alien::song_clip {
 enum class Kind { move, trimStart, trimEnd, slip, remove, mute, gain, fades, fadeIn, fadeOut, fadeShape, clearFades,
-                  crossfade, group, ungroup, loopSource, reverse, split, duplicate, copy };
+                  crossfade, group, ungroup, loopSource, reverse, split, duplicate, copy,
+                  setWarp, addWarp, moveWarp, removeWarp };
 struct Edit {
     Kind kind{Kind::move};
     timeline::Ids clips;            // the clips, by region id; trims and fade handles use one, a crossfade left then right
@@ -22,13 +23,16 @@ struct Edit {
     timeline::FadeEdge edge{};      // fadeShape
     timeline::FadeCurve curve{};    // fadeShape
     std::uint32_t group{};          // group: the new group's id
+    std::vector<timeline::WarpMarker> warp;   // setWarp: the clip's whole marker list (empty: no warp)
+    int index{};                    // moveWarp, removeWarp: which marker; addWarp and moveWarp use `ticks` as its source tick
 };
 
 inline bool audioOnly(Kind k) noexcept {
     return k == Kind::gain || k == Kind::fades || k == Kind::fadeIn || k == Kind::fadeOut || k == Kind::fadeShape
         || k == Kind::clearFades || k == Kind::crossfade || k == Kind::loopSource || k == Kind::reverse;
 }
-inline bool oneClip(Kind k) noexcept { return k == Kind::trimStart || k == Kind::trimEnd || k == Kind::fadeIn || k == Kind::fadeOut; }
+inline bool warpEdit(Kind k) noexcept { return k == Kind::setWarp || k == Kind::addWarp || k == Kind::moveWarp || k == Kind::removeWarp; }
+inline bool oneClip(Kind k) noexcept { return k == Kind::trimStart || k == Kind::trimEnd || k == Kind::fadeIn || k == Kind::fadeOut || warpEdit(k); }
 inline bool creates(Kind k) noexcept { return k == Kind::split || k == Kind::duplicate || k == Kind::copy; }
 
 // Either why the edit is refused, or the Song it leaves (none when it changes nothing).
@@ -50,6 +54,27 @@ inline Outcome outcome(const ProjectDocument& d, const Edit& e) {
             return refuse("Unfreeze track " + juce::String(r->row + 1) + " before editing its clips.");
     }
     if (audioOnly(e.kind) && !anyAudio) return refuse("Select audio clips for that.");
+    if (warpEdit(e.kind)) {
+        // Warp markers pin a clip's source seconds to ticks of its content (Region::offset counts in them).
+        const auto& r = *song.find(e.clips[0]);
+        if (r.isPattern()) return refuse("Warp markers are for audio clips.");
+        const auto count = static_cast<int>(r.warp.size());
+        if (e.kind == Kind::setWarp) {
+            if (!e.warp.empty() && (!d.isValidCell(r.row, r.source) || !d.clip(r.row, r.source).isAudioClip())) return refuse("Warp markers are for audio clips.");
+            if (!validWarp(e.warp)) return refuse("Warp needs 2 to 256 markers, each later in the clip and in the source than the one before.");
+        } else if (r.warp.empty()) {
+            return refuse("Turn on warp for that clip first.");
+        } else if (e.kind == Kind::addWarp) {
+            if (r.warp.size() >= maxWarpMarkers) return refuse("A clip has at most 256 warp markers.");
+            if (e.ticks <= r.warp.front().tick || e.ticks >= r.warp.back().tick) return refuse("Put the warp marker between the clip's first and last markers.");
+        } else {
+            if (e.index < 0 || e.index >= count) return refuse("There is no warp marker " + juce::String(e.index) + " on that clip.");
+            if (e.index == 0 || e.index == count - 1) return refuse("The first and last warp markers stay where they are.");
+            const auto i = static_cast<std::size_t>(e.index);
+            if (e.kind == Kind::moveWarp && (e.ticks <= r.warp[i - 1].tick || e.ticks >= r.warp[i + 1].tick))
+                return refuse("A warp marker stays between the markers on either side of it.");
+        }
+    }
     switch (e.kind) {
     case Kind::gain:
         if (!std::isfinite(e.gain) || e.gain < 0.0 || e.gain > 64.0) return refuse("Clip gain must be from 0 to 64.");
@@ -104,6 +129,10 @@ inline Outcome outcome(const ProjectDocument& d, const Edit& e) {
     case Kind::split: done = next.split(ids, e.ticks); break;
     case Kind::duplicate: done = next.duplicate(ids); break;
     case Kind::copy: done = next.paste(song.copy(ids), first + e.ticks, e.lanes); break;
+    case Kind::setWarp: done = next.setWarp(ids[0], e.warp); break;
+    case Kind::addWarp: done = next.addWarpMarker(ids[0], e.ticks); break;
+    case Kind::moveWarp: done = next.moveWarpMarker(ids[0], static_cast<std::size_t>(e.index), e.ticks); break;
+    case Kind::removeWarp: done = next.removeWarpMarker(ids[0], static_cast<std::size_t>(e.index)); break;
     }
     if (!done && creates(e.kind)) return refuse("That does not fit there.");
     if (!done) return {};

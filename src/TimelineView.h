@@ -47,6 +47,12 @@ inline bool forgetTake(ProjectController& controller, std::uint32_t id) {
         return std::erase_if(t.takes, [=](const auto& take) { return take.id == id; }) != 0;
     });
 }
+// Turns warp on for an audio clip, fitting its source to it (SetSongClipWarp), as one undo step.
+inline command::Result enableWarp(ProjectController& controller, std::uint32_t id) {
+    const auto markers = controller.fittedWarp(id);
+    if (!markers) { command::Result r; r.error = "That clip has no audio to warp."; return r; }
+    return command::CommandEngine(controller).batch({command::SetSongClipWarp{id, *markers}}, "Enable audio warp");
+}
 } // namespace tlui
 
 class TimelineCanvas final : public juce::Component, public juce::DragAndDropTarget, public juce::FileDragAndDropTarget {
@@ -726,6 +732,24 @@ public:
     command::Result clipCommand(const command::Command& change, const juce::String& undoLabel = {}, const juce::String& key = {}) {
         return clipCommands({change}, undoLabel.isNotEmpty() ? undoLabel : command::label(change), key);
     }
+    // Warp on and transient detection are commands too (SetSongClipWarp); a refusal is said.
+    bool enableWarp(std::uint32_t id) {
+        if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return false; }
+        const auto result = tlui::enableWarp(controller, id);
+        if (!result.ok) say(result.error);
+        else if (result.changed) afterEdit();
+        return result.changed;
+    }
+    void detectTransients(std::uint32_t id) {
+        juce::Component::SafePointer<TimelineCanvas> safe(this);
+        controller.detectRegionTransients(id, [safe, &c = controller](std::uint32_t clip, std::vector<timeline::WarpMarker> markers) {
+            // The canvas may be gone by now; the edit is still the project's.
+            const auto result = command::CommandEngine(c).batch({command::SetSongClipWarp{clip, std::move(markers)}}, "Detect warp transients");
+            if (safe == nullptr) return;
+            if (!result.ok) safe->say(result.error);
+            else if (result.changed) safe->afterEdit();
+        });
+    }
     // The Song's clips now, and the ones added since: what a split, duplicate or copy made, in the order it made them.
     timeline::Ids clipIds() const {
         timeline::Ids ids;
@@ -1340,7 +1364,8 @@ public:
             const auto id=drag.grabbed;const auto index=drag.warpIndex;
             const auto tick=std::clamp<std::int64_t>(r->offset+snapTick(tickNow,bypass)-r->start,0,timeline::maxLength);
             drag.label="Move warp marker";
-            drag.apply=[=](auto& t){return t.moveWarpMarker(id,index,tick);};updatePreview();break;
+            drag.apply=[=](auto& t){return t.moveWarpMarker(id,index,tick);};
+            drag.change=command::MoveSongWarpMarker{id,static_cast<int>(index),tick};updatePreview();break;
         }
         case DragKind::scrub: setCursor(snapTick(tickNow, bypass)); break;
         case DragKind::slip: {
@@ -1474,7 +1499,7 @@ public:
         case DragKind::move: case DragKind::copy: case DragKind::slip: case DragKind::trimStart: case DragKind::trimEnd:
         case DragKind::warp: case DragKind::fadeIn: case DragKind::fadeOut:
             if (active && finished.apply) {
-                // Clip drags run their command; warp markers and comps still edit the Song directly.
+                // Clip and warp marker drags run their command.
                 bool done = false, said = false;
                 const auto before = clipIds();
                 if (finished.change) { const auto r = clipCommand(*finished.change, finished.label); done = r.changed; said = !r.ok; }
@@ -1760,12 +1785,12 @@ private:
             if (r != nullptr && !r->isPattern()) menu.addItem(cmdMakeUnique, "Make this placement unique", controller.placementShared(hit.region));
             launch(std::move(menu), area, [this, region = hit.region, warpIndex = hit.warp, tick](int id) {
                 switch (id) {
-                case cmdWarp: if(controller.enableRegionWarp(region))afterEdit();break;
-                case cmdAddWarp: edit("Add warp marker",[=](auto& t){const auto* r=t.find(region);return r && t.addWarpMarker(region,r->offset+tick-r->start);});break;
-                case cmdRemoveWarp: edit("Remove warp marker",[=](auto& t){return t.removeWarpMarker(region,static_cast<std::size_t>(warpIndex));});break;
-                case cmdDisableWarp: edit("Disable audio warp",[=](auto& t){return t.setWarp(region,{});});break;
+                case cmdWarp: enableWarp(region); break;
+                case cmdAddWarp: if (const auto* r = committed().find(region)) clipCommand(command::AddSongWarpMarker{region, r->offset + tick - r->start}); break;
+                case cmdRemoveWarp: clipCommand(command::RemoveSongWarpMarker{region, warpIndex}); break;
+                case cmdDisableWarp: clipCommand(command::SetSongClipWarp{region, {}}, "Disable audio warp"); break;
                 case cmdRebuildWarp: controller.retryWarpPreparation();break;
-                case cmdDetectTransients: controller.detectRegionTransients(region);break;
+                case cmdDetectTransients: detectTransients(region); break;
                 case cmdSplit: splitAtCursor(); break; case cmdMute: toggleMuteSelection(); break;
                 case cmdSlipLeft: slipSelection(-timeline::ticksPerStep); break; case cmdSlipRight: slipSelection(timeline::ticksPerStep); break;
                 case cmdSourceLoop: toggleSourceLoopSelection(); break; case cmdReverse: toggleReverseSelection(); break;
