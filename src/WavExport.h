@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <filesystem>
 
 namespace alien {
@@ -19,6 +20,11 @@ struct WavExportOptions {
     int freezeTrack{-1};       // >=0: one post-FX, pre-fader Session track WAV.
     bool stems{false};         // target is a new folder; capture aligned buses before master processing.
     int blockFrames{512};       // frames per render call (1..512); the result is the same for any size
+};
+
+struct MasterExportLevels {
+    double peak{};
+    double rms{};
 };
 
 // Owned sibling staging directory. Only this generated directory is cleaned on
@@ -75,7 +81,8 @@ inline std::int64_t exportFrameCount(const timeline::TempoMap& tempo, std::int64
 inline bool exportArrangementWav(const juce::File& target, const SessionProjectData& project,
     const ArrangementPlayback& livesong, const DrumSamplePointers& drums,
     const std::atomic<bool>& cancelled, juce::String& error, ToneEngine* preparedEngine = nullptr,
-    const WavExportOptions& options = {}) {
+    const WavExportOptions& options = {}, std::optional<MasterExportLevels>* masterLevels = nullptr) {
+    if (masterLevels) masterLevels->reset();
     constexpr double exportRate = 48000.0;
     const bool freezing=options.freezeTrack>=0;
     const bool capture=options.stems || freezing;
@@ -270,6 +277,9 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         error="Export duration is too long."; return false;
     }
     const auto total=frames+latency+tail;
+    const bool measureMaster = masterLevels && !capture;
+    bool finiteMaster = true;
+    double peak = 0, squares = 0;
     for(std::int64_t offset=0;offset<total;offset+=block) {
         if(cancelled.load()) {
             error=options.stems ? "Stem export cancelled; no folder published." : "Export cancelled; existing file unchanged.";return false;
@@ -306,6 +316,17 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
                 || !writer->writeFromAudioSampleBuffer(buffer,start,count-start)) {
                 error="WAV write failed (check available space)."; return false;
             }
+            if (measureMaster && finiteMaster) {
+                for (int channel = 0; channel < 2; ++channel) {
+                    const auto* samples = buffer.getReadPointer(channel);
+                    for (int i = start; i < count; ++i) {
+                        const double sample = samples[i];
+                        finiteMaster = finiteMaster && std::isfinite(sample);
+                        peak = std::max(peak, std::abs(sample));
+                        squares += sample * sample;
+                    }
+                }
+            }
         }
     }
     if (options.stems) {
@@ -333,6 +354,8 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     if (options.stems ? !folder->publish() : !temporary->overwriteTargetFileWithTemporary()) {
         error=options.stems ? "Cannot publish stem folder; destination may already exist." : "Cannot replace destination WAV.";return false;
     }
+    if (measureMaster && finiteMaster)
+        *masterLevels = MasterExportLevels{peak, std::sqrt(squares / (2.0 * static_cast<double>(frames + tail)))};
     error.clear();return true;
 }
 } // namespace alien

@@ -172,18 +172,36 @@ int main() {
     check(!engine->playing.load(),"song stops automatically");
     auto file=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("alien-export-test",".wav");
     std::atomic<bool> cancel{false}; alien::DrumSamplePointers drums{};
-    check(alien::exportArrangementWav(file,*project,*song,drums,cancel,error),"export succeeds");
+    std::optional<alien::MasterExportLevels> levels;
+    check(alien::exportArrangementWav(file,*project,*song,drums,cancel,error,nullptr,{},&levels),"export succeeds");
     juce::WavAudioFormat format;std::unique_ptr<juce::AudioFormatReader> reader(format.createReaderFor(file.createInputStream().release(),true));
-    check(reader && reader->lengthInSamples==288000 && reader->sampleRate==48000 && reader->bitsPerSample==24 && reader->numChannels==2,"WAV format and exact duration");reader.reset();
+    check(reader && reader->lengthInSamples==288000 && reader->sampleRate==48000 && reader->bitsPerSample==24 && reader->numChannels==2,"WAV format and exact duration");
+    juce::AudioBuffer<float> decoded(2, 288000);
+    check(reader->read(&decoded, 0, decoded.getNumSamples(), 0, true, true), "read measured WAV");
+    double peak = 0, squares = 0;
+    for (int channel = 0; channel < 2; ++channel) {
+        const auto* samples = decoded.getReadPointer(channel);
+        for (int i = 0; i < decoded.getNumSamples(); ++i) {
+            const double value = samples[i];
+            peak = std::max(peak, std::abs(value));
+            squares += value * value;
+        }
+    }
+    check(levels && peak > 0 && std::abs(levels->peak - peak) < 2e-7 &&
+          std::abs(levels->rms - std::sqrt(squares / (2 * decoded.getNumSamples()))) < 2e-7,
+          "reported stereo levels match the published WAV within quantization");
+    reader.reset();
     juce::MemoryBlock before,after;file.loadFileAsData(before);cancel.store(true);
-    check(!alien::exportArrangementWav(file,*project,*song,drums,cancel,error),"cancel rejects export");file.loadFileAsData(after);
+    check(!alien::exportArrangementWav(file,*project,*song,drums,cancel,error,nullptr,{},&levels) && !levels,
+          "cancel rejects export and clears the previous measurement");file.loadFileAsData(after);
     check(before==after,"cancel preserves every destination byte");
     // Master volume is part of the mix, so the export must follow it.
     auto rms=[&](float masterGain) {
         auto loud=std::make_unique<alien::SessionProjectData>(*project); loud->masterGain=masterGain;
         const auto out=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("alien-master-test",".wav");
         std::atomic<bool> never{false}; alien::DrumSamplePointers noDrums{};
-        check(alien::exportArrangementWav(out,*loud,*song,noDrums,never,error),"export with master volume");
+        check(alien::exportArrangementWav(out,*loud,*song,noDrums,never,error,nullptr,{},&levels),"export with master volume");
+        if (masterGain == 0) check(levels && levels->peak == 0 && levels->rms == 0, "silent master reports zero amplitude");
         std::unique_ptr<juce::AudioFormatReader> r(format.createReaderFor(out.createInputStream().release(),true));
         check(r!=nullptr,"read exported file");
         juce::AudioBuffer<float> samples(2,static_cast<int>(r->lengthInSamples));

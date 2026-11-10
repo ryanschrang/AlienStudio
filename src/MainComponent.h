@@ -1518,15 +1518,25 @@ private:
         juce::Component::SafePointer<MainComponent> safe(this);
         // The engine and host are handed to the message thread when the render ends, so the plugins are destroyed there (plugins expect that).
         std::function<juce::ThreadPoolJob::JobStatus()> job = [safe, file, song, project, assets, drums, cancel, renderEngine, renderHost, options, keepAlive]() mutable {
-            juce::String error; const bool ok = alien::exportArrangementWav(file, *project, *song, drums, *cancel, error, renderEngine.get(), options);
-            juce::MessageManager::callAsync([safe, file, ok, error, engine = std::move(renderEngine), host = std::move(renderHost)] {
+            juce::String error;
+            std::optional<alien::MasterExportLevels> levels;
+            const bool ok = alien::exportArrangementWav(file, *project, *song, drums, *cancel, error, renderEngine.get(), options, &levels);
+            juce::MessageManager::callAsync([safe, file, ok, error, levels, engine = std::move(renderEngine), host = std::move(renderHost)] {
                 // Reports from plugins that failed while rendering are only collected here, on the message thread.
                 juce::String pluginFailures; host->onProblem = [&pluginFailures](const juce::String& text) { pluginFailures = text; };
                 host->poll();
                 if (!safe) return;
                 safe->exportCancellation.reset(); safe->setProjectBusy(false); safe->timelineView.setExporting(false);
+                juce::String summary = "Exported " + file.getFullPathName();
+                if (levels) {
+                    const auto dbfs = [](double amplitude) {
+                        return amplitude > 0 ? juce::String(20 * std::log10(amplitude), 1) : juce::String("-inf");
+                    };
+                    summary = "Sample peak " + dbfs(levels->peak) + " dBFS  |  RMS " + dbfs(levels->rms)
+                        + " dBFS  |  " + summary;
+                }
                 safe->timelineView.setStatus(!ok ? error
-                    : pluginFailures.isEmpty() ? "Exported " + file.getFullPathName()
+                    : pluginFailures.isEmpty() ? summary
                     : "Exported " + file.getFullPathName() + " WITH PLUGIN FAILURES. The file is missing the sound of the plugin(s) that failed, so do not use it as a final mix:\n" + pluginFailures);
             });
             return juce::ThreadPoolJob::jobHasFinished;
