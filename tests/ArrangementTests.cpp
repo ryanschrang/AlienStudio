@@ -129,7 +129,21 @@ static void slicedDrumExportTests() {
     bool silent = true; for (int i = 61; i < 1024; ++i) silent = silent && std::abs(left[i]) < 1e-6 && std::abs(right[i]) < 1e-6;
     check(silent, "export stops at exclusive slice end"); reader.reset(); file.deleteFile();
 }
+static void truePeakTests() {
+    alien::TruePeak48k meter;
+    check(meter.peak() == 0, "silent true peak is zero");
+    for (int i = 0; i < 511; ++i) meter.push(0);
+    meter.push(-.9);
+    check(meter.peak() == .9, "true peak includes the original sample magnitude");
+    meter.push(-.9);
+    // Adjacent samples straddle a render-block boundary and end the file.
+    const double expected = .9 * (3810 + 6388) / 8192.0;
+    check(expected > 1 && std::abs(meter.peak() - expected) < 1e-12,
+          "interpolation finds the over after draining the filter history");
+}
+
 int main() {
+    truePeakTests();
     slicedDrumExportTests();
     mailboxTests();
     // Clips point at shared notes, so a song snapshot stays small (it was 16 MiB of copied notes).
@@ -178,17 +192,21 @@ int main() {
     check(reader && reader->lengthInSamples==288000 && reader->sampleRate==48000 && reader->bitsPerSample==24 && reader->numChannels==2,"WAV format and exact duration");
     juce::AudioBuffer<float> decoded(2, 288000);
     check(reader->read(&decoded, 0, decoded.getNumSamples(), 0, true, true), "read measured WAV");
-    double peak = 0, squares = 0;
+    double peak = 0, squares = 0, truePeak = 0;
     for (int channel = 0; channel < 2; ++channel) {
+        alien::TruePeak48k meter;
         const auto* samples = decoded.getReadPointer(channel);
         for (int i = 0; i < decoded.getNumSamples(); ++i) {
             const double value = samples[i];
             peak = std::max(peak, std::abs(value));
             squares += value * value;
+            meter.push(value);
         }
+        truePeak = std::max(truePeak, meter.peak());
     }
     check(levels && peak > 0 && std::abs(levels->peak - peak) < 2e-7 &&
-          std::abs(levels->rms - std::sqrt(squares / (2 * decoded.getNumSamples()))) < 2e-7,
+          std::abs(levels->rms - std::sqrt(squares / (2 * decoded.getNumSamples()))) < 2e-7 &&
+          std::abs(levels->truePeak - truePeak) < 2e-7,
           "reported stereo levels match the published WAV within quantization");
     reader.reset();
     juce::MemoryBlock before,after;file.loadFileAsData(before);cancel.store(true);
@@ -201,7 +219,8 @@ int main() {
         const auto out=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("alien-master-test",".wav");
         std::atomic<bool> never{false}; alien::DrumSamplePointers noDrums{};
         check(alien::exportArrangementWav(out,*loud,*song,noDrums,never,error,nullptr,{},&levels),"export with master volume");
-        if (masterGain == 0) check(levels && levels->peak == 0 && levels->rms == 0, "silent master reports zero amplitude");
+        if (masterGain == 0) check(levels && levels->peak == 0 && levels->rms == 0 && levels->truePeak == 0,
+                                  "silent master reports zero amplitude");
         std::unique_ptr<juce::AudioFormatReader> r(format.createReaderFor(out.createInputStream().release(),true));
         check(r!=nullptr,"read exported file");
         juce::AudioBuffer<float> samples(2,static_cast<int>(r->lengthInSamples));
