@@ -354,7 +354,9 @@ public:
                     if(target>=0)changed=command::CommandEngine(c).execute(command::DuplicateClip{track,scene,track,target}).changed;
                 } else changed=command::CommandEngine(c).execute(command::MakeClipUnique{track,scene}).changed;
             }
-            if (choice == 5) changed = c.placeRegion(track, scene, std::max<std::int64_t>(0, safe->engine.timelinePosition.load()));
+            if (choice == 5)
+                changed = command::CommandEngine(c).batch({command::PlaceSongClip{track, scene, std::max<std::int64_t>(0, safe->engine.timelinePosition.load())}},
+                                                          song_clip::placesPattern(c.document(), track, scene) ? "Place pattern" : "Place clip").changed;
             if (choice >= 1000 && choice < 1000 + static_cast<int>(rackIds.size()))
                 changed = command::CommandEngine(c).execute(command::AssignRackClip{track, scene, rackIds[static_cast<std::size_t>(choice - 1000)]}).changed;
             if (!changed) { safe->setImportStatus("Nothing changed: that cell cannot take it (it may be frozen, recording or already linked).", {}); return; }

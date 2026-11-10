@@ -862,11 +862,13 @@ public:
     // Puts a clip (a Session scene on a track row, or a pattern on a lane) at a position and selects it.
     bool place(int row, int source, std::int64_t tick) {
         if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return false; }
-        std::uint32_t id = 0;
-        const bool done = controller.placeRegion(row, source, tick, &id);
-        if (done) { selected = {id}; selectedMarker = 0; focus = row; afterEdit(); }
-        else say("That clip does not fit there.");
-        return done;
+        const auto before = controller.timeline();
+        const auto* label = song_clip::placesPattern(controller.document(), row, source) ? "Place pattern" : "Place clip";
+        const auto result = command::CommandEngine(controller).batch({command::PlaceSongClip{row, source, tick}}, label);
+        const auto id = result.changed ? song_clip::placedClip(controller.document(), before, controller.timeline(), row, source, tick) : 0;
+        if (id != 0) { selected = {id}; selectedMarker = 0; focus = row; afterEdit(); }
+        else say(result.error.isNotEmpty() ? result.error : juce::String("That clip does not fit there."));
+        return id != 0;
     }
     // Double-click: the track's selected scene, or the first scene with something in it; on a lane, the selected pattern.
     bool placeDefault(int row, std::int64_t tick) {
