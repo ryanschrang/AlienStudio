@@ -1532,7 +1532,10 @@ private:
                     const auto dbfs = [](double amplitude) {
                         return amplitude > 0 ? juce::String(20 * std::log10(amplitude), 1) : juce::String("-inf");
                     };
-                    summary = "True peak " + dbfs(levels->truePeak) + " dBTP  |  Sample peak " + dbfs(levels->peak)
+                    const auto loudness = levels->integratedLufs
+                        ? juce::String(*levels->integratedLufs, 1) + " LUFS" : juce::String("unavailable");
+                    summary = "Integrated " + loudness + "  |  True peak " + dbfs(levels->truePeak)
+                        + " dBTP  |  Sample peak " + dbfs(levels->peak)
                         + " dBFS  |  RMS " + dbfs(levels->rms)
                         + " dBFS  |  " + summary;
                 }
