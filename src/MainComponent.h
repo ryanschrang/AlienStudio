@@ -29,6 +29,7 @@
 #include "PluginHost.h"
 #include "ConvolutionImport.h"
 #include "PluginPanel.h"
+#include "PluginPresetBrowser.h"
 #include "PluginPreflight.h"
 #include "PluginBlocklist.h"
 
@@ -152,6 +153,7 @@ public:
         pluginPanel.onTarget = [this](int) { refreshPlugins(); };
         pluginPanel.onAdd = [this](bool instrument, int choice) { addPlugin(instrument,choice); };
         pluginPanel.onAction = [this](int op,int slot) { pluginAction(op,slot); };
+        pluginPanel.onPresets = [this](int slot) { showPluginPresets(slot); };
         pluginPanel.onImpulseResponse = [this](int slot, std::uint64_t instance, bool chamber) {
             chooseConvolutionResponse(slot, instance, chamber);
         };
@@ -1722,6 +1724,32 @@ private:
         const auto result=commands.executeWithPlugins(edit,[this]{snapshotPlugins(SnapshotReason::always);},[this]{restorePlugins();});
         if(!result.ok)pluginPanel.setStatus(result.error);
         return result.ok && result.changed;
+    }
+
+    // The selected slot's plugin presets, in a call-out beside the Presets button. Loading one is a change inside the
+    // plugin (saved with the project, not an Undo step); the call-out names the plugin instance it was opened for, so a
+    // preset never lands in a plugin that has since replaced it.
+    void showPluginPresets(int slot) {
+        if(controller.isTrackFrozen(pluginTarget())){pluginPanel.setStatus("Unfreeze the track before changing its instrument or effects.");return;}
+        if(projectBusy || controller.isBusy())return;
+        const int rack=pluginTarget();
+        alien::plugin_presets::Found found; std::uint64_t instance=0;
+        const auto problem=pluginHost.presets(rack,slot,found,instance);
+        if(problem.isNotEmpty()){pluginPanel.setStatus(problem);refreshPlugins();return;}
+        const auto* processor=pluginHost.processorAt(rack,slot);
+        const auto name=processor!=nullptr?processor->getName():juce::String("Plugin");
+        juce::Component::SafePointer<MainComponent> safe(this);
+        auto browser=std::make_unique<alien::PluginPresetBrowser>(name,std::move(found),[safe,rack,slot,instance](const alien::plugin_presets::Preset& preset) -> juce::String {
+            if(safe==nullptr)return "Alien Studio is closing.";
+            if(safe->projectBusy || safe->controller.isBusy())return "Wait for the save, import or export to finish.";
+            if(safe->controller.isTrackFrozen(rack<alien::maxSessionTracks?rack:-1))return "Unfreeze the track before changing its instrument or effects.";
+            const auto why=safe->pluginHost.loadPreset(rack,slot,instance,preset);
+            if(why.isEmpty())safe->controller.runtimePluginEdited();
+            else safe->refreshPlugins();
+            return why;
+        });
+        auto& button=pluginPanel.presetsButton();
+        juce::CallOutBox::launchAsynchronously(std::move(browser),button.getScreenBounds(),nullptr);
     }
 
     void pluginAction(int op,int slot) {

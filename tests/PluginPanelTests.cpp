@@ -119,8 +119,11 @@ static void browserTests() {
           + juce::String(narrow.pluginBrowser().getHeight()) + " px)");
 }
 
+#include "PluginPresetTests.h"
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juceInit;
+    pluginPresetTests();
     {
         PluginPanel responsePanel; responsePanel.setSize(900, 500);
         juce::KnownPluginList known;

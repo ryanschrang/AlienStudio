@@ -242,6 +242,85 @@ static void commandLine(Fixture& f) {
         const auto r3 = runTool(f, {}, ""); test(r3.exitCode == 0 && r3.output.contains("AlienPluginCheck"), "no arguments prints the help"); }
 }
 
+// Plugin presets (T1-10): a .vstpreset saved from the real plugin is found and loaded back into it by the host.
+struct PresetSaver final : juce::ExtensionsVisitor {
+    void visitVST3Client(const VST3Client& client) override { data = client.getPreset(); }
+    juce::MemoryBlock data;
+};
+static juce::MemoryBlock presetOf(juce::AudioProcessor& plugin) {
+    PresetSaver saver;
+    if (auto* instance = dynamic_cast<juce::AudioPluginInstance*>(&plugin)) instance->getExtensions(saver);
+    return saver.data;
+}
+// Runs a few blocks of 0.5 through track 1's rack and returns what came out (parameter changes reach the plugin as it processes).
+static float heard(PluginRuntime& runtime) {
+    float out = 0.0f;
+    for (int block = 0; block < 4; ++block) {
+        runtime.begin(64, 120, true, 0);
+        for (int c = 0; c < 2; ++c) for (int i = 0; i < 64; ++i) runtime.tracks[0].setSample(c, i, 0.5f);
+        runtime.effectsAndAlign(64);
+        out = runtime.tracks[0].getSample(0, 10);
+    }
+    return out;
+}
+static void presetsWithRealPlugin(Fixture& f, const PluginState& state) {
+    const auto root = f.scratch.getChildFile("VST3 Presets");
+    juce::File saved;
+    {   setBehaviour("");
+        auto runtime = std::make_unique<PluginRuntime>(); PluginHost host(*runtime, f.scratch.getChildFile("presets.log"));
+        std::vector<PluginRackState> racks(1); racks[0].effects = {state}; PluginRackState master;
+        test(host.restore(racks, master, 48000.0).isEmpty(), "the real plugin is in the rack for the preset checks");
+        auto& slot = runtime->racks[0].effects[0];
+        auto* plugin = dynamic_cast<juce::AudioPluginInstance*>(slot.processor.get());
+        test(plugin != nullptr && plugin->getParameters().size() >= 1, "it is a hosted VST3 instance with parameters");
+        if (plugin == nullptr || plugin->getParameters().isEmpty()) return;
+        auto* gain = plugin->getParameters()[0];
+        gain->setValueNotifyingHost(0.25f);
+        const float quiet = heard(*runtime);
+        const auto preset = presetOf(*plugin);
+        const auto description = plugin->getPluginDescription();
+        saved = root.getChildFile(plugin_presets::folderName(description.manufacturerName)).getChildFile(plugin_presets::folderName(description.name))
+                    .getChildFile("Quiet").getChildFile("Quarter.vstpreset");
+        saved.getParentDirectory().createDirectory();
+        test(preset.getSize() > 0 && saved.replaceWithData(preset.getData(), preset.getSize()), "the plugin's sound is saved as a .vstpreset");
+        gain->setValueNotifyingHost(0.9f);
+        const float loud = heard(*runtime);
+        test(std::abs(loud - quiet) > 1.0e-3f && presetOf(*plugin) != preset, "turning its gain up changes its sound (" + juce::String(quiet) + " -> " + juce::String(loud) + ")");
+
+        plugin_presets::Found found; std::uint64_t instance = 0;
+        const auto listed = host.presets(0, 0, found, instance, {root});
+        test(listed.isEmpty() && found.presets.size() == 1 && found.presets[0].name == "Quarter" && found.presets[0].folder == "Quiet" && instance == slot.instanceId && instance != 0,
+             "the host lists the plugin's preset file, and no programs for a plugin with one: " + listed);
+        if (found.presets.size() != 1) return;
+        host.changed.store(false);
+        const auto loaded = host.loadPreset(0, 0, instance, found.presets[0]);
+        const float after = heard(*runtime);
+        test(loaded.isEmpty() && presetOf(*plugin) == preset && std::abs(after - quiet) < 1.0e-4f && host.changed.load(),
+             "loading it puts the saved sound back and marks the plugins changed (heard " + juce::String(after) + ", saved " + juce::String(quiet) + "): " + loaded);
+        test(host.loadPreset(0, 0, instance + 1, found.presets[0]).contains("no longer"), "a preset is not loaded into a plugin that replaced the one it was listed for");
+        const auto junk = saved.getSiblingFile("Junk.vstpreset");
+        junk.replaceWithText("not a preset");
+        plugin_presets::Preset bad = found.presets[0]; bad.name = "Junk"; bad.file = junk;
+        const auto refused = host.loadPreset(0, 0, instance, bad);
+        test(refused.contains("did not accept") && !slot.faulted.get() && presetOf(*plugin) == preset, "a file that is not a preset is refused and changes nothing: " + refused);
+        junk.deleteFile();
+        plugin_presets::Found none; std::uint64_t noInstance = 0;
+        test(host.presets(0, 1, none, noInstance, {root}).contains("no plugin") && none.presets.empty(), "an empty slot has no presets"); }
+    {   // A plugin that crashes while taking a preset is switched off, and the host carries on.
+        setBehaviour("crash-restore");
+        auto runtime = std::make_unique<PluginRuntime>(); PluginHost host(*runtime, f.scratch.getChildFile("presets-crash.log"));
+        std::vector<PluginRackState> racks(1); racks[0].effects = {state}; PluginRackState master;
+        test(host.restore(racks, master, 48000.0).isEmpty(), "the crashing plugin loads (it has no saved state to restore)");
+        plugin_presets::Found found; std::uint64_t instance = 0;
+        test(host.presets(0, 0, found, instance, {root}).isEmpty() && found.presets.size() == 1, "and lists the preset");
+        if (found.presets.size() == 1) {
+            const auto crashed = host.loadPreset(0, 0, instance, found.presets[0]);
+            test(crashed.contains("failed while loading the preset") && runtime->racks[0].effects[0].faulted.get(), "a crash while loading a preset is contained: " + crashed);
+            test(host.loadPreset(0, 0, instance, found.presets[0]).contains("switched off"), "and the switched-off plugin takes no more presets");
+        }
+        setBehaviour(""); }
+}
+
 // The host itself, in this process, with the real plugin binary behind it.
 static void hostWithRealPlugin(Fixture& f) {
     const PluginState state{f.description.createXml()->toString(), {}, false};
@@ -284,6 +363,7 @@ static void hostWithRealPlugin(Fixture& f) {
         const auto before = PluginRuntime::quarantinedCount();
         host.restore(racks, master, 48000.0);
         test(PluginRuntime::quarantinedCount() == before + 1, "reloading the project parks the crashed instance rather than destroying it"); }
+    presetsWithRealPlugin(f, state);
 }
 
 int main(int argc, char** argv) {
