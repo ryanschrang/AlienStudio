@@ -1532,7 +1532,8 @@ private:
                     const auto dbfs = [](double amplitude) {
                         return amplitude > 0 ? juce::String(20 * std::log10(amplitude), 1) : juce::String("-inf");
                     };
-                    summary = "Sample peak " + dbfs(levels->peak) + " dBFS  |  RMS " + dbfs(levels->rms)
+                    summary = "True peak " + dbfs(levels->truePeak) + " dBTP  |  Sample peak " + dbfs(levels->peak)
+                        + " dBFS  |  RMS " + dbfs(levels->rms)
                         + " dBFS  |  " + summary;
                 }
                 safe->timelineView.setStatus(!ok ? error

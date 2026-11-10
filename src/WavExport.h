@@ -2,6 +2,7 @@
 #include "ArrangementWarp.h"
 #include "ToneEngine.h"
 #include "SessionProject.h"
+#include "TruePeak48k.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <cmath>
 #include <limits>
@@ -25,6 +26,7 @@ struct WavExportOptions {
 struct MasterExportLevels {
     double peak{};
     double rms{};
+    double truePeak{};
 };
 
 // Owned sibling staging directory. Only this generated directory is cleaned on
@@ -280,6 +282,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     const bool measureMaster = masterLevels && !capture;
     bool finiteMaster = true;
     double peak = 0, squares = 0;
+    std::array<TruePeak48k, 2> truePeak;
     for(std::int64_t offset=0;offset<total;offset+=block) {
         if(cancelled.load()) {
             error=options.stems ? "Stem export cancelled; no folder published." : "Export cancelled; existing file unchanged.";return false;
@@ -324,6 +327,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
                         finiteMaster = finiteMaster && std::isfinite(sample);
                         peak = std::max(peak, std::abs(sample));
                         squares += sample * sample;
+                        truePeak[channel].push(sample);
                     }
                 }
             }
@@ -355,7 +359,8 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         error=options.stems ? "Cannot publish stem folder; destination may already exist." : "Cannot replace destination WAV.";return false;
     }
     if (measureMaster && finiteMaster)
-        *masterLevels = MasterExportLevels{peak, std::sqrt(squares / (2.0 * static_cast<double>(frames + tail)))};
+        *masterLevels = MasterExportLevels{peak, std::sqrt(squares / (2.0 * static_cast<double>(frames + tail))),
+            std::max(truePeak[0].peak(), truePeak[1].peak())};
     error.clear();return true;
 }
 } // namespace alien
