@@ -143,8 +143,9 @@ public:
         progressionMode.setName("Progression scale");
         progressionMode.addItem("Major", 1);
         progressionMode.addItem("Natural minor", 2);
+        progressionMode.addItem("Project scale", 3);
         progressionMode.setSelectedId(1, juce::dontSendNotification);
-        progressionMode.setTooltip("Diatonic triads in the chosen scale; root MIDI note sets key and register");
+        progressionMode.setTooltip("Diatonic triads. Project scale uses the saved key and a seven-note scale. Tonic sets the octave in Project scale mode.");
         for (std::size_t i = 0; i < progressionDegrees.size(); ++i) {
             auto& degree = progressionDegrees[i];
             addChildComponent(degree);
@@ -1615,7 +1616,7 @@ private:
             configureParameter(0, "Tonic (MIDI)", "Progression tonic MIDI note", 0, 127, progressionSettings.tonic);
             configureParameter(1, "Steps / chord", "Progression chord length steps", 1, 64, progressionSettings.chordSteps);
             configureParameter(2, "Velocity", "Progression velocity", 1, 127, progressionSettings.velocity * 127.0f);
-            progressionMode.setSelectedId(progressionSettings.minor ? 2 : 1, juce::dontSendNotification);
+            progressionMode.setSelectedId(progressionUsesProjectScale ? 3 : progressionSettings.minor ? 2 : 1, juce::dontSendNotification);
             for (std::size_t i = 0; i < progressionDegrees.size(); ++i)
                 progressionDegrees[i].setSelectedId(progressionSettings.degrees[i], juce::dontSendNotification);
         } else if (tool == 10) {
@@ -1689,9 +1690,11 @@ private:
             progressionSettings.chordSteps = parameters[1].getValue();
             progressionSettings.velocity = static_cast<float>(parameters[2].getValue() / 127.0);
             progressionSettings.minor = progressionMode.getSelectedId() == 2;
+            progressionUsesProjectScale = progressionMode.getSelectedId() == 3;
             for (std::size_t i = 0; i < progressionDegrees.size(); ++i)
                 progressionSettings.degrees[i] = progressionDegrees[i].getSelectedId();
-            const auto result = insertProgression(pattern, insertionStep, progressionSettings);
+            const auto scale = progressionUsesProjectScale ? std::optional{projectMusicalScale} : std::nullopt;
+            const auto result = insertProgression(pattern, insertionStep, progressionSettings, scale);
             if (result.changed()) {
                 selection = result.selection;
                 activeId = selection.ids[0];
@@ -1700,7 +1703,9 @@ private:
                 closeToolPanel();
             } else {
                 endEdit();
-                statusMessage = result.status == ChordStampStatus::outOfBounds
+                statusMessage = scale && !supportsProgressionScale(*scale)
+                    ? "No changes: set a seven-note project scale in the Scale tool."
+                    : result.status == ChordStampStatus::outOfBounds
                     ? "No changes: four chords do not fit after the cursor. Shorten Steps / chord or move the cursor."
                     : result.status == ChordStampStatus::capacityExceeded
                     ? "No changes: the progression exceeds the clip note limit."
@@ -1956,6 +1961,7 @@ private:
     ArpeggiateSettings arpeggiateSettings;
     EuclideanSettings euclideanSettings;
     ProgressionSettings progressionSettings;
+    bool progressionUsesProjectScale{};
     juce::ComboBox progressionMode;
     std::array<juce::ComboBox, 4> progressionDegrees;
     ChordStampSettings chordSettings;
