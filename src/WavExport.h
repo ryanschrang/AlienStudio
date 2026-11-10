@@ -3,6 +3,7 @@
 #include "ToneEngine.h"
 #include "SessionProject.h"
 #include "TruePeak48k.h"
+#include "IntegratedLoudness48k.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <cmath>
 #include <limits>
@@ -27,6 +28,7 @@ struct MasterExportLevels {
     double peak{};
     double rms{};
     double truePeak{};
+    std::optional<double> integratedLufs;
 };
 
 // Owned sibling staging directory. Only this generated directory is cleaned on
@@ -283,6 +285,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     bool finiteMaster = true;
     double peak = 0, squares = 0;
     std::array<TruePeak48k, 2> truePeak;
+    IntegratedLoudness48k loudness;
     for(std::int64_t offset=0;offset<total;offset+=block) {
         if(cancelled.load()) {
             error=options.stems ? "Stem export cancelled; no folder published." : "Export cancelled; existing file unchanged.";return false;
@@ -320,15 +323,17 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
                 error="WAV write failed (check available space)."; return false;
             }
             if (measureMaster && finiteMaster) {
-                for (int channel = 0; channel < 2; ++channel) {
-                    const auto* samples = buffer.getReadPointer(channel);
-                    for (int i = start; i < count; ++i) {
-                        const double sample = samples[i];
-                        finiteMaster = finiteMaster && std::isfinite(sample);
-                        peak = std::max(peak, std::abs(sample));
-                        squares += sample * sample;
-                        truePeak[channel].push(sample);
-                    }
+                juce::ScopedNoDenormals noDenormals;
+                const auto* left = buffer.getReadPointer(0);
+                const auto* right = buffer.getReadPointer(1);
+                for (int i = start; i < count; ++i) {
+                    const double l = left[i], r = right[i];
+                    if (!std::isfinite(l) || !std::isfinite(r)) { finiteMaster = false; break; }
+                    peak = std::max({peak, std::abs(l), std::abs(r)});
+                    squares += l * l + r * r;
+                    truePeak[0].push(l);
+                    truePeak[1].push(r);
+                    loudness.push(l, r);
                 }
             }
         }
@@ -360,7 +365,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     }
     if (measureMaster && finiteMaster)
         *masterLevels = MasterExportLevels{peak, std::sqrt(squares / (2.0 * static_cast<double>(frames + tail))),
-            std::max(truePeak[0].peak(), truePeak[1].peak())};
+            std::max(truePeak[0].peak(), truePeak[1].peak()), loudness.lufs()};
     error.clear();return true;
 }
 } // namespace alien

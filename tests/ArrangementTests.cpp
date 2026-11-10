@@ -142,8 +142,32 @@ static void truePeakTests() {
           "interpolation finds the over after draining the filter history");
 }
 
+static void integratedLoudnessTests() {
+    alien::IntegratedLoudness48k stereo, mono, quiet, incomplete;
+    for (int i = 0; i < 144000; ++i) {
+        const double tone = std::sin(2 * alien::dsp::pi * (i % 48) / 48);
+        stereo.push(.070794578 * tone, -.070794578 * tone);
+        mono.push(.070794578 * tone, 0);
+        quiet.push(.0001 * tone, .0001 * tone);
+        if (i < 19199) incomplete.push(tone, tone);
+    }
+    check(!incomplete.lufs() && !quiet.lufs(), "partial blocks and audio below the absolute gate have no reading");
+    const auto reference = stereo.lufs(), single = mono.lufs();
+    check(reference && single && std::abs(*reference + 23) < .05 &&
+          std::abs(*reference - *single - 3.0103) < .001,
+          "1 kHz reference checks K-weighting and independent stereo power");
+    for (int i = 0; i < 144000; ++i) {
+        const double tone = .001 * std::sin(2 * alien::dsp::pi * (i % 48) / 48);
+        stereo.push(tone, tone);
+    }
+    const auto gated = stereo.lufs();
+    check(gated && std::abs(*gated - *reference) < .5,
+          "quiet material above the absolute gate is rejected by the relative gate");
+}
+
 int main() {
     truePeakTests();
+    integratedLoudnessTests();
     slicedDrumExportTests();
     mailboxTests();
     // Clips point at shared notes, so a song snapshot stays small (it was 16 MiB of copied notes).
@@ -208,6 +232,13 @@ int main() {
           std::abs(levels->rms - std::sqrt(squares / (2 * decoded.getNumSamples()))) < 2e-7 &&
           std::abs(levels->truePeak - truePeak) < 2e-7,
           "reported stereo levels match the published WAV within quantization");
+    alien::IntegratedLoudness48k loudness;
+    for (int i = 0; i < decoded.getNumSamples(); ++i)
+        loudness.push(decoded.getSample(0, i), decoded.getSample(1, i));
+    const auto decodedLufs = loudness.lufs();
+    check(levels && levels->integratedLufs && decodedLufs &&
+          std::abs(*levels->integratedLufs - *decodedLufs) < .0001,
+          "reported integrated loudness matches the published WAV");
     reader.reset();
     juce::MemoryBlock before,after;file.loadFileAsData(before);cancel.store(true);
     check(!alien::exportArrangementWav(file,*project,*song,drums,cancel,error,nullptr,{},&levels) && !levels,
@@ -219,7 +250,7 @@ int main() {
         const auto out=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("alien-master-test",".wav");
         std::atomic<bool> never{false}; alien::DrumSamplePointers noDrums{};
         check(alien::exportArrangementWav(out,*loud,*song,noDrums,never,error,nullptr,{},&levels),"export with master volume");
-        if (masterGain == 0) check(levels && levels->peak == 0 && levels->rms == 0 && levels->truePeak == 0,
+        if (masterGain == 0) check(levels && levels->peak == 0 && levels->rms == 0 && levels->truePeak == 0 && !levels->integratedLufs,
                                   "silent master reports zero amplitude");
         std::unique_ptr<juce::AudioFormatReader> r(format.createReaderFor(out.createInputStream().release(),true));
         check(r!=nullptr,"read exported file");
