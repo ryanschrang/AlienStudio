@@ -156,6 +156,22 @@ static void randomizeTests() {
     require(sameNote(*pattern.find(other), *original.find(other)), "randomizer only alters selected notes");
     require(pattern.find(a)->pitch == 62 && pattern.find(b)->pitch == 68,
             "portable seeded pitch sequence is stable");
+    auto inKey = original;
+    require(processRandomize(inKey, selected, settings, {true, 0, ScaleType::major}).changed() &&
+            inKey.find(a)->pitch == 62 && inKey.find(b)->pitch == 67,
+            "project scale keeps a legal proposal and resolves an equally close pitch downward");
+    for (const auto id : {a, b}) {
+        require(inKey.find(id)->startStep == pattern.find(id)->startStep &&
+                inKey.find(id)->velocity == pattern.find(id)->velocity,
+                "project scale does not change seeded timing or velocity");
+    }
+    require(sameNote(*inKey.find(other), *original.find(other)), "project scale leaves unselected notes alone");
+    PianoRollPattern low;
+    const auto lowId = low.add(0, 1, 1);
+    PianoRollSelection lowSelection; lowSelection.add(lowId);
+    RandomizeSettings tight{0, 0, 1, 1};
+    require(!processRandomize(low, lowSelection, tight, {true, 2, ScaleType::majorPentatonic}).changed() &&
+            low.find(lowId)->pitch == 0, "an empty legal pitch range keeps the original note");
     for (const auto id : {a, b}) {
         const auto& note = *pattern.find(id); const auto& old = *original.find(id);
         require(std::abs(note.startStep - old.startStep) <= .5 && note.lengthSteps == old.lengthSteps

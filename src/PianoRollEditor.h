@@ -196,6 +196,10 @@ public:
         euclideanScale.setButtonText("Project scale");
         euclideanScale.setName("Euclidean follow project scale");
         euclideanScale.setTooltip("Snap the generated pitch to the current project scale, independently of local Scale settings. Undefined project key leaves it chromatic. Existing notes stay unchanged.");
+        addChildComponent(randomizeScale);
+        randomizeScale.setButtonText("Project scale");
+        randomizeScale.setName("Randomize follow project scale");
+        randomizeScale.setTooltip("Keep randomized pitches in the current project scale and within the chosen semitone range. Undefined key leaves pitches chromatic.");
         descending.setButtonText("High to low");
         descending.setName("Strum from high pitch to low pitch");
         addChildComponent(chordTypeLabel);
@@ -650,6 +654,7 @@ public:
             seed.setBounds(128, 113, 190, 26);
             descending.setBounds(336, 113, 150, 26);
             euclideanScale.setBounds(336, 113, 170, 26);
+            randomizeScale.setBounds(euclideanScale.getBounds());
         }
         applyButton.setBounds(getWidth() - 184, 113, 78, 28);
         cancelButton.setBounds(getWidth() - 98, 113, 78, 28);
@@ -1559,6 +1564,7 @@ private:
         seedLabel.setVisible(seed.isVisible());
         descending.setVisible(tool == 1 || tool == 10);
         euclideanScale.setVisible(tool == 12);
+        randomizeScale.setVisible(tool == 3);
         seed.setTooltip(tool == 12 ? "MIDI pitch for generated notes, optionally snapped to the project scale" : "The same seed and notes reproduce the same randomized result");
         progressionMode.setVisible(tool == 11);
         for (auto& degree : progressionDegrees) degree.setVisible(tool == 11);
@@ -1648,7 +1654,7 @@ private:
         progressionMode.setVisible(false);
         for (auto& degree : progressionDegrees) degree.setVisible(false);
         for (auto* child : std::initializer_list<juce::Component*> { &panelTitle, &panelHelp, &applyButton,
-                                                                 &cancelButton, &seed, &seedLabel, &descending, &euclideanScale,
+                                                                 &cancelButton, &seed, &seedLabel, &descending, &euclideanScale, &randomizeScale,
                                                                  &chordType, &chordTypeLabel, &previewChordButton,
                                                                  &scaleRoot, &scaleRootLabel, &scaleType, &scaleTypeLabel,
                                                                  &scaleHighlight, &scaleSnap, &followProjectScale, &useProjectScale, &projectScaleSummary })
@@ -1749,7 +1755,8 @@ private:
             result = processChop(pattern, selection, chopSettings);
         } else if (tools.getSelectedId() == 3) {
             randomizeSettings = { value(0) / 240.0, static_cast<float>(value(1) / 100.0), static_cast<int>(value(2)), randomSeed };
-            result = processRandomize(pattern, selection, randomizeSettings);
+            result = processRandomize(pattern, selection, randomizeSettings,
+                randomizeScale.getToggleState() ? projectMusicalScale : ProjectMusicalScale{});
         } else if (tools.getSelectedId() == 4) {
             quantizeSettings = { value(0) / 240.0, value(1) / 100.0, value(2) / 100.0 };
             result = processQuantize(pattern, selection, quantizeSettings);
@@ -1931,7 +1938,7 @@ private:
     std::array<juce::Label, 3> parameterLabels;
     std::array<juce::Slider, 3> parameters;
     juce::Slider seed;
-    juce::ToggleButton descending, previewChordButton, scaleHighlight, scaleSnap, euclideanScale;
+    juce::ToggleButton descending, previewChordButton, scaleHighlight, scaleSnap, euclideanScale, randomizeScale;
     juce::ScrollBar pitchScroll { true };
     PianoRollSelection selection, marqueeBase;
     PianoRollClipboard clipboard;

@@ -1,5 +1,6 @@
 #pragma once
 #include "PianoRollSequence.h"
+#include "PianoRollScale.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -290,10 +291,11 @@ inline ProcessingResult processChop(PianoRollPattern& pattern, const PianoRollSe
 }
 
 inline ProcessingResult processRandomize(PianoRollPattern& pattern, const PianoRollSelection& selection,
-                                        const RandomizeSettings& settings = {}) noexcept {
+                                        const RandomizeSettings& settings = {}, ProjectMusicalScale scale = {}) noexcept {
     using namespace piano_roll_processing_detail;
     if (!validInputs(pattern, selection) || !within(settings.timingSteps, 0, 4)
-        || !within(settings.velocityVariation, 0, 1) || settings.pitchSemitones < 0 || settings.pitchSemitones > 24)
+        || !within(settings.velocityVariation, 0, 1) || settings.pitchSemitones < 0 || settings.pitchSemitones > 24
+        || (scale.defined && !scale.valid()))
         return result(ProcessingStatus::invalidInput, pattern, selection);
     if (settings.timingSteps == 0 && settings.velocityVariation == 0 && settings.pitchSemitones == 0)
         return result(ProcessingStatus::unchanged, pattern, selection);
@@ -308,7 +310,23 @@ inline ProcessingResult processRandomize(PianoRollPattern& pattern, const PianoR
         if (settings.timingSteps > 0)
             setStart(note, pattern.toTicks(original.startStep) + static_cast<int>(std::lround(timing)), edited);
         if (settings.velocityVariation > 0) note.velocity = velocity(original.velocity, variation);
-        if (settings.pitchSemitones > 0) note.pitch = std::clamp(original.pitch + pitch, 0, 127);
+        if (settings.pitchSemitones == 0) continue;
+        const int proposed = std::clamp(original.pitch + pitch, 0, 127);
+        if (!scale.defined) {
+            note.pitch = proposed;
+            continue;
+        }
+        const ScaleSettings key{scale.rootPitchClass, scale.type};
+        const int low = std::max(0, original.pitch - settings.pitchSemitones);
+        const int high = std::min(127, original.pitch + settings.pitchSemitones);
+        int closest = high - low + 1;
+        for (int candidate = low; candidate <= high; ++candidate) {
+            const int distance = std::abs(candidate - proposed);
+            if (distance < closest && isPitchInScale(candidate, key)) {
+                note.pitch = candidate;
+                closest = distance;
+            }
+        }
     }
     return commit(pattern, edited, selection);
 }

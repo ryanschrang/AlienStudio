@@ -49,6 +49,13 @@ pitch class. Apply requires a defined seven-note scale. An undefined key,
 pentatonic, blues or chromatic scale leaves the clip untouched. The four chords
 are one Undo step and retain their notes when the project key changes.
 
+Piano Roll > Randomize has a **Project scale** option (claim #295). With a
+nonzero pitch range and a defined project scale, each selected note's proposed
+pitch snaps to the nearest scale tone within the requested semitone range and
+MIDI bounds. Ties go downward. If the range contains no scale tone, the original
+pitch is kept. The seed still controls timing and velocity as before. Undefined
+project keys use chromatic randomization.
+
 Note-based rack rows can use the Piano Roll's existing follow option. Song sections
 and the editable chord-track context are documented in SONG_SECTIONS.md and
 SONG_CHORD_TRACK.md. Chord creation seeds its root from the saved key, but its
