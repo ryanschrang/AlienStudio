@@ -2,6 +2,7 @@
 #include "DiagnosticLog.h"
 #include "PluginRuntime.h"
 #include "PluginScan.h"
+#include "PluginPresets.h"
 #include "PluginState.h"
 #include "ParameterAutomation.h"
 #include "StockEffectEditors.h"
@@ -348,6 +349,52 @@ public:
         }
         if (entry.faulted.get()) return "FAILED - switched off";
         if (brokenEditors.count(entry.processor.get())!=0) return "editor crashed";
+        return {};
+    }
+    // Message thread. The presets of the VST3 plugin in a slot: its programs (when it has more than one), then its
+    // .vstpreset files from `roots` and its bundle. Empty on success, otherwise a message for the user. `instanceOut`
+    // gets the slot's instance id, for loadPreset.
+    juce::String presets(int rack,int slot,plugin_presets::Found& out,std::uint64_t& instanceOut,
+                         const juce::Array<juce::File>& roots=plugin_presets::standardRoots()) {
+        out={}; instanceOut=0;
+        auto* found=slotAt(rack,slot);
+        if (found==nullptr || !found->processor) return "There is no plugin in that slot.";
+        auto& entry=*found;
+        const auto label=slotLabel(entry,rack,slot);
+        if (entry.faulted.get()) return report("warn",label+" has failed and is switched off, so its presets cannot be loaded.");
+        auto* instance=dynamic_cast<juce::AudioPluginInstance*>(entry.processor.get());
+        if (instance==nullptr) return "Alien Studio's stock effects have no plugin presets.";
+        juce::PluginDescription description; std::vector<plugin_presets::Preset> programs; fault::Fault fault;
+        if (!fault::guarded([&]{ description=instance->getPluginDescription(); programs=plugin_presets::programs(*instance); },fault)) {
+            runtime.markFaulted(entry,rack,slot,PluginPhase::query,fault);
+            return report("error",label+" failed while listing its presets ("+juce::String(fault::describe(fault))+") and is switched off. Save your work: the plugin may be unstable.");
+        }
+        auto files=plugin_presets::findFiles(description.manufacturerName,description.name,roots,juce::File(description.fileOrIdentifier));
+        out.presets=std::move(programs);
+        out.presets.insert(out.presets.end(),files.presets.begin(),files.presets.end());
+        out.truncated=files.truncated;
+        instanceOut=entry.instanceId;
+        return {};
+    }
+    // The plugin loaded in a slot, or none.
+    const juce::AudioProcessor* processorAt(int rack,int slot) { const auto* found=slotAt(rack,slot); return found!=nullptr?found->processor.get():nullptr; }
+    // Message thread. Loads a preset from presets() into the slot, if it still holds that plugin instance. Like a change
+    // made in the plugin's own window, it marks the plugins changed (so the project saves the new state) and is not an
+    // Undo step. A plugin that crashes while loading it is switched off. Empty on success, otherwise why not.
+    juce::String loadPreset(int rack,int slot,std::uint64_t instance,const plugin_presets::Preset& preset) {
+        auto* found=slotAt(rack,slot);
+        if (found==nullptr || !found->processor || found->instanceId!=instance) return "That plugin is no longer in the slot. Open its presets again.";
+        auto& entry=*found;
+        const auto label=slotLabel(entry,rack,slot);
+        if (entry.faulted.get()) return report("warn",label+" has failed and is switched off, so its presets cannot be loaded.");
+        juce::String why; fault::Fault fault;
+        if (!fault::guarded([&]{ why=plugin_presets::load(*entry.processor,preset); },fault)) {
+            runtime.markFaulted(entry,rack,slot,PluginPhase::load,fault);
+            return report("error",label+" failed while loading the preset \""+preset.name+"\" ("+juce::String(fault::describe(fault))+") and is switched off. Save your work: the plugin may be unstable.");
+        }
+        if (why.isNotEmpty()) return report("warn",label+": "+why);
+        changed.store(true);
+        log.write("info",label+" loaded the preset \""+preset.name+"\".");
         return {};
     }
     // Message thread, with the device callback detached, before an offline snapshot.

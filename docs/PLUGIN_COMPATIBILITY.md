@@ -13,10 +13,23 @@ about whether a particular commercial plugin works, which is what this document 
 | **Loading a project** | The first time a plugin file is seen, the **short compatibility check** (below) runs in a separate process. A plugin that passes is trusted until its file changes. | A plugin that crashes or hangs in the check is **not loaded**. Its slot stays in the project with its saved settings, labelled "NOT LOADED", with the reason. |
 | **Creating the plugin** | Inside Alien Studio, under a fault trap. | A crash or exception while creating it, applying its saved state or preparing it leaves a placeholder slot (settings kept) and a message. |
 | **Playing** | Every call into the plugin runs under a fault trap, and its output is checked for NaN/infinity. | The plugin is switched off for the rest of the session and is never called again. An effect passes its **unprocessed input** through; an instrument goes silent. The slot shows "FAILED - switched off". The report is written to `plugin-host.log`. |
+| **Loading a preset** (Plugins > Presets...) | The plugin's programs and `.vstpreset` files are listed, and the chosen one is loaded on the message thread under the fault trap, as the plugin's own preset menu would. Files larger than 16 MiB are not read. | A crash while listing or loading switches the plugin off, as in playback. A file the plugin refuses changes nothing and says so. |
 | **Opening an editor** | Creating and showing the window run under the fault trap. | The slot shows "editor crashed", the editor is not reopened this session, and the plugin keeps playing if it can. |
 | **Next time** (blocklist) | A plugin that **crashed** while being created, prepared, played, saved, queried or shown is remembered against its file. | It is not loaded again (placeholder, settings kept) until the file changes, which an update does, or you choose **Scan VST3 > Blocked plugins > Allow ... to load again**. Invalid audio (NaN) switches a plugin off for the session but does not block it. A crash that ends the whole application is not recorded. |
 | **Saving** | A plugin that has failed is not asked for its state again. | The last good saved state stays in the project. |
 | **Exporting** | Uses separate plugin instances. | If any plugin fails during the render, the export is reported as having **plugin failures** instead of success. |
+
+### Plugin presets
+
+**Presets...** beside the slot chooser on the Plugins page opens a searchable list of the selected VST3 plugin's presets:
+
+* its own programs, when it has more than one;
+* `.vstpreset` files in `Documents\VST3 Presets\<maker>\<plugin>` and in the shared `ProgramData\VST3 Presets\<maker>\<plugin>`, with subfolders shown as the preset's folder (the shared ones under "Shared");
+* the bundle's own `Contents\Resources\Presets` ("Factory").
+
+Selecting a preset changes nothing. Double-click, Enter or **Load preset** loads it. At most 4096 files are listed. A maker or plugin name with characters Windows does not allow in a folder name is also looked for with those characters replaced by `_`.
+
+Loading a preset is a change inside the plugin, like turning one of its knobs in its own window: the project is marked changed and saves the plugin's new state, but it is **not an Undo step**. The list is tied to the plugin instance it was opened for, so a preset is never loaded into a plugin that has replaced it. Stock effects have no presets here. Saving presets, and presets for Channel Rack instruments, are not part of this.
 
 ### What this cannot protect against
 

@@ -22,6 +22,9 @@ public:
         for (auto* c:std::array<juce::Component*,16>{&target,&browser,&slot,&liveInput,&scan,&cancelScan,&addInstrument,&addEffect,&open,&bypass,&sidechain,&impulse,&up,&down,&remove,&status}) addAndMakeVisible(c);
         impulse.setVisible(false);
         cancelScan.setVisible(false);
+        addAndMakeVisible(presets); presets.setButtonText("Presets..."); presets.setName("Plugin presets");
+        presets.setTooltip("Browse and load the selected VST3 plugin's presets: its programs and .vstpreset files.");
+        presets.onClick=[this]{if(onPresets && slot.getSelectedId()>0)onPresets(slot.getSelectedId()-2);};
         scan.setButtonText("Scan VST3..."); cancelScan.setButtonText("Cancel scan"); addInstrument.setButtonText("Use instrument"); addEffect.setButtonText("Add FX");
         open.setButtonText("Open editor"); bypass.setButtonText("Bypass / enable"); up.setButtonText("Move FX up"); down.setButtonText("Move FX down"); remove.setButtonText("Remove");
         target.setName("Plugin destination track, return or master"); slot.setName("Instrument or FX slot");
@@ -84,6 +87,8 @@ public:
     std::function<bool(const juce::PluginDescription&)> isBlocked;
     PluginBrowser& pluginBrowser() noexcept { return browser; }
     std::function<void(int,int)> onAction;
+    std::function<void(int)> onPresets;   // the slot whose plugin presets to browse (-1 instrument, 0.. FX)
+    juce::Component& presetsButton() noexcept { return presets; }
     std::function<void(int,std::uint64_t,bool)> onImpulseResponse;
     // Whether the effect in (destination, effect index) has a sidechain input; and the choice of key:
     // (effect index, what kind of key, its track, bus or return slot, or -1 for none).
@@ -254,7 +259,8 @@ public:
         if(!beside){r.removeFromTop(12);browser.setBounds(r.removeFromTop(juce::jmax(120,r.getHeight()-belowStackedBrowser)));}
         r.removeFromTop(12);row=r.removeFromTop(32);
         addInstrument.setBounds(row.removeFromLeft(150));row.removeFromLeft(10);addEffect.setBounds(row.removeFromLeft(120));
-        r.removeFromTop(20);slot.setBounds(r.removeFromTop(30));r.removeFromTop(12);row=r.removeFromTop(32);
+        r.removeFromTop(20);row=r.removeFromTop(30);presets.setBounds(row.removeFromRight(118));row.removeFromRight(8);slot.setBounds(row);
+        r.removeFromTop(12);row=r.removeFromTop(32);
         for(auto* b:{&open,&bypass,&sidechain,&up,&down,&remove}){b->setBounds(row.removeFromLeft(118));row.removeFromLeft(8);}
         impulse.setBounds(sidechain.getBounds());
         r.removeFromTop(16);status.setBounds(r.removeFromTop(110));
@@ -301,7 +307,7 @@ private:
     static constexpr int belowStackedBrowser=12+32+20+30+12+32+16+72;
     juce::ComboBox target,slot,liveInput;
     PluginBrowser browser;
-    juce::TextButton scan,cancelScan,addInstrument,addEffect,open,bypass,sidechain,impulse,up,down,remove;
+    juce::TextButton scan,cancelScan,addInstrument,addEffect,open,bypass,sidechain,impulse,up,down,remove,presets;
     std::vector<std::uint64_t> convolutionSlots;
     juce::String keyName(KeySource from,int i) const {
         const auto slotName=[&](const auto& names,const juce::String& fallback){
