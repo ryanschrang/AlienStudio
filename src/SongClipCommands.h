@@ -5,12 +5,13 @@
 #include <optional>
 
 // Pure document edits for the clips placed in the Song: moving, trimming, slipping, deleting, muting,
-// gain, fades, crossfades, groups, audio source looping and reversing, warp markers, and splitting, duplicating
-// and copying them. The controller and command Preview share them, so what Preview predicts is what the live
-// edit does. New clips take the next Song ids; a Preview hands out the same ones (timeline::id_stream).
+// gain, fades, crossfades, groups, audio source looping and reversing, warp markers, and splitting, duplicating and
+// copying them, and comping or forgetting recorded takes. The controller and command Preview share them, so
+// what Preview predicts is what the live edit does. New clips take the next Song ids; a Preview hands out the
+// same ones (timeline::id_stream).
 namespace alien::song_clip {
 enum class Kind { move, trimStart, trimEnd, slip, remove, mute, gain, fades, fadeIn, fadeOut, fadeShape, clearFades,
-                  crossfade, group, ungroup, loopSource, reverse, split, duplicate, copy,
+                  crossfade, group, ungroup, loopSource, reverse, split, duplicate, copy, comp, forget,
                   setWarp, addWarp, moveWarp, removeWarp };
 struct Edit {
     Kind kind{Kind::move};
@@ -23,6 +24,8 @@ struct Edit {
     timeline::FadeEdge edge{};      // fadeShape
     timeline::FadeCurve curve{};    // fadeShape
     std::uint32_t group{};          // group: the new group's id
+    std::uint32_t take{};           // comp, forget: the recorded take's id (`clips` is empty)
+    std::int64_t end{};             // comp: plays the take from `ticks` to `end`
     std::vector<timeline::WarpMarker> warp;   // setWarp: the clip's whole marker list (empty: no warp)
     int index{};                    // moveWarp, removeWarp: which marker; addWarp and moveWarp use `ticks` as its source tick
 };
@@ -33,7 +36,8 @@ inline bool audioOnly(Kind k) noexcept {
 }
 inline bool warpEdit(Kind k) noexcept { return k == Kind::setWarp || k == Kind::addWarp || k == Kind::moveWarp || k == Kind::removeWarp; }
 inline bool oneClip(Kind k) noexcept { return k == Kind::trimStart || k == Kind::trimEnd || k == Kind::fadeIn || k == Kind::fadeOut || warpEdit(k); }
-inline bool creates(Kind k) noexcept { return k == Kind::split || k == Kind::duplicate || k == Kind::copy; }
+inline bool creates(Kind k) noexcept { return k == Kind::split || k == Kind::duplicate || k == Kind::copy || k == Kind::comp; }
+inline bool takeEdit(Kind k) noexcept { return k == Kind::comp || k == Kind::forget; }
 
 // Either why the edit is refused, or the Song it leaves (none when it changes nothing).
 struct Outcome { juce::String why; std::optional<timeline::Timeline> next; };
@@ -42,6 +46,31 @@ inline Outcome outcome(const ProjectDocument& d, const Edit& e) {
     using namespace timeline;
     const auto& song = d.timeline;
     const auto refuse = [](juce::String why) { Outcome o; o.why = std::move(why); return o; };
+    if (takeEdit(e.kind)) {
+        // A take is a kept recording pass, not a clip in the Song. Forgetting one leaves the comp and its audio file;
+        // a comp plays part of it on its track over what is there, and the take stays.
+        const auto found = std::find_if(song.takes.begin(), song.takes.end(), [&](const Region& r) { return r.id == e.take; });
+        if (found == song.takes.end()) return refuse("There is no take " + juce::String(static_cast<juce::int64>(e.take)) + " in the song.");
+        Timeline next = song;
+        next.tempo = d.bpm;
+        if (e.kind == Kind::forget) {
+            std::erase_if(next.takes, [&](const Region& r) { return r.id == e.take; });
+        } else {
+            const auto& take = *found;
+            if (!d.isValidCell(take.row, take.source) || !d.clip(take.row, take.source).isAudioClip()
+                || (take.ownsClip() && d.library.clip(library::ClipId{take.clip}) == nullptr))
+                return refuse("That take's audio is no longer in the project.");
+            if (take.reversed || take.loopSource) return refuse("A reversed or looped take cannot be comped.");
+            if (e.ticks < take.start || e.end > take.end() || e.end <= e.ticks) return refuse("Choose a range inside the take.");
+            if (take.row >= 0 && take.row < d.trackCount() && d.tracks[static_cast<std::size_t>(take.row)].settings.frozen())
+                return refuse("Unfreeze track " + juce::String(take.row + 1) + " before comping its takes.");
+            if (!next.compTake(e.take, e.ticks, e.end) || !next.valid(d.trackCount(), d.sceneCount(), d.channelRack.patternCount))
+                return refuse("That take cannot be comped there.");
+        }
+        Outcome o;
+        o.next = std::move(next);
+        return o;
+    }
     if (e.clips.empty()) return refuse("Choose at least one Song clip.");
     if (oneClip(e.kind) && e.clips.size() != 1) return refuse("Choose one Song clip.");
     if (e.kind == Kind::crossfade && e.clips.size() != 2) return refuse("A crossfade needs a left and a right clip.");
@@ -129,6 +158,7 @@ inline Outcome outcome(const ProjectDocument& d, const Edit& e) {
     case Kind::split: done = next.split(ids, e.ticks); break;
     case Kind::duplicate: done = next.duplicate(ids); break;
     case Kind::copy: done = next.paste(song.copy(ids), first + e.ticks, e.lanes); break;
+    case Kind::comp: case Kind::forget: break;   // handled above
     case Kind::setWarp: done = next.setWarp(ids[0], e.warp); break;
     case Kind::addWarp: done = next.addWarpMarker(ids[0], e.ticks); break;
     case Kind::moveWarp: done = next.moveWarpMarker(ids[0], static_cast<std::size_t>(e.index), e.ticks); break;

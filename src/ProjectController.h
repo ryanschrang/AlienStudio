@@ -1241,8 +1241,10 @@ public:
         return {};
     }
     // Why the project's state refuses a Song clip command: while warped audio records, nothing that plays may change.
+    // The take list is the recorder's while it records, so comping and forgetting takes wait for it.
     juce::String songClipRefusal(const song_clip::Edit& e) const {
         if(!isRecording() && engine.recording.phase.load()==RecordControls::idle)return {};
+        if(song_clip::takeEdit(e.kind))return e.kind==song_clip::Kind::comp?"Stop recording before comping a take.":"Stop recording before forgetting a take.";
         timeline::id_stream::Scope asking;   // a split or copy's new ids are the live edit's to take
         const auto o=song_clip::outcome(doc,e);
         if(!o.next)return {};

@@ -712,6 +712,21 @@ markers and Disable warp) and the marker handle drag run these commands with the
 warp asks the controller for the two markers that fit the clip's source to it; transient detection finds the new
 markers on a worker thread and runs `SetSongClipWarp` when it finishes.
 
+## Song take commands
+
+`CompSongTake {take, start, end}` plays ticks `start` to `end` of a recorded take on its track, over what is there, as a
+new Song clip with short edge fades; the take is kept. `ForgetSongTake {take}` removes a take from the take list; the
+comp and the audio file stay. Both name the take by its id and share the Song clip reducer, so Preview and execute agree
+on the comp's new clip id.
+
+Refused: a take that is not in the song, a range that is empty or outside the take, a take whose audio is no longer in
+the project, a reversed or looped take, and a take on a frozen track. The take list belongs to the recorder while it
+records, so both wait for recording to stop.
+
+The takes panel's Use whole take, Use loop range and Forget take buttons, the take lane comp drag and the take menu's
+play, loop-range and forget items run these commands with their old Undo names ("Comp recording take" and "Forget
+recording take"). A refusal is said in the Song view's message line or the panel's hint.
+
 ## Master volume command
 
 `SetMasterVolume {gain}` accepts a finite linear gain from 0 through 4 (1 is unity),

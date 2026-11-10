@@ -41,6 +41,14 @@ of the Scale tool's local settings and follow/snap toggles. An undefined project
 key leaves the pitch chromatic. Changing the key later never retunes generated
 notes. Generator settings are local and do not change the project format.
 
+Piano Roll > Chord progression offers **Project scale** alongside Major and
+Natural minor (claim #284). It builds triads on the four selected degrees of
+the current project scale, including diminished and augmented triads. The
+Tonic MIDI control chooses the octave and the saved project root supplies the
+pitch class. Apply requires a defined seven-note scale. An undefined key,
+pentatonic, blues or chromatic scale leaves the clip untouched. The four chords
+are one Undo step and retain their notes when the project key changes.
+
 Note-based rack rows can use the Piano Roll's existing follow option. Song sections
 and the editable chord-track context are documented in SONG_SECTIONS.md and
 SONG_CHORD_TRACK.md. Chord creation seeds its root from the saved key, but its

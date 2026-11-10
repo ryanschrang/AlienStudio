@@ -1,5 +1,8 @@
 #pragma once
 #include "PianoRollChordStamp.h"
+#include "PianoRollScale.h"
+#include <bit>
+#include <optional>
 
 namespace alien {
 
@@ -11,18 +14,29 @@ struct ProgressionSettings {
     float velocity { 0.8f };
 };
 
+inline bool supportsProgressionScale(ProjectMusicalScale scale) noexcept {
+    return scale.defined && scale.valid() && std::popcount(scaleMask(scale.type)) == 7;
+}
+
 // Message-thread operation. Build on a copy so a failed final chord cannot leave
 // a partial progression, consume IDs, or alter any existing notes.
 inline ChordStampResult insertProgression(PianoRollPattern& pattern, double start,
-                                         const ProgressionSettings& settings) noexcept {
+                                         const ProgressionSettings& settings,
+                                         std::optional<ProjectMusicalScale> projectScale = {}) noexcept {
     ChordStampResult result;
     if (!pattern.valid() || settings.tonic < 0 || settings.tonic > 127
         || !std::isfinite(start) || !std::isfinite(settings.chordSteps)
         || settings.chordSteps < PianoRollPattern::minLength
         || settings.chordSteps > pattern.loopSteps || start < 0 || start > pattern.loopSteps)
         return result;
-    const auto scale = settings.minor ? std::array<int, 7>{0, 2, 3, 5, 7, 8, 10}
-                                      : std::array<int, 7>{0, 2, 4, 5, 7, 9, 11};
+    if (projectScale && !supportsProgressionScale(*projectScale)) return result;
+    const auto mode = projectScale ? projectScale->type : settings.minor ? ScaleType::naturalMinor : ScaleType::major;
+    const auto mask = scaleMask(mode);
+    std::array<int, 7> scale{};
+    int index = 0;
+    for (int semitone = 0; semitone < 12; ++semitone)
+        if (mask & (1u << semitone)) scale[index++] = semitone;
+    const int tonic = projectScale ? settings.tonic / 12 * 12 + projectScale->rootPitchClass : settings.tonic;
     const int lengthTicks = PianoRollPattern::toTicks(settings.chordSteps);
     const int startTicks = PianoRollPattern::toTicks(start);
     if (startTicks + 4 * lengthTicks > pattern.loopSteps * PianoRollPattern::ticksPerStep) {
@@ -36,8 +50,9 @@ inline ChordStampResult insertProgression(PianoRollPattern& pattern, double star
         const int third = scale[(degree + 2) % 7] + ((degree + 2) / 7) * 12 - scale[degree];
         const int fifth = scale[(degree + 4) % 7] + ((degree + 4) / 7) * 12 - scale[degree];
         ChordStampSettings stamp;
-        stamp.root = settings.tonic + scale[degree];
-        stamp.type = fifth == 6 ? ChordType::diminished : third == 3 ? ChordType::minor : ChordType::major;
+        stamp.root = tonic + scale[degree];
+        stamp.type = fifth == 8 ? ChordType::augmented : fifth == 6 ? ChordType::diminished
+                              : third == 3 ? ChordType::minor : ChordType::major;
         stamp.lengthSteps = static_cast<double>(lengthTicks) / PianoRollPattern::ticksPerStep;
         stamp.velocity = settings.velocity;
         const auto added = stampChord(candidate,

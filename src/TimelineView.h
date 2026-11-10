@@ -40,12 +40,13 @@ inline std::int64_t snapSize(Snap s) {
     case Snap::sixteenth: return timeline::ticksPerStep; default: return 0;
     }
 }
-// Removes a recording take from the take list, as one undo step. The comp and the audio file stay.
-inline bool forgetTake(ProjectController& controller, std::uint32_t id) {
-    if (controller.isBusy() || controller.isRecording()) return false;
-    return controller.editTimeline("Forget recording take", [=](timeline::Timeline& t) {
-        return std::erase_if(t.takes, [=](const auto& take) { return take.id == id; }) != 0;
-    });
+// Removes a recording take from the take list, as one undo step (ForgetSongTake). The comp and the audio file stay.
+inline command::Result forgetTake(ProjectController& controller, std::uint32_t id) {
+    return command::CommandEngine(controller).execute(command::ForgetSongTake{id});
+}
+// Plays `from`..`to` of a take on its track, as one undo step (CompSongTake). The take is kept.
+inline command::Result compTake(ProjectController& controller, std::uint32_t id, std::int64_t from, std::int64_t to) {
+    return command::CommandEngine(controller).execute(command::CompSongTake{id, from, to});
 }
 // Turns warp on for an audio clip, fitting its source to it (SetSongClipWarp), as one undo step.
 inline command::Result enableWarp(ProjectController& controller, std::uint32_t id) {
@@ -297,7 +298,9 @@ public:
     // Plays `from`..`to` of a take on its track (one undo step through the controller); the take itself is kept.
     bool compFromTake(std::uint32_t id, std::int64_t from, std::int64_t to) {
         if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return false; }
-        const bool done = controller.compRecordedTake(id, from, to);
+        const auto result = tlui::compTake(controller, id, from, to);
+        if (!result.ok) say(result.error);
+        const bool done = result.changed;
         if (done) {
             afterEdit();
             say("Comped bar " + barBeat(from) + " to " + barBeat(to) + " from the take. The take is kept; Undo restores the previous comp.");
@@ -310,7 +313,10 @@ public:
         return take != nullptr && compFromTake(id, take->start, take->end());
     }
     bool forgetTake(std::uint32_t id) {
-        const bool done = tlui::forgetTake(controller, id);
+        if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return false; }
+        const auto result = tlui::forgetTake(controller, id);
+        if (!result.ok) say(result.error);
+        const bool done = result.changed;
         if (done) {
             if (selectedTake == id) selectedTake = 0;
             scrollYpx = std::clamp(scrollYpx, 0, maxScrollY());
@@ -1545,7 +1551,7 @@ public:
             break;
         case DragKind::comp:
             if (active && finished.apply) {
-                if (!compFromTake(finished.grabbed, finished.newAnchor, finished.edgeTick) && !controller.isBusy()) say("That take cannot be comped.");
+                compFromTake(finished.grabbed, finished.newAnchor, finished.edgeTick);   // a refusal says why
             } else if (!active) setCursor(snapTick(finished.anchorTick, bypass));   // a click: the take is picked, and plays from there
             break;
         default: break;
@@ -2897,9 +2903,10 @@ public:
         forget.setButtonText("Forget take"); forget.setName("Forget recording take");
         forget.setTooltip("Remove this pass from the take list. Active comp and audio file stay; Undo restores the list entry.");
         forget.onClick = [this] {
-            const bool done = tlui::forgetTake(controller, selectedId);
+            const auto result = tlui::forgetTake(controller, selectedId);
             refresh();
-            if (done && onChanged) onChanged();
+            if (!result.ok) hint.setText(result.error, juce::dontSendNotification);
+            if (result.changed && onChanged) onChanged();
         };
         whole.onClick = [this] { apply(false); };
         range.onClick = [this] { apply(true); };
@@ -2968,9 +2975,10 @@ private:
         const auto id = take->id;
         const auto from = loopRange ? controller.timeline().loopStart : take->start;
         const auto to = loopRange ? controller.timeline().loopEnd : take->end();
-        const bool done = controller.compRecordedTake(id, from, to);
+        const auto result = tlui::compTake(controller, id, from, to);
         refresh();
-        if (done && onChanged) onChanged();
+        if (!result.ok) hint.setText(result.error, juce::dontSendNotification);
+        if (result.changed && onChanged) onChanged();
     }
     ProjectController& controller;
     juce::ListBox list;
