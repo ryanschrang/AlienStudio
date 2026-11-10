@@ -167,6 +167,40 @@ static void layout() {
 #include "WindowLayoutTests.h"
 #include "ProgressionEditorTests.h"
 
+static void randomizeScaleEditorChecks() {
+    alien::PianoRollEditor editor;
+    editor.setSize(960, 500);
+    alien::PianoRollPattern pattern;
+    const auto id = pattern.add(65, 8, 3, .5f);
+    editor.setPattern(pattern);
+    editor.setSelection(std::array{id});
+    editor.setProjectScaleContext({true, 0, alien::ScaleType::major}, 1);
+    const auto find = [&](const char* name) -> juce::Component* {
+        for (auto* child : editor.getChildren()) if (child->getName() == name) return child;
+        require(false, "randomize control is accessible");
+        return nullptr;
+    };
+    auto* tools = dynamic_cast<juce::ComboBox*>(find("Piano roll processing tool"));
+    auto* open = dynamic_cast<juce::TextButton*>(find("Open piano roll processing settings"));
+    auto* apply = dynamic_cast<juce::TextButton*>(find("Apply piano roll processing"));
+    auto* scale = dynamic_cast<juce::ToggleButton*>(find("Randomize follow project scale"));
+    require(tools && open && apply && scale, "randomize exposes the expected controls");
+    tools->setSelectedId(3, juce::sendNotificationSync);
+    clickButton(*open);
+    auto* range = dynamic_cast<juce::Slider*>(find("Randomize pitch semitones"));
+    require(range != nullptr, "randomize exposes the pitch range");
+    require(scale->isVisible() && !scale->getToggleState() && !scale->getBounds().intersects(apply->getBounds()),
+            "project scale is opt-in and fits beside Apply");
+    range->setValue(1, juce::sendNotificationSync);
+    clickButton(*scale);
+    editor.setProjectScaleContext({true, 6, alien::ScaleType::majorPentatonic}, 1);
+    clickButton(*apply);
+    require(editor.getPattern().find(id)->pitch == 66 && !editor.isProcessingPanelOpen(),
+            "Apply uses the latest project scale and the selected pitch range");
+    editor.undo();
+    require(alien::samePianoRollPattern(editor.getPattern(), pattern), "one Undo restores the original note");
+}
+
 int main(int argc,char** argv) {
     juce::ScopedJuceInitialiser_GUI gui;
     viewModes();
@@ -175,6 +209,7 @@ int main(int argc,char** argv) {
     songModeSwitch();
     ::layout();
     progressionEditorChecks(argc > 2 ? juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]) : juce::File{});
+    randomizeScaleEditorChecks();
     applicationToolbarChecks();
     presetBrowserChecks();
     sampleBrowserChecks();
