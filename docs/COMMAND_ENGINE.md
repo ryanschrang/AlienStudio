@@ -712,6 +712,29 @@ markers and Disable warp) and the marker handle drag run these commands with the
 warp asks the controller for the two markers that fit the clip's source to it; transient detection finds the new
 markers on a worker thread and runs `SetSongClipWarp` when it finishes.
 
+## Automation lane commands
+
+`SetAutomationRead {lane, enabled}`, `AddAutomationPoint {lane, tick, value, curve}`,
+`MoveAutomationPoint {lane, from, tick, value, curve}` and `RemoveAutomationPoint {lane, tick}` edit the Song's
+automation lanes. A lane is a track's volume, pan or send lane, named in a script by `track` and `parameter` (`volume`,
+`pan`, `sendA` to `sendH`), or a plugin parameter's lane, named by the plugin's `instance` (a decimal string, as for rack
+clips) and `parameterId`. A point is named by its tick. A value is the parameter's own: linear gain 0 to 2 for volume,
+-1 to 1 for pan, and 0 to 1 for a send or a plugin parameter. `curve` 0 is linear to the next point and 1 holds.
+
+Adding a lane's first point makes the lane, and a point at a tick that already has one replaces it. A move takes the
+point off its old tick and puts it at the new one, replacing a point already there. Removing a lane's last point leaves
+the lane, empty. Read turns playback of a lane that exists on or off. They share a pure reducer in
+`AutomationCommands.h`.
+
+Refused: a track that does not exist, a send lane for a return that is not there, a plugin lane with no instance or
+parameter id, Read on a lane with no automation, a point outside the song, a value outside the parameter's range, a curve
+other than 0 or 1, a move or removal of a point that is not there, a 4097th point on a lane, and a 1025th plugin lane.
+Automation changes playback, so while warped audio records a change is refused like a loop change.
+
+The Song view's automation editor runs them with its old Undo names: the Read button ("Toggle automation read"), a click
+or drag ("Edit automation point": an add, or a move of the point under the mouse) and a right-click on a point ("Delete
+automation point"). A drag shows a local preview and runs one command on release, so it is one Undo step.
+
 ## Song take commands
 
 `CompSongTake {take, start, end}` plays ticks `start` to `end` of a recorded take on its track, over what is there, as a

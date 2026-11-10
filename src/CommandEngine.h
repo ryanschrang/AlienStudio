@@ -7,6 +7,7 @@
 #include "RackPatternCommands.h"
 #include "SongMarkerCommands.h"
 #include "SongClipCommands.h"
+#include "AutomationCommands.h"
 #include <juce_core/juce_core.h>
 #include <array>
 #include <charconv>
@@ -192,13 +193,21 @@ struct SetSongClipWarp { std::uint32_t clip{}; std::vector<timeline::WarpMarker>
 struct AddSongWarpMarker { std::uint32_t clip{}; std::int64_t tick{}; };
 struct MoveSongWarpMarker { std::uint32_t clip{}; int marker{}; std::int64_t tick{}; };
 struct RemoveSongWarpMarker { std::uint32_t clip{}; int marker{}; };
+// Automation lanes: a track's volume, pan or send lane, or a plugin parameter's lane (see automation_edit::LaneRef).
+// A point is named by its tick; one at a tick that already has a point replaces it. Adding a lane's first point
+// makes the lane, and removing its last point leaves the lane empty. A value is the parameter's own (linear gain
+// 0 to 2 for volume, -1 to 1 for pan, 0 to 1 for a send or a plugin parameter); curve 0 is linear, 1 is hold.
+struct SetAutomationRead { automation_edit::LaneRef lane; bool enabled{true}; };
+struct AddAutomationPoint { automation_edit::LaneRef lane; std::int64_t tick{}; float value{}; automation::Curve curve{}; };
+struct MoveAutomationPoint { automation_edit::LaneRef lane; std::int64_t from{}, tick{}; float value{}; automation::Curve curve{}; };
+struct RemoveAutomationPoint { automation_edit::LaneRef lane; std::int64_t tick{}; };
 
-using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume, ImportClipAudio, SetTrackSend, SetTrackSendMode, CreateReturn, RenameReturn, DeleteReturn, SetReturnVolume, SetReturnPan, SetReturnMute, CreateBus, RenameBus, DeleteBus, SetBusVolume, SetBusPan, SetBusMute, SetBusSolo, SetTrackOutput, SetSidechain, InsertDevice, RemoveDevice, MoveDevice, SetDeviceBypass, SetTempo, SetTempoChange, MoveTempoChange, RemoveTempoChange, ClearTempoChanges, SetMeterChange, RemoveMeterChange, ClearMeterChanges, AddRackChannel, AddRackSynthChannel, RemoveRackChannel, MoveRackChannel, DuplicateRackChannel, RenameRackChannel, SetRackChannelVolume, SetRackChannelPan, SetRackChannelMute, SetRackChannelSolo, SetRackChannelOutput, SetRackChannelChoke, SetRackStep, SetRackStepValue, FillRackSteps, RotateRackSteps, ReverseRackSteps, RepeatRackSteps, ClearRackSteps, SetRackPatternLength, SetRackSwing, CloneRackPattern, ClearRackPattern, RenameRackPattern, DeleteRackPattern, SetRackChannelSound, SilenceRackChannel, SetRackChannelSynth, SetRackChannelPlugin, PasteRackSteps, SetRackChannelNotes, ImportRackGroove, LoadRackSample, AddSongMarker, MoveSongMarker, RenameSongMarker, ColourSongMarker, RemoveSongMarker, SetSongLoop, MoveSongClips, TrimSongClipStart, TrimSongClipEnd, SlipSongClips, DeleteSongClips, SetSongClipsMuted, SetSongClipGain, SetSongClipFades, SetSongClipFadeIn, SetSongClipFadeOut, SetSongClipFadeShape, RemoveSongClipFades, CrossfadeSongClips, GroupSongClips, UngroupSongClips, LoopSongClips, ReverseSongClips, SplitSongClips, DuplicateSongClips, CopySongClips, AddSongSection, EditSongSection, RemoveSongSection, AddSongChord, EditSongChord, RemoveSongChord, SetSongLength, CompSongTake, ForgetSongTake, SetSongClipWarp, AddSongWarpMarker, MoveSongWarpMarker, RemoveSongWarpMarker>;
+using Command = std::variant<CreateTrack, DeleteTrack, MoveTrack, RenameTrack, ColorTrack, SetTrackVolume, SetTrackPan, SetTrackMute, SetTrackSolo, CreateClip, DuplicateClip, MakeClipUnique, CreateScene, DuplicateScene, MoveScene, RenameScene, DeleteScene, DeleteClip, PasteClip, PasteLinkedClip, MoveClip, CreateRackPattern, AssignRackClip, RemoveClipAudio, SetMasterVolume, ImportClipAudio, SetTrackSend, SetTrackSendMode, CreateReturn, RenameReturn, DeleteReturn, SetReturnVolume, SetReturnPan, SetReturnMute, CreateBus, RenameBus, DeleteBus, SetBusVolume, SetBusPan, SetBusMute, SetBusSolo, SetTrackOutput, SetSidechain, InsertDevice, RemoveDevice, MoveDevice, SetDeviceBypass, SetTempo, SetTempoChange, MoveTempoChange, RemoveTempoChange, ClearTempoChanges, SetMeterChange, RemoveMeterChange, ClearMeterChanges, AddRackChannel, AddRackSynthChannel, RemoveRackChannel, MoveRackChannel, DuplicateRackChannel, RenameRackChannel, SetRackChannelVolume, SetRackChannelPan, SetRackChannelMute, SetRackChannelSolo, SetRackChannelOutput, SetRackChannelChoke, SetRackStep, SetRackStepValue, FillRackSteps, RotateRackSteps, ReverseRackSteps, RepeatRackSteps, ClearRackSteps, SetRackPatternLength, SetRackSwing, CloneRackPattern, ClearRackPattern, RenameRackPattern, DeleteRackPattern, SetRackChannelSound, SilenceRackChannel, SetRackChannelSynth, SetRackChannelPlugin, PasteRackSteps, SetRackChannelNotes, ImportRackGroove, LoadRackSample, AddSongMarker, MoveSongMarker, RenameSongMarker, ColourSongMarker, RemoveSongMarker, SetSongLoop, MoveSongClips, TrimSongClipStart, TrimSongClipEnd, SlipSongClips, DeleteSongClips, SetSongClipsMuted, SetSongClipGain, SetSongClipFades, SetSongClipFadeIn, SetSongClipFadeOut, SetSongClipFadeShape, RemoveSongClipFades, CrossfadeSongClips, GroupSongClips, UngroupSongClips, LoopSongClips, ReverseSongClips, SplitSongClips, DuplicateSongClips, CopySongClips, AddSongSection, EditSongSection, RemoveSongSection, AddSongChord, EditSongChord, RemoveSongChord, SetSongLength, CompSongTake, ForgetSongTake, SetSongClipWarp, AddSongWarpMarker, MoveSongWarpMarker, RemoveSongWarpMarker, SetAutomationRead, AddAutomationPoint, MoveAutomationPoint, RemoveAutomationPoint>;
 
 namespace detail {
 // Indexed like Command's alternatives.
-inline constexpr std::array<const char*, 127> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume", "ImportClipAudio", "SetTrackSend", "SetTrackSendMode", "CreateReturn", "RenameReturn", "DeleteReturn", "SetReturnVolume", "SetReturnPan", "SetReturnMute", "CreateBus", "RenameBus", "DeleteBus", "SetBusVolume", "SetBusPan", "SetBusMute", "SetBusSolo", "SetTrackOutput", "SetSidechain", "InsertDevice", "RemoveDevice", "MoveDevice", "SetDeviceBypass", "SetTempo", "SetTempoChange", "MoveTempoChange", "RemoveTempoChange", "ClearTempoChanges", "SetMeterChange", "RemoveMeterChange", "ClearMeterChanges", "AddRackChannel", "AddRackSynthChannel", "RemoveRackChannel", "MoveRackChannel", "DuplicateRackChannel", "RenameRackChannel", "SetRackChannelVolume", "SetRackChannelPan", "SetRackChannelMute", "SetRackChannelSolo", "SetRackChannelOutput", "SetRackChannelChoke", "SetRackStep", "SetRackStepValue", "FillRackSteps", "RotateRackSteps", "ReverseRackSteps", "RepeatRackSteps", "ClearRackSteps", "SetRackPatternLength", "SetRackSwing", "CloneRackPattern", "ClearRackPattern", "RenameRackPattern", "DeleteRackPattern", "SetRackChannelSound", "SilenceRackChannel", "SetRackChannelSynth", "SetRackChannelPlugin", "PasteRackSteps", "SetRackChannelNotes", "ImportRackGroove", "LoadRackSample", "AddSongMarker", "MoveSongMarker", "RenameSongMarker", "ColourSongMarker", "RemoveSongMarker", "SetSongLoop", "MoveSongClips", "TrimSongClipStart", "TrimSongClipEnd", "SlipSongClips", "DeleteSongClips", "SetSongClipsMuted", "SetSongClipGain", "SetSongClipFades", "SetSongClipFadeIn", "SetSongClipFadeOut", "SetSongClipFadeShape", "RemoveSongClipFades", "CrossfadeSongClips", "GroupSongClips", "UngroupSongClips", "LoopSongClips", "ReverseSongClips", "SplitSongClips", "DuplicateSongClips", "CopySongClips", "AddSongSection", "EditSongSection", "RemoveSongSection", "AddSongChord", "EditSongChord", "RemoveSongChord", "SetSongLength", "CompSongTake", "ForgetSongTake", "SetSongClipWarp", "AddSongWarpMarker", "MoveSongWarpMarker", "RemoveSongWarpMarker"};
-inline constexpr std::array<const char*, 127> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume", "Import audio", "Set send level", "Set send mode", "Add return", "Rename return", "Remove return", "Set return volume", "Set return pan", "Set return mute", "Add bus", "Rename bus", "Delete bus", "Set bus volume", "Set bus pan", "Set bus mute", "Set bus solo", "Set track output", "Set sidechain", "Insert device", "Remove device", "Move device", "Set device bypass", "Change tempo", "Tempo change", "Move tempo change", "Remove tempo change", "Remove tempo changes", "Time signature change", "Remove time signature change", "Remove time signature changes", "Add channel", "Add synth channel", "Delete channel", "Move channel", "Duplicate channel", "Rename channel", "Change channel volume", "Change channel pan", "Mute channel", "Solo channel", "Route channel", "Change choke group", "Edit step", "Edit step", "Edit channel steps", "Edit channel steps", "Edit channel steps", "Edit channel steps", "Clear channel", "Change pattern length", "Change swing", "Clone pattern", "Clear pattern", "Rename pattern", "Delete pattern", "Change channel sound", "Silence channel", "Change channel instrument", "Change channel instrument", "Paste steps", "Edit channel notes", "Import drum groove", "Load channel sample", "Add marker", "Move marker", "Rename marker", "Colour marker", "Delete marker", "Set loop", "Move clips", "Trim clip start", "Resize clip", "Slip clips", "Delete clips", "Mute clips", "Set clip gain", "Fade clips", "Fade in", "Fade out", "Fade shape", "Remove fades", "Crossfade clips", "Group clips", "Ungroup clips", "Loop clip source", "Reverse clips", "Split", "Duplicate", "Copy clips", "Add Song section", "Edit Song section", "Delete Song section", "Add Song chord", "Edit Song chord", "Delete Song chord", "Change song length", "Comp recording take", "Forget recording take", "Set warp markers", "Add warp marker", "Move warp marker", "Remove warp marker"};
+inline constexpr std::array<const char*, 131> names{"CreateTrack", "DeleteTrack", "MoveTrack", "RenameTrack", "ColorTrack", "SetTrackVolume", "SetTrackPan", "SetTrackMute", "SetTrackSolo", "CreateClip", "DuplicateClip", "MakeClipUnique", "CreateScene", "DuplicateScene", "MoveScene", "RenameScene", "DeleteScene", "DeleteClip", "PasteClip", "PasteLinkedClip", "MoveClip", "CreateRackPattern", "AssignRackClip", "RemoveClipAudio", "SetMasterVolume", "ImportClipAudio", "SetTrackSend", "SetTrackSendMode", "CreateReturn", "RenameReturn", "DeleteReturn", "SetReturnVolume", "SetReturnPan", "SetReturnMute", "CreateBus", "RenameBus", "DeleteBus", "SetBusVolume", "SetBusPan", "SetBusMute", "SetBusSolo", "SetTrackOutput", "SetSidechain", "InsertDevice", "RemoveDevice", "MoveDevice", "SetDeviceBypass", "SetTempo", "SetTempoChange", "MoveTempoChange", "RemoveTempoChange", "ClearTempoChanges", "SetMeterChange", "RemoveMeterChange", "ClearMeterChanges", "AddRackChannel", "AddRackSynthChannel", "RemoveRackChannel", "MoveRackChannel", "DuplicateRackChannel", "RenameRackChannel", "SetRackChannelVolume", "SetRackChannelPan", "SetRackChannelMute", "SetRackChannelSolo", "SetRackChannelOutput", "SetRackChannelChoke", "SetRackStep", "SetRackStepValue", "FillRackSteps", "RotateRackSteps", "ReverseRackSteps", "RepeatRackSteps", "ClearRackSteps", "SetRackPatternLength", "SetRackSwing", "CloneRackPattern", "ClearRackPattern", "RenameRackPattern", "DeleteRackPattern", "SetRackChannelSound", "SilenceRackChannel", "SetRackChannelSynth", "SetRackChannelPlugin", "PasteRackSteps", "SetRackChannelNotes", "ImportRackGroove", "LoadRackSample", "AddSongMarker", "MoveSongMarker", "RenameSongMarker", "ColourSongMarker", "RemoveSongMarker", "SetSongLoop", "MoveSongClips", "TrimSongClipStart", "TrimSongClipEnd", "SlipSongClips", "DeleteSongClips", "SetSongClipsMuted", "SetSongClipGain", "SetSongClipFades", "SetSongClipFadeIn", "SetSongClipFadeOut", "SetSongClipFadeShape", "RemoveSongClipFades", "CrossfadeSongClips", "GroupSongClips", "UngroupSongClips", "LoopSongClips", "ReverseSongClips", "SplitSongClips", "DuplicateSongClips", "CopySongClips", "AddSongSection", "EditSongSection", "RemoveSongSection", "AddSongChord", "EditSongChord", "RemoveSongChord", "SetSongLength", "CompSongTake", "ForgetSongTake", "SetSongClipWarp", "AddSongWarpMarker", "MoveSongWarpMarker", "RemoveSongWarpMarker", "SetAutomationRead", "AddAutomationPoint", "MoveAutomationPoint", "RemoveAutomationPoint"};
+inline constexpr std::array<const char*, 131> labels{"Add track", "Delete track", "Move track", "Rename track", "Colour track", "Set track volume", "Set track pan", "Set track mute", "Set track solo", "Create MIDI clip", "Duplicate clip", "Make clip independent", "Add scene", "Duplicate scene", "Move scene", "Rename scene", "Delete scene", "Clear clip", "Paste clip", "Paste linked clip", "Move clip", "New pattern", "Assign rack clip", "Remove audio", "Set master volume", "Import audio", "Set send level", "Set send mode", "Add return", "Rename return", "Remove return", "Set return volume", "Set return pan", "Set return mute", "Add bus", "Rename bus", "Delete bus", "Set bus volume", "Set bus pan", "Set bus mute", "Set bus solo", "Set track output", "Set sidechain", "Insert device", "Remove device", "Move device", "Set device bypass", "Change tempo", "Tempo change", "Move tempo change", "Remove tempo change", "Remove tempo changes", "Time signature change", "Remove time signature change", "Remove time signature changes", "Add channel", "Add synth channel", "Delete channel", "Move channel", "Duplicate channel", "Rename channel", "Change channel volume", "Change channel pan", "Mute channel", "Solo channel", "Route channel", "Change choke group", "Edit step", "Edit step", "Edit channel steps", "Edit channel steps", "Edit channel steps", "Edit channel steps", "Clear channel", "Change pattern length", "Change swing", "Clone pattern", "Clear pattern", "Rename pattern", "Delete pattern", "Change channel sound", "Silence channel", "Change channel instrument", "Change channel instrument", "Paste steps", "Edit channel notes", "Import drum groove", "Load channel sample", "Add marker", "Move marker", "Rename marker", "Colour marker", "Delete marker", "Set loop", "Move clips", "Trim clip start", "Resize clip", "Slip clips", "Delete clips", "Mute clips", "Set clip gain", "Fade clips", "Fade in", "Fade out", "Fade shape", "Remove fades", "Crossfade clips", "Group clips", "Ungroup clips", "Loop clip source", "Reverse clips", "Split", "Duplicate", "Copy clips", "Add Song section", "Edit Song section", "Delete Song section", "Add Song chord", "Edit Song chord", "Delete Song chord", "Change song length", "Comp recording take", "Forget recording take", "Set warp markers", "Add warp marker", "Move warp marker", "Remove warp marker", "Set automation read", "Add automation point", "Move automation point", "Remove automation point"};
 static_assert(names.size() == std::variant_size_v<Command> && labels.size() == names.size());
 
 // SetSongClipFadeShape's "edge" argument.
@@ -392,6 +401,15 @@ inline std::optional<song_clip::Edit> songClipEdit(const Command& command) {
     return std::nullopt;
 }
 
+inline std::optional<automation_edit::Edit> automationEdit(const Command& command) {
+    using Kind = automation_edit::Kind;
+    automation_edit::Edit e;
+    if (const auto* c = std::get_if<SetAutomationRead>(&command)) { e.kind = Kind::setRead; e.lane = c->lane; e.enabled = c->enabled; return e; }
+    if (const auto* c = std::get_if<AddAutomationPoint>(&command)) { e.kind = Kind::addPoint; e.lane = c->lane; e.point = {c->tick, c->value, c->curve}; return e; }
+    if (const auto* c = std::get_if<MoveAutomationPoint>(&command)) { e.kind = Kind::movePoint; e.lane = c->lane; e.from = c->from; e.point = {c->tick, c->value, c->curve}; return e; }
+    if (const auto* c = std::get_if<RemoveAutomationPoint>(&command)) { e.kind = Kind::removePoint; e.lane = c->lane; e.from = c->tick; return e; }
+    return std::nullopt;
+}
 inline std::optional<song_edit::Edit> songEdit(const Command& command) {
     using Kind = song_edit::Kind;
     song_edit::Edit e;
@@ -493,6 +511,7 @@ inline juce::String refusal(const ProjectDocument& d, const Command& command, co
     if (const auto edit = rackPatternEdit(command)) return rack_pattern::refusal(d, *edit);
     if (const auto edit = songEdit(command)) return song_edit::refusal(d, *edit);
     if (const auto edit = songClipEdit(command)) return song_clip::refusal(d, *edit);
+    if (const auto edit = automationEdit(command)) return automation_edit::refusal(d, *edit);
     if (const auto* c = std::get_if<SetTrackOutput>(&command)) {
         if (const auto why = track(c->track); why.isNotEmpty()) return why;
         return c->bus == -1 || bus_edit::slotInUse(d, c->bus) ? juce::String{} : "Bus slot " + juce::String(c->bus) + " is not in use.";
@@ -557,6 +576,21 @@ inline juce::String describe(const ProjectDocument& d, const Command& command) {
         case Kind::plugin: return "Give " + channel + " the plugin instrument \"" + edit->text + "\"";
         case Kind::sample: return "Load \"" + edit->text + "\" into " + channel;
         case Kind::add: case Kind::addSynth: break;
+        }
+    }
+    if (const auto edit = automationEdit(command)) {
+        const auto& r = edit->lane;
+        const auto lane = r.isPlugin()
+            ? "the automation of plugin " + juce::String(static_cast<juce::uint64>(r.plugin.instance)) + "'s parameter \"" + juce::String::fromUTF8(r.plugin.parameterId.c_str()) + "\""
+            : "the " + juce::String(automation_edit::parameterName(r.parameter)) + " automation of " + detail::trackTitle(d, r.track);
+        const auto point = [](const automation::Point& p) {
+            return "tick " + juce::String(p.tick) + ", value " + juce::String(p.value, 3) + (p.curve == automation::Curve::hold ? ", held" : "");
+        };
+        switch (edit->kind) {
+        case automation_edit::Kind::setRead: return juce::String(edit->enabled ? "Play " : "Stop playing ") + lane;
+        case automation_edit::Kind::addPoint: return "Add a point at " + point(edit->point) + " to " + lane;
+        case automation_edit::Kind::movePoint: return "Move the point at tick " + juce::String(edit->from) + " of " + lane + " to " + point(edit->point);
+        case automation_edit::Kind::removePoint: return "Delete the point at tick " + juce::String(edit->from) + " of " + lane;
         }
     }
     if (songEdit(command)) {
@@ -743,6 +777,7 @@ inline juce::String applyTo(ProjectDocument& d, const Command& command, const cl
     if (const auto edit = rackPatternEdit(command)) return rack_pattern::apply(d, *edit);
     if (const auto edit = songEdit(command)) return song_edit::apply(d, *edit);
     if (const auto edit = songClipEdit(command)) return song_clip::apply(d, *edit);
+    if (const auto edit = automationEdit(command)) return automation_edit::apply(d, *edit);
     if (const auto* c = std::get_if<SetTrackOutput>(&command)) { d.tracks[static_cast<std::size_t>(c->track)].settings.output = c->bus; return {}; }
     if (const auto* c = std::get_if<SetReturnVolume>(&command)) { d.returns[static_cast<std::size_t>(c->returnSlot)].settings.gain = static_cast<float>(c->gain); return {}; }
     if (const auto* c = std::get_if<SetReturnPan>(&command)) { d.returns[static_cast<std::size_t>(c->returnSlot)].settings.pan = static_cast<float>(c->pan); return {}; }
@@ -854,6 +889,23 @@ inline juce::var arguments(const Command& command) {
     if (const auto* c = std::get_if<RemoveSongChord>(&command)) { object->setProperty("chord", static_cast<juce::int64>(c->chord)); return result; }
     if (const auto* c = std::get_if<SetSongLoop>(&command)) { object->setProperty("start", static_cast<juce::int64>(c->start)); object->setProperty("end", static_cast<juce::int64>(c->end)); object->setProperty("enabled", c->enabled); return result; }
     if (const auto* c = std::get_if<SetSongLength>(&command)) { object->setProperty("bars", c->bars); return result; }
+    if (const auto edit = automationEdit(command)) {
+        const auto& r = edit->lane;
+        if (r.isPlugin()) {
+            object->setProperty("instance", juce::String(static_cast<juce::uint64>(r.plugin.instance)));
+            object->setProperty("parameterId", juce::String::fromUTF8(r.plugin.parameterId.c_str()));
+        } else { object->setProperty("track", r.track); object->setProperty("parameter", juce::String(automation_edit::parameterName(r.parameter))); }
+        using Kind = automation_edit::Kind;
+        if (edit->kind == Kind::setRead) object->setProperty("enabled", edit->enabled);
+        if (edit->kind == Kind::movePoint) object->setProperty("from", static_cast<juce::int64>(edit->from));
+        if (edit->kind == Kind::removePoint) object->setProperty("tick", static_cast<juce::int64>(edit->from));
+        if (edit->kind == Kind::addPoint || edit->kind == Kind::movePoint) {
+            object->setProperty("tick", static_cast<juce::int64>(edit->point.tick));
+            object->setProperty("value", static_cast<double>(edit->point.value));
+            object->setProperty("curve", static_cast<int>(edit->point.curve));
+        }
+        return result;
+    }
     if (const auto* c = std::get_if<CompSongTake>(&command)) { object->setProperty("take", static_cast<juce::int64>(c->take)); object->setProperty("start", static_cast<juce::int64>(c->start)); object->setProperty("end", static_cast<juce::int64>(c->end)); return result; }
     if (const auto* c = std::get_if<ForgetSongTake>(&command)) { object->setProperty("take", static_cast<juce::int64>(c->take)); return result; }
     if (const auto edit = songClipEdit(command)) {
@@ -990,7 +1042,7 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
     if (index == 85) { error = "SetRackChannelNotes takes a note sequence, which cannot be written as arguments."; return std::nullopt; }
     if (index == 86) { error = "ImportRackGroove takes a read MIDI file, which cannot be written as arguments."; return std::nullopt; }
     if (index == 87) { error = "LoadRackSample takes decoded audio, which cannot be written as arguments."; return std::nullopt; }
-    static const std::array<juce::StringArray, 127> allowed{
+    static const std::array<juce::StringArray, 131> allowed{
         juce::StringArray{}, juce::StringArray{"track"}, juce::StringArray{"track", "to"},
         juce::StringArray{"track", "name"}, juce::StringArray{"track", "colour"},
         juce::StringArray{"track", "gain"}, juce::StringArray{"track", "pan"},
@@ -1011,7 +1063,9 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
         {"clips", "ticks", "lanes"}, {"clip", "tick"}, {"clip", "tick"}, {"clips", "ticks"}, {"clips"}, {"clips", "muted"}, {"clips", "gain"}, {"clips", "fadeIn", "fadeOut"}, {"clip", "ticks"}, {"clip", "ticks"}, {"clips", "edge", "curve"}, {"clips"}, {"left", "right", "ticks"}, {"clips"}, {"clips"}, {"clips", "looped"}, {"clips", "reversed"},
         {"clips", "tick"}, {"clips"}, {"clips", "ticks", "lanes"},
         {"start", "end", "name", "colour"}, {"section", "start", "end", "name", "colour"}, {"section"}, {"start", "end", "root", "quality"}, {"chord", "start", "end", "root", "quality"}, {"chord"}, {"bars"}, {"take", "start", "end"}, {"take"},
-        {"clip", "markers"}, {"clip", "tick"}, {"clip", "marker", "tick"}, {"clip", "marker"}
+        {"clip", "markers"}, {"clip", "tick"}, {"clip", "marker", "tick"}, {"clip", "marker"},
+        {"track", "parameter", "instance", "parameterId", "enabled"}, {"track", "parameter", "instance", "parameterId", "tick", "value", "curve"},
+        {"track", "parameter", "instance", "parameterId", "from", "tick", "value", "curve"}, {"track", "parameter", "instance", "parameterId", "tick"}
     };
     static_assert(std::tuple_size_v<std::remove_cvref_t<decltype(allowed)>> == detail::names.size(), "every command lists its arguments");
     const auto* object = args.getDynamicObject();
@@ -1071,6 +1125,41 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
             error = commandName + " needs a positive \"" + juce::String(key) + "\" id that fits 32 bits."; ok = false;
         }
         return ok ? static_cast<std::uint32_t>(value) : std::uint32_t{};
+    };
+    // An automation lane: "track" and "parameter" (volume, pan, sendA to sendH), or a plugin's "instance" (a decimal
+    // string, as arguments() writes it) and "parameterId".
+    auto automationLane = [&] {
+        automation_edit::LaneRef lane;
+        const bool plugin = object != nullptr && (object->hasProperty("instance") || object->hasProperty("parameterId"));
+        if (plugin) {
+            if (ok && (object->hasProperty("track") || object->hasProperty("parameter"))) {
+                error = commandName + " takes a track and parameter, or a plugin instance and parameterId, not both."; ok = false; return lane;
+            }
+            const auto value = text("instance");
+            const auto digits = value.toStdString(); std::uint64_t instance{};
+            const auto parsed = std::from_chars(digits.data(), digits.data() + digits.size(), instance);
+            if (ok && (parsed.ec != std::errc{} || parsed.ptr != digits.data() + digits.size() || instance == 0
+                || value != juce::String(static_cast<juce::uint64>(instance)))) {
+                error = commandName + " needs a positive canonical decimal-string plugin \"instance\"."; ok = false;
+            }
+            lane.plugin = {instance, text("parameterId").toStdString()};
+            return lane;
+        }
+        lane.track = integer("track");
+        const auto name = text("parameter");
+        if (const auto parameter = automation_edit::parameterNamed(name)) lane.parameter = *parameter;
+        else if (ok) { error = commandName + " needs \"parameter\" to be volume, pan or sendA to sendH."; ok = false; }
+        return lane;
+    };
+    auto curve = [&] {
+        const int value = integer("curve");
+        if (ok && value != 0 && value != 1) { error = commandName + " needs \"curve\" to be 0 (linear) or 1 (hold)."; ok = false; }
+        return static_cast<automation::Curve>(value);
+    };
+    auto pointValue = [&] {
+        const double value = number("value");
+        if (ok && std::abs(value) > 1.0e6) { error = commandName + " needs a \"value\" the parameter can hold."; ok = false; }
+        return static_cast<float>(value);
     };
     // A list of Song clip ids: an array of positive whole numbers that fit 32 bits.
     auto clips = [&](const char* key) {
@@ -1157,6 +1246,13 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
         case 124: { const auto id = marker("clip"); command = AddSongWarpMarker{id, wide("tick")}; break; }
         case 125: { const auto id = marker("clip"); const int index = integer("marker"); command = MoveSongWarpMarker{id, index, wide("tick")}; break; }
         case 126: { const auto id = marker("clip"); command = RemoveSongWarpMarker{id, integer("marker")}; break; }
+        case 127: { const auto lane = automationLane(); command = SetAutomationRead{lane, boolean("enabled")}; break; }
+        case 128: { const auto lane = automationLane(); const auto tick = wide("tick"); const auto value = pointValue(); command = AddAutomationPoint{lane, tick, value, curve()}; break; }
+        case 129: {
+            const auto lane = automationLane(); const auto from = wide("from"), tick = wide("tick"); const auto value = pointValue();
+            command = MoveAutomationPoint{lane, from, tick, value, curve()}; break;
+        }
+        case 130: { const auto lane = automationLane(); command = RemoveAutomationPoint{lane, wide("tick")}; break; }
         case 55: command = AddRackChannel{text("sound")}; break;
         case 56: command = AddRackSynthChannel{integer("preset")}; break;
         case 57: command = RemoveRackChannel{integer("channel")}; break;
@@ -1360,6 +1456,9 @@ public:
         for (const auto& command : commands)
             if (const auto edit = songClipEdit(command))
                 if (const auto why = controller.songClipRefusal(*edit); why.isNotEmpty()) return refused(why);
+        for (const auto& command : commands)
+            if (const auto edit = automationEdit(command))
+                if (const auto why = controller.automationRefusal(*edit); why.isNotEmpty()) return refused(why);
         const auto clipboard = controller.clipClipboard();
         Result result = preview(commands, &clipboard);
         if (!result.ok || !result.changed) return result;
@@ -1418,6 +1517,7 @@ private:
         if (const auto edit = tempoEdit(command)) return controller.applyTempoCommand(*edit);
         if (const auto edit = songEdit(command)) return controller.applySongCommand(*edit);
         if (const auto edit = songClipEdit(command)) return controller.applySongClipCommand(*edit);
+        if (const auto edit = automationEdit(command)) return controller.applyAutomationCommand(*edit);
         if (const auto* c = std::get_if<LoadRackSample>(&command)) return controller.applyRackSampleCommand(*rackChannelEdit(command), c->clip);
         if (const auto edit = rackChannelEdit(command)) return controller.applyRackChannelCommand(*edit);
         if (const auto edit = rackPatternEdit(command)) return controller.applyRackPatternCommand(*edit);

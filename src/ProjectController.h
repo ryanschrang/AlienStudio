@@ -12,6 +12,7 @@
 #include "TempoCommands.h"
 #include "SongMarkerCommands.h"
 #include "SongClipCommands.h"
+#include "AutomationCommands.h"
 #include "RackChannelCommands.h"
 #include "RackPatternCommands.h"
 #include "ViewModes.h"
@@ -1251,6 +1252,17 @@ public:
         const bool warp=hasWarpedAudio() || std::any_of(o.next->regions.begin(),o.next->regions.end(),[](const auto& r){return !r.warp.empty();});
         if(warp && !o.next->playbackEquals(doc.timeline))return "Stop recording before changing Song clips while the song has warped audio.";
         return {};
+    }
+    // Why the project's state refuses an automation lane command: automation plays, so like the loop it waits while
+    // warped audio records.
+    juce::String automationRefusal(const automation_edit::Edit& e) const {
+        if(tempoLocked() && !automation_edit::changesNothing(doc,e))return "Stop recording before changing automation while the song has warped audio.";
+        return {};
+    }
+    // Live side of the automation lane commands. CommandEngine owns the history entry, and its commit plays the result.
+    bool applyAutomationCommand(const automation_edit::Edit& e) {
+        if(busy || automationRefusal(e).isNotEmpty())return false;
+        return automation_edit::apply(doc,e).isEmpty();
     }
     // Live side of the Song clip commands. CommandEngine owns the history entry, and its commit plays the result.
     bool applySongClipCommand(const song_clip::Edit& e) {
