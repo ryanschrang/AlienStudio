@@ -2298,15 +2298,26 @@ static void sendAutomationEditorChecks() {
         const auto& lanes = rig->controller.timeline().automationLanes;
         require(lanes.size() == static_cast<std::size_t>(k + 1) && lanes.back().parameter == static_cast<alien::automation::Parameter>(2 + k)
             && lanes.back().points.size() == 1 && lanes.back().points[0].value == 1, "send drag creates one unity point on chosen return");
+        require(rig->controller.undoLabel() == "Edit automation point", "the drag keeps its Undo name");
         require(rig->controller.undo() && rig->controller.timeline().automationLanes.size() == static_cast<std::size_t>(k), "one undo removes whole gesture");
         require(rig->controller.redo(), "redo restores send curve");
     }
     clickButton(*read);
-    require(!rig->controller.timeline().automationLanes.back().enabled, "Read disables selected send curve");
+    require(!rig->controller.timeline().automationLanes.back().enabled && rig->controller.undoLabel() == "Toggle automation read", "Read disables selected send curve");
     require(rig->controller.undo() && rig->controller.timeline().automationLanes.back().enabled, "Read toggle is undoable");
     editor->mouseDown(mouse(*editor, {400, 171}));
     editor->mouseUp(mouse(*editor, {400, 171}));
     require(rig->controller.timeline().automationLanes.back().points.back().value < 0.01f, "send graph bottom means off, not negative gain");
+    // Dragging the bottom point back across the top one moves it past without taking the top one with it.
+    const auto top = rig->controller.timeline().automationLanes.back().points.front();
+    editor->mouseDown(mouse(*editor, {400, 171}));
+    editor->mouseDrag(mouse(*editor, {200, 120}, leftButton, 1, true));
+    editor->mouseDrag(mouse(*editor, {150, 120}, leftButton, 1, true));
+    editor->mouseUp(mouse(*editor, {150, 120}));
+    const auto& moved = rig->controller.timeline().automationLanes.back().points;
+    require(moved.size() == 2 && moved.back() == top && moved.front().tick < top.tick && rig->controller.undoLabel() == "Edit automation point",
+            "a dragged point passes over another and leaves it");
+    require(rig->controller.undo() && rig->controller.timeline().automationLanes.back().points.back().value < 0.01f, "one Undo puts the dragged point back");
 }
 
 // A placement clip (T1-03 B2b): a Song region with notes of its own and no Session cell.

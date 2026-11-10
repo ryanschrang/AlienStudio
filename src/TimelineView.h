@@ -2660,7 +2660,8 @@ private:
 // The whole screen: the toolbar, the timeline, its scroll bars and a line of help.
 
 // One editable automation lane at a time. Edits stay in a local preview during a
-// gesture and commit once on mouse-up, so a drag is one undo transaction.
+// gesture and commit once on mouse-up, so a drag is one undo transaction. Every change is an automation command
+// (SetAutomationRead, AddAutomationPoint, MoveAutomationPoint, RemoveAutomationPoint).
 // A lane is a track's volume, pan or send, or (T1-09) a parameter of a plugin on the track: the owner lists those
 // through pluginParameters, and they are offered in one submenu per plugin. Plugin values are normalized (0 to 1).
 class TrackAutomationEditor final : public juce::Component {
@@ -2686,7 +2687,7 @@ public:
         curveBox.addItem("Linear", 1); curveBox.addItem("Hold", 2); curveBox.setSelectedId(1);
         enableButton.setButtonText("Read"); enableButton.setName("Automation read"); enableButton.setClickingTogglesState(true);
         enableButton.setTooltip("Enable playback of this automation lane");
-        hint.setText("Click to add; drag to move; right-click a point to delete. Values are absolute.", juce::dontSendNotification);
+        hint.setText(helpText, juce::dontSendNotification);
         hint.setColour(juce::Label::textColourId, ui::colours::textDim); hint.setFont(ui::font(11.0f));
         trackBox.onChange = [this] { preview.reset(); base.reset(); refresh(); };
         parameterBox.onChange = [this] {
@@ -2695,19 +2696,13 @@ public:
             preview.reset(); base.reset(); refresh();
         };
         enableButton.onClick = [this] {
-            const int track = selectedTrack(); const auto parameter = selectedParameter();
-            const auto plugin = chosenPlugin;
-            controller.editTimeline("Toggle automation read", [=](timeline::Timeline& t) {
-                if (plugin) {
-                    for (auto& lane : t.parameterLanes) if (lane.target == *plugin) { lane.enabled = !lane.enabled; return true; }
-                    return false;
-                }
-                for (auto& lane : t.automationLanes) if (lane.track == track && lane.parameter == parameter) {
-                    lane.enabled = !lane.enabled; return true;
-                }
-                return false;
-            });
+            const auto lane = laneRef();
+            bool found = false, enabled = false;
+            withLane(controller.timeline(), [&](const auto& l) { found = true; enabled = l.enabled; });
+            juce::String why;
+            if (lane && found) why = command::CommandEngine(controller).batch({command::SetAutomationRead{*lane, !enabled}}, "Toggle automation read").error;
             refresh();
+            tell(why);
         };
         refresh();
     }
@@ -2761,24 +2756,40 @@ public:
     }
     void mouseDown(const juce::MouseEvent& e) override {
         if (controller.isBusy() || !plot().contains(e.position)) return;
-        base = controller.timeline(); preview = *base;
-        int nearest = -1;
-        withEditable(*preview, [&](auto& lane) {
+        const auto lane = laneRef();
+        if (!lane) return;   // nothing to draw where there is no plugin parameter
+        tell({});
+        // The point under the mouse, if any: a drag moves it, a right-click deletes it.
+        std::optional<automation::Point> nearest;
+        withLane(controller.timeline(), [&](const auto& l) {
             float distance = 100.0f;
-            for (std::size_t i = 0; i < lane.points.size(); ++i) {
-                const float dx = xFor(lane.points[i].tick) - e.position.x, dy = yFor(lane.points[i].value) - e.position.y;
-                const float d = dx * dx + dy * dy;
-                if (d < distance) { distance = d; nearest = static_cast<int>(i); }
+            for (const auto& p : l.points) {
+                const float dx = xFor(p.tick) - e.position.x, dy = yFor(p.value) - e.position.y;
+                if (const float d = dx * dx + dy * dy; d < distance) { distance = d; nearest = p; }
             }
-            if (e.mods.isPopupMenu()) { if (nearest >= 0) lane.points.erase(lane.points.begin() + nearest); return; }
-            activeTick = nearest >= 0 ? lane.points[static_cast<std::size_t>(nearest)].tick : -1;
         });
-        if (e.mods.isPopupMenu()) { finish("Delete automation point"); return; }
+        if (e.mods.isPopupMenu()) {
+            if (nearest) tell(command::CommandEngine(controller).batch({command::RemoveAutomationPoint{*lane, nearest->tick}}, "Delete automation point").error);
+            refresh();
+            return;
+        }
+        base = controller.timeline(); origin = nearest;
         updatePoint(e.position); repaint();
     }
     void mouseDrag(const juce::MouseEvent& e) override { if (preview && !e.mods.isPopupMenu()) { updatePoint(e.position); repaint(); } }
-    void mouseUp(const juce::MouseEvent&) override { if (preview) finish("Edit automation point"); }
+    void mouseUp(const juce::MouseEvent&) override { if (preview) finish(); }
 private:
+    inline static const juce::String helpText{"Click to add; drag to move; right-click a point to delete. Values are absolute."};
+    // Shows why an automation command was refused in place of the help line, or the help line again.
+    void tell(const juce::String& why) { hint.setText(why.isNotEmpty() ? why : helpText, juce::dontSendNotification); }
+    // The chosen lane, as the automation commands name it, or none where there is no plugin parameter to choose.
+    std::optional<automation_edit::LaneRef> laneRef() const {
+        automation_edit::LaneRef lane;
+        if (const auto* plugin = selectedPlugin()) { lane.plugin = plugin->target; return lane; }
+        if (!trackChosen()) return std::nullopt;
+        lane.track = selectedTrack(); lane.parameter = selectedParameter();
+        return lane;
+    }
     bool trackChosen() const { return trackBox.getSelectedId() < targetBase; }
     int selectedTrack() const { return std::max(0, trackBox.getSelectedId() - 1); }
     // What pluginParameters is asked about: the track, or the chosen entry's rack number.
@@ -2859,31 +2870,43 @@ private:
     juce::Rectangle<float> plot() const { return getLocalBounds().withTrimmedTop(34).reduced(12, 8).toFloat(); }
     float xFor(std::int64_t tick) const { const auto a = plot(); return a.getX() + a.getWidth() * static_cast<float>(static_cast<double>(tick) / controller.timeline().length()); }
     float yFor(float value) const { const auto a = plot(); return a.getBottom() - (value - low()) / (high() - low()) * a.getHeight(); }
+    // Where the gesture puts its point: the dragged point (`origin`) leaves its tick, and the point lands under the
+    // mouse, replacing any point already at that tick. The preview is worked out afresh from `base` each time, as
+    // MoveAutomationPoint will do it, so a drag across another point does not take that point with it.
     void updatePoint(juce::Point<float> position) {
         const auto a = plot();
-        if (a.getWidth() <= 0 || a.getHeight() <= 0) return;
-        withEditable(*preview, [&](auto& lane) {
-            if (activeTick >= 0) std::erase_if(lane.points, [&](const automation::Point& p) { return p.tick == activeTick; });
-            const double fraction = std::clamp(static_cast<double>((position.x - a.getX()) / a.getWidth()), 0.0, 1.0);
-            activeTick = std::clamp<std::int64_t>(static_cast<std::int64_t>(std::llround(fraction * preview->length() / timeline::ticksPerStep)) * timeline::ticksPerStep, 0, preview->length());
-            const float value = low() + (high() - low()) * std::clamp((a.getBottom() - position.y) / a.getHeight(), 0.0f, 1.0f);
-            lane.put({activeTick, value, curveBox.getSelectedId() == 2 ? automation::Curve::hold : automation::Curve::linear});
+        if (!base || a.getWidth() <= 0 || a.getHeight() <= 0) return;
+        const double fraction = std::clamp(static_cast<double>((position.x - a.getX()) / a.getWidth()), 0.0, 1.0);
+        const auto length = base->length();
+        const auto tick = std::clamp<std::int64_t>(static_cast<std::int64_t>(std::llround(fraction * length / timeline::ticksPerStep)) * timeline::ticksPerStep, 0, length);
+        const float value = low() + (high() - low()) * std::clamp((a.getBottom() - position.y) / a.getHeight(), 0.0f, 1.0f);
+        placed = {tick, value, curveBox.getSelectedId() == 2 ? automation::Curve::hold : automation::Curve::linear};
+        auto next = *base;
+        withEditable(next, [&](auto& lane) {
+            if (origin) std::erase_if(lane.points, [&](const automation::Point& p) { return p.tick == origin->tick; });
+            lane.put(placed);
         });
+        preview = std::move(next);
     }
-    void finish(const juce::String& label) {
+    void finish() {
         // A load, undo or edit elsewhere during the gesture must not be overwritten.
-        if (base && preview && controller.timeline() == *base) {
-            const auto result = *preview;
-            controller.editTimeline(label, [result](timeline::Timeline& t) { t = result; return true; });
+        juce::String why;
+        const auto lane = laneRef();
+        if (base && preview && lane && controller.timeline() == *base) {
+            const auto change = origin ? command::Command{command::MoveAutomationPoint{*lane, origin->tick, placed.tick, placed.value, placed.curve}}
+                                       : command::Command{command::AddAutomationPoint{*lane, placed.tick, placed.value, placed.curve}};
+            why = command::CommandEngine(controller).batch({change}, "Edit automation point").error;
         }
-        preview.reset(); base.reset(); activeTick = -1; refresh();
+        preview.reset(); base.reset(); origin.reset(); refresh();
+        tell(why);
     }
     ProjectController& controller;
     juce::ComboBox trackBox, parameterBox, curveBox;
     juce::TextButton enableButton;
     juce::Label hint;
     std::optional<timeline::Timeline> preview, base;
-    std::int64_t activeTick{-1};
+    std::optional<automation::Point> origin;   // the point a drag moves, or none when it adds one
+    automation::Point placed;                  // where the gesture puts its point
     std::vector<PluginParameter> pluginChoices;
     std::optional<automation::ParameterTarget> chosenPlugin;
     juce::String shownSignature;
