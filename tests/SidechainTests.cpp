@@ -4,6 +4,7 @@
 // Plugins panel's choice of key. Part 2: the stock gate, keys from a track after its fader, from a
 // bus and from a return, which racks may use which keys, format 25, and bus/return removal.
 #include "CommandEngine.h"
+#include "MasteringPreset.h"
 #include "PluginHost.h"
 #include "PluginPanel.h"
 #include "ProjectController.h"
@@ -508,6 +509,34 @@ static void deviceHostTests() {
     const auto keyWhileRecording = counted(cmd::SetSidechain{RackStage::track, 0, 1, alien::KeySource::track, 1});
     require(!keyWhileRecording.ok && captures == 0 && rebuilds == 0, "and so does a sidechain key");
     engine.recording.phase.store(alien::RecordControls::idle);
+    const alien::PluginState originalMaster(description(0), {});
+    require(run(cmd::InsertDevice{RackStage::master, 0, 0, originalMaster}).changed, "seed Master FX before the preset");
+    auto& master = engine.plugins->racks[alien::PluginRuntime::masterIndex];
+    auto* existing = master.effects[0].processor->getParameters()[0];
+    existing->setValueNotifyingHost(.65f);
+    const auto gentle = [&] {
+        return alien::mastering::addGentleChain(c, [&] { ++captures; capture(); }, [&] { ++rebuilds; rebuild(); });
+    };
+    require(gentle().changed && captures == 1 && rebuilds == 1 && master.effectCount == 4 &&
+            c.undoLabel() == "Add gentle mastering chain", "preset appends all three effects in one edit and one rebuild");
+    require(c.document().masterPlugins.effects[0].instanceId == originalMaster.instanceId &&
+            std::abs(master.effects[0].processor->getParameters()[0]->getValue() - .65f) < .01f,
+            "preset keeps the existing Master effect and its live settings");
+    const auto value = [&](int slot, const char* id) {
+        return static_cast<alien::stock::Effect&>(*master.effects[slot].processor).parameters.getRawParameterValue(id)->load();
+    };
+    require(std::abs(value(1, alien::stock::eq::lowGain) + 1.f) < .001f &&
+            std::abs(value(2, alien::stock::comp::ratio) - 1.5f) < .001f &&
+            std::abs(value(3, alien::stock::limiter::ceiling) + 1.f) < .001f,
+            "host restores the editable EQ, compressor and limiter settings in order");
+    require(c.undo(), "undo the entire mastering preset"); rebuild();
+    require(master.effectCount == 1 && c.redo(), "Undo leaves the original rack and Redo restores the chain"); rebuild();
+    engine.recording.phase.store(alien::RecordControls::countIn);
+    require(!gentle().ok && captures == 1 && rebuilds == 1, "count-in refuses before touching the host");
+    engine.recording.phase.store(alien::RecordControls::idle);
+    require(gentle().changed && master.effectCount == 7, "append to a rack with room");
+    require(!gentle().ok && master.effectCount == 7 && captures == 2 && rebuilds == 2,
+            "insufficient capacity refuses before touching the host");
     host.restore({}, {}, {}, {}, 48000);
     std::cout << "PASS: device commands keep live plugin settings through the host\n";
 }

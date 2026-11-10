@@ -142,6 +142,20 @@ int main() {
     check(boxes.size() == 3, "the panel has a destination, a slot and a live MIDI chooser beside its plugin browser");
     auto& slot = *boxes[1];
     const juce::StringArray tracks{"Track 1", "Track 2"};
+    {
+        juce::KnownPluginList known;
+        panel.refresh(tracks, {}, known);
+        auto* mastering = button(panel, "Add gentle mastering chain");
+        int requests = 0;
+        panel.onMasteringChain = [&] { ++requests; };
+        check(mastering && !mastering->isVisible(), "mastering preset is hidden on a track");
+        boxes[0]->setSelectedId(maxSessionTracks + 1, juce::dontSendNotification); boxes[0]->onChange();
+        check(mastering && mastering->isVisible() && mastering->getWidth() > 0, "Master FX offers the mastering preset");
+        if (mastering) mastering->onClick();
+        check(requests == 1, "mastering button dispatches one request");
+        boxes[0]->setSelectedId(1, juce::dontSendNotification); boxes[0]->onChange();
+        panel.onMasteringChain = {};
+    }
     int liveRoute=-99;
     panel.onLiveInput=[&](int value){liveRoute=value;};
     panel.refreshLiveInput(tracks,1);

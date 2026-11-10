@@ -27,6 +27,7 @@
 #include "StreamingTempoWarp.h"
 #include "WavExport.h"
 #include "PluginHost.h"
+#include "MasteringPreset.h"
 #include "ConvolutionImport.h"
 #include "PluginPanel.h"
 #include "PluginPreflight.h"
@@ -151,6 +152,13 @@ public:
         };
         pluginPanel.onTarget = [this](int) { refreshPlugins(); };
         pluginPanel.onAdd = [this](bool instrument, int choice) { addPlugin(instrument,choice); };
+        pluginPanel.onMasteringChain = [this] {
+            if (projectBusy) return;
+            const auto result = alien::mastering::addGentleChain(controller,
+                [this] { snapshotPlugins(SnapshotReason::always); }, [this] { restorePlugins(); });
+            if (!result.ok) pluginPanel.setStatus(result.error);
+            else if (result.changed) pluginPanel.setStatus("Added EQ, compressor and limiter to Master FX. One Undo removes the chain.");
+        };
         pluginPanel.onAction = [this](int op,int slot) { pluginAction(op,slot); };
         pluginPanel.onImpulseResponse = [this](int slot, std::uint64_t instance, bool chamber) {
             chooseConvolutionResponse(slot, instance, chamber);

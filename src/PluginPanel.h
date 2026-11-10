@@ -19,7 +19,7 @@ public:
     // Choice ids: stock effects are stockBase + catalog index; scanned VST3 plugins are index + 1.
     static constexpr int stockBase = PluginBrowser::stockBase;
     PluginPanel() {
-        for (auto* c:std::array<juce::Component*,16>{&target,&browser,&slot,&liveInput,&scan,&cancelScan,&addInstrument,&addEffect,&open,&bypass,&sidechain,&impulse,&up,&down,&remove,&status}) addAndMakeVisible(c);
+        for (auto* c:std::array<juce::Component*,17>{&target,&browser,&slot,&liveInput,&scan,&cancelScan,&addInstrument,&addEffect,&masteringChain,&open,&bypass,&sidechain,&impulse,&up,&down,&remove,&status}) addAndMakeVisible(c);
         impulse.setVisible(false);
         cancelScan.setVisible(false);
         scan.setButtonText("Scan VST3..."); cancelScan.setButtonText("Cancel scan"); addInstrument.setButtonText("Use instrument"); addEffect.setButtonText("Add FX");
@@ -36,6 +36,10 @@ public:
         scan.onClick=[this]{showScanMenu();}; cancelScan.onClick=[this]{if(onCancelScan)onCancelScan();};
         addInstrument.onClick=[this]{if(onAdd)onAdd(true,browser.selectedChoice());};
         addEffect.onClick=[this]{if(onAdd)onAdd(false,browser.selectedChoice());};
+        masteringChain.setButtonText("Add gentle mastering chain");
+        masteringChain.setTooltip("Append an editable EQ, compressor and limiter. Requires three free Master FX slots.");
+        masteringChain.setVisible(false);
+        masteringChain.onClick=[this]{if(destination()==maxSessionTracks && onMasteringChain)onMasteringChain();};
         // Double-click or Enter in the browser adds the row where it belongs, if the destination takes it.
         browser.onChoose=[this](int choice,bool instrument){
             if(!(instrument?addInstrument:addEffect).isEnabled()){
@@ -80,6 +84,7 @@ public:
         liveInput.setSelectedId(rackChosen?liveRackBase+selectedRack:selected>=0 && selected<names.size()?selected+2:1,juce::dontSendNotification);
     }
     std::function<void(bool,int)> onAdd;
+    std::function<void()> onMasteringChain;
     // Whether a scanned plugin is blocked after crashing while hosted (T1-09); the browser marks it and it cannot be added.
     std::function<bool(const juce::PluginDescription&)> isBlocked;
     PluginBrowser& pluginBrowser() noexcept { return browser; }
@@ -254,6 +259,7 @@ public:
         if(!beside){r.removeFromTop(12);browser.setBounds(r.removeFromTop(juce::jmax(120,r.getHeight()-belowStackedBrowser)));}
         r.removeFromTop(12);row=r.removeFromTop(32);
         addInstrument.setBounds(row.removeFromLeft(150));row.removeFromLeft(10);addEffect.setBounds(row.removeFromLeft(120));
+        row.removeFromLeft(10); masteringChain.setBounds(row.removeFromLeft(210));
         r.removeFromTop(20);slot.setBounds(r.removeFromTop(30));r.removeFromTop(12);row=r.removeFromTop(32);
         for(auto* b:{&open,&bypass,&sidechain,&up,&down,&remove}){b->setBounds(row.removeFromLeft(118));row.removeFromLeft(8);}
         impulse.setBounds(sidechain.getBounds());
@@ -294,6 +300,7 @@ private:
         const bool usable=chosen!=nullptr && !chosen->blocked;
         addInstrument.setEnabled(usable && chosen->instrument && destination()<maxSessionTracks);
         addEffect.setEnabled(usable && !chosen->instrument);
+        masteringChain.setVisible(destination()==maxSessionTracks);
     }
     static constexpr int controlsWidth=780;
     // Under a stacked browser: the add row (12+32), slot (20+30), slot buttons (12+32), and a gap (16)
@@ -301,7 +308,7 @@ private:
     static constexpr int belowStackedBrowser=12+32+20+30+12+32+16+72;
     juce::ComboBox target,slot,liveInput;
     PluginBrowser browser;
-    juce::TextButton scan,cancelScan,addInstrument,addEffect,open,bypass,sidechain,impulse,up,down,remove;
+    juce::TextButton scan,cancelScan,addInstrument,addEffect,masteringChain,open,bypass,sidechain,impulse,up,down,remove;
     std::vector<std::uint64_t> convolutionSlots;
     juce::String keyName(KeySource from,int i) const {
         const auto slotName=[&](const auto& names,const juce::String& fallback){
