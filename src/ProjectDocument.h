@@ -272,6 +272,10 @@ struct ProjectDocument {
     }
     // A new placement clip holding `notes` (MIDI only; placement clips have no audio).
     library::ClipId addPlacementClip(std::shared_ptr<const PianoRollPattern> notes, juce::String name = {}) {
+        return addPlacementClipTo(library, std::move(notes), std::move(name));
+    }
+    // The same, into a library of its own (a Song Paste builds the library it leaves before it is applied).
+    static library::ClipId addPlacementClipTo(library::Library& library, std::shared_ptr<const PianoRollPattern> notes, juce::String name = {}) {
         auto data = std::make_shared<library::PatternData>();
         if (notes == nullptr) notes = emptyPattern();
         data->lengthTicks = library::PatternData::loopTicks(*notes);

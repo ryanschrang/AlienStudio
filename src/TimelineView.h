@@ -525,31 +525,22 @@ public:
         return done;
     }
     // Pastes at the play position (or `at`); rack patterns land on the focused lane.
+    // It is the PasteSongClips command: a placement clip that was cut, or edited since it was copied, comes back with
+    // the copied notes as part of the same Undo step.
     bool paste(std::optional<std::int64_t> at = std::nullopt) {
-        auto clip = pastable();
-        if (clip.empty()) { say("Nothing to paste."); return false; }
-        // A pasted placement clip shares the copied one while that still holds what was copied; otherwise
-        // (it was cut, or edited since) the paste brings back a clip with the copied notes.
-        std::map<std::uint64_t, std::uint64_t> restored;
-        for (auto& r : clip.regions) {
-            if (!r.ownsClip()) continue;
-            const auto& copied = clipboardOrigin().placements[r.clip];
-            const auto* now = controller.document().library.clip(library::ClipId{r.clip});
-            if (now != nullptr && controller.document().contentOf(library::ClipId{r.clip}).pattern == copied.first) continue;
-            auto& id = restored[r.clip];
-            if (id == 0) id = controller.restorePlacementClip(copied.first, copied.second);
-            if (id == 0) { say("Nothing to paste."); return false; }
-            r.clip = id;
-        }
+        auto pasted = std::make_shared<alien::song_clip::Pasted>();
+        pasted->clips = pastable();
+        if (pasted->clips.empty()) { say("Nothing to paste."); return false; }
+        for (const auto& r : pasted->clips.regions)
+            if (r.ownsClip()) if (const auto found = clipboardOrigin().placements.find(r.clip); found != clipboardOrigin().placements.end()) pasted->placements.insert(*found);
         int laneDelta = 0;
         int firstLane = timeline::rowCount;
-        for (const auto& r : clip.regions) if (r.isPattern()) firstLane = std::min(firstLane, r.row);
+        for (const auto& r : pasted->clips.regions) if (r.isPattern()) firstLane = std::min(firstLane, r.row);
         if (firstLane < timeline::rowCount && timeline::isPatternRow(focus)) laneDelta = focus - firstLane;
-        const auto where = at.value_or(cursor);
-        auto made = std::make_shared<timeline::Ids>();
-        const bool done = edit("Paste", [=](timeline::Timeline& t) { made->clear(); return t.paste(clip, where, laneDelta, made.get()); });
-        if (done) { selected = *made; selectedMarker = 0; stateChanged(); }
-        else say("Those clips do not fit there.");
+        const command::PasteSongClips change{pasted, at.value_or(cursor), laneDelta};
+        const auto made = alien::song_clip::pastedClips(controller.document(), *command::songClipEdit(change));
+        const bool done = clipCommand(change).changed;
+        if (done) { selected = made; selectedMarker = 0; stateChanged(); }
         return done;
     }
     bool duplicateSelection() {

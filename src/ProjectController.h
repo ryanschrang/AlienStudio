@@ -1366,12 +1366,6 @@ public:
         publishArrangement();
         return true;
     }
-    // A placement clip with `notes`, for a paste that brings back a clip that was cut. Nothing plays it until a
-    // region names it (an unused one is dropped at the next edit). Returns its id, or 0.
-    std::uint64_t restorePlacementClip(std::shared_ptr<const PianoRollPattern> notes, const juce::String& name) {
-        if (busy || notes == nullptr || !notes->valid()) return 0;
-        return doc.addPlacementClip(std::move(notes), name).value;
-    }
     // The track whose Song regions play placement clip `clip` (-1 when none does).
     int placementTrack(std::uint64_t clip) const {
         for (const auto& r : doc.timeline.regions) if (clip != 0 && r.clip == clip) return r.row;
