@@ -1790,31 +1790,21 @@ public:
     // for MIDI and rack patterns, its running time at the current tempo for audio
     // (rounded up to a sixteenth so it ends on the grid).
     std::int64_t naturalLength(int row, int source, std::int64_t start = 0) const {
-        using namespace alien::timeline;
-        if (isPatternRow(row)) {
-            if (!doc.channelRack.validPattern(source)) return ticksPerBar;
-            return static_cast<std::int64_t>(doc.channelRack.pattern(source).length) * ticksPerStep;
-        }
-        if (!doc.isValidCell(row, source)) return ticksPerBar;
-        const auto& clip = doc.clip(row, source);
-        if (clip.audio != nullptr && clip.audio->sampleRate > 0.0) {
-            const double seconds = static_cast<double>(clip.audio->frames) / clip.audio->sampleRate;
-            const double ticks = songTempo().tickAfter(static_cast<double>(start), seconds) - static_cast<double>(start);
-            return std::clamp<std::int64_t>(static_cast<std::int64_t>(std::ceil(ticks / ticksPerStep)) * ticksPerStep, ticksPerStep, maxLength);
-        }
-        return static_cast<std::int64_t>(clip.notes().loopSteps) * ticksPerStep;
+        return song_clip::naturalLength(doc, row, source, start);
     }
-    // Where the song starts and is shown when it is next played.
+    // Places a Session cell or a rack pattern in the Song over what is there, as one undo step at the clip's natural length.
+    // It is the PlaceSongClip reducer, recorded under "Place pattern" or "Place clip"; the Song and Session views run the
+    // command itself. `idOut` gets the placed clip's id.
     bool placeRegion(int row, int source, std::int64_t start, std::uint32_t* idOut = nullptr) {
-        if (!timeline::isPatternRow(row) && doc.isValidCell(row, source) && doc.clip(row, source).rackClip != 0) {
-            source = rackPatternForClip(doc.clip(row, source).rackClip);
-            row = timeline::rackRowBase;
-        }
-        const auto length = naturalLength(row, source, start);
-        return editTimeline(alien::timeline::isPatternRow(row) ? "Place pattern" : "Place clip", [&](alien::timeline::Timeline& t) {
-            alien::timeline::Region r; r.row = row; r.source = source; r.start = start; r.length = length;
-            return t.place(r, idOut);
-        });
+        song_clip::Edit e;
+        e.kind = song_clip::Kind::place; e.row = row; e.source = source; e.ticks = start;
+        if (busy || songClipRefusal(e).isNotEmpty()) return false;
+        const auto before = doc.timeline;
+        const auto* label = song_clip::placesPattern(doc, row, source) ? "Place pattern" : "Place clip";
+        if (song_clip::apply(doc, e).isNotEmpty() || doc.timeline == before) return false;
+        if (idOut != nullptr) *idOut = song_clip::placedClip(doc, before, doc.timeline, row, source, start);
+        commit(label, -1, -1);
+        return true;
     }
     // A new, empty MIDI clip for a track, put on the timeline in one undo step. It takes the first Session cell of that track
     // that is empty and that the timeline does not already use, so every new clip is a clip of its own; when there is no such

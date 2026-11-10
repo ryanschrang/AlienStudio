@@ -735,6 +735,25 @@ The Song view's automation editor runs them with its old Undo names: the Read bu
 or drag ("Edit automation point": an add, or a move of the point under the mouse) and a right-click on a point ("Delete
 automation point"). A drag shows a local preview and runs one command on release, so it is one Undo step.
 
+## Placing clips in the Song
+
+`PlaceSongClip {row, source, start, length}` puts a clip in the Song at tick `start`, over whatever it lands on (a clip
+it covers is trimmed or removed, as a placement always has). `row` is a track and `source` one of its scenes, or `row`
+is a rack lane row (from `timeline::rackRowBase`) and `source` a rack pattern. An empty Session cell can be placed. A
+Session cell that holds a rack clip places that clip's rack pattern on the first rack lane, as the Session menu always
+has. `length` may be left out (or 0): the clip's natural length, which is its loop for MIDI and rack patterns and its
+running time at the song's tempo for audio, rounded up to a sixteenth. A placement past the end makes the song longer.
+It is a Song clip edit, sharing `SongClipCommands.h`, so a Preview hands out the id the live edit gives the new clip
+(`song_clip::placedClip` finds it).
+
+Refused: a track, scene or rack pattern that is not there, a start outside the song, a length below 0 or above the
+song's maximum, a clip that does not fit, and a clip on a frozen track. While warped audio records it is refused like
+the other Song clip edits.
+
+The Song view's double-click, drop and Place menu placements and the Session cell menu's "Place in Song" run it under their old
+Undo names, "Place clip" and "Place pattern". `ProjectController::placeRegion` is the same reducer, for code that needs
+no command.
+
 ## Song take commands
 
 `CompSongTake {take, start, end}` plays ticks `start` to `end` of a recorded take on its track, over what is there, as a
