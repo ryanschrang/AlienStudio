@@ -2255,6 +2255,50 @@ public:
         if (!e.bounds.empty() && e.bounds.back() > frames) return "The slices run past the end of the sample (" + juce::String(frames) + " frames).";
         return {};
     }
+    // Finds the attacks in a sample channel's audio (its slice, when it plays one) on a worker, then hands `found`
+    // the slices' edges in the file's frames, ready for SliceRackChannel (T2-01). As many slices as the rack has room
+    // for, 16 at most. Nothing is handed over when there are no useful attacks, or when the project, the channel or
+    // the recording state changed meanwhile; the status line says which.
+    bool findRackAttacks(int channel, std::function<void(const std::vector<std::int64_t>&)> found) {
+        if (busy || isRecording() || engine.recording.active() || !found || !doc.channelRack.validChannel(channel)) return false;
+        const auto info = doc.channelRack.info[static_cast<std::size_t>(channel)];
+        if (!info.isFile() || doc.channelRack.channels[static_cast<std::size_t>(channel)].isInstrument()) return false;
+        const auto asset = rackAsset(info);
+        if (!asset) { importStatus("Load the channel's sample before slicing it.", {}); return false; }
+        if (asset->streamed() || asset->frames / asset->sampleRate > 60) {
+            importStatus("Attack slicing needs a decoded sample range of at most one minute.", {}); return false;
+        }
+        const int room = std::min(rack_channel::maxSlices, rack::maxChannels - doc.channelRack.channelCount);
+        if (room < 2) { importStatus("The Channel Rack has no room for two more channels.", {}); return false; }
+        const auto scope = doc.identityScope;
+        setBusy(true); importStatus("Finding sample attacks...", {});
+        std::weak_ptr<int> token = alive;
+        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, channel, info, asset, room, scope, found] {
+            auto bounds = detectAttackBounds(*asset, room);
+            const auto offset = asset->sliceSource ? static_cast<std::int64_t>(asset->sliceOffset) : std::int64_t{};
+            for (auto& edge : bounds) edge += offset;
+            juce::MessageManager::callAsync([this, token, channel, info, asset, scope, found, bounds] {
+                if (!token.lock()) return;
+                setBusy(false);
+                if (scope != doc.identityScope || isRecording() || engine.recording.active()) {
+                    importStatus("Attack slicing discarded: project or recording state changed.", {}); return;
+                }
+                const auto& rack = doc.channelRack;
+                if (!rack.validChannel(channel) || !(rack.info[static_cast<std::size_t>(channel)] == info) || rackAsset(info) != asset
+                    || rack.channelCount + static_cast<int>(bounds.size()) - 1 > rack::maxChannels) {
+                    importStatus("Attack slicing discarded: the channel changed.", {}); return;
+                }
+                if (bounds.size() < 3) {
+                    importStatus("No useful attack boundaries found. Channels unchanged; try equal slices.", {}); return;
+                }
+                importStatus("Found " + juce::String(static_cast<int>(bounds.size()) - 1) + " slices at attacks.", {});
+                found(bounds);
+            });
+            return juce::ThreadPoolJob::jobHasFinished;
+        };
+        pool.addJob(std::move(job));
+        return true;
+    }
     bool applyRackChannelCommand(const rack_channel::Edit& e) {
         if (rackSliceRefusal(e).isNotEmpty()) return false;
         if (busy || rack_channel::apply(doc, e).isNotEmpty()) return false;

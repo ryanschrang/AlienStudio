@@ -48,8 +48,16 @@ range. Loading another sound into a slice channel plays that sound whole.
 
 Slicing needs the file decoded here (an offline file must be relinked first), and the rack holds 64 channels. It is
 the `SliceRackChannel {channel, bounds}` command, whose bounds are the slices' edges in the file's frames; scripts can
-give uneven edges. Attack detection for channels is a later increment. As with pads, there is no zero-crossing
-adjustment or fade, so listen for clicks at slice edges.
+give uneven edges. As with pads, there is no zero-crossing adjustment or fade, so listen for clicks at slice edges.
+
+**Slice sample > At attacks** uses the pads' attack detector on the channel's audio (its own range, for a slice
+channel) and runs the same command with the edges it finds, so it is one Undo step like the equal slices. The first
+slice keeps the lead-in before the first attack and the last keeps the tail. It makes as many channels as the rack has
+room for, 16 at most; with more attacks than that, the strongest become the edges. The search runs on a worker for a
+decoded range of at most one minute. Silence, a steady sound or a single attack changes nothing and makes no Undo
+step, and the status line says so. A result is dropped if the project, the channel or the recording state changed
+while searching. `ChannelRackViewTests` covers the menu, the worker, slices of a slice, the room limit and the dropped
+results with synthetic clicks; how well it finds the hits in real recordings has not been checked by ear.
 
 ## Session audio to drum pads
 
