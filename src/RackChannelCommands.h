@@ -4,12 +4,13 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // Pure document edits for the Channel Rack's channels: adding, removing, moving, naming and
 // mixing them. The controller and command Preview share them, so what Preview predicts is
 // what the live edit does. They never touch a plugin; the host rebuilds after the commit.
 namespace alien::rack_channel {
-enum class Kind { add, addSynth, remove, move, duplicate, rename, volume, pan, mute, solo, output, choke, sound, silence, synth, plugin, sample };
+enum class Kind { add, addSynth, remove, move, duplicate, rename, volume, pan, mute, solo, output, choke, sound, silence, synth, plugin, sample, slice };
 struct Edit {
     Kind kind{Kind::remove};
     int channel{-1};
@@ -19,7 +20,18 @@ struct Edit {
     std::uint64_t instance{};    // duplicate, plugin: the new plugin identity, so Preview and execute agree
     juce::String text;           // rename: the name; add: a built-in sound id, or empty for an empty sampler; sound: a built-in sound id; plugin, sample: the name
     juce::String description;    // plugin: its description from the plugin list; sample: the file's path
+    std::vector<std::int64_t> bounds;   // slice: the slices' edges in the file's frames, ascending
 };
+
+inline constexpr int maxSlices = 16;
+
+// Edges for `count` equal slices of frames `start` to `end` (end exclusive), or none when they would be empty.
+inline std::vector<std::int64_t> equalSlices(std::int64_t start, std::int64_t end, int count) {
+    if (count < 2 || count > maxSlices || start < 0 || end - start < count) return {};
+    std::vector<std::int64_t> bounds;
+    for (int k = 0; k <= count; ++k) bounds.push_back(start + (end - start) * k / count);
+    return bounds;
+}
 
 inline std::uint64_t freshInstance() {
     std::uint64_t id = 0;
@@ -85,6 +97,7 @@ inline bool editRack(rack::Project& p, const Edit& e) {
         const bool changed = p.setSample(e.channel, e.description.toStdString());
         return p.renameChannel(e.channel, e.text.toStdString()) || changed;
     }
+    case Kind::slice: return p.sliceChannel(e.channel, e.bounds);
     }
     return false;
 }
@@ -136,6 +149,19 @@ inline juce::String refusal(const ProjectDocument& d, const Edit& e) {
         if (e.description.isEmpty()) return "A sample needs a file.";
         if (e.description.toStdString().size() > static_cast<std::size_t>(rack::maxSampleBytes)) return "That file's path is too long to store in a project.";
         break;
+    case Kind::slice: {
+        const auto& info = p.info[static_cast<std::size_t>(e.channel)];
+        if (!info.isFile() || p.channels[static_cast<std::size_t>(e.channel)].isInstrument()) return "Only a channel playing an audio file can be sliced.";
+        const int slices = static_cast<int>(e.bounds.size()) - 1;
+        if (slices < 2 || slices > maxSlices) return "A sample is sliced into 2 to " + juce::String(maxSlices) + " channels.";
+        if (p.channelCount + slices > rack::maxChannels)
+            return "There is room for " + juce::String(rack::maxChannels - p.channelCount) + " more channels; the Channel Rack holds " + juce::String(rack::maxChannels) + ".";
+        for (std::size_t i = 0; i + 1 < e.bounds.size(); ++i)
+            if (e.bounds[i] < 0 || e.bounds[i + 1] <= e.bounds[i]) return "Slice edges must rise from frame 0 or later, each slice at least one frame long.";
+        if (!info.wholeSample() && (e.bounds.front() < info.sliceStart || e.bounds.back() > info.sliceEnd))
+            return "Slices of a slice stay inside it (frames " + juce::String(info.sliceStart) + " to " + juce::String(info.sliceEnd) + ").";
+        break;
+    }
     case Kind::remove: case Kind::mute: case Kind::solo: case Kind::silence: break;
     }
     auto next = p;

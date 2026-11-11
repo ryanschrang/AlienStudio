@@ -793,6 +793,14 @@ Like SetRackChannelNotes neither has a script form: `arguments` writes the clip 
 Refused: notes that are not valid, a cell that is not there, a cell playing a rack pattern (its notes are the
 channel's), a clip on a frozen track, a placement clip no Song clip plays, and the cell a MIDI take is recording into.
 A refused change is said, and the roll shows the clip's notes again when the gesture ends.
+## Slicing a Channel Rack sample
+
+`SliceRackChannel {channel, bounds}` adds a channel after `channel` for each slice between consecutive `bounds` (the
+file's frames, ascending; 2 to 16 slices). Each plays that part of the file the channel plays, sharing its decoded
+audio, with the channel's mix settings and no steps or notes; the channel stays. Slicing a slice stays inside its range.
+Refused: a channel that does not play an audio file, too few or too many slices, edges that do not rise, no room in the
+rack, and, against the loaded audio, a file that is not decoded here or slices past its end. The Channel Rack channel
+menu's "Slice sample" runs it with equal slices, under the Undo name "Slice channel".
 
 ## Song take commands
 

@@ -37,6 +37,20 @@ mono, deterministic selection, silence, steady audio and view ranges.
 Undo/Redo, persistence, subranges and stale-result refusal. These tests do not
 establish detection quality on real recordings or native listening acceptance.
 
+## Channel Rack sample to channels
+
+Open a Channel Rack channel that plays an audio file and choose **Slice sample > Into 4, 8 or 16 channels**. Each
+equal slice becomes a new channel after it, named after the channel with the slice's number, with the channel's
+volume, pan, output and choke group and no steps or notes. The channel itself stays. One Undo removes all the new
+channels. The slices share the file's decoded audio: a slice channel saves the file's path and its frame range (format
+37), so it relinks and reloads with the file. A slice channel's menu offers **Slice this slice**, which stays inside its
+range. Loading another sound into a slice channel plays that sound whole.
+
+Slicing needs the file decoded here (an offline file must be relinked first), and the rack holds 64 channels. It is
+the `SliceRackChannel {channel, bounds}` command, whose bounds are the slices' edges in the file's frames; scripts can
+give uneven edges. Attack detection for channels is a later increment. As with pads, there is no zero-crossing
+adjustment or fade, so listen for clicks at slice edges.
+
 ## Session audio to drum pads
 
 Open **Copy / link** on a loaded, decoded Session audio clip and choose

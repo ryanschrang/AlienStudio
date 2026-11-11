@@ -1,6 +1,7 @@
 // Channel Rack playback: step clock, swing, voices, pitch, pan, probability,
 // gate, nudge, ratchets, choke, mute/solo, routing, and real-time safety. No JUCE.
 #include "RackEngine.h"
+#include "DrumSampler.h"
 #include "RackModel.h"
 #include <cstdio>
 #include <cstdlib>
@@ -694,6 +695,33 @@ static void stepTimingTests() {
     }
 }
 
+// A sliced channel (T2-01) plays a view of its file: from the slice's first frame, and only as long as the slice.
+static void sliceTests() {
+    const auto source = makeClip(1000, 48000.0, [](std::size_t i) { return static_cast<float>(i) / 1000.0f; },
+                                 [](std::size_t i) { return -static_cast<float>(i) / 1000.0f; });
+    const auto view = drumSliceView(source, {200, 300});
+    check(view != nullptr && view->frames == 100 && view->sliceSource == source && view->left.empty(), "a slice is a view of its source's PCM");
+    Rig rig; rig.keep.push_back(source);
+    rig.clips[0].store(view.get());
+    rig.on(0, 0);
+    rig.run(400, true);
+    near(rig.master()[0], 0.200 * kCenter, 1e-5, "a slice starts at its own first frame");
+    near(rig.master()[50], 0.250 * kCenter, 1e-5, "and plays on through its source");
+    near(rig.right[RackPlayer::masterBus][50], -0.250 * kCenter, 1e-5, "both channels come from the slice");
+    near(peakOf(rig.master(), 101, 400), 0.0, 1e-6, "and it stops at the slice's end, not the source's");
+    // Pitched up, the interpolation stays inside the slice: the source is loud past the slice, so a read there would show.
+    const auto walled = makeClip(1000, 48000.0, [](std::size_t i) { return i < 300 ? static_cast<float>(i) / 1000.0f : 10.0f; });
+    const auto inner = drumSliceView(walled, {200, 300});
+    Rig pitched; pitched.keep.push_back(walled);
+    pitched.clips[0].store(inner.get());
+    pitched.on(0, 0);
+    pitched.project.setStepField(0, 0, 0, StepField::pitch, 7);
+    pitched.run(400, true);
+    double highest = 0;
+    for (std::size_t i = 0; i < 400; ++i) highest = std::max(highest, static_cast<double>(pitched.master()[i]));
+    check(highest < 0.5, "a pitched slice never reads past its end");
+}
+
 static void realTimeSafetyTests() {
     Rig rig; rig.setClip(0, dc(48000)); rig.setClip(1, makeClip(2000, 44100.0, [](std::size_t i) { return std::sin(0.1f * static_cast<float>(i)); }));
     for (int s = 0; s < 16; ++s) { rig.on(0, s); rig.on(1, s); rig.project.setStepField(0, 1, s, StepField::pitch, s - 8); rig.project.setStepField(0, 1, s, StepField::probability, 60);
@@ -824,6 +852,7 @@ int main() {
     independenceTests();
     stepTimingTests();
     realTimeSafetyTests();
+    sliceTests();
     if (failures) { std::fprintf(stderr, "%d check(s) failed\n", failures); return 1; }
     std::puts("PASS: channel rack engine (clock, swing, voices, pitch, pan, probability, gate, nudge, ratchets, choke, routing)");
     return 0;

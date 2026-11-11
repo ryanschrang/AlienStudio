@@ -53,6 +53,10 @@ inline juce::var rackToVar(const Project& project, bool identities = false) {
         channel->setProperty("name", detail::text(project.info[i].name));
         if (identities) channel->setProperty("lane", detail::text(library::toHex(project.lanes[i])));
         channel->setProperty("sample", detail::text(project.info[i].sample));
+        if (!project.info[i].wholeSample()) {   // a slice of its file (format 37)
+            channel->setProperty("sliceStart", static_cast<juce::int64>(project.info[i].sliceStart));
+            channel->setProperty("sliceEnd", static_cast<juce::int64>(project.info[i].sliceEnd));
+        }
         channel->setProperty("volume", static_cast<double>(project.channels[i].volume));
         channel->setProperty("pan", static_cast<double>(project.channels[i].pan));
         channel->setProperty("mute", project.channels[i].mute);
@@ -168,6 +172,13 @@ inline bool rackFromVar(const juce::var& value, Project& out, juce::String& erro
         if (sampleText.size() > maxSampleBytes) return fail("A Channel Rack sample path is too long.");
         if (!parsed.addChannel(Project::clean(name.toString().toStdString()), sampleText)) return fail("The Channel Rack has too many channels.");
         parsed.channels[static_cast<std::size_t>(parsed.channelCount - 1)] = settings;
+        if (channel->hasProperty("sliceStart") || channel->hasProperty("sliceEnd")) {
+            const auto start = channel->getProperty("sliceStart"), end = channel->getProperty("sliceEnd");
+            if (!(start.isInt() || start.isInt64()) || !(end.isInt() || end.isInt64())) return fail("A Channel Rack sample slice is invalid.");
+            auto& info = parsed.info[static_cast<std::size_t>(parsed.channelCount - 1)];
+            info.sliceStart = static_cast<std::int64_t>(start); info.sliceEnd = static_cast<std::int64_t>(end);
+            if (!info.isFile() || info.sliceStart < 0 || info.sliceEnd <= info.sliceStart) return fail("A Channel Rack sample slice is invalid.");
+        }
         if (plugin.descriptionXml.isNotEmpty()
             && !parsed.setPlugin(parsed.channelCount - 1, plugin.descriptionXml.toStdString(), plugin.instanceId))
             return fail("A Channel Rack plugin instrument is invalid.");

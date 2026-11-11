@@ -26,7 +26,7 @@ namespace alien {
 // Version 1-3 projects always contained exactly this grid.
 inline constexpr int sessionProjectTrackCount = 4;
 inline constexpr int sessionProjectSceneCount = 4;
-inline constexpr int sessionProjectFormatVersion = 36;   // 36: Song chord track; 35: named Song sections; 34: shared project musical scale; 33: shared drum sample slices; 32: Song rack lanes saved apart from track rows (T1-04 C2); 31: VST3 instruments on Channel Rack channels; 30: Song warp anchors; 29: persistent universal track registry and checked document bindings; 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings; 27: fade shapes; 28: independent rack launch slots per Session row
+inline constexpr int sessionProjectFormatVersion = 37;   // 37: Channel Rack sample slices; 36: Song chord track; 35: named Song sections; 34: shared project musical scale; 33: shared drum sample slices; 32: Song rack lanes saved apart from track rows (T1-04 C2); 31: VST3 instruments on Channel Rack channels; 30: Song warp anchors; 29: persistent universal track registry and checked document bindings; 18: song tempo changes; 19: group buses; 20: song time signatures; 21: effect sidechains; 22: linked Session clips; 23: return slots; 24: Song placement clips; 25: flexible sidechain keys; 26: saved rack identities and Session/Song bindings; 27: fade shapes; 28: independent rack launch slots per Session row
 
 // A group bus slot. Slots keep their index while other buses come and go, so a track's output
 // (TrackSettings::output) and the bus's FX rack never need renumbering.
