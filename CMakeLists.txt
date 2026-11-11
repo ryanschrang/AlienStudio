@@ -163,6 +163,8 @@ if(BUILD_TESTING)
         juce::juce_audio_formats juce::juce_audio_basics)
     add_test(NAME ProjectControllerTests COMMAND ProjectControllerTests)
     set_tests_properties(ProjectControllerTests PROPERTIES TIMEOUT 60)
+    # Its test functions hold many projects, and the rack model grew with key zones (T2-01): a Debug build overflowed Windows' default 1 MB stack.
+    target_link_options(ProjectControllerTests PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/STACK:8388608>")
     add_executable(CommandEngineTests tests/CommandEngineTests.cpp)
     target_include_directories(CommandEngineTests PRIVATE src)
     target_compile_definitions(CommandEngineTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)

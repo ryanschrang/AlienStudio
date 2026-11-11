@@ -171,6 +171,25 @@ struct Channel {
     }
 };
 
+// A part of a channel's file on a range of keys (T2-01, format 38): source frames `start` to `end` (end exclusive)
+// play for notes `low` to `high`, at their own pitch on `root`.
+inline constexpr int maxKeyZones = 16;
+struct KeyZone {
+    std::int64_t start{}, end{};
+    int low{}, high{}, root{};
+    bool operator==(const KeyZone&) const = default;
+};
+// One to sixteen zones, each on keys above the one before, so a note finds at most one.
+inline bool validKeyZones(const std::vector<KeyZone>& zones) noexcept {
+    if (zones.empty() || zones.size() > static_cast<std::size_t>(maxKeyZones)) return false;
+    for (std::size_t i = 0; i < zones.size(); ++i) {
+        const auto& z = zones[i];
+        if (z.start < 0 || z.end <= z.start || z.low < 0 || z.high > 127 || z.low > z.high || z.root < 0 || z.root > 127
+            || (i > 0 && z.low <= zones[i - 1].high)) return false;
+    }
+    return true;
+}
+
 // Where a channel's sound comes from. Message thread only.
 struct ChannelInfo {
     std::string name;
@@ -180,6 +199,10 @@ struct ChannelInfo {
     // file. Slices share the file's decoded audio.
     std::int64_t sliceStart{}, sliceEnd{};
     bool wholeSample() const noexcept { return sliceStart == 0 && sliceEnd == 0; }
+    // Key zones: parts of the file on keys, so one channel plays several slices from the piano roll. Null when the
+    // channel plays its sample on every key. Compared by content.
+    std::shared_ptr<const std::vector<KeyZone>> zones;
+    bool hasZones() const noexcept { return zones != nullptr && !zones->empty(); }
     // A VST3 instrument (T1-09): its saved description (XML) and state (JUCE base64), and its instance identity.
     // Held by pointer and compared by content, so a channel without one stays small (projects are copied often).
     struct Plugin {
@@ -194,6 +217,7 @@ struct ChannelInfo {
     std::uint64_t pluginInstance() const { return plugin ? plugin->instance : 0; }
     bool operator==(const ChannelInfo& o) const {
         return name == o.name && sample == o.sample && sliceStart == o.sliceStart && sliceEnd == o.sliceEnd
+            && hasZones() == o.hasZones() && (!hasZones() || *zones == *o.zones)
             && (plugin == o.plugin || (plugin && o.plugin && *plugin == *o.plugin));
     }
 private:
@@ -513,6 +537,19 @@ struct Project {
         clearPlugin(c);
         info[c].sample = std::move(sample);
         info[c].sliceStart = info[c].sliceEnd = 0;   // a new sound is played whole
+        info[c].zones.reset();
+        return true;
+    }
+    // Puts parts of the channel's file on keys, or with no zones plays it on every key again.
+    bool setKeyZones(int index, std::vector<KeyZone> zones) {
+        if (!validChannel(index)) return false;
+        const auto c = static_cast<std::size_t>(index);
+        if (zones.empty()) {
+            if (!info[c].hasZones()) return false;
+            info[c].zones.reset(); return true;
+        }
+        if (!info[c].isFile() || channels[c].isInstrument() || !validKeyZones(zones) || (info[c].hasZones() && *info[c].zones == zones)) return false;
+        info[c].zones = std::make_shared<const std::vector<KeyZone>>(std::move(zones));
         return true;
     }
     // Adds a channel after `index` for each slice between consecutive `bounds` (source frames, ascending, at least two
@@ -531,6 +568,7 @@ struct Project {
             const auto made = static_cast<std::size_t>(at + 1);
             info[made].name = clean(base + " " + std::to_string(k + 1));
             info[made].sliceStart = bounds[k]; info[made].sliceEnd = bounds[k + 1];
+            info[made].zones.reset();   // a slice channel plays its slice on every key
             forEachPattern([&](Pattern& p) { p.steps[made] = {}; p.notes[made] = nullptr; });
         }
         return true;
@@ -540,7 +578,9 @@ struct Project {
         const auto c = static_cast<std::size_t>(index);
         if (channels[c].instrumentPreset == preset && info[c].sample.empty()) return false;
         clearPlugin(c);
-        channels[c].instrumentPreset = preset; info[c].sample.clear(); return true;
+        channels[c].instrumentPreset = preset; info[c].sample.clear();
+        info[c].sliceStart = info[c].sliceEnd = 0; info[c].zones.reset();   // an instrument has no sample to cut
+        return true;
     }
     static constexpr std::size_t maxPluginDescriptionBytes = 65536, maxPluginStateBytes = 64u * 1024u * 1024u;
     // Gives a channel a plugin instrument (a fresh one: no saved state yet). instance must be non-zero and is
@@ -550,6 +590,7 @@ struct Project {
         const auto c = static_cast<std::size_t>(index);
         channels[c].instrumentPreset = -1; channels[c].plugin = true;
         info[c].sample.clear();
+        info[c].sliceStart = info[c].sliceEnd = 0; info[c].zones.reset();
         info[c].plugin = std::make_shared<const ChannelInfo::Plugin>(ChannelInfo::Plugin{std::move(description), {}, instance});
         return true;
     }
@@ -607,6 +648,7 @@ struct Project {
             if (!channels[i].valid() || info[i].name.size() > maxNameBytes || info[i].sample.size() > maxSampleBytes) return false;
             if (channels[i].isSynth() && !info[i].sample.empty()) return false;
             if (!info[i].wholeSample() && (!info[i].isFile() || info[i].sliceStart < 0 || info[i].sliceEnd <= info[i].sliceStart)) return false;
+            if (info[i].zones != nullptr && (!info[i].isFile() || channels[i].isInstrument() || !validKeyZones(*info[i].zones))) return false;
             if (channels[i].plugin != info[i].hasPlugin() || (info[i].hasPlugin() && (!info[i].sample.empty() || info[i].pluginInstance() == 0))
                 || (!info[i].hasPlugin() && info[i].plugin != nullptr)
                 || info[i].pluginDescription().size() > maxPluginDescriptionBytes || info[i].pluginState().size() > maxPluginStateBytes) return false;

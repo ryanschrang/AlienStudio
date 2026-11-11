@@ -298,7 +298,7 @@ public:
                   cmdDuplicate = 100, cmdCopyRow, cmdPasteRow, cmdFill2, cmdFill4, cmdFill8,
                   cmdRotateLeft, cmdRotateRight, cmdReverseRow, cmdRepeat4, cmdRepeat8, cmdRepeat16, cmdPianoRoll,
                   synthBase = 200, builtinBase = 20, outputMaster = 40, outputBase = 41, chokeNone = 60, chokeBase = 61,
-                  cmdSlice4 = 170, cmdSlice8, cmdSlice16, cmdSliceAttacks, cmdPluginEditor = 190, pluginBase = 1000, starterBase = 50000 };
+                  cmdSlice4 = 170, cmdSlice8, cmdSlice16, cmdSliceAttacks, cmdKeys4, cmdKeys8, cmdKeys16, cmdKeysAttacks, cmdKeysClear, cmdPluginEditor = 190, pluginBase = 1000, starterBase = 50000 };
 
     // The name in a plugin channel's saved description (what the instrument list shows).
     static juce::String pluginName(const rack::ChannelInfo& info) {
@@ -343,6 +343,15 @@ public:
             slices.addItem(count == 4 ? cmdSlice4 : count == 8 ? cmdSlice8 : cmdSlice16, "Into " + juce::String(count) + " channels",
                            sliceable && project().channelCount + count <= rack::maxChannels);
         menu.addSubMenu(info.wholeSample() ? "Slice sample" : "Slice this slice", slices, sliceable);
+        // The same slices kept on this channel, one per key from C5 up, to play from the piano roll or a step's pitch.
+        juce::PopupMenu keys;
+        keys.addItem(cmdKeysAttacks, "At attacks (up to " + juce::String(rack::maxKeyZones) + " keys)", sliceable);
+        keys.addSeparator();
+        for (const int count : {4, 8, 16})
+            keys.addItem(count == 4 ? cmdKeys4 : count == 8 ? cmdKeys8 : cmdKeys16, juce::String(count) + " equal slices", sliceable);
+        keys.addSeparator();
+        keys.addItem(cmdKeysClear, "Play the whole sample on every key", info.hasZones(), !info.hasZones() && sliceable);
+        menu.addSubMenu("Slices on keys", keys, sliceable || info.hasZones(), nullptr, info.hasZones());
         juce::PopupMenu output;
         output.addItem(outputMaster, "Master", true, channel.output == rack::masterOutput);
         const auto& doc = controller.document();
@@ -426,6 +435,28 @@ public:
                 safe->changed();
             });
             return;
+        }
+        if (id == cmdKeysAttacks) {
+            juce::Component::SafePointer<ChannelRackGrid> safe(this);
+            controller.findRackAttacks(row, [safe, row](const std::vector<std::int64_t>& bounds) {
+                if (safe == nullptr) return;
+                safe->runCommands({command::SetRackChannelKeySlices{row, bounds}}, "Slices on keys");
+                safe->changed();
+            }, false);
+            return;
+        }
+        if (id == cmdKeys4 || id == cmdKeys8 || id == cmdKeys16 || id == cmdKeysClear) {
+            const int count = id == cmdKeys4 ? 4 : id == cmdKeys8 ? 8 : 16;
+            const auto& info = project().info[static_cast<std::size_t>(row)];
+            const auto* clip = controller.rackChannelAudio(row);
+            std::vector<std::int64_t> bounds;
+            if (id != cmdKeysClear) {
+                if (clip == nullptr) return;
+                const std::int64_t start = info.wholeSample() ? 0 : info.sliceStart;
+                bounds = rack_channel::equalSlices(start, info.wholeSample() ? static_cast<std::int64_t>(clip->frames) : info.sliceEnd, count);
+            }
+            runCommands({command::SetRackChannelKeySlices{row, bounds}}, "Slices on keys");
+            changed(); return;
         }
         if (id == cmdSlice4 || id == cmdSlice8 || id == cmdSlice16) {
             const int count = id == cmdSlice4 ? 4 : id == cmdSlice8 ? 8 : 16;

@@ -802,6 +802,12 @@ Refused: a channel that does not play an audio file, too few or too many slices,
 rack, and, against the loaded audio, a file that is not decoded here or slices past its end. The Channel Rack channel
 menu's "Slice sample" runs it with equal slices, under the Undo name "Slice channel".
 
+`SetRackChannelKeySlices {channel, bounds, firstKey}` keeps the slices on the channel instead: the slice between each
+pair of `bounds` goes on its own key, the first on `firstKey` (60 is the key a plain step plays) and each next one a
+key higher, each at its own pitch. Other keys are silent. Empty `bounds` plays the sample on every key again. Refused
+as above, except that it needs no room in the rack, and when the keys would pass note 127. The channel menu's "Slices
+on keys" runs it, under the Undo name "Slices on keys".
+
 ## Song take commands
 
 `CompSongTake {take, start, end}` plays ticks `start` to `end` of a recorded take on its track, over what is there, as a

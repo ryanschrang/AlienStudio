@@ -59,6 +59,24 @@ step, and the status line says so. A result is dropped if the project, the chann
 while searching. `ChannelRackViewTests` covers the menu, the worker, slices of a slice, the room limit and the dropped
 results with synthetic clicks; how well it finds the hits in real recordings has not been checked by ear.
 
+## Channel Rack slices on keys
+
+**Slices on keys** in the same menu keeps the slices on the one channel instead of adding channels: the first slice
+plays on C5 (note 60, the pitch a plain step plays), and each next slice on the next key up. Choose **At attacks** (up
+to 16 keys) or **4, 8 or 16 equal slices**. A note in the channel's piano roll, or a step's pitch, then picks the
+slice; each slice plays at its own pitch, and keys without a slice are silent. **Play the whole sample on every key**
+goes back. Each choice is one Undo step, and none needs room in the rack.
+
+It is the `SetRackChannelKeySlices {channel, bounds, firstKey}` command; empty bounds plays the sample whole again.
+The channel saves its key zones (format 38): for each, the file's frame range, its lowest and highest key and its root
+key. The command puts each slice on a single key at its own root; the saved form and the engine also take a zone that
+spans several keys and is pitched from its root, which nothing in the app makes yet. All zones are parts of the
+channel's one file: zones from different files (a multisample of separate recordings) are a later increment. A new
+sound on the channel, or slicing it into channels, plays whole on every key.
+
+`CommandEngineTests`, `RackEngineTests` and `ChannelRackViewTests` cover the command, the shared audio, saving,
+playback of each zone, the menu and the attack search. It has not been listened to in the app.
+
 ## Session audio to drum pads
 
 Open **Copy / link** on a loaded, decoded Session audio clip and choose

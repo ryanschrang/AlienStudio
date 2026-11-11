@@ -722,6 +722,37 @@ static void sliceTests() {
     check(highest < 0.5, "a pitched slice never reads past its end");
 }
 
+// A key map (T2-01): each note plays the zone that holds it, pitched from the zone's root; other notes are silent.
+static void keyZoneTests() {
+    const auto source = makeClip(1000, 48000.0, [](std::size_t i) { return static_cast<float>(i) / 1000.0f; });
+    auto map = std::make_shared<SessionAudioClip>();
+    map->sampleRate = 48000.0; map->channels = 1; map->frames = 1000;
+    auto zones = std::make_shared<std::vector<SampleKeyZone>>();
+    zones->push_back({60, 60, 60, drumSliceView(source, {200, 300})});
+    zones->push_back({61, 61, 61, drumSliceView(source, {500, 600})});
+    zones->push_back({62, 72, 62, drumSliceView(source, {700, 800})});
+    map->keyZones = zones;
+    Rig rig; rig.keep.push_back(source); rig.keep.push_back(map);
+    rig.clips[0].store(map.get());
+    const auto at = [&](int step, int pitch) { rig.on(0, step); rig.project.setStepField(0, 0, step, StepField::pitch, pitch); };
+    at(0, 0); at(4, 1); at(8, 14); at(12, 3);   // 120 BPM at 48 kHz: a step every 6000 samples
+    rig.run(80000, true);
+    near(rig.master()[0], 0.200 * kCenter, 1e-5, "the base key plays its zone from the zone's first frame");
+    near(rig.master()[24050], 0.550 * kCenter, 1e-5, "the next key plays the next zone, at its own pitch");
+    near(peakOf(rig.master(), 24101, 48000), 0.0, 1e-6, "a zone stops at its own end");
+    near(peakOf(rig.master(), 48000, 72000), 0.0, 1e-6, "a note on no zone is silent");
+    near(rig.master()[72010], (700.0 + 10.0 * std::exp2(1.0 / 12.0)) / 1000.0 * kCenter, 1e-4, "a wider zone is pitched from its root");
+
+    Rig preview; preview.keep.push_back(source); preview.keep.push_back(map);
+    preview.publish();
+    preview.player.audition(*preview.snap, 0, 1.0f, map.get(), 30);
+    preview.run(200, false);
+    near(peakOf(preview.master(), 0, 200), 0.0, 1e-6, "auditioning a key with no zone is silent");
+    preview.player.audition(*preview.snap, 0, 1.0f, map.get(), 1);
+    preview.run(200, false);
+    near(preview.master()[200], 0.500 * kCenter, 1e-5, "auditioning a key plays its zone");
+}
+
 static void realTimeSafetyTests() {
     Rig rig; rig.setClip(0, dc(48000)); rig.setClip(1, makeClip(2000, 44100.0, [](std::size_t i) { return std::sin(0.1f * static_cast<float>(i)); }));
     for (int s = 0; s < 16; ++s) { rig.on(0, s); rig.on(1, s); rig.project.setStepField(0, 1, s, StepField::pitch, s - 8); rig.project.setStepField(0, 1, s, StepField::probability, 60);
@@ -853,6 +884,7 @@ int main() {
     stepTimingTests();
     realTimeSafetyTests();
     sliceTests();
+    keyZoneTests();
     if (failures) { std::fprintf(stderr, "%d check(s) failed\n", failures); return 1; }
     std::puts("PASS: channel rack engine (clock, swing, voices, pitch, pan, probability, gate, nudge, ratchets, choke, routing)");
     return 0;
