@@ -298,7 +298,7 @@ public:
                   cmdDuplicate = 100, cmdCopyRow, cmdPasteRow, cmdFill2, cmdFill4, cmdFill8,
                   cmdRotateLeft, cmdRotateRight, cmdReverseRow, cmdRepeat4, cmdRepeat8, cmdRepeat16, cmdPianoRoll,
                   synthBase = 200, builtinBase = 20, outputMaster = 40, outputBase = 41, chokeNone = 60, chokeBase = 61,
-                  cmdPluginEditor = 190, pluginBase = 1000, starterBase = 50000 };
+                  cmdSlice4 = 170, cmdSlice8, cmdSlice16, cmdPluginEditor = 190, pluginBase = 1000, starterBase = 50000 };
 
     // The name in a plugin channel's saved description (what the instrument list shows).
     static juce::String pluginName(const rack::ChannelInfo& info) {
@@ -332,6 +332,13 @@ public:
         sound.addItem(cmdLoadSample, "Load sample file...");
         sound.addItem(cmdSilent, "Silent (no sound)", true, info.sample.empty() && !channel.isInstrument());
         menu.addSubMenu("Sound", sound);
+        // Equal slices of the sample (or of this channel's slice), each a new channel playing its part (T2-01).
+        juce::PopupMenu slices;
+        const bool sliceable = info.isFile() && !channel.isInstrument() && controller.rackChannelAudio(row) != nullptr;
+        for (const int count : {4, 8, 16})
+            slices.addItem(count == 4 ? cmdSlice4 : count == 8 ? cmdSlice8 : cmdSlice16, "Into " + juce::String(count) + " channels",
+                           sliceable && project().channelCount + count <= rack::maxChannels);
+        menu.addSubMenu(info.wholeSample() ? "Slice sample" : "Slice this slice", slices, sliceable);
         juce::PopupMenu output;
         output.addItem(outputMaster, "Master", true, channel.output == rack::masterOutput);
         const auto& doc = controller.document();
@@ -404,6 +411,16 @@ public:
                 const auto at = std::find(rows.begin(), rows.end(), row) - rows.begin();
                 selected = anchor = row + static_cast<int>(at) + 1;
             }
+            changed(); return;
+        }
+        if (id == cmdSlice4 || id == cmdSlice8 || id == cmdSlice16) {
+            const int count = id == cmdSlice4 ? 4 : id == cmdSlice8 ? 8 : 16;
+            const auto& info = project().info[static_cast<std::size_t>(row)];
+            const auto* clip = controller.rackChannelAudio(row);
+            if (clip == nullptr) return;
+            const std::int64_t start = info.wholeSample() ? 0 : info.sliceStart;
+            const std::int64_t end = info.wholeSample() ? static_cast<std::int64_t>(clip->frames) : info.sliceEnd;
+            if (runCommands({command::SliceRackChannel{row, rack_channel::equalSlices(start, end, count)}}, "Slice channel")) selectChannel(row + 1);
             changed(); return;
         }
         if (id >= cmdFill2 && id <= cmdRepeat16) {

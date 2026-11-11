@@ -492,7 +492,7 @@ private:
         return *chosen;
     }
 
-    static float hermite(const std::vector<float>& x, std::size_t frames, std::size_t i, float f) noexcept {
+    static float hermite(const float* x, std::size_t frames, std::size_t i, float f) noexcept {
         const float y0 = x[i];
         const float ym = i > 0 ? x[i - 1] : 0.0f;
         const float y1 = i + 1 < frames ? x[i + 1] : 0.0f;
@@ -520,12 +520,19 @@ private:
                 l = r = synth.nextSample();
                 if (synth.activeVoices() == 0) { v.active = false; continue; }
             } else {
+                // A slice is a view of its source's PCM, from its offset: frame 0 and the interpolation limits are the view's.
                 const SessionAudioClip& clip = *v.clip;
+                const SessionAudioClip& pcm = clip.sliceSource ? *clip.sliceSource : clip;
+                const std::size_t offset = clip.sliceSource ? clip.sliceOffset : 0;
                 const auto i = static_cast<std::size_t>(v.position);
                 if (i >= clip.frames) { v.active = false; continue; }
                 const float f = static_cast<float>(v.position - static_cast<double>(i));
-                l = f == 0.0f ? clip.left[i] : hermite(clip.left, clip.frames, i, f);
-                r = clip.channels == 2 ? (f == 0.0f ? clip.right[i] : hermite(clip.right, clip.frames, i, f)) : l;
+                const float* leftPcm = pcm.left.data() + offset;
+                l = f == 0.0f ? leftPcm[i] : hermite(leftPcm, clip.frames, i, f);
+                if (clip.channels == 2) {
+                    const float* rightPcm = pcm.right.data() + offset;
+                    r = f == 0.0f ? rightPcm[i] : hermite(rightPcm, clip.frames, i, f);
+                } else r = l;
             }
             float fade = 1.0f;
             if (v.releasing) {

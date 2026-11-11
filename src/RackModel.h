@@ -20,6 +20,7 @@
 #include <mutex>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace alien::rack {
 
@@ -175,6 +176,10 @@ struct ChannelInfo {
     std::string name;
     // "" (silent), "builtin:<id>" (a synthesized drum sound), or the path of an audio file.
     std::string sample;
+    // The part of a file sample the channel plays (T2-01, format 37): source frames, end exclusive. {0, 0} is the whole
+    // file. Slices share the file's decoded audio.
+    std::int64_t sliceStart{}, sliceEnd{};
+    bool wholeSample() const noexcept { return sliceStart == 0 && sliceEnd == 0; }
     // A VST3 instrument (T1-09): its saved description (XML) and state (JUCE base64), and its instance identity.
     // Held by pointer and compared by content, so a channel without one stays small (projects are copied often).
     struct Plugin {
@@ -188,7 +193,8 @@ struct ChannelInfo {
     const std::string& pluginState() const { return plugin ? plugin->state : none(); }
     std::uint64_t pluginInstance() const { return plugin ? plugin->instance : 0; }
     bool operator==(const ChannelInfo& o) const {
-        return name == o.name && sample == o.sample && (plugin == o.plugin || (plugin && o.plugin && *plugin == *o.plugin));
+        return name == o.name && sample == o.sample && sliceStart == o.sliceStart && sliceEnd == o.sliceEnd
+            && (plugin == o.plugin || (plugin && o.plugin && *plugin == *o.plugin));
     }
 private:
     static const std::string& none() { static const std::string empty; return empty; }
@@ -505,7 +511,29 @@ struct Project {
         if (info[c].sample == sample && !channels[c].isInstrument()) return false;
         channels[c].instrumentPreset = -1;
         clearPlugin(c);
-        info[c].sample = std::move(sample); return true;
+        info[c].sample = std::move(sample);
+        info[c].sliceStart = info[c].sliceEnd = 0;   // a new sound is played whole
+        return true;
+    }
+    // Adds a channel after `index` for each slice between consecutive `bounds` (source frames, ascending, at least two
+    // slices): each plays that part of the channel's file, with the channel's mix settings and no steps or notes. The
+    // channel itself stays. False, and nothing changes, when it cannot.
+    bool sliceChannel(int index, const std::vector<std::int64_t>& bounds) {
+        if (!validChannel(index) || bounds.size() < 3) return false;
+        const auto c = static_cast<std::size_t>(index);
+        if (!info[c].isFile() || channels[c].isInstrument() || channelCount + static_cast<int>(bounds.size()) - 1 > maxChannels) return false;
+        for (std::size_t i = 0; i + 1 < bounds.size(); ++i) if (bounds[i] < 0 || bounds[i + 1] <= bounds[i]) return false;
+        const auto saved = *this;
+        const auto base = info[c].name;
+        for (std::size_t k = 0; k + 1 < bounds.size(); ++k) {
+            const int at = index + static_cast<int>(k);
+            if (!duplicateChannel(at)) { *this = saved; return false; }
+            const auto made = static_cast<std::size_t>(at + 1);
+            info[made].name = clean(base + " " + std::to_string(k + 1));
+            info[made].sliceStart = bounds[k]; info[made].sliceEnd = bounds[k + 1];
+            forEachPattern([&](Pattern& p) { p.steps[made] = {}; p.notes[made] = nullptr; });
+        }
+        return true;
     }
     bool setInstrumentPreset(int index, int preset) {
         if (!validChannel(index) || preset < 0 || preset >= alien::presetCount) return false;
@@ -578,6 +606,7 @@ struct Project {
             const auto i = static_cast<std::size_t>(c);
             if (!channels[i].valid() || info[i].name.size() > maxNameBytes || info[i].sample.size() > maxSampleBytes) return false;
             if (channels[i].isSynth() && !info[i].sample.empty()) return false;
+            if (!info[i].wholeSample() && (!info[i].isFile() || info[i].sliceStart < 0 || info[i].sliceEnd <= info[i].sliceStart)) return false;
             if (channels[i].plugin != info[i].hasPlugin() || (info[i].hasPlugin() && (!info[i].sample.empty() || info[i].pluginInstance() == 0))
                 || (!info[i].hasPlugin() && info[i].plugin != nullptr)
                 || info[i].pluginDescription().size() > maxPluginDescriptionBytes || info[i].pluginState().size() > maxPluginStateBytes) return false;

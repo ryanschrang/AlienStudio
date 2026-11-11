@@ -777,6 +777,15 @@ frozen track. While warped audio records it is refused like the other Song clip 
 The Song view's Ctrl+V and its Paste menu item run it under the old Undo name, "Paste", and select what was pasted.
 Which tracks and scenes the clipboard means is still worked out by the view, by identity, before the command is made.
 
+## Slicing a Channel Rack sample
+
+`SliceRackChannel {channel, bounds}` adds a channel after `channel` for each slice between consecutive `bounds` (the
+file's frames, ascending; 2 to 16 slices). Each plays that part of the file the channel plays, sharing its decoded
+audio, with the channel's mix settings and no steps or notes; the channel stays. Slicing a slice stays inside its range.
+Refused: a channel that does not play an audio file, too few or too many slices, edges that do not rise, no room in the
+rack, and, against the loaded audio, a file that is not decoded here or slices past its end. The Channel Rack channel
+menu's "Slice sample" runs it with equal slices, under the Undo name "Slice channel".
+
 ## Song take commands
 
 `CompSongTake {take, start, end}` plays ticks `start` to `end` of a recorded take on its track, over what is there, as a

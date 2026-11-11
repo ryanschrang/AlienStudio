@@ -2189,10 +2189,10 @@ public:
         for (int c = 0; c < doc.channelRack.channelCount; ++c) {
             const auto& info = doc.channelRack.info[static_cast<std::size_t>(c)];
             if (info.isFile()) {
-                const auto found = rackAudio.find(info.sample);
-                if (found == rackAudio.end()) continue;
-                keepAlive.push_back(found->second);
-                clips[static_cast<std::size_t>(c)] = found->second.get();
+                auto asset = rackAsset(info);
+                if (asset == nullptr) continue;
+                clips[static_cast<std::size_t>(c)] = asset.get();
+                keepAlive.push_back(std::move(asset));
             } else clips[static_cast<std::size_t>(c)] = rackClip(info);
         }
         return clips;
@@ -2220,7 +2220,21 @@ public:
         return true;
     }
     // Live side of the rack channel commands. CommandEngine owns the history entry.
+    // Why the loaded audio refuses slicing a channel: the file must be decoded here, and the slices inside it.
+    juce::String rackSliceRefusal(const rack_channel::Edit& e) const {
+        if (e.kind != rack_channel::Kind::slice || !doc.channelRack.validChannel(e.channel)) return {};
+        const auto& info = doc.channelRack.info[static_cast<std::size_t>(e.channel)];
+        if (!info.isFile()) return {};   // the reducer says why
+        const auto found = rackAudio.find(info.sample);
+        if (found == rackAudio.end()) return "Load the channel's sample before slicing it.";
+        if (found->second->streamed() || found->second->sliceSource) return "That sample cannot be sliced.";
+        const auto frames = static_cast<std::int64_t>(found->second->frames);
+        if (frames > std::numeric_limits<int>::max()) return "That sample is too long to slice.";
+        if (!e.bounds.empty() && e.bounds.back() > frames) return "The slices run past the end of the sample (" + juce::String(frames) + " frames).";
+        return {};
+    }
     bool applyRackChannelCommand(const rack_channel::Edit& e) {
+        if (rackSliceRefusal(e).isNotEmpty()) return false;
         if (busy || rack_channel::apply(doc, e).isNotEmpty()) return false;
         pushRackToEngine();
         return true;
@@ -2349,6 +2363,10 @@ public:
         if (refused.isEmpty() && onDocumentRestored) onDocumentRestored();
     }
     // True when the channel names a file that is not loaded (moved or deleted).
+    // The decoded audio a rack channel plays (its slice of a file, for a sliced channel), or null.
+    const SessionAudioClip* rackChannelAudio(int channel) const {
+        return doc.channelRack.validChannel(channel) ? rackClip(doc.channelRack.info[static_cast<std::size_t>(channel)]) : nullptr;
+    }
     bool rackChannelOffline(int channel) const {
         if (!doc.channelRack.validChannel(channel)) return false;
         const auto& info = doc.channelRack.info[static_cast<std::size_t>(channel)];
@@ -2479,13 +2497,24 @@ private:
     }
     // The sound a channel plays: a built-in drum sound (generated once and kept
     // for the life of the program), a loaded file, or nothing (silent or offline).
-    const SessionAudioClip* rackClip(const rack::ChannelInfo& info) const {
-        if (info.isBuiltin()) return rack::builtinClip(info.builtinId()).get();
-        if (info.isFile()) {
-            const auto found = rackAudio.find(info.sample);
-            return found == rackAudio.end() ? nullptr : found->second.get();
-        }
-        return nullptr;
+    const SessionAudioClip* rackClip(const rack::ChannelInfo& info) const { return rackAsset(info).get(); }
+    // The same, owned. A sliced channel plays a view of its file's decoded audio (T2-01): the views are kept for the
+    // life of the controller, as the engine may still hold one, and shared by every channel playing that slice. A slice
+    // past the end of its file, or of audio that is streamed, plays nothing.
+    std::shared_ptr<const SessionAudioClip> rackAsset(const rack::ChannelInfo& info) const {
+        if (info.isBuiltin()) return rack::builtinClip(info.builtinId());
+        if (!info.isFile()) return {};
+        const auto found = rackAudio.find(info.sample);
+        if (found == rackAudio.end()) return {};
+        if (info.wholeSample()) return found->second;
+        const auto key = std::make_tuple(info.sample, info.sliceStart, info.sliceEnd);
+        if (const auto view = rackSliceViews.find(key); view != rackSliceViews.end() && view->second->sliceSource == found->second) return view->second;
+        if (info.sliceEnd > static_cast<std::int64_t>(found->second->frames) || info.sliceEnd > std::numeric_limits<int>::max()) return {};
+        auto view = drumSliceView(found->second, {static_cast<int>(info.sliceStart), static_cast<int>(info.sliceEnd)});
+        if (view == nullptr || view == found->second) return {};
+        rackSliceViews[key] = view;
+        retainedSliceViews.push_back(view);   // a replaced view may still be playing
+        return view;
     }
     // Hands the engine the rack and the sound for each channel. Skipped when
     // nothing changed, so unrelated edits do not rebuild the snapshot.
@@ -3154,6 +3183,9 @@ private:
     // Decoded Channel Rack samples by path. Kept (with `retained`) for the life of
     // the controller so the engine can hold raw pointers to them.
     std::map<std::string, std::shared_ptr<const SessionAudioClip>> rackAudio;
+    // Views of rack files for sliced channels, by file and frame range, and every one ever handed to the engine.
+    mutable std::map<std::tuple<std::string, std::int64_t, std::int64_t>, std::shared_ptr<const SessionAudioClip>> rackSliceViews;
+    mutable std::vector<std::shared_ptr<const SessionAudioClip>> retainedSliceViews;
     struct PublishedRack {
         bool known{};
         rack::Project project;
