@@ -823,6 +823,14 @@ The takes panel's Use whole take, Use loop range and Forget take buttons, the ta
 play, loop-range and forget items run these commands with their old Undo names ("Comp recording take" and "Forget
 recording take"). A refusal is said in the Song view's message line or the panel's hint.
 
+## Project setting commands
+
+`SetLivePreset {preset}` chooses the factory synth sound played live and by the step synth (presets are numbered from
+0); the Devices page's "Use preset" runs it, under the Undo name "Change live sound". `SetLaunchQuantization {steps}`
+sets when queued Session clips and scenes launch: 4 for the next beat, 16 for the next bar; the Session header's
+Beat/Bar box runs it, under "Change launch timing". Both refuse a value outside those, and the same value again is no
+edit.
+
 ## Master volume command
 
 `SetMasterVolume {gain}` accepts a finite linear gain from 0 through 4 (1 is unity),

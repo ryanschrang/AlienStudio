@@ -87,9 +87,10 @@ public:
         launchTiming.addItem("Beat", 1);
         launchTiming.addItem("Bar", 2);
         launchTiming.onChange = [this] {
-            controller.setLaunchQuantization(launchTiming.getSelectedId() == 1 ? 4 : 16);
-            if (onTitleChanged) onTitleChanged();
-            if (onEdited) onEdited("Change launch timing");
+            const auto result = command::CommandEngine(controller).execute(command::SetLaunchQuantization{launchTiming.getSelectedId() == 1 ? 4 : 16});
+            // A refused change (a busy project) puts the box back on what the project has.
+            launchTiming.setSelectedId(controller.document().launchQuantizationSteps == 4 ? 1 : 2, juce::dontSendNotification);
+            if (result.changed && onTitleChanged) onTitleChanged();
         };
 
         // Grid: pinned track column, scrolling clips, pinned scene row.
