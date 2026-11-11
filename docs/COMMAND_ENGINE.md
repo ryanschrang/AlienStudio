@@ -777,6 +777,23 @@ frozen track. While warped audio records it is refused like the other Song clip 
 The Song view's Ctrl+V and its Paste menu item run it under the old Undo name, "Paste", and select what was pasted.
 Which tracks and scenes the clipboard means is still worked out by the view, by identity, before the command is made.
 
+## Clip notes
+
+`SetClipNotes {track, scene, notes}` sets the whole note sequence of a Session MIDI clip, and
+`SetPlacementClipNotes {placement, notes}` that of a Song placement clip, named by its library clip id (every Song clip
+playing it hears the new notes; the Session cell it came from keeps its own). They share `ClipNotesCommands.h`, so
+Preview and execute agree. A cell's notes are its content, so cells linked to it hear them too, and a cell left with no
+notes at the blank length is cleared, as the piano roll always has done. Notes already in the clip change nothing.
+The live side queues an edited Session clip that is not playing to launch, so the edit is heard straight away.
+
+The piano roll runs one per change, under a key for the gesture (`roll-notes-<n>`, counted up when the gesture ends),
+so a gesture is one Undo step named "Edit notes"; multi-clip editing runs one SetClipNotes per clip in a single batch.
+Like SetRackChannelNotes neither has a script form: `arguments` writes the clip and the note count.
+
+Refused: notes that are not valid, a cell that is not there, a cell playing a rack pattern (its notes are the
+channel's), a clip on a frozen track, a placement clip no Song clip plays, and the cell a MIDI take is recording into.
+A refused change is said, and the roll shows the clip's notes again when the gesture ends.
+
 ## Song take commands
 
 `CompSongTake {take, start, end}` plays ticks `start` to `end` of a recorded take on its track, over what is there, as a

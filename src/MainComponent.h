@@ -608,17 +608,14 @@ private:
                 rackView.refresh();
                 return;
             }
-            if (rollTarget.placement != 0) {
-                if (!loadingClip) controller.setPlacementPattern(rollTarget.placement, pianoRoll.getPattern());
-                return;
-            }
-            if (multiClip.active()) {
-                if (!loadingClip) writeMultiClipEdit();
-                return;
-            }
+            // Loading a clip into the roll reports the notes it already has: not an edit.
+            if (loadingClip) return;
+            const auto notes = std::make_shared<const alien::PianoRollPattern>(pianoRoll.getPattern());
+            if (rollTarget.placement != 0) { runRollNotes({alien::command::SetPlacementClipNotes{rollTarget.placement, notes}}); return; }
+            if (multiClip.active()) { writeMultiClipEdit(); return; }
             const auto& d = controller.document();
-            controller.setClipPattern(d.selectedTrack, d.selectedScene, pianoRoll.getPattern(), !loadingClip);
-            if (!loadingClip) sessionView.refreshSelectedClip();
+            runRollNotes({alien::command::SetClipNotes{d.selectedTrack, d.selectedScene, notes}});
+            sessionView.refreshSelectedClip();
         };
         pianoRoll.onEditCommitted = [this] {
             if (suppressPianoRollCommit) return;
@@ -629,9 +626,10 @@ private:
                 if (rollEditRefused) { rollEditRefused = false; loadSelectedClip(); }
                 return;
             }
-            if (rollTarget.placement != 0) { controller.commit("Edit notes"); timelineView.refresh(); return; }
-            const auto& d = controller.document();
-            controller.commit("Edit notes", d.selectedTrack, d.selectedScene);
+            // Each change ran as a note command under this gesture's key, so the gesture is already one Undo step.
+            ++rollGesture;
+            if (rollEditRefused) { rollEditRefused = false; loadSelectedClip(); }
+            if (rollTarget.placement != 0) timelineView.refresh();
         };
         pianoRoll.onGhostSourceChanged = [this](alien::GhostNoteSource) {
             if (pianoRoll.isMultiClipEditing() || multiClip.active()) loadSelectedClip();   // a different set of clips to edit
@@ -861,16 +859,25 @@ private:
         pianoRoll.setPattern(multiClip.combined());
         return true;
     }
-    // Writes one edit of the merged notes back into each clip it changed. The commit after the gesture makes the
-    // whole edit, across every clip, one undo step.
+    // Writes one edit of the merged notes back into each clip, as one batch of note commands under the gesture's key,
+    // so the whole edit, across every clip, is one Undo step. A clip whose notes did not change is left as it is.
     void writeMultiClipEdit() {
         std::vector<std::shared_ptr<const alien::PianoRollPattern>> parts;
         if (!multiClip.split(pianoRoll.getPattern(), parts)) { loadSelectedClip(); return; }   // could not split: show what is there
         const auto& sources = multiClip.sources();
+        std::vector<alien::command::Command> changes;
         for (std::size_t i = 0; i < sources.size() && i < parts.size(); ++i)
-            controller.setClipPattern(sources[i].track, sources[i].scene, *parts[i], true);
+            changes.push_back(alien::command::SetClipNotes{sources[i].track, sources[i].scene, parts[i]});
+        runRollNotes(std::move(changes));
         sessionView.refreshClips();
         sessionView.refreshSelectedClip();
+    }
+    // A piano-roll change to a Session or Song clip runs as note commands under the gesture's key, so the gesture is
+    // one Undo step named "Edit notes". A refusal is said, and the roll is put back when the gesture ends.
+    bool runRollNotes(std::vector<alien::command::Command> changes) {
+        const auto result = alien::command::CommandEngine(controller).batch(changes, "Edit notes", "roll-notes-" + juce::String(rollGesture));
+        if (!result.ok) { rollEditRefused = true; statusBar.setProjectStatus(result.error, {}); }
+        return result.ok;
     }
 
     // Recording --------------------------------------------------------------
@@ -2046,7 +2053,7 @@ private:
     alien::MultiClipEdit multiClip;
     alien::PianoRollAuditionRouter auditions;   // where each held piano-roll preview note plays   // the Session clips the piano roll edits together, while that is on
     RollTarget rollTarget;
-    int rollGesture{};                  // one undo step per piano-roll gesture on a rack channel
+    int rollGesture{};                  // one undo step per piano-roll gesture
     bool rollEditRefused{};             // the roll shows an edit the project refused; put it back when the gesture ends
     int statusTicks{};
     alien::DrumSamplerPanel drumPanel;

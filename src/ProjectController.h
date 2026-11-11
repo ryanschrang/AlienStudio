@@ -12,6 +12,7 @@
 #include "TempoCommands.h"
 #include "SongMarkerCommands.h"
 #include "SongClipCommands.h"
+#include "ClipNotesCommands.h"
 #include "AutomationCommands.h"
 #include "RackChannelCommands.h"
 #include "RackPatternCommands.h"
@@ -1356,6 +1357,27 @@ public:
         else publishClip(track, scene);
     }
 
+    // Why the project's state refuses a clip notes command: the take recording into a clip owns it until it ends.
+    juce::String clipNotesRefusal(const clip_notes::Edit& e) const {
+        if (e.kind == clip_notes::Kind::cell && take.active && e.track == take.track && e.scene == take.scene)
+            return "The take recording into this clip owns its notes until it ends.";
+        return {};
+    }
+    // Live side of SetClipNotes and SetPlacementClipNotes. CommandEngine owns the history entry. A Session clip that is
+    // not playing is queued to launch, so an edit is heard straight away; Song clips playing a placement clip follow it.
+    bool applyClipNotesCommand(const clip_notes::Edit& e) {
+        if (busy || clipNotesRefusal(e).isNotEmpty() || clip_notes::refusal(doc, e).isNotEmpty()) return false;
+        if (clip_notes::changesNothing(doc, e)) return true;
+        if (clip_notes::apply(doc, e).isNotEmpty()) return false;
+        if (e.kind == clip_notes::Kind::placement) { publishArrangement(); return true; }
+        republishLinked(e.track, e.scene);   // cells linked to this one now play the new notes too
+        if (doc.clip(e.track, e.scene).isAudioClip()) return true;
+        const auto index = static_cast<std::size_t>(e.track);
+        engine.requestedPianoRollClip[index].store(e.scene);
+        if (engine.activePianoRollClip[index].load() == e.scene) engine.pianoRollNotes[index].publish(*e.notes);
+        else publishClip(e.track, e.scene);
+        return true;
+    }
     // Called by the piano roll as a placement clip's notes change: every region that plays it follows.
     bool setPlacementPattern(std::uint64_t clip, const PianoRollPattern& pattern) {
         const auto id = alien::library::ClipId{clip};
