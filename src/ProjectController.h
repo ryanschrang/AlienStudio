@@ -1328,13 +1328,18 @@ public:
         if (unfrozen && onDocumentRestored) onDocumentRestored();
         return changed;
     }
-    void setLivePreset(int preset) {
+    // Live side of SetLivePreset and SetLaunchQuantization. CommandEngine owns the history entry.
+    bool setLivePreset(int preset) {
+        if (busy || preset < 0 || preset >= presetCount) return false;
         doc.livePreset = preset;
         engine.preset.store(preset);
+        return true;
     }
-    void setLaunchQuantization(int steps) {
-        doc.launchQuantizationSteps = steps == 4 ? 4 : 16;
-        engine.launchQuantizationSteps.store(doc.launchQuantizationSteps);
+    bool setLaunchQuantization(int steps) {
+        if (busy || (steps != 4 && steps != 16)) return false;
+        doc.launchQuantizationSteps = steps;
+        engine.launchQuantizationSteps.store(steps);
+        return true;
     }
 
     // Called by the piano roll as notes change. Editing a clip that is not
