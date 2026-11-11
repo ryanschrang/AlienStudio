@@ -1,5 +1,8 @@
 #pragma once
 #include "DrumSampler.h"
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <vector>
 
 namespace alien {
@@ -10,9 +13,11 @@ struct DrumTransientSlices {
 
 // Worker-only, deterministic energy-onset heuristic, not beat detection. Refuse
 // sources over one minute rather than silently analysing only part of a sample.
-inline DrumTransientSlices detectDrumTransientSlices(const SessionAudioClip& clip) {
-    DrumTransientSlices result;
-    if (!clip.valid() || clip.streamed() || clip.sampleRate < 8000 || clip.sampleRate > 192000
+// The edges of up to `maxSlices` chronological slices, local to the clip: 0, each
+// kept attack, then the clip's frame count. Empty when there are no useful attacks.
+inline std::vector<std::int64_t> detectAttackBounds(const SessionAudioClip& clip, int maxSlices) {
+    std::vector<std::int64_t> result;
+    if (maxSlices < 2 || !clip.valid() || clip.streamed() || clip.sampleRate < 8000 || clip.sampleRate > 192000
         || clip.frames < 2 || clip.frames / clip.sampleRate > 60) return result;
     const auto hop = static_cast<std::size_t>(std::max(1.0, std::round(clip.sampleRate * .005)));
     const auto blocks = (clip.frames + hop - 1) / hop;
@@ -54,20 +59,26 @@ inline DrumTransientSlices detectDrumTransientSlices(const SessionAudioClip& cli
             if (novelty[b] > attacks.back().strength) attacks.back() = {frame, novelty[b]};
         } else attacks.push_back({frame, novelty[b]});
     }
-    if (attacks.size() < 2) return result; // one-shot/steady audio: keep the kit
-    // Keep the first attack in pad 1 (including any lead-in). Choose the seven
-    // strongest remaining boundaries, then restore chronological pad order.
+    if (attacks.size() < 2) return result; // one-shot/steady audio: keep what is there
+    // Keep the first attack in the first slice (including any lead-in). Choose the
+    // strongest remaining boundaries, then restore chronological order.
     attacks.erase(attacks.begin());
     std::stable_sort(attacks.begin(), attacks.end(), [](auto a, auto b) { return a.strength > b.strength; });
-    if (attacks.size() > drumPadCount - 1) attacks.resize(drumPadCount - 1);
+    if (attacks.size() > static_cast<std::size_t>(maxSlices - 1)) attacks.resize(static_cast<std::size_t>(maxSlices - 1));
     std::sort(attacks.begin(), attacks.end(), [](auto a, auto b) { return a.frame < b.frame; });
-    int start = 0;
-    for (const auto attack : attacks) {
-        const auto end = static_cast<int>(attack.frame);
-        if (end > start) result.ranges[result.count++] = {start, end};
-        start = end;
-    }
-    result.ranges[result.count++] = {start, static_cast<int>(clip.frames)};
+    result.push_back(0);
+    for (const auto attack : attacks)
+        if (static_cast<std::int64_t>(attack.frame) > result.back()) result.push_back(static_cast<std::int64_t>(attack.frame));
+    result.push_back(static_cast<std::int64_t>(clip.frames));
+    return result;
+}
+
+// The same for the eight drum pads: the first attack's slice and the seven strongest later boundaries.
+inline DrumTransientSlices detectDrumTransientSlices(const SessionAudioClip& clip) {
+    DrumTransientSlices result;
+    const auto bounds = detectAttackBounds(clip, drumPadCount);
+    for (std::size_t i = 0; i + 1 < bounds.size(); ++i)
+        result.ranges[static_cast<std::size_t>(result.count++)] = {static_cast<int>(bounds[i]), static_cast<int>(bounds[i + 1])};
     return result;
 }
 } // namespace alien

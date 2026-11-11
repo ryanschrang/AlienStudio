@@ -1489,6 +1489,100 @@ static void pluginInstrumentMenu() {
     std::puts("PASS: VST3 instruments in the channel menu");
 }
 
+// ---- slicing a sample channel into channels (T2-01) --------------------------------
+static void sliceMenuChecks() {
+    Rig rig;
+    auto& grid = rig.grid;
+    auto& c = rig.controller;
+    juce::String said;
+    c.onImportStatus = [&](const juce::String& text, const juce::String&) { said = text; };
+    const auto wait = [&] {
+        for (int i = 0; i < 600 && c.isBusy(); ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+        require(!c.isBusy(), "the attack search finishes");
+    };
+    const auto clipOf = [](std::initializer_list<int> hits) {
+        auto clip = std::make_shared<SessionAudioClip>();
+        clip->sampleRate = 8000; clip->channels = 1; clip->frames = 8000; clip->left.resize(8000);
+        for (const int f : hits) clip->left[static_cast<std::size_t>(f)] = .8f;
+        clip->buildWaveform();
+        return clip;
+    };
+    const auto none = [](const std::vector<std::int64_t>&) {};
+    const auto temp = juce::File::getSpecialLocation(juce::File::tempDirectory);
+    const auto hits = clipOf({400, 2000, 4000, 6400});
+    require(command::loadDecodedRackSample(c, temp.getChildFile("rack attack hits.wav"), 1, hits).changed, "a decoded sample on channel 2");
+    const int count = rig.rack().channelCount;
+    const auto is = [&](int channel, std::int64_t start, std::int64_t end) {
+        const auto& info = rig.rack().info[static_cast<std::size_t>(channel)];
+        return info.sliceStart == start && info.sliceEnd == end;
+    };
+
+    auto menu = entries(grid.channelMenu(1));
+    require(entry(menu, ChannelRackGrid::cmdSliceAttacks)->enabled && entry(menu, ChannelRackGrid::cmdSlice4)->enabled
+            && entry(menu, ChannelRackGrid::cmdSliceAttacks)->text.startsWith("At attacks"), "a sample channel offers slicing at attacks and in equal parts");
+    menu = entries(grid.channelMenu(0));
+    require(!entry(menu, ChannelRackGrid::cmdSliceAttacks)->enabled && !entry(menu, ChannelRackGrid::cmdSlice4)->enabled, "a built-in sound has nothing to slice");
+    require(!c.findRackAttacks(0, none) && !c.findRackAttacks(99, none) && !c.findRackAttacks(1, nullptr) && !c.isBusy(), "only a sample channel is searched");
+
+    // Equal slices from the menu: one Undo step, the first new channel selected.
+    grid.runChannelCommand(1, ChannelRackGrid::cmdSlice4);
+    require(rig.rack().channelCount == count + 4 && is(2, 0, 2000) && is(5, 6000, 8000) && grid.selectedChannel() == 2 && c.undoLabel() == "Slice channel",
+            "menu: four equal slices");
+    require(c.undo() && rig.rack().channelCount == count, "and they undo together");
+
+    // At attacks: the search runs on a worker and changes nothing until it is back.
+    const auto before = c.document();
+    grid.runChannelCommand(1, ChannelRackGrid::cmdSliceAttacks);
+    require(c.isBusy() && sameContent(before, c.document()), "the attack search starts without changing the project");
+    require(!c.findRackAttacks(1, none), "a second search waits for the first");
+    wait();
+    require(rig.rack().channelCount == count + 4 && is(2, 0, 2000) && is(3, 2000, 4000) && is(4, 4000, 6400) && is(5, 6400, 8000),
+            "menu: a channel per attack, the first keeping the lead-in and the last the tail");
+    require(is(1, 0, 0) && rig.rack().info[2].name == rig.rack().info[1].name + " 1" && grid.selectedChannel() == 2 && c.undoLabel() == "Slice channel"
+            && said.contains("Found 4 slices"), "the sliced channel stays, the first slice is selected and the status says what was found");
+    require(c.rackChannelAudio(4) != nullptr && c.rackChannelAudio(4)->frames == 2400 && c.rackChannelAudio(4)->sliceSource.get() == hits.get()
+            && rig.engine.rackSamples[4].load() == c.rackChannelAudio(4), "the slices share the decoded audio and reach the engine");
+    require(c.undo() && sameContent(before, c.document()), "one Undo takes every attack slice away");
+    require(c.redo() && rig.rack().channelCount == count + 4, "Redo brings them back");
+
+    // A slice is searched inside its own frames, and its edges are still the file's frames.
+    require(c.undo() && command::CommandEngine(c).execute(command::SliceRackChannel{1, {0, 2000, 8000}}).changed && is(3, 2000, 8000), "a slice from frame 2000 on");
+    grid.runChannelCommand(3, ChannelRackGrid::cmdSliceAttacks); wait();
+    require(rig.rack().channelCount == count + 5 && is(4, 2000, 4000) && is(5, 4000, 6400) && is(6, 6400, 8000), "attacks inside a slice map to the file's frames");
+    require(c.undo() && c.undo() && rig.rack().channelCount == count, "back to the unsliced rack");
+
+    // No useful attacks: nothing changes and no Undo step is made.
+    require(command::loadDecodedRackSample(c, temp.getChildFile("rack attack silence.wav"), 2, clipOf({})).changed, "a silent sample on channel 3");
+    const auto quiet = c.document(); const auto label = c.undoLabel();
+    grid.runChannelCommand(2, ChannelRackGrid::cmdSliceAttacks); wait();
+    require(sameContent(quiet, c.document()) && c.undoLabel() == label && said.contains("No useful attack"), "silence leaves the rack and history alone and says so");
+
+    // Refused while recording or busy; a result for a changed project is dropped.
+    rig.engine.recording.phase.store(RecordControls::countIn);
+    require(!c.findRackAttacks(1, none), "count-in refuses the search");
+    rig.engine.recording.phase.store(RecordControls::idle);
+    c.setExternalBusy(true);
+    require(!c.findRackAttacks(1, none), "a busy project refuses the search");
+    c.setExternalBusy(false);
+    bool handed = false;
+    require(c.findRackAttacks(1, [&](const std::vector<std::int64_t>&) { handed = true; }), "a search to go stale");
+    rig.engine.recording.phase.store(RecordControls::countIn); wait();
+    rig.engine.recording.phase.store(RecordControls::idle);
+    require(!handed && said.contains("discarded") && sameContent(quiet, c.document()), "recording starting meanwhile drops the result");
+    require(c.findRackAttacks(1, [&](const std::vector<std::int64_t>&) { handed = true; }), "a search for the old project");
+    c.newProject(); wait();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
+    require(!handed, "a new project is never handed the old project's slices");
+
+    // The rack's room limits the slices: with two channels free, the strongest boundary makes two.
+    require(command::loadDecodedRackSample(c, temp.getChildFile("rack attack hits.wav"), 1, hits).changed, "the sample again");
+    while (rig.rack().channelCount < maxChannels - 2) grid.addChannelWithSound("kick");
+    grid.runChannelCommand(1, ChannelRackGrid::cmdSliceAttacks); wait();
+    require(rig.rack().channelCount == maxChannels && is(2, 0, 2000) && is(3, 2000, 8000), "two free channels take two slices");
+    require(!entry(entries(grid.channelMenu(1)), ChannelRackGrid::cmdSliceAttacks)->enabled && !c.findRackAttacks(1, none), "a full rack offers no slicing");
+    std::puts("PASS: slicing a sample channel at attacks and in equal parts");
+}
+
 static void starterPackMenu() {
     Rig rig;
     auto& grid = rig.grid;
@@ -1658,6 +1752,7 @@ int main() {
     deferredTrackIdentityRename();
     synthChannelChecks();
     pluginInstrumentMenu();
+    sliceMenuChecks();
     starterPackMenu();
     nameColumnChecks();
     channelPianoRollChecks();

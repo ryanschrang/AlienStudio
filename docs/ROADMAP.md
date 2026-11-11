@@ -122,7 +122,7 @@ genuinely integrated rather than checkbox features.
 
 | Order | Workstream | Checklist IDs | Status today |
 | --- | --- | --- | --- |
-| T2-01 | Integrated sampler: audio clip -> quick sample -> slice -> multisample -> granular/resynthesis, one audio object throughout (Milestone G) | INST-07, PROD-03 | Partial: eight-pad drum sampler and sample channels; equal and automatic attack slicing to eight pads with shared audio, editable frame boundaries and Undo (format 33); Session audio sliced to pads; equal slicing of a Channel Rack sample into channels (format 37); attack slicing to channels, multisample and granular remain |
+| T2-01 | Integrated sampler: audio clip -> quick sample -> slice -> multisample -> granular/resynthesis, one audio object throughout (Milestone G) | INST-07, PROD-03 | Partial: eight-pad drum sampler and sample channels; equal and automatic attack slicing to eight pads with shared audio, editable frame boundaries and Undo (format 33); Session audio sliced to pads; equal and attack slicing of a Channel Rack sample into channels (format 37); multisample and granular remain |
 | T2-02 | Instrument and effect racks with macros; remaining stock effects | RACK-01, FX-01, FX-02 | Partial: eight-slot FX rack per track and return, fifteen stock effects including stereo chorus, phaser, transient shaper, bit crusher, stereo imager, flanger and de-esser; macros and remaining effects pending |
 | T2-03 | Mixing and mastering environment | FINISH-02 | Partial: stock EQ, compressor, limiter, saturator, filter, reverb, delay |
 | T2-04 | Chord and arrangement system: chord track, project-wide scale, arrangement sections (Milestone H foundation) | CHORD-01, MIDI-06 | Partial: chord builder and scales inside the Piano Roll |

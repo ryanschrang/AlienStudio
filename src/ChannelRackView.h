@@ -298,7 +298,7 @@ public:
                   cmdDuplicate = 100, cmdCopyRow, cmdPasteRow, cmdFill2, cmdFill4, cmdFill8,
                   cmdRotateLeft, cmdRotateRight, cmdReverseRow, cmdRepeat4, cmdRepeat8, cmdRepeat16, cmdPianoRoll,
                   synthBase = 200, builtinBase = 20, outputMaster = 40, outputBase = 41, chokeNone = 60, chokeBase = 61,
-                  cmdSlice4 = 170, cmdSlice8, cmdSlice16, cmdPluginEditor = 190, pluginBase = 1000, starterBase = 50000 };
+                  cmdSlice4 = 170, cmdSlice8, cmdSlice16, cmdSliceAttacks, cmdPluginEditor = 190, pluginBase = 1000, starterBase = 50000 };
 
     // The name in a plugin channel's saved description (what the instrument list shows).
     static juce::String pluginName(const rack::ChannelInfo& info) {
@@ -332,9 +332,13 @@ public:
         sound.addItem(cmdLoadSample, "Load sample file...");
         sound.addItem(cmdSilent, "Silent (no sound)", true, info.sample.empty() && !channel.isInstrument());
         menu.addSubMenu("Sound", sound);
-        // Equal slices of the sample (or of this channel's slice), each a new channel playing its part (T2-01).
+        // Slices of the sample (or of this channel's slice) at its attacks or in equal parts, each a new channel
+        // playing its part (T2-01).
         juce::PopupMenu slices;
         const bool sliceable = info.isFile() && !channel.isInstrument() && controller.rackChannelAudio(row) != nullptr;
+        slices.addItem(cmdSliceAttacks, "At attacks (up to " + juce::String(rack_channel::maxSlices) + " channels)",
+                       sliceable && project().channelCount + 2 <= rack::maxChannels);
+        slices.addSeparator();
         for (const int count : {4, 8, 16})
             slices.addItem(count == 4 ? cmdSlice4 : count == 8 ? cmdSlice8 : cmdSlice16, "Into " + juce::String(count) + " channels",
                            sliceable && project().channelCount + count <= rack::maxChannels);
@@ -412,6 +416,16 @@ public:
                 selected = anchor = row + static_cast<int>(at) + 1;
             }
             changed(); return;
+        }
+        if (id == cmdSliceAttacks) {
+            // The search runs on a worker; the slices arrive later, if the channel is still what was searched.
+            juce::Component::SafePointer<ChannelRackGrid> safe(this);
+            controller.findRackAttacks(row, [safe, row](const std::vector<std::int64_t>& bounds) {
+                if (safe == nullptr) return;
+                if (safe->runCommands({command::SliceRackChannel{row, bounds}}, "Slice channel")) safe->selectChannel(row + 1);
+                safe->changed();
+            });
+            return;
         }
         if (id == cmdSlice4 || id == cmdSlice8 || id == cmdSlice16) {
             const int count = id == cmdSlice4 ? 4 : id == cmdSlice8 ? 8 : 16;

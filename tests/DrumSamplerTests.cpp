@@ -75,6 +75,12 @@ static void transientTests() {
     for (int hit = 0; hit < 12; ++hit) source->left[400 + hit * 1200] = .2f + hit * .05f;
     source->buildWaveform(); auto result = alien::detectDrumTransientSlices(*source);
     check(result.count == 8 && result.ranges[0].end == 6400, "over eight attacks keeps first and strongest seven boundaries");
+    auto bounds = alien::detectAttackBounds(*source, 16);
+    check(bounds.size() == 13 && bounds.front() == 0 && bounds[1] == 1600 && bounds[11] == 13600 && bounds.back() == 16000,
+          "with room for sixteen, every attack after the first is a boundary");
+    bounds = alien::detectAttackBounds(*source, 3);
+    check(bounds == std::vector<std::int64_t>{0, 12400, 13600, 16000}, "fewer slices keep the strongest boundaries, in time order");
+    check(alien::detectAttackBounds(*source, 1).empty(), "one slice is no slicing");
     const auto view = alien::drumSliceView(source, {2800, 7600});
     result = alien::detectDrumTransientSlices(*view);
     check(result.count == 4 && result.ranges[0].start == 0 && result.ranges[3].end == 4800, "view detection uses local selected range only");
