@@ -772,8 +772,7 @@ private:
         devicesView.onPresetChanged = [this](int preset) {
             if (projectBusy || controller.isBusy() || controller.isRecording() || activeCapture || preset == controller.document().livePreset) return;
             releaseNotes();
-            controller.setLivePreset(preset);
-            controller.commit("Change live sound");
+            if (!alien::command::CommandEngine(controller).execute(alien::command::SetLivePreset{preset}).changed) return;
             devicesView.setPreset(preset);
             stepsView.repaint();
             updateEditorTitle();
