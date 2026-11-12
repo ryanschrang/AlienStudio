@@ -876,6 +876,18 @@ when there is none). The Song clip menu's "Make this placement unique" runs it u
 that already plays content of its own, a frozen track, recording, and a full Channel Rack or Session are refused. Both
 commands share their reducers (`SongPlacementEdit.h`) between Preview and the controller.
 
+## Project key and recording settings commands
+
+`SetProjectScale {root, type}` defines the project's key: `root` is a pitch class (0 = C to 11 = B) and `type` is a
+scale (0 major, 1 natural minor, 2 harmonic minor, 3 melodic minor, 4 Dorian, 5 Mixolydian, 6 major pentatonic,
+7 minor pentatonic, 8 blues, 9 chromatic). The piano roll's project-scale menu runs it under the Undo name "Set
+project key and scale". A value out of range, and a change during a take, are refused. It rewrites no notes.
+
+`SetRecordSettings {metronome, metronomeVolume, countInBars, latencyOffsetMs, replace, audioLatencyOffsetMs, punch}`
+replaces the recording options as a whole. The top bar's metronome button, the Transport menu's Metronome item and the
+recording options menu run it under "Change recording settings"; changes made one after another share one Undo step.
+A metronome volume outside 0 to 1, a count-in over 2 bars and a latency offset beyond 100 ms are refused.
+
 ## Master volume command
 
 `SetMasterVolume {gain}` accepts a finite linear gain from 0 through 4 (1 is unity),
