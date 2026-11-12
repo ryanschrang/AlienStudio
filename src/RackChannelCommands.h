@@ -10,17 +10,17 @@
 // mixing them. The controller and command Preview share them, so what Preview predicts is
 // what the live edit does. They never touch a plugin; the host rebuilds after the commit.
 namespace alien::rack_channel {
-enum class Kind { add, addSynth, remove, move, duplicate, rename, volume, pan, mute, solo, output, choke, sound, silence, synth, plugin, sample, slice };
+enum class Kind { add, addSynth, remove, move, duplicate, rename, volume, pan, mute, solo, output, choke, sound, silence, synth, plugin, sample, slice, keys };
 struct Edit {
     Kind kind{Kind::remove};
     int channel{-1};
-    int value{};                 // move: where it ends up; output, choke group, or synth preset (addSynth, synth)
+    int value{};                 // move: where it ends up; output, choke group, or synth preset (addSynth, synth); keys: the first slice's key
     double level{};              // volume or pan
     bool on{};                   // mute or solo
     std::uint64_t instance{};    // duplicate, plugin: the new plugin identity, so Preview and execute agree
     juce::String text;           // rename: the name; add: a built-in sound id, or empty for an empty sampler; sound: a built-in sound id; plugin, sample: the name
     juce::String description;    // plugin: its description from the plugin list; sample: the file's path
-    std::vector<std::int64_t> bounds;   // slice: the slices' edges in the file's frames, ascending
+    std::vector<std::int64_t> bounds;   // slice, keys: the slices' edges in the file's frames, ascending; keys: none plays the sample whole
 };
 
 inline constexpr int maxSlices = 16;
@@ -31,6 +31,16 @@ inline std::vector<std::int64_t> equalSlices(std::int64_t start, std::int64_t en
     std::vector<std::int64_t> bounds;
     for (int k = 0; k <= count; ++k) bounds.push_back(start + (end - start) * k / count);
     return bounds;
+}
+
+// Key zones for the slices between consecutive `bounds`: slice k alone on key `firstKey + k`, at its own pitch.
+inline std::vector<rack::KeyZone> keySlices(const std::vector<std::int64_t>& bounds, int firstKey) {
+    std::vector<rack::KeyZone> zones;
+    for (std::size_t k = 0; k + 1 < bounds.size(); ++k) {
+        const int key = firstKey + static_cast<int>(k);
+        zones.push_back({bounds[k], bounds[k + 1], key, key, key});
+    }
+    return zones;
 }
 
 inline std::uint64_t freshInstance() {
@@ -98,6 +108,7 @@ inline bool editRack(rack::Project& p, const Edit& e) {
         return p.renameChannel(e.channel, e.text.toStdString()) || changed;
     }
     case Kind::slice: return p.sliceChannel(e.channel, e.bounds);
+    case Kind::keys: return p.setKeyZones(e.channel, keySlices(e.bounds, e.value));
     }
     return false;
 }
@@ -156,6 +167,19 @@ inline juce::String refusal(const ProjectDocument& d, const Edit& e) {
         if (slices < 2 || slices > maxSlices) return "A sample is sliced into 2 to " + juce::String(maxSlices) + " channels.";
         if (p.channelCount + slices > rack::maxChannels)
             return "There is room for " + juce::String(rack::maxChannels - p.channelCount) + " more channels; the Channel Rack holds " + juce::String(rack::maxChannels) + ".";
+        for (std::size_t i = 0; i + 1 < e.bounds.size(); ++i)
+            if (e.bounds[i] < 0 || e.bounds[i + 1] <= e.bounds[i]) return "Slice edges must rise from frame 0 or later, each slice at least one frame long.";
+        if (!info.wholeSample() && (e.bounds.front() < info.sliceStart || e.bounds.back() > info.sliceEnd))
+            return "Slices of a slice stay inside it (frames " + juce::String(info.sliceStart) + " to " + juce::String(info.sliceEnd) + ").";
+        break;
+    }
+    case Kind::keys: {
+        if (e.bounds.empty()) break;   // back to the sample on every key
+        const auto& info = p.info[static_cast<std::size_t>(e.channel)];
+        if (!info.isFile() || p.channels[static_cast<std::size_t>(e.channel)].isInstrument()) return "Only a channel playing an audio file can put slices on keys.";
+        const int slices = static_cast<int>(e.bounds.size()) - 1;
+        if (slices < 2 || slices > rack::maxKeyZones) return "2 to " + juce::String(rack::maxKeyZones) + " slices go on keys.";
+        if (e.value < 0 || e.value + slices - 1 > 127) return "The slices' keys must be notes 0 to 127.";
         for (std::size_t i = 0; i + 1 < e.bounds.size(); ++i)
             if (e.bounds[i] < 0 || e.bounds[i + 1] <= e.bounds[i]) return "Slice edges must rise from frame 0 or later, each slice at least one frame long.";
         if (!info.wholeSample() && (e.bounds.front() < info.sliceStart || e.bounds.back() > info.sliceEnd))

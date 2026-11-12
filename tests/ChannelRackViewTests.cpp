@@ -1583,6 +1583,62 @@ static void sliceMenuChecks() {
     std::puts("PASS: slicing a sample channel at attacks and in equal parts");
 }
 
+// ---- slices of a sample on one channel's keys (T2-01) -------------------------------
+static void keysMenuChecks() {
+    Rig rig;
+    auto& grid = rig.grid;
+    auto& c = rig.controller;
+    juce::String said;
+    c.onImportStatus = [&](const juce::String& text, const juce::String&) { said = text; };
+    const auto wait = [&] {
+        for (int i = 0; i < 600 && c.isBusy(); ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+        require(!c.isBusy(), "the attack search finishes");
+    };
+    auto hits = std::make_shared<SessionAudioClip>();
+    hits->sampleRate = 8000; hits->channels = 1; hits->frames = 8000; hits->left.resize(8000);
+    for (const int f : {400, 2000, 4000, 6400}) hits->left[static_cast<std::size_t>(f)] = .8f;
+    hits->buildWaveform();
+    require(command::loadDecodedRackSample(c, juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("rack key hits.wav"), 1, hits).changed,
+            "a decoded sample on channel 2");
+    const int count = rig.rack().channelCount;
+    const auto zones = [&] { return rig.rack().info[1].zones; };
+
+    auto menu = entries(grid.channelMenu(1));
+    require(entry(menu, ChannelRackGrid::cmdKeys4)->enabled && entry(menu, ChannelRackGrid::cmdKeysAttacks)->enabled && !entry(menu, ChannelRackGrid::cmdKeysClear)->enabled
+            && entry(menu, ChannelRackGrid::cmdKeysClear)->ticked, "a sample channel offers slices on keys, and plays whole until then");
+    menu = entries(grid.channelMenu(0));
+    require(!entry(menu, ChannelRackGrid::cmdKeys4)->enabled && !entry(menu, ChannelRackGrid::cmdKeysAttacks)->enabled, "a built-in sound has no slices to put on keys");
+
+    grid.runChannelCommand(1, ChannelRackGrid::cmdKeys8);
+    require(rig.rack().channelCount == count && zones() != nullptr && zones()->size() == 8 && (*zones())[7] == KeyZone{7000, 8000, 67, 67, 67}
+            && c.undoLabel() == "Slices on keys", "menu: eight equal slices on keys from C5, on the same channel");
+    menu = entries(grid.channelMenu(1));
+    require(entry(menu, ChannelRackGrid::cmdKeysClear)->enabled && !entry(menu, ChannelRackGrid::cmdKeysClear)->ticked && entry(menu, ChannelRackGrid::cmdSlice4)->enabled,
+            "the whole sample can be chosen again, and the channel can still be sliced to channels");
+    grid.runChannelCommand(1, ChannelRackGrid::cmdKeysClear);
+    require(!rig.rack().info[1].hasZones() && c.undo() && zones()->size() == 8 && c.undo() && !rig.rack().info[1].hasZones(), "menu: the whole sample again; each is one Undo step");
+
+    // At attacks: found on a worker, then put on keys. A full rack still has room, as no channel is added.
+    while (rig.rack().channelCount < maxChannels) grid.addChannelWithSound("kick");
+    const auto before = c.document();
+    grid.runChannelCommand(1, ChannelRackGrid::cmdKeysAttacks);
+    require(c.isBusy() && sameContent(before, c.document()), "the attack search starts without changing the project");
+    wait();
+    require(zones() != nullptr && zones()->size() == 4 && (*zones())[0] == KeyZone{0, 2000, 60, 60, 60} && (*zones())[2] == KeyZone{4000, 6400, 62, 62, 62}
+            && (*zones())[3].end == 8000 && rig.rack().channelCount == maxChannels && said.contains("Found 4 slices") && c.undoLabel() == "Slices on keys",
+            "menu: a key per attack, even in a full rack");
+    const auto* map = c.rackChannelAudio(1);
+    require(map != nullptr && map->keyZones != nullptr && (*map->keyZones)[1].clip->frames == 2000 && (*map->keyZones)[1].clip->sliceSource.get() == hits.get()
+            && rig.engine.rackSamples[1].load() == map, "the engine plays the key map, sharing the decoded audio");
+    require(c.undo() && sameContent(before, c.document()), "one Undo takes the keys away");
+
+    // The sample is still searched when the channel already has slices on keys.
+    grid.runChannelCommand(1, ChannelRackGrid::cmdKeys4);
+    grid.runChannelCommand(1, ChannelRackGrid::cmdKeysAttacks); wait();
+    require(zones()->size() == 4 && (*zones())[1].start == 2000, "attacks replace equal slices on the keys");
+    std::puts("PASS: slices of a sample on one channel's keys");
+}
+
 static void starterPackMenu() {
     Rig rig;
     auto& grid = rig.grid;
@@ -1753,6 +1809,7 @@ int main() {
     synthChannelChecks();
     pluginInstrumentMenu();
     sliceMenuChecks();
+    keysMenuChecks();
     starterPackMenu();
     nameColumnChecks();
     channelPianoRollChecks();

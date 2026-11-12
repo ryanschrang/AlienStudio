@@ -174,7 +174,9 @@ public:
             return;
         }
         if (clip == nullptr && !settings.isInstrument()) return;
-        auto& voice = start(settings, channel, clip, std::clamp(velocity, 0.0f, 1.0f), 0.0f, note - stepPitchBaseNote, true);
+        int semitones = note - stepPitchBaseNote;
+        if (clip != nullptr && clip->keyZones) { clip = zoneFor(*clip, semitones); if (clip == nullptr) return; }
+        auto& voice = start(settings, channel, clip, std::clamp(velocity, 0.0f, 1.0f), 0.0f, semitones, true);
         // Clicking a channel name must not leave a sustaining instrument held.
         if ((voice.synthPreset >= 0 || voice.plugin) && !held) voice.gateLeft = static_cast<std::int64_t>(sampleRate * 0.5) + 1;
     }
@@ -449,9 +451,19 @@ private:
     void play(const Snapshot& snap, const SampleTable& clips, int c, float velocity, float stepPan, int pitch, std::int64_t gate, int pattern = -1, std::uint64_t sequence = 0, int instance = -1) noexcept {
         const SessionAudioClip* clip = clips[static_cast<std::size_t>(c)].load(std::memory_order_relaxed);
         if (clip == nullptr && !snap.channels[static_cast<std::size_t>(c)].isInstrument()) return;
+        if (clip != nullptr && clip->keyZones) { clip = zoneFor(*clip, pitch); if (clip == nullptr) return; }
         Voice& v = start(snap.channels[static_cast<std::size_t>(c)], c, clip, velocity, stepPan, pitch, false, instance);
         v.gateLeft = (v.synthPreset >= 0 || v.plugin) && gate < 0 ? static_cast<std::int64_t>(stepSamples) + 1 : gate; v.pattern = pattern; v.sequence = sequence; v.instance = instance;
         v.patternClip = pattern >= 0 && pattern < maxPatterns ? snap.clips[static_cast<std::size_t>(pattern)] : 0;
+    }
+
+    // A key-mapped sample (T2-01) plays the zone holding the note, pitched from the zone's root. A note on no zone is
+    // silent. `semitones` comes back as the offset from that root.
+    static const SessionAudioClip* zoneFor(const SessionAudioClip& map, int& semitones) noexcept {
+        const int note = stepPitchBaseNote + semitones;
+        for (const auto& zone : *map.keyZones)
+            if (note >= zone.low && note <= zone.high) { semitones = note - zone.root; return zone.clip.get(); }
+        return nullptr;
     }
 
     Voice& start(const Channel& channel, int index, const SessionAudioClip* clip, float velocity, float stepPan, int semitones,

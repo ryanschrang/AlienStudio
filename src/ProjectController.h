@@ -2249,7 +2249,8 @@ public:
     // Live side of the rack channel commands. CommandEngine owns the history entry.
     // Why the loaded audio refuses slicing a channel: the file must be decoded here, and the slices inside it.
     juce::String rackSliceRefusal(const rack_channel::Edit& e) const {
-        if (e.kind != rack_channel::Kind::slice || !doc.channelRack.validChannel(e.channel)) return {};
+        const bool keys = e.kind == rack_channel::Kind::keys && !e.bounds.empty();
+        if ((e.kind != rack_channel::Kind::slice && !keys) || !doc.channelRack.validChannel(e.channel)) return {};
         const auto& info = doc.channelRack.info[static_cast<std::size_t>(e.channel)];
         if (!info.isFile()) return {};   // the reducer says why
         const auto found = rackAudio.find(info.sample);
@@ -2264,33 +2265,34 @@ public:
     // the slices' edges in the file's frames, ready for SliceRackChannel (T2-01). As many slices as the rack has room
     // for, 16 at most. Nothing is handed over when there are no useful attacks, or when the project, the channel or
     // the recording state changed meanwhile; the status line says which.
-    bool findRackAttacks(int channel, std::function<void(const std::vector<std::int64_t>&)> found) {
+    // `addsChannels` false is for slices that stay on the channel's keys: sixteen at most, whatever room the rack has.
+    bool findRackAttacks(int channel, std::function<void(const std::vector<std::int64_t>&)> found, bool addsChannels = true) {
         if (busy || isRecording() || engine.recording.active() || !found || !doc.channelRack.validChannel(channel)) return false;
         const auto info = doc.channelRack.info[static_cast<std::size_t>(channel)];
         if (!info.isFile() || doc.channelRack.channels[static_cast<std::size_t>(channel)].isInstrument()) return false;
-        const auto asset = rackAsset(info);
+        const auto asset = rackRangeAsset(info);
         if (!asset) { importStatus("Load the channel's sample before slicing it.", {}); return false; }
         if (asset->streamed() || asset->frames / asset->sampleRate > 60) {
             importStatus("Attack slicing needs a decoded sample range of at most one minute.", {}); return false;
         }
-        const int room = std::min(rack_channel::maxSlices, rack::maxChannels - doc.channelRack.channelCount);
+        const int room = addsChannels ? std::min(rack_channel::maxSlices, rack::maxChannels - doc.channelRack.channelCount) : rack::maxKeyZones;
         if (room < 2) { importStatus("The Channel Rack has no room for two more channels.", {}); return false; }
         const auto scope = doc.identityScope;
         setBusy(true); importStatus("Finding sample attacks...", {});
         std::weak_ptr<int> token = alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, channel, info, asset, room, scope, found] {
+        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, channel, info, asset, room, scope, found, addsChannels] {
             auto bounds = detectAttackBounds(*asset, room);
             const auto offset = asset->sliceSource ? static_cast<std::int64_t>(asset->sliceOffset) : std::int64_t{};
             for (auto& edge : bounds) edge += offset;
-            juce::MessageManager::callAsync([this, token, channel, info, asset, scope, found, bounds] {
+            juce::MessageManager::callAsync([this, token, channel, info, asset, scope, found, bounds, addsChannels] {
                 if (!token.lock()) return;
                 setBusy(false);
                 if (scope != doc.identityScope || isRecording() || engine.recording.active()) {
                     importStatus("Attack slicing discarded: project or recording state changed.", {}); return;
                 }
                 const auto& rack = doc.channelRack;
-                if (!rack.validChannel(channel) || !(rack.info[static_cast<std::size_t>(channel)] == info) || rackAsset(info) != asset
-                    || rack.channelCount + static_cast<int>(bounds.size()) - 1 > rack::maxChannels) {
+                if (!rack.validChannel(channel) || !(rack.info[static_cast<std::size_t>(channel)] == info) || rackRangeAsset(info) != asset
+                    || (addsChannels && rack.channelCount + static_cast<int>(bounds.size()) - 1 > rack::maxChannels)) {
                     importStatus("Attack slicing discarded: the channel changed.", {}); return;
                 }
                 if (bounds.size() < 3) {
@@ -2572,7 +2574,31 @@ private:
     // The same, owned. A sliced channel plays a view of its file's decoded audio (T2-01): the views are kept for the
     // life of the controller, as the engine may still hold one, and shared by every channel playing that slice. A slice
     // past the end of its file, or of audio that is streamed, plays nothing.
+    // A channel with key zones (T2-01) plays a key map: a clip with no audio of its own that names the slice for each
+    // key. Maps are kept like the slice views, one for each file, range and set of zones.
     std::shared_ptr<const SessionAudioClip> rackAsset(const rack::ChannelInfo& info) const {
+        auto base = rackRangeAsset(info);
+        if (base == nullptr || !info.hasZones()) return base;
+        const auto& file = rackAudio.find(info.sample)->second;
+        for (const auto& made : rackKeyMaps)
+            if (made.file == file && made.base == base && made.zones == *info.zones) return made.map;
+        auto zones = std::make_shared<std::vector<SampleKeyZone>>();
+        for (const auto& z : *info.zones) {
+            rack::ChannelInfo part;
+            part.sample = info.sample; part.sliceStart = z.start; part.sliceEnd = z.end;
+            auto view = z.start == 0 && z.end == static_cast<std::int64_t>(file->frames) ? file : rackRangeAsset(part);
+            if (view == nullptr) return {};   // a zone past the end of its file plays nothing
+            zones->push_back({z.low, z.high, z.root, std::move(view)});
+        }
+        auto map = std::make_shared<SessionAudioClip>();
+        map->sampleRate = base->sampleRate; map->channels = base->channels; map->frames = base->frames;
+        map->waveform = base->waveform; map->waveformCount = base->waveformCount;
+        map->keyZones = std::move(zones);
+        rackKeyMaps.push_back({file, base, *info.zones, map});
+        return map;
+    }
+    // The audio a channel's sample gives before any key zones: the whole file, or the channel's slice of it.
+    std::shared_ptr<const SessionAudioClip> rackRangeAsset(const rack::ChannelInfo& info) const {
         if (info.isBuiltin()) return rack::builtinClip(info.builtinId());
         if (!info.isFile()) return {};
         const auto found = rackAudio.find(info.sample);
@@ -3257,6 +3283,12 @@ private:
     // Views of rack files for sliced channels, by file and frame range, and every one ever handed to the engine.
     mutable std::map<std::tuple<std::string, std::int64_t, std::int64_t>, std::shared_ptr<const SessionAudioClip>> rackSliceViews;
     mutable std::vector<std::shared_ptr<const SessionAudioClip>> retainedSliceViews;
+    struct RackKeyMap {
+        std::shared_ptr<const SessionAudioClip> file, base;
+        std::vector<rack::KeyZone> zones;
+        std::shared_ptr<const SessionAudioClip> map;
+    };
+    mutable std::vector<RackKeyMap> rackKeyMaps;   // every one is kept: the engine may still be playing it
     struct PublishedRack {
         bool known{};
         rack::Project project;

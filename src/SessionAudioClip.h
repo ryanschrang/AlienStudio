@@ -18,6 +18,13 @@ struct AudioWaveformPeak {
     float leftMin{}, leftMax{}, rightMin{}, rightMax{};
 };
 
+struct SessionAudioClip;
+// One key range of a key-mapped sample (T2-01): notes `low` to `high` play `clip`, at its own pitch on `root`.
+struct SampleKeyZone {
+    int low{}, high{}, root{};
+    std::shared_ptr<const SessionAudioClip> clip;
+};
+
 // Immutable after publication. Short clips keep decoded samples; long Session
 // clips retain file metadata and are read by DiskAudioStreamService.
 struct SessionAudioClip {
@@ -35,6 +42,9 @@ struct SessionAudioClip {
     // local frame zero and interpolation limits belong to this view.
     std::shared_ptr<const SessionAudioClip> sliceSource;
     std::size_t sliceOffset{};
+    // A Channel Rack key map (T2-01): this clip has no PCM of its own, and the rack plays the zone holding the note.
+    // Its rate, channels, frames and waveform describe the sample the zones were cut from.
+    std::shared_ptr<const std::vector<SampleKeyZone>> keyZones;
 
     float sampleAt(int channel, std::size_t frame) const noexcept {
         const auto& source = sliceSource ? *sliceSource : *this;
