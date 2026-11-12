@@ -831,6 +831,21 @@ sets when queued Session clips and scenes launch: 4 for the next beat, 16 for th
 Beat/Bar box runs it, under "Change launch timing". Both refuse a value outside those, and the same value again is no
 edit.
 
+## Track sound command
+
+`SetTrackSound {track, preset, drumKit}` chooses a track's built-in sound: a factory synth preset (numbered from 0), or
+the drum kit when `drumKit` is true, which leaves the preset as it is. The Mixer strip's instrument box runs it, under
+the Undo name "Change track sound". A frozen track, a track that is not there and a preset outside the list are
+refused.
+
+## Song sample import command
+
+`ImportSongAudio` places a decoded sample on the Song at a tick, under the Undo name "Import sample to Song". Its audio
+goes into a Session cell of the track that holds no clip and that the Song does not use, in a new scene when the track
+has none, and that cell is selected. The sample browser's "to Song" import and a sample dropped on the Song both decode
+the file off the message thread and then run it; a drop also refuses a sample that would cover Song clips. It takes
+decoded audio, so it has no script form. The same reducer (`SongAudioImport.h`) serves Preview and the controller.
+
 ## Master volume command
 
 `SetMasterVolume {gain}` accepts a finite linear gain from 0 through 4 (1 is unity),

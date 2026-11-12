@@ -33,12 +33,12 @@ inline juce::String returnLetter(int r) { return juce::String::charToString(stat
 
 // One console channel strip: instrument, pan knob, mute/solo, fader with dB
 // scale, peak meter and coloured name plate. Track mix commands own their
-// history; legacy instrument edits still notify the host.
+// history.
 class MixerChannelStrip final : public juce::Component {
 public:
-    MixerChannelStrip(ProjectController& projectController, int trackIndex, TrackControls& trackControls, std::function<void(bool)> editedCallback)
+    MixerChannelStrip(ProjectController& projectController, int trackIndex, TrackControls& trackControls)
         : controller(projectController), track(trackIndex), owner(controller.document().tracks[static_cast<std::size_t>(track)].id),
-          controls(trackControls), edited(std::move(editedCallback)) {
+          controls(trackControls) {
         for (auto* c : std::array<juce::Component*, 9>{&title, &preset, &gainLabel, &gain, &panLabel, &pan,
                                                        &mute, &solo, &meter})
             addAndMakeVisible(c);
@@ -50,9 +50,9 @@ public:
         preset.setTooltip("Changes new notes on this track; held notes finish with their original sound");
         preset.addItem("Drum kit", 100);
         preset.onChange = [this] {
-            controls.instrument.store(preset.getSelectedId() == 100 ? 1 : 0);
-            if (preset.getSelectedId() != 100) controls.preset.store(preset.getSelectedId() - 1);
-            edited(true);
+            // A refused change (a busy project) puts the box back on the track's sound.
+            const bool drumKit = preset.getSelectedId() == 100;
+            executeMix(command::SetTrackSound{track, drumKit ? 0 : preset.getSelectedId() - 1, drumKit});
         };
 
         gainLabel.setText("VOLUME", juce::dontSendNotification);
@@ -312,7 +312,6 @@ private:
     }
 
     TrackControls& controls;
-    std::function<void(bool)> edited;
     juce::Label title, gainLabel, panLabel, sendsLabel, outputLabel;
     juce::ComboBox preset, output;
 
@@ -710,7 +709,6 @@ public:
 
     // Called whenever a strip control changes the engine. "committed" is true
     // for discrete changes and at the end of a fader/knob drag.
-    std::function<void(int, bool)> onTrackEdited; // legacy instrument edits only
     std::function<void(int)> onTrackMixCommandExecuted;
     // Master edits are already committed by CommandEngine; refresh only.
     std::function<void()> onMasterCommandExecuted;
@@ -730,8 +728,7 @@ public:
         strips.clear();
         const auto& d = controller.document();
         for (int t = 0; t < d.trackCount() && t < static_cast<int>(controls.size()); ++t) {
-            auto strip = std::make_unique<MixerChannelStrip>(controller, t, controls[static_cast<std::size_t>(t)],
-                [this, t](bool committed) { if (onTrackEdited) onTrackEdited(t, committed); });
+            auto strip = std::make_unique<MixerChannelStrip>(controller, t, controls[static_cast<std::size_t>(t)]);
             strip->onMixCommandExecuted = [this, t] { if (onTrackMixCommandExecuted) onTrackMixCommandExecuted(t); };
             strip->onOutputChosen = [this, t](int output) { chooseOutput(t, output); };
             content.addAndMakeVisible(*strip);

@@ -90,5 +90,5 @@ candidate for command Preview.
 browser and Explorer drops on Session cells, finished takes and tempo renders all
 run it, so each is one Import audio undo step with the same refusals. A drop only
 fills an empty cell, including when something arrived there during decoding. Sample
-imports placed on the Song timeline still use `importSampleToSong`; they belong to
-the Song/MIDI/rack family below, not this command.
+imports placed on the Song timeline run their own command, `ImportSongAudio`, through
+`command::importSampleToSong`.

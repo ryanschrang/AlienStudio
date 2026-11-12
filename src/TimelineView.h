@@ -975,7 +975,7 @@ public:
         if (!plan.valid) { say(plan.message.isNotEmpty() ? plan.message : "That cannot be placed there."); return; }
         const auto file = sampledrag::decode(details.description);
         if (file != juce::File{}) {
-            controller.importSampleToSong(file, plan.row, controller.document().selectedScene, plan.tick, true);
+            command::importSampleToSong(controller, file, plan.row, plan.tick, true);
             return;
         }
         if (place(plan.row, plan.source, plan.tick)) say("Placed on " + laneName(plan.row) + " at bar " + barBeat(plan.tick).upToFirstOccurrenceOf(".", false, false) + ".");
@@ -1502,7 +1502,6 @@ public:
                 bool done = false, said = false;
                 const auto before = clipIds();
                 if (finished.change) { const auto r = clipCommand(*finished.change, finished.label); done = r.changed; said = !r.ok; }
-                else done = edit(finished.label, finished.apply);
                 if (done && kind == DragKind::copy) { selected = clipsSince(before); stateChanged(); }
                 if (!done && !said && hadPreview && !controller.isBusy()) say("That does not fit there.");
             } else if (!active) {
@@ -1696,12 +1695,6 @@ private:
         if (drag.apply(t) && t.valid(trackCount(), controller.document().sceneCount(), controller.channelRack().patternCount)) preview = std::move(t);
         else preview.reset();
         repaint();
-    }
-    bool edit(const juce::String& label, const std::function<bool(timeline::Timeline&)>& change, const juce::String& key = {}) {
-        if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return false; }
-        const bool done = controller.editTimeline(label, change, key);
-        if (done) afterEdit();
-        return done;
     }
     void afterEdit() {
         timeline::Ids keep;

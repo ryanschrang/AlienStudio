@@ -1148,7 +1148,7 @@ static void browserImportTests() {
     alien::command::importSampleToCell(c, wav, 0, 1); require(c.isBusy(), "browser decode runs asynchronously"); wait();
     require(c.document().clip(0, 1).isAudioClip(), "browser imports into empty cell");
     c.undo(); require(!c.document().cellClip(0, 1), "one undo removes Session import"); c.redo();
-    c.importSampleToSong(wav, 0, 1, 3840); wait();
+    alien::command::importSampleToSong(c, wav, 0, 3840); wait();
     require(c.timeline().regions.size() == 1 && c.timeline().regions[0].start == 3840 && c.timeline().regions[0].source != 0 && c.timeline().regions[0].source != 1, "Song import uses independent empty source and requested cursor");
     c.undo(); require(c.timeline().regions.empty() && c.document().clip(0, 1).isAudioClip(), "one undo removes only Song import");
     const auto label = c.undoLabel(); alien::command::importSampleToCell(c, root.getChildFile("missing.wav"), 1, 1); wait(); require(c.undoLabel() == label, "failed decode has no history changes");
