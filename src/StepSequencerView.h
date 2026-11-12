@@ -1,5 +1,6 @@
 #pragma once
 #include "ProjectController.h"
+#include "CommandEngine.h"
 #include "StudioWidgets.h"
 #include "SynthEngine.h"
 #include <cmath>
@@ -93,9 +94,11 @@ public:
             button->setTitle("Step " + juce::String(i + 1));
             addAndMakeVisible(button);
             button->onClick = [this, button, i] {
-                controller.setStepOn(i, button->getToggleState());
+                const bool on = button->getToggleState();
+                command::CommandEngine(controller).batch({command::Command{command::SetStepOn{i, on}}}, on ? "Turn on step" : "Turn off step");
+                // A refused change (a busy project) puts the pad back on what the project has.
+                button->setToggleState(controller.document().steps.on[static_cast<std::size_t>(i)], juce::dontSendNotification);
                 selectStep(i);
-                if (onEdited) onEdited(button->getToggleState() ? "Turn on step" : "Turn off step", {});
             };
         }
         for (auto* label : {&selectedStepLabel, &stepPitchLabel, &stepVelocityLabel}) {
@@ -114,14 +117,15 @@ public:
         stepPitch.setTooltip("Set the selected step pitch from MIDI note 0 to 127");
         stepPitch.setRange(0, 127, 1);
         stepPitch.setTextBoxStyle(juce::Slider::TextBoxRight, false, 46, 24);
+        // A drag is one Undo step; keyboard, wheel and typed changes are merged when rapid.
+        stepPitch.onDragStart = [this] { gesture = "step-drag-" + juce::String(++nextGesture); };
         stepPitch.onValueChange = [this] {
-            controller.setStepPitch(selectedStep, static_cast<int>(stepPitch.getValue()));
-            updateInspectorText();
-            refreshPadInfo();
-            // Keyboard, wheel and typed changes commit immediately (merged when rapid).
-            if (!stepPitch.isMouseButtonDown() && onEdited) onEdited("Change step pitch", "step-pitch");
+            const bool dragging = gesture.isNotEmpty();
+            command::CommandEngine(controller).execute(command::SetStepPitch{selectedStep, static_cast<int>(stepPitch.getValue())},
+                                                       dragging ? gesture : "step-pitch-" + juce::String(selectedStep), dragging);
+            selectStep(selectedStep);   // a refused change puts the slider back
         };
-        stepPitch.onDragEnd = [this] { if (onEdited) onEdited("Change step pitch", {}); };
+        stepPitch.onDragEnd = [this] { gesture.clear(); };
         addAndMakeVisible(stepPitchName);
         stepPitchName.setName("Selected step note name");
         stepPitchName.setFont(ui::monoFont(14.0f, true));
@@ -133,12 +137,14 @@ public:
         stepVelocity.setTooltip("Set the selected step velocity from 1 to 127");
         stepVelocity.setRange(1, 127, 1);
         stepVelocity.setTextBoxStyle(juce::Slider::TextBoxRight, false, 46, 24);
+        stepVelocity.onDragStart = [this] { gesture = "step-drag-" + juce::String(++nextGesture); };
         stepVelocity.onValueChange = [this] {
-            controller.setStepVelocity(selectedStep, static_cast<int>(stepVelocity.getValue()));
-            refreshPadInfo();
-            if (!stepVelocity.isMouseButtonDown() && onEdited) onEdited("Change step velocity", "step-velocity");
+            const bool dragging = gesture.isNotEmpty();
+            command::CommandEngine(controller).execute(command::SetStepVelocity{selectedStep, static_cast<int>(stepVelocity.getValue())},
+                                                       dragging ? gesture : "step-velocity-" + juce::String(selectedStep), dragging);
+            selectStep(selectedStep);
         };
-        stepVelocity.onDragEnd = [this] { if (onEdited) onEdited("Change step velocity", {}); };
+        stepVelocity.onDragEnd = [this] { gesture.clear(); };
         addAndMakeVisible(stepHelp);
         stepHelp.setText("Click a pad to toggle it and select it for editing. The step row plays the live synth.",
                          juce::dontSendNotification);
@@ -149,7 +155,6 @@ public:
     }
 
     // Called after a committed edit: undo label and an optional merge key.
-    std::function<void(const juce::String&, const juce::String&)> onEdited;
 
     // Re-read everything from the document.
     void refresh() {
@@ -271,6 +276,8 @@ private:
     }
 
     ProjectController& controller;
+    juce::String gesture;   // the coalescing key of the slider drag in progress
+    int nextGesture{};
     juce::OwnedArray<SequencerStepButton> pads;
     juce::Label stepHelp, selectedStepLabel, stepPitchLabel, stepPitchName, stepVelocityLabel;
     juce::ComboBox stepSelector;
