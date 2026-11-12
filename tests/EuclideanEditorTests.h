@@ -27,13 +27,16 @@ static void euclideanEditorTests() {
     auto* hits = dynamic_cast<juce::Slider*>(child("Euclidean hits"));
     auto* rotation = dynamic_cast<juce::Slider*>(child("Euclidean rotation"));
     auto* pitch = dynamic_cast<juce::Slider*>(child("Euclidean MIDI pitch"));
-    auto* follow = dynamic_cast<juce::ToggleButton*>(child("Euclidean follow project scale"));
-    require(steps && hits && rotation && pitch && follow && !follow->getToggleState(), "generator controls exist and project following defaults off");
-    for (auto* control : std::array<juce::Component*, 5>{steps, hits, rotation, pitch, follow})
+    auto* mode = dynamic_cast<juce::ComboBox*>(child("Euclidean pitch mode"));
+    auto* degree = dynamic_cast<juce::ComboBox*>(child("Euclidean scale degree"));
+    auto* octave = dynamic_cast<juce::Slider*>(child("Euclidean tonic octave"));
+    require(steps && hits && rotation && pitch && mode && degree && octave && mode->getSelectedId() == 1, "generator defaults to raw MIDI pitch");
+    for (auto* control : std::array<juce::Component*, 5>{steps, hits, rotation, pitch, mode})
         require(control->isVisible() && control->getWidth() > 40 && roll.getLocalBounds().contains(control->getBounds())
             && !control->getBounds().intersects(apply->getBounds()), "generator controls fit minimum width without Apply overlap");
     steps->setValue(8, juce::sendNotificationSync); hits->setValue(3, juce::sendNotificationSync);
-    rotation->setValue(1, juce::sendNotificationSync); pitch->setValue(61, juce::sendNotificationSync); click(follow);
+    rotation->setValue(1, juce::sendNotificationSync); pitch->setValue(61, juce::sendNotificationSync);
+    mode->setSelectedId(2, juce::sendNotificationSync);
     require(c.setProjectScale(1, ScaleType::major, c.document().identityScope), "project key can change while generator panel is open");
     roll.setInsertionStep(4); click(apply);
     require(!roll.isProcessingPanelOpen() && changes == 1 && commits == 1 && roll.getPattern().count == 4, "generator publishes one edit and one owner commit");
@@ -50,7 +53,24 @@ static void euclideanEditorTests() {
     hits->setValue(9, juce::sendNotificationSync); roll.setInsertionStep(0); click(apply);
     require(samePianoRollPattern(before, roll.getPattern()) && commits == 1, "invalid hit count keeps editor notes unchanged");
     click(dynamic_cast<juce::Button*>(child("Cancel piano roll processing")));
-    require(!follow->isVisible() && !steps->isVisible(), "Cancel hides generator controls");
+    require(!mode->isVisible() && !steps->isVisible(), "Cancel hides generator controls");
+    click(open);
+    hits->setValue(3, juce::sendNotificationSync);
+    mode->setSelectedId(3, juce::sendNotificationSync);
+    require(degree->isVisible() && octave->isVisible() && !pitch->isVisible(), "degree mode replaces MIDI pitch with degree and octave");
+    degree->setSelectedId(7, juce::sendNotificationSync);
+    require(c.setProjectScale(1, ScaleType::minorPentatonic, c.document().identityScope), "project can switch to a shorter scale");
+    require(!degree->isItemEnabled(7), "unavailable degrees are disabled");
+    click(apply);
+    require(roll.isProcessingPanelOpen() && samePianoRollPattern(before, roll.getPattern()) && commits == 1,
+            "a stale degree selection does not generate notes");
+    degree->setSelectedId(3, juce::sendNotificationSync);
+    octave->setValue(4, juce::sendNotificationSync);
+    click(apply);
+    require(roll.getPattern().count == 4 && roll.getPattern().notes[1].pitch == 66 && commits == 2,
+            "degree mode generates the third degree of the current project scale");
+    c.undo();
+    require(samePianoRollPattern(roll.getPattern(), initial), "one Undo removes all scale-degree hits");
     // Generator is also available without a selection in a wholly empty clip.
     PianoRollEditor empty; empty.setSize(960, 500);
     juce::ComboBox* emptyTools = nullptr; juce::Button* emptyOpen = nullptr; juce::Button* emptyApply = nullptr;
