@@ -67,12 +67,23 @@ public:
     }
 
     std::function<void()> onMusicalScaleChanged;
+    // The key cannot change during a take, or while the last one is still finishing.
+    bool projectScaleOpen() const { return !busy && !isRecording() && !engine.recording.active(); }
+    // Live side of SetProjectScale. CommandEngine owns the history entry.
+    bool applyProjectScale(int root, ScaleType type) {
+        const ProjectMusicalScale next{true, root, type};
+        if (!projectScaleOpen() || !next.valid()) return false;
+        doc.musicalScale = next;
+        if (onMusicalScaleChanged) onMusicalScaleChanged();
+        return true;
+    }
+    // The same edit as its own undo step, for callers that are not a view (the views run the command).
     bool setProjectScale(int root, ScaleType type, std::uint32_t expectedScope) {
         const ProjectMusicalScale next{true, root, type};
-        if (busy || isRecording() || engine.recording.active() || expectedScope != doc.identityScope || !next.valid()) return false;
+        if (!projectScaleOpen() || expectedScope != doc.identityScope || !next.valid()) return false;
         if (doc.musicalScale == next) return true;
-        doc.musicalScale = next; commit("Set project key and scale");
-        if (onMusicalScaleChanged) onMusicalScaleChanged();
+        if (!applyProjectScale(root, type)) return false;
+        commit("Set project key and scale");
         return true;
     }
     const ProjectDocument& document() const noexcept { return doc; }
@@ -1002,10 +1013,16 @@ public:
         return result;
     }
 
-    void setRecordSettings(const RecordSettings& settings) {
-        if (!settings.valid() || settings == doc.recording) return;
+    // Live side of SetRecordSettings. CommandEngine owns the history entry.
+    bool applyRecordSettings(const RecordSettings& settings) {
+        if (busy || !settings.valid()) return false;
         doc.recording = settings;
         engine.recording.apply(settings);
+        return true;
+    }
+    // The same edit as its own undo step, for callers that are not a view (the views run the command).
+    void setRecordSettings(const RecordSettings& settings) {
+        if (settings == doc.recording || !applyRecordSettings(settings)) return;
         commit("Change recording settings", -1, -1, "recordSettings");
     }
 

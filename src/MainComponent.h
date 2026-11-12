@@ -389,7 +389,7 @@ private:
                 case Menu::record:if(activeCapture)finishRecording();else toggleRecording();break;
                 case Menu::metronome: {
                     auto settings=controller.document().recording;settings.metronome=!settings.metronome;
-                    controller.setRecordSettings(settings);break;
+                    changeRecordSettings(settings);break;
                 }
                 case Menu::songMode:setSongMode(!songPlayback);break;
                 case Menu::audioSettings:showAudioSettings();break;
@@ -422,6 +422,13 @@ private:
         };
     }
 
+    // The recording options, as one undo step that repeated changes share. A refused change puts the
+    // top bar back to what the project holds.
+    void changeRecordSettings(const alien::RecordSettings& settings) {
+        const auto result = alien::command::CommandEngine(controller).execute(alien::command::SetRecordSettings{settings}, "recordSettings");
+        if (!result.ok) topBar.setRecordSettings(controller.document().recording);
+    }
+
     // Wiring ------------------------------------------------------------------
     void wireTopBar() {
         topBar.onViewSelected = [this](int index) { showView(index); };
@@ -431,11 +438,9 @@ private:
         topBar.onMetronomeToggled = [this](bool on) {
             auto settings = controller.document().recording;
             settings.metronome = on;
-            controller.setRecordSettings(settings);
+            changeRecordSettings(settings);
         };
-        topBar.onRecordSettingsChanged = [this](const alien::RecordSettings& settings) {
-            controller.setRecordSettings(settings);
-        };
+        topBar.onRecordSettingsChanged = [this](const alien::RecordSettings& settings) { changeRecordSettings(settings); };
         topBar.onTempoChanged = [this](int bpm) {
             if (topBar.isTempoDragging()) controller.auditionTempo(bpm);
             else commitTempo(bpm);
@@ -593,7 +598,11 @@ private:
     }
 
     void wireEditors() {
-        pianoRoll.onProjectScaleRequested = [this](int root, alien::ScaleType type, std::uint32_t scope) { return controller.setProjectScale(root, type, scope); };
+        pianoRoll.onProjectScaleRequested = [this](int root, alien::ScaleType type, std::uint32_t scope) {
+            // The piano roll asks for the project it is showing; a project replaced since then is not changed.
+            return scope == controller.document().identityScope
+                && alien::command::CommandEngine(controller).execute(alien::command::SetProjectScale{root, static_cast<int>(type)}).ok;
+        };
         controller.onMusicalScaleChanged = [this] {
             const auto& d = controller.document(); pianoRoll.setProjectScaleContext(d.musicalScale, d.identityScope); rackView.graphEditor().repaint(); updateEditorTitle();
         };
