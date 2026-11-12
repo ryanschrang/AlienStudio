@@ -42,6 +42,23 @@ static void euclideanTests() {
     PianoRollPattern local;
     insertEuclidean(local, 0, {8, 1, 0, 61, false}, {true, 0, ScaleType::major});
     require(local.notes[0].pitch == 61, "disabled project follow does not snap");
+    const auto third = EuclideanScaleDegree{3, 4};
+    require(euclideanDegreePitch({true, 0, ScaleType::major}, third) == 64
+        && euclideanDegreePitch({true, 0, ScaleType::naturalMinor}, third) == 63
+        && euclideanDegreePitch({true, 2, ScaleType::major}, third) == 66,
+        "scale degree follows both project tonic and scale");
+    require(euclideanDegreePitch({true, 11, ScaleType::blues}, {4, 4}) == 77,
+        "degree octave follows the tonic across the next C");
+    require(euclideanDegreePitch({true, 7, ScaleType::major}, {1, 9}) == 127
+        && !euclideanDegreePitch({true, 8, ScaleType::major}, {1, 9}),
+        "degree pitch accepts 127 and refuses notes outside MIDI range");
+    auto degreePattern = original;
+    const EuclideanSettings degreeSettings{8, 1, 0, 60, false, third};
+    require(insertEuclidean(degreePattern, 0, degreeSettings).status == EuclideanStatus::invalidScaleDegree
+        && samePianoRollPattern(degreePattern, original), "undefined project scale refuses before editing");
+    const auto degreeResult = insertEuclidean(degreePattern, 0, degreeSettings, {true, 2, ScaleType::minorPentatonic});
+    require(degreeResult.changed() && degreePattern.find(degreeResult.selection.ids[0])->pitch == 67,
+        "pentatonic degree resolves through the generator");
     for (auto bad : {EuclideanSettings{0, 0}, EuclideanSettings{65, 1}, EuclideanSettings{8, -1}, EuclideanSettings{8, 9},
                      EuclideanSettings{8, 3, -1}, EuclideanSettings{8, 3, 8}, EuclideanSettings{8, 3, 0, -1}, EuclideanSettings{8, 3, 0, 128}}) {
         auto unchanged = original;

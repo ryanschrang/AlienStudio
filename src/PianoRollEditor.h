@@ -192,10 +192,23 @@ public:
         seedLabel.setText("Random seed", juce::dontSendNotification);
         seedLabel.setJustificationType(juce::Justification::centredRight);
         addChildComponent(descending);
-        addChildComponent(euclideanScale);
-        euclideanScale.setButtonText("Project scale");
-        euclideanScale.setName("Euclidean follow project scale");
-        euclideanScale.setTooltip("Snap the generated pitch to the current project scale, independently of local Scale settings. Undefined project key leaves it chromatic. Existing notes stay unchanged.");
+        addChildComponent(euclideanPitchMode);
+        euclideanPitchMode.setName("Euclidean pitch mode");
+        euclideanPitchMode.addItem("MIDI pitch", 1);
+        euclideanPitchMode.addItem("Snap to project scale", 2);
+        euclideanPitchMode.addItem("Scale degree", 3);
+        euclideanPitchMode.onChange = [this] { updateEuclideanPitchControls(); };
+        addChildComponent(euclideanDegree);
+        euclideanDegree.setName("Euclidean scale degree");
+        euclideanDegree.setTooltip("Choose a degree of the current project scale.");
+        for (int degree = 1; degree <= 12; ++degree)
+            euclideanDegree.addItem("Degree " + juce::String(degree), degree);
+        addChildComponent(euclideanOctave);
+        euclideanOctave.setName("Euclidean tonic octave");
+        euclideanOctave.setTooltip("Choose the octave of the project tonic. C4 is MIDI 60.");
+        euclideanOctave.setSliderStyle(juce::Slider::LinearHorizontal);
+        euclideanOctave.setTextBoxStyle(juce::Slider::TextBoxRight, false, 44, 22);
+        euclideanOctave.setRange(-1, 9, 1);
         addChildComponent(randomizeScale);
         randomizeScale.setButtonText("Project scale");
         randomizeScale.setName("Randomize follow project scale");
@@ -649,12 +662,17 @@ public:
             followProjectScale.setBounds(16, 113, 170, 26);
             useProjectScale.setBounds(194, 113, 170, 26);
             projectScaleSummary.setBounds(380, 113, juce::jmax(0, getWidth() - 580), 26);
+        } else if (tools.getSelectedId() == 12) {
+            euclideanPitchMode.setBounds(16, 113, 170, 26);
+            euclideanDegree.setBounds(194, 113, 106, 26);
+            seedLabel.setBounds(310, 113, 82, 26);
+            seed.setBounds(398, 113, 108, 26);
+            euclideanOctave.setBounds(seed.getBounds());
         } else {
             seedLabel.setBounds(16, 113, 106, 26);
             seed.setBounds(128, 113, 190, 26);
             descending.setBounds(336, 113, 150, 26);
-            euclideanScale.setBounds(336, 113, 170, 26);
-            randomizeScale.setBounds(euclideanScale.getBounds());
+            randomizeScale.setBounds(336, 113, 170, 26);
         }
         applyButton.setBounds(getWidth() - 184, 113, 78, 28);
         cancelButton.setBounds(getWidth() - 98, 113, 78, 28);
@@ -1563,7 +1581,8 @@ private:
         seed.setVisible(tool == 1 || tool == 3 || tool == 5 || tool == 12);
         seedLabel.setVisible(seed.isVisible());
         descending.setVisible(tool == 1 || tool == 10);
-        euclideanScale.setVisible(tool == 12);
+        euclideanPitchMode.setVisible(tool == 12);
+        if (tool != 12) updateEuclideanPitchControls();
         randomizeScale.setVisible(tool == 3);
         seed.setTooltip(tool == 12 ? "MIDI pitch for generated notes, optionally snapped to the project scale" : "The same seed and notes reproduce the same randomized result");
         progressionMode.setVisible(tool == 11);
@@ -1613,9 +1632,14 @@ private:
             configureParameter(0, "Steps", "Euclidean steps", 1, 64, euclideanSettings.steps);
             configureParameter(1, "Hits", "Euclidean hits", 0, 64, euclideanSettings.hits);
             configureParameter(2, "Rotate right", "Euclidean rotation", 0, 63, euclideanSettings.rotation);
-            seed.setName("Euclidean MIDI pitch"); seedLabel.setText("Pitch (MIDI)", juce::dontSendNotification);
+            seed.setName("Euclidean MIDI pitch");
             seed.setRange(0, 127, 1); seed.setValue(euclideanSettings.pitch, juce::dontSendNotification);
-            euclideanScale.setToggleState(euclideanSettings.followProjectScale, juce::dontSendNotification);
+            euclideanPitchMode.setSelectedId(euclideanSettings.scaleDegree ? 3 : euclideanSettings.followProjectScale ? 2 : 1,
+                                            juce::dontSendNotification);
+            const auto choice = euclideanSettings.scaleDegree.value_or(EuclideanScaleDegree{});
+            euclideanDegree.setSelectedId(choice.degree, juce::dontSendNotification);
+            euclideanOctave.setValue(choice.octave, juce::dontSendNotification);
+            updateEuclideanPitchControls();
         } else if (tool == 6) {
             syncScaleControls();
         } else if (tool == 11) {
@@ -1648,13 +1672,25 @@ private:
         repaint();
         if (tool == 6) scaleRoot.grabKeyboardFocus(); else parameters[0].grabKeyboardFocus();
     }
+    void updateEuclideanPitchControls() {
+        const bool active = panelOpen && tools.getSelectedId() == 12;
+        const bool useDegree = active && euclideanPitchMode.getSelectedId() == 3;
+        euclideanDegree.setVisible(useDegree);
+        euclideanOctave.setVisible(useDegree);
+        if (!active) return;
+        seed.setVisible(!useDegree);
+        seedLabel.setText(useDegree ? "Tonic octave" : "Pitch (MIDI)", juce::dontSendNotification);
+        for (int degree = 1; degree <= 12; ++degree)
+            euclideanDegree.setItemEnabled(degree, euclideanDegreePitch(projectMusicalScale, {degree, 4}).has_value());
+    }
     void closeToolPanel() {
         releaseChordPreview(true);
         panelOpen = false;
         progressionMode.setVisible(false);
         for (auto& degree : progressionDegrees) degree.setVisible(false);
         for (auto* child : std::initializer_list<juce::Component*> { &panelTitle, &panelHelp, &applyButton,
-                                                                 &cancelButton, &seed, &seedLabel, &descending, &euclideanScale, &randomizeScale,
+                                                                 &cancelButton, &seed, &seedLabel, &descending, &euclideanPitchMode,
+                                                                 &euclideanDegree, &euclideanOctave, &randomizeScale,
                                                                  &chordType, &chordTypeLabel, &previewChordButton,
                                                                  &scaleRoot, &scaleRootLabel, &scaleType, &scaleTypeLabel,
                                                                  &scaleHighlight, &scaleSnap, &followProjectScale, &useProjectScale, &projectScaleSummary })
@@ -1676,7 +1712,9 @@ private:
         beginEdit();
         if (tools.getSelectedId() == 12) {
             euclideanSettings = {static_cast<int>(parameters[0].getValue()), static_cast<int>(parameters[1].getValue()),
-                static_cast<int>(parameters[2].getValue()), static_cast<int>(seed.getValue()), euclideanScale.getToggleState()};
+                static_cast<int>(parameters[2].getValue()), static_cast<int>(seed.getValue()), euclideanPitchMode.getSelectedId() == 2};
+            if (euclideanPitchMode.getSelectedId() == 3)
+                euclideanSettings.scaleDegree = EuclideanScaleDegree{euclideanDegree.getSelectedId(), static_cast<int>(euclideanOctave.getValue())};
             const auto result = insertEuclidean(pattern, insertionStep, euclideanSettings, projectMusicalScale);
             if (result.changed()) {
                 selection = result.selection; activeId = selection.ids[0]; changed(); endEdit(); closeToolPanel();
@@ -1686,6 +1724,7 @@ private:
                     ? "No changes: the full rhythm does not fit after the cursor. Reduce Steps or move the cursor."
                     : result.status == EuclideanStatus::capacityExceeded ? "No changes: the rhythm exceeds the clip note limit."
                     : result.status == EuclideanStatus::unchanged ? "No changes: zero hits generates no notes."
+                    : result.status == EuclideanStatus::invalidScaleDegree ? "No changes: define a project scale and choose a degree and octave within MIDI range."
                     : "No changes: Hits must be <= Steps and rotation must be < Steps.";
                 panelHelp.setText(statusMessage, juce::dontSendNotification); updateSelection();
             }
@@ -1838,6 +1877,7 @@ private:
             startChordPreview();
     }
     void applyScaleContext() {
+        updateEuclideanPitchControls();
         scaleSettings = localScaleSettings;
         const bool following = followProjectScale.getToggleState() && projectMusicalScale.defined;
         if (following) { scaleSettings.rootPitchClass = projectMusicalScale.rootPitchClass; scaleSettings.type = projectMusicalScale.type; }
@@ -1938,7 +1978,9 @@ private:
     std::array<juce::Label, 3> parameterLabels;
     std::array<juce::Slider, 3> parameters;
     juce::Slider seed;
-    juce::ToggleButton descending, previewChordButton, scaleHighlight, scaleSnap, euclideanScale, randomizeScale;
+    juce::ToggleButton descending, previewChordButton, scaleHighlight, scaleSnap, randomizeScale;
+    juce::ComboBox euclideanPitchMode, euclideanDegree;
+    juce::Slider euclideanOctave;
     juce::ScrollBar pitchScroll { true };
     PianoRollSelection selection, marqueeBase;
     PianoRollClipboard clipboard;

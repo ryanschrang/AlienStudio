@@ -34,12 +34,17 @@ even when that pitch is outside the key. Existing steps are not rewritten, and p
 never resnaps them when the project key changes. The toggle is a local view preference.
 A changed project, scale, row, pattern or pattern content cancels a stale draw gesture.
 
-Piano Roll > Euclidean rhythm has its own opt-in **Project scale** toggle. It snaps
+Piano Roll > Euclidean rhythm offers **Snap to project scale**. It snaps
 the requested MIDI pitch to the nearest tone of the current shared context when
 Apply is pressed (ties downward, bounded to MIDI 0-127). This option is independent
 of the Scale tool's local settings and follow/snap toggles. An undefined project
 key leaves the pitch chromatic. Changing the key later never retunes generated
 notes. Generator settings are local and do not change the project format.
+
+**Scale degree** selects a tone directly by degree and tonic octave. For example,
+degree 3 at octave 4 gives E4 in C major and E-flat 4 in C natural minor. The
+degree list follows the saved scale. Apply requires a defined scale and a valid
+degree and MIDI pitch. One Undo removes the generated rhythm.
 
 Piano Roll > Chord progression offers **Project scale** alongside Major and
 Natural minor (claim #284). It builds triads on the four selected degrees of
