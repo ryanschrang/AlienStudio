@@ -1189,20 +1189,24 @@ public:
     }
 
     // Edits -----------------------------------------------------------------
-    void setStepOn(int step, bool on) {
-        if (!validStep(step)) return;
+    // Live side of SetStepOn, SetStepPitch and SetStepVelocity. CommandEngine owns the history entry.
+    bool setStepOn(int step, bool on) {
+        if (busy || !validStep(step)) return false;
         doc.steps.on[static_cast<std::size_t>(step)] = on;
         engine.steps[static_cast<std::size_t>(step)].store(on);
+        return true;
     }
-    void setStepPitch(int step, int pitch) {
-        if (!validStep(step)) return;
-        doc.steps.pitch[static_cast<std::size_t>(step)] = juce::jlimit(0, 127, pitch);
-        engine.stepPitches[static_cast<std::size_t>(step)].store(doc.steps.pitch[static_cast<std::size_t>(step)]);
+    bool setStepPitch(int step, int pitch) {
+        if (busy || !validStep(step) || pitch < 0 || pitch > 127) return false;
+        doc.steps.pitch[static_cast<std::size_t>(step)] = pitch;
+        engine.stepPitches[static_cast<std::size_t>(step)].store(pitch);
+        return true;
     }
-    void setStepVelocity(int step, int velocity) {
-        if (!validStep(step)) return;
-        doc.steps.velocity[static_cast<std::size_t>(step)] = juce::jlimit(1, 127, velocity);
-        engine.stepVelocities[static_cast<std::size_t>(step)].store(doc.steps.velocity[static_cast<std::size_t>(step)]);
+    bool setStepVelocity(int step, int velocity) {
+        if (busy || !validStep(step) || velocity < 1 || velocity > 127) return false;
+        doc.steps.velocity[static_cast<std::size_t>(step)] = velocity;
+        engine.stepVelocities[static_cast<std::size_t>(step)].store(velocity);
+        return true;
     }
     void setBpm(int bpm) {
         if (busy || (std::any_of(doc.timeline.regions.begin(),doc.timeline.regions.end(),[](const auto& r){return !r.warp.empty();}) && (isRecording() || engine.recording.phase.load()!=RecordControls::idle))) return;
