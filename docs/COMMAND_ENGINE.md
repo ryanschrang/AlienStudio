@@ -831,6 +831,14 @@ sets when queued Session clips and scenes launch: 4 for the next beat, 16 for th
 Beat/Bar box runs it, under "Change launch timing". Both refuse a value outside those, and the same value again is no
 edit.
 
+## 16-step sequencer commands
+
+`SetStepOn {step, on}`, `SetStepPitch {step, pitch}` and `SetStepVelocity {step, velocity}` edit the 16-step
+sequencer's row for the live synth. `step` counts from 0 to 15, `pitch` is a MIDI note from 0 to 127 and `velocity` is
+from 1 to 127; anything else is refused. The pads run `SetStepOn` under the Undo names "Turn on step" and "Turn off
+step", and the selected step's Pitch and Velocity sliders run the other two: a drag is one Undo step, and rapid
+keyboard, wheel or typed changes to one step merge.
+
 ## Track sound command
 
 `SetTrackSound {track, preset, drumKit}` chooses a track's built-in sound: a factory synth preset (numbered from 0), or

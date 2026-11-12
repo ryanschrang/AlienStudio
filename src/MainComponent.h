@@ -706,9 +706,6 @@ private:
             const bool clipEdit = label == "Remove audio";
             controller.commit(label, clipEdit ? d.selectedTrack : -1, clipEdit ? d.selectedScene : -1);
         };
-        stepsView.onEdited = [this](const juce::String& label, const juce::String& key) {
-            controller.commit(label, -1, -1, key);
-        };
         sessionView.onStructureChanged = [this] {
             mixerPanel.rebuild();
             restorePlugins();
