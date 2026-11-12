@@ -647,20 +647,30 @@ public:
         doc.tracks[static_cast<std::size_t>(track)].settings=next;
     }
 
-    // A track's recording settings (arm, input, monitoring). The engine hears the change at once; it is one undo step.
-    bool editTrackRecording(int track, const juce::String& label, const std::function<void(TrackSettings&)>& change) {
-        if (busy || isTrackFrozen(track) || track < 0 || track >= doc.trackCount() || track >= static_cast<int>(engine.tracks.size())) return false;
-        auto& settings = doc.tracks[static_cast<std::size_t>(track)].settings;
-        auto next = settings;
-        change(next);
-        if (!next.valid() || (next.armed == settings.armed && next.input == settings.input
-            && next.stereoInput == settings.stereoInput && next.monitor == settings.monitor)) return false;
-        settings.armed = next.armed; settings.input = next.input; settings.stereoInput = next.stereoInput; settings.monitor = next.monitor;
-        auto& controls = engine.tracks[static_cast<std::size_t>(track)];
-        controls.input.store(next.input); controls.stereoInput.store(next.stereoInput);
-        controls.monitor.store(next.monitor); controls.armed.store(next.armed);
-        commit(label);
+    // Live sides of SetTrackArmed, SetTrackInput and SetTrackMonitor: the engine hears the change at once.
+    // CommandEngine owns the history entry.
+    bool setTrackArmed(int track, bool armed) {
+        if (!recordingSetupOpen(track)) return false;
+        doc.tracks[static_cast<std::size_t>(track)].settings.armed = armed;
+        engine.tracks[static_cast<std::size_t>(track)].armed.store(armed);
         return true;
+    }
+    bool setTrackInput(int track, int input, bool stereo) {
+        if (!recordingSetupOpen(track) || input < 0 || input + (stereo ? 1 : 0) >= maxTrackInputs) return false;
+        auto& settings = doc.tracks[static_cast<std::size_t>(track)].settings;
+        settings.input = input; settings.stereoInput = stereo;
+        auto& controls = engine.tracks[static_cast<std::size_t>(track)];
+        controls.input.store(input); controls.stereoInput.store(stereo);
+        return true;
+    }
+    bool setTrackMonitor(int track, int mode) {
+        if (!recordingSetupOpen(track) || mode < 0 || mode > 2) return false;
+        doc.tracks[static_cast<std::size_t>(track)].settings.monitor = mode;
+        engine.tracks[static_cast<std::size_t>(track)].monitor.store(mode);
+        return true;
+    }
+    bool recordingSetupOpen(int track) const {
+        return !busy && track >= 0 && track < doc.trackCount() && track < static_cast<int>(engine.tracks.size()) && !isTrackFrozen(track);
     }
     // The loudest input on `track` since the last call (0 when it is neither armed nor monitoring).
     float takeInputLevel(int track) noexcept {
