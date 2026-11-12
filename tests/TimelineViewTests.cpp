@@ -2429,6 +2429,22 @@ static void explorerDropChecks() {
     c.undo(); require(c.timeline().regions.empty(), "an Explorer drop has one Undo step");
 }
 
+// The track header's arm button and recording menu run commands.
+static void recordingCommandViewChecks() {
+    ToneEngine engine; ProjectController c(engine); TimelineCanvas canvas(c); canvas.setSize(1000, 600);
+    const auto before = c.document();
+    const auto name = before.tracks[0].name;
+    const auto& settings = c.document().tracks[0].settings;
+    require(canvas.toggleArm(0) && settings.armed && engine.tracks[0].armed.load() && c.undoLabel() == "Arm " + name, "the arm button arms the track under its name");
+    require(canvas.toggleArm(0) && !settings.armed && c.undoLabel() == "Disarm " + name, "and disarms it");
+    require(canvas.setTrackInput(0, 1, true) && settings.input == 1 && settings.stereoInput && c.undoLabel() == "Change track input", "the input menu sets a stereo input");
+    require(!canvas.setTrackInput(0, 1, true), "the same input again is no edit");
+    require(canvas.setTrackMonitor(0, alien::InputMonitor::always) && settings.monitor == 1 && engine.tracks[0].monitor.load() == 1 && c.undoLabel() == "Change input monitoring", "the monitoring menu sets the mode");
+    require(c.undo() && c.undo() && c.undo() && c.undo() && alien::sameContent(before, c.document()) && !c.canUndo(), "each was one Undo step");
+    juce::String said; canvas.onMessage = [&](const juce::String& text) { if (text.isNotEmpty()) said = text; };
+    require(!canvas.setTrackInput(0, alien::maxTrackInputs, false) && said.isNotEmpty() && alien::sameContent(before, c.document()), "a refused input says why and changes nothing");
+}
+
 #include "SongSectionViewTests.h"
 #include "SongChordViewTests.h"
 int main() {
@@ -2438,6 +2454,7 @@ int main() {
     sectionProgressionChecks();
     sampleDropChecks();
     explorerDropChecks();
+    recordingCommandViewChecks();
     warpRenderChecks();
     warpEditorChecks();
     freezeMenuChecks();

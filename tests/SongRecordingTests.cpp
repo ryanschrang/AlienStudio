@@ -380,8 +380,8 @@ struct ControllerRig {
         for (int i = 0; i < 500 && (controller.isBusy() || outcomes.empty()); ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
     }
     void arm(int track, bool stereo = false, int input = 0) {
-        require(controller.editTrackRecording(track, "Arm", [=](alien::TrackSettings& s) { s.armed = true; s.stereoInput = stereo; s.input = input; }),
-                "fixture: arm a track");
+        require(controller.setTrackInput(track, input, stereo) && controller.setTrackArmed(track, true), "fixture: arm a track");
+        controller.commit("Arm");
     }
 };
 

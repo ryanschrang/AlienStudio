@@ -854,6 +854,15 @@ has none, and that cell is selected. The sample browser's "to Song" import and a
 the file off the message thread and then run it; a drop also refuses a sample that would cover Song clips. It takes
 decoded audio, so it has no script form. The same reducer (`SongAudioImport.h`) serves Preview and the controller.
 
+## Track recording setup commands
+
+`SetTrackArmed {track, armed}`, `SetTrackInput {track, input, stereo}` and `SetTrackMonitor {track, mode}` change a
+track's recording setup. `input` is the first device input, counted from 0, and a stereo input also takes the next
+one; `mode` is 0 (automatic: while armed), 1 (always) or 2 (off). The Song track header's arm button runs
+`SetTrackArmed` under the Undo name "Arm" or "Disarm" with the track's name, and its recording menu runs the other two
+under "Change track input" and "Change input monitoring". A frozen track, a track that is not there, an input past the
+last one and an unknown mode are refused, and the header says why. The engine hears each change at once.
+
 ## Master volume command
 
 `SetMasterVolume {gain}` accepts a finite linear gain from 0 through 4 (1 is unity),

@@ -2010,19 +2010,24 @@ public:
         const auto& d = controller.document();
         if (track < 0 || track >= d.trackCount()) return false;
         const bool arm = !d.tracks[static_cast<std::size_t>(track)].settings.armed;
-        const bool done = controller.editTrackRecording(track, (arm ? "Arm " : "Disarm ") + d.tracks[static_cast<std::size_t>(track)].name,
-                                                       [arm](TrackSettings& s) { s.armed = arm; });
+        const auto result = command::CommandEngine(controller).batch({command::SetTrackArmed{track, arm}}, (arm ? "Arm " : "Disarm ") + d.tracks[static_cast<std::size_t>(track)].name);
+        const bool done = result.ok && result.changed;
+        if (!result.ok && result.error.isNotEmpty()) say(result.error);
         if (done && arm && !inputAvailable(track)) say("Track armed, but its input is not enabled. Enable it in Audio settings or pick another input (right-click the track name).");
         repaint(0, topHeight, headerWidth, getHeight() - topHeight);
         return done;
     }
     bool setTrackInput(int track, int first, bool stereo) {
-        const bool done = controller.editTrackRecording(track, "Change track input", [=](TrackSettings& s) { s.input = first; s.stereoInput = stereo; });
+        const auto result = command::CommandEngine(controller).execute(command::SetTrackInput{track, first, stereo});
+        const bool done = result.ok && result.changed;
+        if (!result.ok && result.error.isNotEmpty()) say(result.error);
         repaint(0, topHeight, headerWidth, getHeight() - topHeight);
         return done;
     }
     bool setTrackMonitor(int track, InputMonitor mode) {
-        const bool done = controller.editTrackRecording(track, "Change input monitoring", [=](TrackSettings& s) { s.monitor = static_cast<int>(mode); });
+        const auto result = command::CommandEngine(controller).execute(command::SetTrackMonitor{track, static_cast<int>(mode)});
+        const bool done = result.ok && result.changed;
+        if (!result.ok && result.error.isNotEmpty()) say(result.error);
         repaint(0, topHeight, headerWidth, getHeight() - topHeight);
         return done;
     }
