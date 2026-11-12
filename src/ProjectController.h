@@ -21,6 +21,7 @@
 #include "AudioClipImport.h"
 #include "SessionAudioImportPlan.h"
 #include "SongAudioImport.h"
+#include "SongPlacementEdit.h"
 #include "ArrangementWarp.h"
 #include "AudioRelink.h"
 #include "PortableProject.h"
@@ -1134,71 +1135,23 @@ public:
     }
     // Whether a Song placement shares what it plays with something else: another placement of the same
     // cell or placement clip, or a linked cell.
-    bool placementShared(std::uint32_t regionId) const {
-        const auto* r = doc.timeline.find(regionId);
-        if (r == nullptr) return false;
-        if (r->isPattern()) return doc.rackPatternForClip(r->rackClip) >= 0;
-        if (r->ownsClip()) {
-            int uses = 0;
-            for (const auto& other : doc.timeline.regions) uses += other.clip == r->clip ? 1 : 0;
-            return uses > 1;
-        }
-        if (!doc.isValidCell(r->row, r->source) || !doc.cellClip(r->row, r->source)) return false;
-        int uses = 0;
-        for (const auto& other : doc.timeline.regions) uses += other.playsCell() && other.row == r->row && other.source == r->source ? 1 : 0;
-        return uses > 1 || doc.linkedCells(r->row, r->source) > 1;
+    bool placementShared(std::uint32_t regionId) const { return song_placement::shared(doc, regionId); }
+    // Live side of MakeSongClipUnique (see SongPlacementEdit.h). CommandEngine owns the history entry.
+    bool applyMakePlacementUnique(std::uint32_t regionId) {
+        if (busy || isRecording()) return false;
+        auto candidate = doc;
+        if (song_placement::makeUnique(candidate, regionId).isNotEmpty()) return false;
+        if (candidate.sceneCount() != doc.sceneCount() && beforeStructureEdit) beforeStructureEdit();
+        const bool rackChanged = !(candidate.channelRack == doc.channelRack);
+        doc = std::move(candidate);
+        if (rackChanged) pushRackToEngine();
+        return true;
     }
-    // Gives one Song placement content of its own: an independent copy of what it plays. A MIDI placement
-    // gets a placement clip, which no Session cell launches; an audio placement gets a free cell of its track
-    // (a scene is added when there is none). The cell and the other placements keep theirs.
+    // The same edit as its own undo step, for callers that are not a view (the views run the command).
     bool makePlacementUnique(std::uint32_t regionId) {
-        if (busy || isRecording() || !placementShared(regionId)) return false;
-        const auto* r = doc.timeline.find(regionId);
-        if (r->isPattern()) {
-            const auto saved = doc;
-            auto next = doc.channelRack;
-            const int slot = next.patternCount;
-            const int source = doc.rackPatternForClip(r->rackClip);
-            if (source < 0 || !next.addPattern(source)) return false;
-            next.selectedPattern = doc.channelRack.selectedPattern;
-            if (!doc.setRack(std::move(next))) return false;
-            auto* own = doc.timeline.find(regionId);
-            own->source = slot; own->rackClip = doc.channelRack.clips[static_cast<std::size_t>(slot)];
-            if (!doc.timeline.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount)) { doc = saved; return false; }
-            pushRackToEngine(); commit("Make placement unique"); return true;
-        }
-        const int row = r->row, from = r->source;
-        if (isTrackFrozen(row)) return false;
-        const auto content = doc.placementContent(*r);
-        if (!content.isAudioClip()) {
-            const auto name = r->ownsClip() ? doc.placementName(r->clip) : doc.scenes[static_cast<std::size_t>(from)].name;
-            const auto saved = doc;
-            const auto id = doc.addPlacementClip(content.pattern, name);
-            auto* region = doc.timeline.find(regionId);
-            region->clip = id.value; region->source = -1;
-            if (!id || !doc.timeline.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount)) { doc = saved; return false; }
-            doc.prune();
-            commit("Make placement unique");
-            return true;
-        }
-        const auto saved = doc;
-        const auto used = [&](int scene) {
-            if (doc.cellClip(row, scene)) return true;
-            for (const auto& x : doc.timeline.regions) if (x.row == row && x.source == scene) return true;
-            for (const auto& x : doc.timeline.takes) if (x.row == row && x.source == scene) return true;
-            for (const auto& x : doc.timeline.frozenOriginals) if (x.row == row && x.source == scene) return true;
-            return false;
-        };
-        int free = -1;
-        for (int s = 0; s < doc.sceneCount() && free < 0; ++s) if (!used(s)) free = s;
-        if (free < 0) {
-            if (!doc.canAddScene() || !insertScene(doc.sceneCount(), nullptr)) { doc = saved; return false; }
-            free = doc.sceneCount() - 1;
-        }
-        doc.cells[static_cast<std::size_t>(free)][static_cast<std::size_t>(row)] = doc.library.duplicateClip(doc.cellClip(row, from));
-        doc.timeline.find(regionId)->source = free;
-        if (!doc.timeline.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount)) { doc = saved; return false; }
-        commit("Make placement unique", row, free);
+        if (!applyMakePlacementUnique(regionId)) return false;
+        const auto [track, scene] = song_placement::audioCell(doc, regionId);
+        commit("Make placement unique", track, scene);
         return true;
     }
 
@@ -1859,44 +1812,23 @@ public:
         commit(label, -1, -1);
         return true;
     }
-    // A new, empty MIDI clip for a track, put on the timeline in one undo step. It takes the first Session cell of that track
-    // that is empty and that the timeline does not already use, so every new clip is a clip of its own; when there is no such
-    // cell a scene is added. The clip is selected, ready to be opened in the piano roll. Returns false (and changes nothing)
-    // when the track does not exist, the project is busy, or there is no room for another scene.
+    // Live side of NewSongClip (see SongPlacementEdit.h): a new, empty MIDI clip for a track on the timeline, in a free
+    // Session cell of that track, which is selected. CommandEngine owns the history entry.
+    bool applyNewSongClip(int row, std::int64_t start, std::uint32_t* idOut = nullptr) {
+        if (busy) return false;
+        auto candidate = doc;
+        if (song_placement::newClip(candidate, row, start, idOut).isNotEmpty()) return false;
+        if (candidate.sceneCount() != doc.sceneCount() && beforeStructureEdit) beforeStructureEdit();
+        doc = std::move(candidate);
+        return true;
+    }
+    // The same edit as its own undo step, for callers that are not a view (the views run the command).
     bool placeNewClip(int row, std::int64_t start, std::uint32_t* idOut = nullptr, int* sceneOut = nullptr, bool* sceneAddedOut = nullptr) {
-        using namespace alien::timeline;
-        if (busy || isTrackFrozen(row) || isPatternRow(row) || row < 0 || row >= doc.trackCount() || start < 0) return false;
-        const auto usedByTimeline = [&](int scene) {
-            for (const auto& r : doc.timeline.takes) if (r.row == row && r.source == scene) return true;
-            for (const auto& r : doc.timeline.regions) if (r.row == row && r.source == scene) return true;
-            return false;
-        };
-        const auto isFree = [&](int scene) { return scene >= 0 && scene < doc.sceneCount() && doc.clip(row, scene).isEmpty() && !usedByTimeline(scene); };
-        int scene = -1;
-        if (isFree(doc.selectedScene)) scene = doc.selectedScene;
-        for (int s = 0; s < doc.sceneCount() && scene < 0; ++s) if (isFree(s)) scene = s;
-        const bool needsScene = scene < 0;
-        if (needsScene && !doc.canAddScene()) return false;
-        const auto saved = doc;   // a failed placement must leave no trace, not even the new scene
-        if (needsScene) {
-            if (!insertScene(doc.sceneCount(), nullptr)) return false;
-            scene = doc.sceneCount() - 1;
-        }
-        std::uint32_t id = 0;
-        auto next = doc.timeline;
-        next.tempo = doc.bpm;
-        Region region;
-        region.row = row; region.source = scene; region.start = start; region.length = naturalLength(row, scene, start);
-        if (!next.place(region, &id) || !next.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount)) {
-            doc = saved;
-            return false;
-        }
-        doc.timeline = std::move(next);
-        selectClip(row, scene);
-        commit("New clip", row, scene);
-        if (idOut != nullptr) *idOut = id;
-        if (sceneOut != nullptr) *sceneOut = scene;
-        if (sceneAddedOut != nullptr) *sceneAddedOut = needsScene;
+        const int scenesBefore = doc.sceneCount();
+        if (!applyNewSongClip(row, start, idOut)) return false;
+        commit("New clip", row, doc.selectedScene);
+        if (sceneOut != nullptr) *sceneOut = doc.selectedScene;
+        if (sceneAddedOut != nullptr) *sceneAddedOut = doc.sceneCount() != scenesBefore;
         return true;
     }
     juce::String placeChordMidi(const timeline::SongChord& expected, TrackId track,

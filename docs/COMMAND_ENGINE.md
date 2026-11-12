@@ -863,6 +863,19 @@ one; `mode` is 0 (automatic: while armed), 1 (always) or 2 (off). The Song track
 under "Change track input" and "Change input monitoring". A frozen track, a track that is not there, an input past the
 last one and an unknown mode are refused, and the header says why. The engine hears each change at once.
 
+## New Song clip and unique placement commands
+
+`NewSongClip {row, start}` puts a new, empty MIDI clip on a track's lane at a tick. It plays a Session cell of that
+track that is empty and that the Song does not use (the selected scene first), in a new scene when the track has
+none, and that cell is selected. A double-click on an empty lane runs it under the Undo name "New clip". A pattern
+lane, a frozen track and a full Session are refused.
+
+`MakeSongClipUnique {clip}` gives one Song clip its own copy of what it plays: a pattern placement gets a new rack
+pattern, a MIDI placement gets a placement clip, and an audio placement gets a free cell of its track (in a new scene
+when there is none). The Song clip menu's "Make this placement unique" runs it under "Make placement unique". A clip
+that already plays content of its own, a frozen track, recording, and a full Channel Rack or Session are refused. Both
+commands share their reducers (`SongPlacementEdit.h`) between Preview and the controller.
+
 ## Master volume command
 
 `SetMasterVolume {gain}` accepts a finite linear gain from 0 through 4 (1 is unity),

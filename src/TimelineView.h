@@ -792,10 +792,8 @@ public:
     }
     // Gives one placement its own copy of what it plays (see ProjectController::makePlacementUnique).
     bool makePlacementUnique(std::uint32_t id) {
-        if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return false; }
         const int scenesBefore = controller.document().sceneCount();
-        if (!controller.makePlacementUnique(id)) { say("That placement already plays content of its own."); return false; }
-        afterEdit();
+        if (const auto result = songCommand(command::MakeSongClipUnique{id}); !result.ok || !result.changed) return false;
         say("This placement now has its own copy: edit it without changing the others.");
         if (const auto* r = committed().find(id); r != nullptr && r->playsCell() && onClipCreated)   // an audio placement took a cell
             onClipCreated(r->row, r->source, controller.document().sceneCount() != scenesBefore);
@@ -874,9 +872,12 @@ public:
     }
     // Makes a new, empty MIDI clip for a track and puts it at `tick`, as one undo step. Double-click it to write notes.
     bool newClipHere(int row, std::int64_t tick) {
-        if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return false; }
-        std::uint32_t id = 0; int scene = -1; bool sceneAdded = false;
-        if (!controller.placeNewClip(row, tick, &id, &scene, &sceneAdded)) { say("A new clip does not fit there: the Session has no room for another scene."); return false; }
+        const int scenesBefore = controller.document().sceneCount();
+        if (const auto result = songCommand(command::NewSongClip{row, tick}); !result.ok || !result.changed) return false;
+        const int scene = controller.document().selectedScene;
+        const bool sceneAdded = controller.document().sceneCount() != scenesBefore;
+        std::uint32_t id = 0;
+        for (const auto& r : committed().regions) if (r.row == row && r.start == tick && r.playsCell() && r.source == scene) id = r.id;
         selected = {id}; selectedMarker = 0; focus = row;
         afterEdit();
         if (onClipCreated) onClipCreated(row, scene, sceneAdded);
