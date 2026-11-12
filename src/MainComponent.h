@@ -730,13 +730,6 @@ private:
             timelineView.refresh();
         };
 
-        mixerPanel.onTrackEdited = [this](int track, bool committed) {
-            controller.trackSettingsEdited(track);
-            sessionView.repaint();
-            if (committed)
-                controller.commit("Change " + controller.document().tracks[static_cast<std::size_t>(track)].name + " mix",
-                                  -1, -1, "mixer-" + juce::String(track));
-        };
         mixerPanel.onTrackMixCommandExecuted = [this](int) { sessionView.repaint(); };
         // Session mixer commands own their history; the host only refreshes the Mixer.
         sessionView.onTrackMixCommandExecuted = [this](int) {
@@ -761,7 +754,7 @@ private:
         devicesView.samples().onImport = [this](const juce::File& file, bool song) {
             const auto& d = controller.document();
             if (projectBusy || controller.isBusy() || controller.isRecording() || activeCapture || (!song && d.cellClip(d.selectedTrack, d.selectedScene)) || controller.isTrackFrozen(d.selectedTrack)) return;
-            if (song) controller.importSampleToSong(file, d.selectedTrack, d.selectedScene, timelineView.timelineCanvas().cursorTick());
+            if (song) alien::command::importSampleToSong(controller, file, d.selectedTrack, timelineView.timelineCanvas().cursorTick());
             else alien::command::importSampleToCell(controller, file, d.selectedTrack, d.selectedScene);
         };
         devicesView.presets().onAudition = [this](int preset) { if (workspace.isDeviceView()) { devicesView.samples().stop(); engine.factoryPresetPreview.request(preset); } };

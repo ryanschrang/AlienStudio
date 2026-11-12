@@ -2409,7 +2409,7 @@ static void sampleDropChecks() {
     // An initially free start can still run into a later clip. The worker must
     // refuse the whole import after decoding its duration, preserving history.
     const auto saved = c.timeline().regions; const auto label = c.undoLabel();
-    c.importSampleToSong(audio.file, 1, 0, 3000, true); SampleDropFixture::wait(c);
+    command::importSampleToSong(c, audio.file, 1, 3000, true); SampleDropFixture::wait(c);
     require(c.timeline().regions == saved && c.undoLabel() == label, "decoded overlap refuses atomically without replacing Song clips");
 }
 

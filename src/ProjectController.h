@@ -20,6 +20,7 @@
 #include "ToneEngine.h"
 #include "AudioClipImport.h"
 #include "SessionAudioImportPlan.h"
+#include "SongAudioImport.h"
 #include "ArrangementWarp.h"
 #include "AudioRelink.h"
 #include "PortableProject.h"
@@ -615,6 +616,16 @@ public:
         if (busy || track < 0 || track >= doc.trackCount()) return false;
         doc.tracks[static_cast<std::size_t>(track)].settings.mute = muted;
         engine.tracks[static_cast<std::size_t>(track)].mute.store(muted);
+        return true;
+    }
+    // Live side of SetTrackSound. CommandEngine owns the history entry.
+    bool setTrackSound(int track, int preset, bool drumKit) {
+        if (busy || track < 0 || track >= doc.trackCount() || track >= static_cast<int>(engine.tracks.size()) || isTrackFrozen(track)
+            || (!drumKit && (preset < 0 || preset >= presetCount))) return false;
+        auto& settings = doc.tracks[static_cast<std::size_t>(track)].settings;
+        settings.instrument = drumKit ? 1 : 0;
+        engine.tracks[static_cast<std::size_t>(track)].instrument.store(settings.instrument);
+        if (!drumKit) { settings.preset = preset; engine.tracks[static_cast<std::size_t>(track)].preset.store(preset); }
         return true;
     }
     bool setTrackSolo(int track, bool soloed) {
@@ -1603,30 +1614,37 @@ public:
         return !busy && !isRecording() && engine.recording.phase.load() == RecordControls::idle
             && doc.isValidCell(track, scene) && !isTrackFrozen(track) && (song || !doc.cellClip(track, scene));
     }
-    // A sample placed on the Song. A sample for a Session cell takes command::importSampleToCell.
-    void importSampleToSong(const juce::File& file, int track, int scene, std::int64_t songTick, bool preserveSong = false) {
-        if (busy || isRecording() || engine.recording.phase.load() != RecordControls::idle || !doc.isValidCell(track, scene) || isTrackFrozen(track)) return;
+    // A sample bound for the Song (command::importSampleToSong): decodes the file off the message thread and hands
+    // the audio to `done`, which runs ImportSongAudio. A sample for a Session cell takes command::importSampleToCell.
+    void decodeSongSample(const juce::File& file, int track, std::function<void(std::shared_ptr<SessionAudioClip>)> done) {
+        if (busy || isRecording() || engine.recording.phase.load() != RecordControls::idle || track < 0 || track >= doc.trackCount() || isTrackFrozen(track)) return;
         setBusy(true); importStatus("Loading sample...", file.getFullPathName());
         std::weak_ptr<int> token = alive;
-        pool.addJob([this, token, file, track, scene, songTick, preserveSong] {
+        pool.addJob([this, token, file, done = std::move(done)] {
             auto result = std::make_shared<AudioClipImportResult>(importSessionAudioClip(file));
-            juce::MessageManager::callAsync([this, token, file, track, scene, songTick, preserveSong, result] {
+            juce::MessageManager::callAsync([this, token, file, done, result] {
                 if (!token.lock()) return;
                 setBusy(false);
                 if (!result->clip) { importStatus(result->error, file.getFullPathName()); return; }
-                if (!doc.isValidCell(track, scene) || isTrackFrozen(track)) return;
-                const auto end = timeline::TempoMap{doc.timeline.tempoChanges, static_cast<double>(doc.bpm)}.tickAfter(static_cast<double>(songTick), result->clip->frames / result->clip->sampleRate);
-                if (end > timeline::maxLength || end <= songTick) { importStatus("Sample does not fit in the Song.", {}); return; }
-                if (preserveSong && std::any_of(doc.timeline.regions.begin(), doc.timeline.regions.end(), [&](const auto& region) {
-                    return region.row == track && region.start < static_cast<std::int64_t>(std::ceil(end)) && region.start + region.length > songTick;
-                })) { importStatus("Drop onto a free Song range; existing clips were preserved.", {}); return; }
-                RecordedTake take; take.track = track; take.file = file; take.clip = result->clip;
-                take.placement = {true, songTick, std::max<std::int64_t>(1, static_cast<std::int64_t>(std::ceil(end)) - songTick), 0};
-                if (addRecordedTakes({take}, "Import sample to Song") != 1) { importStatus("Sample could not be placed in the Song.", {}); return; }
-                importStatus("Imported " + file.getFileName() + " to Song", file.getFullPathName());
-                if (onDocumentRestored) onDocumentRestored();
+                done(result->clip);
             });
         });
+    }
+    // Live side of ImportSongAudio. CommandEngine owns the history entry.
+    bool applySongAudioImport(const song_audio_import::Request& request) {
+        if (busy || isRecording() || engine.recording.phase.load() != RecordControls::idle) return false;
+        auto candidate = doc;
+        if (song_audio_import::apply(candidate, request).isNotEmpty()) return false;
+        if (candidate.sceneCount() != doc.sceneCount() && beforeStructureEdit) beforeStructureEdit();
+        if (!retain(request.clip)) return false;
+        doc = std::move(candidate);
+        return true;
+    }
+    // What the import said: the refusal, or that the sample is on the Song.
+    void songSampleImported(const juce::File& file, const juce::String& error) {
+        if (error.isNotEmpty()) { importStatus(error, {}); return; }
+        importStatus("Imported " + file.getFileName() + " to Song", file.getFullPathName());
+        if (onDocumentRestored) onDocumentRestored();
     }
 
     std::shared_ptr<ArrangementPlayback> captureArrangement() const {

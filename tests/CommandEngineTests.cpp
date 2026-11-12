@@ -465,6 +465,7 @@ static void continuousCommandTests() {
 #include "RackKeySliceCommandTests.h"
 #include "ProjectSettingCommandTests.h"
 #include "StepCommandTests.h"
+#include "TrackSoundCommandTests.h"
 #include "AutomationCommandTests.h"
 #include "SongLengthCommandTests.h"
 #include "SongTakeCommandTests.h"
@@ -491,6 +492,8 @@ int main() {
     rackKeySliceCommandChecks();
     projectSettingCommandChecks();
     stepCommandChecks();
+    trackSoundCommandChecks();
+    songAudioImportCommandChecks();
     automationCommandChecks();
     removeClipAudioChecks();
     sendCommandChecks();

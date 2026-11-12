@@ -230,14 +230,13 @@ static void undoAndPanels() {
     // The mixer: send knobs and pre switches on each track strip, and four return strips.
     alien::TrackMixerPanel panel(c, engine.tracks, engine.returns, engine.masterControls, engine.buses);
     panel.setSize(1400, 640);
-    int trackEdits = 0, sendCommands = 0, returnEdits = 0;
-    panel.onTrackEdited = [&](int, bool) { ++trackEdits; };
+    int sendCommands = 0, returnEdits = 0;
     panel.onTrackMixCommandExecuted = [&](int) { ++sendCommands; };
     panel.onStripCommandExecuted = [&] { ++returnEdits; };
     auto* strip = panel.trackStrip(0);
     require(strip != nullptr && strip->sendKnob(1).getValue() == 70.0 && strip->sendMode(1).getToggleState(), "a strip shows its sends and pre switches");
     strip->sendKnob(2).setValue(50.0, juce::sendNotificationSync);
-    require(approx(engine.tracks[0].send[2].load(), 0.5f) && approx(c.document().tracks[0].settings.send[2], 0.5f) && sendCommands == 1 && trackEdits == 0 && c.undoLabel() == "Set send level",
+    require(approx(engine.tracks[0].send[2].load(), 0.5f) && approx(c.document().tracks[0].settings.send[2], 0.5f) && sendCommands == 1 && c.undoLabel() == "Set send level",
             "turning a send knob runs the named command, not the legacy edit");
     strip->sendMode(2).triggerClick();
     juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
@@ -496,8 +495,7 @@ static void mixerCommandHistory() {
     alien::ProjectController c(*engine);
     alien::TrackMixerPanel panel(c, engine->tracks, engine->returns, engine->masterControls, engine->buses);
     panel.setSize(1400, 640);
-    int legacy = 0, commands = 0;
-    panel.onTrackEdited = [&](int, bool) { ++legacy; };
+    int commands = 0;
     panel.onTrackMixCommandExecuted = [&](int track) { require(track == 0, "command notification identifies its track"); ++commands; };
     auto* strip = panel.trackStrip(0);
     juce::Slider *gain = nullptr, *pan = nullptr; juce::Button *mute = nullptr, *solo = nullptr;
@@ -543,7 +541,7 @@ static void mixerCommandHistory() {
     session.mouseDown(juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(), point, juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier),
         1, 0, 0, 0, 0, &session, &session, now, point, now, 1, false));
     require(!c.document().tracks[0].settings.mute && !mute->getToggleState(), "Session mute command refreshes the same Mixer state");
-    require(legacy == 0 && c.document().selectedTrack == 2 && c.document().selectedScene == 1 && engine->requestedPianoRollClip[0].load() == 1,
+    require(c.document().selectedTrack == 2 && c.document().selectedScene == 1 && engine->requestedPianoRollClip[0].load() == 1,
         "mix commands avoid legacy commits and preserve selection and queued playback");
     gain->onDragStart(); require(c.moveTrack(0, 1), "reorder track during queued drag"); c.commit("Move row");
     const auto moved = c.document(); const int notified = commands;
