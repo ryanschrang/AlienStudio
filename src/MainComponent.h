@@ -66,6 +66,8 @@ public:
         addWorkspace("Drums", drumPanel);
         addWorkspace("Arrangement", timelineView);
         addWorkspace("Audio lab", audioTools);
+        // The Drums page's edits run as commands (ClearDrumPad, SetDrumPadSlice, LoadDrumSample, SliceDrumPad).
+        alien::command::routeDrumPadEdits(controller);
         drumPanel.onLoad = [this](int t, int p, const juce::File& f) { controller.loadDrum(f, t, p); };
         drumPanel.onApplySlice = [this](const alien::DrumSliceTarget& target, alien::DrumSlice range) { return controller.editDrumSlice(target, range); };
         drumPanel.onSlice = [this](int t, int p) { controller.sliceDrum(t, p); };
