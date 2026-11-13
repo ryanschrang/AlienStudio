@@ -101,7 +101,7 @@ public:
     std::function<void(int)> onFreezeTrack, onUnfreezeTrack;
     std::function<void()> onPlayToggle;                        // Space
     std::function<void(int row, int source)> onOpenSource;     // double-click on a region: edit what it plays
-    std::function<void(std::uint64_t clip)> onOpenPlacement;    // ... or, for a placement clip, its notes
+    std::function<void(std::uint32_t region)> onOpenPlacement; // Open the notes with this occurrence as context.
     std::function<void(int track, int scene, bool sceneAdded)> onClipCreated;   // a new empty clip was made for a track (a scene is added when none was free)
     std::function<void(const juce::String&)> onMessage;
     std::function<void()> onViewChanged;                       // zoom or scroll changed
@@ -787,7 +787,7 @@ public:
     }
     // Edits what a region plays: its placement clip, or its cell or rack pattern.
     void openRegion(const timeline::Region& r) {
-        if (r.ownsClip()) { if (onOpenPlacement) onOpenPlacement(r.clip); }
+        if (r.ownsClip()) { if (onOpenPlacement) onOpenPlacement(r.id); }
         else if (onOpenSource) onOpenSource(r.row, r.source);
     }
     // Gives one placement its own copy of what it plays (see ProjectController::makePlacementUnique).

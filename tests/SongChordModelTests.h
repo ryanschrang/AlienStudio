@@ -8,6 +8,32 @@ static void chordModelTests() {
     check(t.chordAt(0)->id == a && t.chordAt(bar - 1)->id == a && t.chordAt(bar)->id == b
         && !t.chordAt(2 * bar) && !t.chordAt(-1) && !t.chordAt(4 * bar), "shared chord context uses exclusive ends and has no implicit chord in gaps");
     check(t != empty && t.playbackEquals(empty), "chord context affects history but does not play or retune notes");
+    {
+        auto song = t;
+        alien::timeline::Region first;
+        first.clip = 99;
+        first.source = -1;
+        first.length = 3 * bar;
+        auto second = first;
+        second.start = 3 * bar;
+        second.length = bar;
+        second.offset = bar / 2;
+        std::uint32_t firstId{}, secondId{};
+        check(song.place(first, &firstId) && song.place(second, &secondId), "place linked occurrences of the same MIDI clip");
+        const auto at = [&](std::uint32_t region, std::int64_t cursor, std::int64_t loop) {
+            const auto* chord = song.chordForPlacementCursor(region, first.clip, cursor, loop);
+            return chord ? chord->id : 0;
+        };
+        check(at(firstId, bar - 1, 2 * bar) == a && at(firstId, bar, 2 * bar) == b,
+              "placement cursor follows exclusive chord boundaries");
+        check(at(firstId, 2 * bar, 3 * bar) == 0, "a gap inside the placement has no chord");
+        check(at(secondId, bar / 2, bar) == c && at(secondId, 0, bar) == c,
+              "trimmed linked placement maps directly and wraps within the same region");
+        check(at(secondId, 0, 2 * bar) == 0 && at(firstId, 0, bar) == a && at(firstId, 0, 0) == 0,
+              "cursor outside the occurrence refuses and repeated cursor uses the first occurrence");
+        check(!song.chordForPlacementCursor(secondId, 100, 0, bar) && at(0, 0, bar) == 0,
+              "a stale placement or source refuses");
+    }
     const auto before = t;
     check(!t.addChord(bar / 2, bar * 2, 2, ChordType::minor) && !t.addChord(-1, bar, 0, ChordType::major)
         && !t.addChord(2 * bar, 2 * bar + 1, 0, ChordType::major) && !t.addChord(0, t.length() + 1, 0, ChordType::major), "invalid chord ranges and overlaps refuse");

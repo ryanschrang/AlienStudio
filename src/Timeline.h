@@ -954,6 +954,18 @@ struct Timeline {
         for (const auto& c : chords) if (tick >= c.start && tick < c.end) return &c;
         return nullptr; // gaps have no assumed chord, regardless of project key
     }
+
+    // A source cursor may occur several times. Use its first audible occurrence
+    // within this placement, including a wrap after a left trim.
+    const SongChord* chordForPlacementCursor(std::uint32_t id, std::uint64_t clip,
+                                            std::int64_t cursor, std::int64_t loop) const noexcept {
+        const auto* region = find(id);
+        if (!region || !region->ownsClip() || region->clip != clip || cursor < 0 || cursor >= loop)
+            return nullptr;
+        auto into = cursor - region->offset % loop;
+        if (into < 0) into += loop;
+        return into < region->length ? chordAt(region->start + into) : nullptr;
+    }
     std::vector<SongChord> chordsOverlapping(std::int64_t start, std::int64_t end) const {
         std::vector<SongChord> result;
         for (const auto& chord : chords)
