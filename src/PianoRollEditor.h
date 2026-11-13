@@ -7,6 +7,7 @@
 #include "PianoRollClipboard.h"
 #include "PianoRollGhostNotes.h"
 #include "PianoRollChordStamp.h"
+#include "SongChord.h"
 #include "PianoRollProgression.h"
 #include "PianoRollEuclidean.h"
 #include "PianoRollScale.h"
@@ -226,6 +227,11 @@ public:
                  {"Major 7", 8}, {"Minor 7", 9} }) chordType.addItem(item.first, item.second);
         chordType.setSelectedId(1, juce::dontSendNotification);
         chordType.onChange = [this] { updateChordInversionRange(); refreshChordPreview(); };
+        addChildComponent(useSongChord);
+        useSongChord.setButtonText("Use Song chord");
+        useSongChord.setName("Use Song chord for stamp");
+        useSongChord.setTooltip("Use the Song chord at the first occurrence of the cursor in this placement. Root (MIDI) chooses the octave.");
+        useSongChord.onClick = [this] { updateChordSource(); refreshChordPreview(); };
         addChildComponent(previewChordButton);
         previewChordButton.setButtonText("Preview");
         previewChordButton.setName("Preview chord stamp");
@@ -327,6 +333,15 @@ public:
     std::function<void()> onEditCommitted;
     // Positive velocity starts a preview; zero releases that same pitch.
     std::function<void(int, float)> onAudition;
+    std::function<std::optional<timeline::SongChord>(std::int64_t, std::int64_t)> songChordAtCursor;
+    void setSongChordAvailable(bool available) {
+        songChordAvailable = available;
+        if (!available && useSongChord.getToggleState()) {
+            useSongChord.setToggleState(false, juce::dontSendNotification);
+            if (panelOpen && tools.getSelectedId() == 5) closeToolPanel();
+        }
+        updateChordSource();
+    }
     // The user picked another ghost-note source; the owner answers with setGhostClips.
     std::function<void(GhostNoteSource)> onGhostSourceChanged;
 
@@ -531,6 +546,10 @@ public:
         if (!std::isfinite(step)) return;
         insertionStep = PianoRollPattern::fromTicks(PianoRollPattern::toTicks(
             juce::jlimit(0.0, static_cast<double>(pattern.loopSteps), step)));
+        if (useSongChord.getToggleState()) {
+            updateChordInversionRange();
+            refreshChordPreview();
+        }
         statusMessage.clear();
         repaint();
     }
@@ -645,6 +664,7 @@ public:
             seedLabel.setBounds(282, 113, 72, 26);
             seed.setBounds(360, 113, 110, 26);
             previewChordButton.setBounds(480, 113, 88, 28);
+            useSongChord.setBounds(580, 113, 150, 26);
         } else if (tools.getSelectedId() == 11) {
             const int available = getWidth() - 220;
             const int modeWidth = juce::jmin(140, available / 4);
@@ -1590,6 +1610,7 @@ private:
         chordType.setVisible(tool == 5);
         chordTypeLabel.setVisible(tool == 5);
         previewChordButton.setVisible(tool == 5);
+        updateChordSource();
         for (auto* control : std::initializer_list<juce::Component*> {
                  &scaleRoot, &scaleRootLabel, &scaleType, &scaleTypeLabel, &scaleHighlight, &scaleSnap, &followProjectScale, &useProjectScale, &projectScaleSummary })
             control->setVisible(tool == 6);
@@ -1627,7 +1648,7 @@ private:
             seed.setRange(0, 3, 1);
             seed.setValue(chordSettings.inversion, juce::dontSendNotification);
             chordType.setSelectedId(static_cast<int>(chordSettings.type) + 1, juce::dontSendNotification);
-            updateChordInversionRange();
+            updateChordSource();
         } else if (tool == 12) {
             configureParameter(0, "Steps", "Euclidean steps", 1, 64, euclideanSettings.steps);
             configureParameter(1, "Hits", "Euclidean hits", 0, 64, euclideanSettings.hits);
@@ -1691,7 +1712,7 @@ private:
         for (auto* child : std::initializer_list<juce::Component*> { &panelTitle, &panelHelp, &applyButton,
                                                                  &cancelButton, &seed, &seedLabel, &descending, &euclideanPitchMode,
                                                                  &euclideanDegree, &euclideanOctave, &randomizeScale,
-                                                                 &chordType, &chordTypeLabel, &previewChordButton,
+                                                                 &chordType, &chordTypeLabel, &previewChordButton, &useSongChord,
                                                                  &scaleRoot, &scaleRootLabel, &scaleType, &scaleTypeLabel,
                                                                  &scaleHighlight, &scaleSnap, &followProjectScale, &useProjectScale, &projectScaleSummary })
             child->setVisible(false);
@@ -1762,8 +1783,10 @@ private:
         }
         if (tools.getSelectedId() == 5) {
             releaseChordPreview(true);
+            updateChordInversionRange();
             chordSettings = currentChordSettings();
-            const auto result = stampChord(pattern, insertionStep, chordSettings);
+            const auto resolved = resolvedChordSettings();
+            const auto result = resolved ? stampChord(pattern, insertionStep, *resolved) : ChordStampResult{};
             if (result.changed()) {
                 selection = result.selection;
                 activeId = selection.ids[0];
@@ -1772,7 +1795,8 @@ private:
                 closeToolPanel();
             } else {
                 endEdit();
-                const auto message = result.status == ChordStampStatus::capacityExceeded
+                const auto message = !resolved ? juce::String("No changes: no Song chord at the cursor in this placement.")
+                    : result.status == ChordStampStatus::capacityExceeded
                     ? juce::String("No changes: the chord would exceed the ") + juce::String(static_cast<int>(PianoRollPattern::maxNotes)) + "-note limit."
                     : result.status == ChordStampStatus::outOfBounds
                     ? "No changes: the chord duration extends beyond the loop."
@@ -1847,9 +1871,35 @@ private:
                  static_cast<int>(seed.getValue()), parameters[1].getValue() / 240.0,
                  static_cast<float>(parameters[2].getValue() / 127.0) };
     }
+    std::optional<timeline::SongChord> currentSongChord() const {
+        if (!songChordAtCursor) return std::nullopt;
+        return songChordAtCursor(PianoRollPattern::toTicks(insertionStep),
+                                 pattern.loopSteps * PianoRollPattern::ticksPerStep);
+    }
+    std::optional<ChordStampSettings> resolvedChordSettings() const {
+        auto settings = currentChordSettings();
+        if (!useSongChord.getToggleState()) return settings;
+        const auto chord = currentSongChord();
+        if (!chord) return std::nullopt;
+        settings.root = settings.root / 12 * 12 + chord->root;
+        settings.type = chord->quality;
+        return settings;
+    }
+    void updateChordSource() {
+        const bool active = panelOpen && tools.getSelectedId() == 5;
+        useSongChord.setVisible(active && songChordAvailable);
+        if (!active) return;
+        chordType.setEnabled(!useSongChord.getToggleState());
+        parameterLabels[0].setText(useSongChord.getToggleState() ? "Octave via MIDI" : "Root (MIDI)", juce::dontSendNotification);
+        updateChordInversionRange();
+    }
     void updateChordInversionRange() {
         ChordStampSettings settings;
         settings.type = static_cast<ChordType>(juce::jlimit(1, 9, chordType.getSelectedId()) - 1);
+        if (useSongChord.getToggleState()) {
+            const auto chord = currentSongChord();
+            if (chord) settings.type = chord->quality;
+        }
         const auto count = chordPitches(settings).count;
         seed.setRange(0, static_cast<double>(count > 0 ? count - 1 : 0), 1);
     }
@@ -1861,16 +1911,18 @@ private:
     }
     void startChordPreview() {
         releaseChordPreview(false);
-        const auto settings = currentChordSettings();
-        const auto pitches = chordPitches(settings);
+        updateChordInversionRange();
+        const auto settings = resolvedChordSettings();
+        const auto pitches = settings ? chordPitches(*settings) : ChordPitches{};
         if (pitches.count == 0) {
+            if (!settings) panelHelp.setText("No Song chord at the cursor in this placement.", juce::dontSendNotification);
             previewChordButton.setToggleState(false, juce::dontSendNotification);
             return;
         }
         previewedChordPitches = pitches.values;
         previewedChordCount = pitches.count;
         for (std::size_t i = 0; i < previewedChordCount; ++i)
-            if (onAudition) onAudition(previewedChordPitches[i], settings.velocity);
+            if (onAudition) onAudition(previewedChordPitches[i], settings->velocity);
     }
     void refreshChordPreview() {
         if (panelOpen && tools.getSelectedId() == 5 && previewChordButton.getToggleState())
@@ -1978,7 +2030,8 @@ private:
     std::array<juce::Label, 3> parameterLabels;
     std::array<juce::Slider, 3> parameters;
     juce::Slider seed;
-    juce::ToggleButton descending, previewChordButton, scaleHighlight, scaleSnap, randomizeScale;
+    juce::ToggleButton descending, previewChordButton, useSongChord, scaleHighlight, scaleSnap, randomizeScale;
+    bool songChordAvailable{};
     juce::ComboBox euclideanPitchMode, euclideanDegree;
     juce::Slider euclideanOctave;
     juce::ScrollBar pitchScroll { true };

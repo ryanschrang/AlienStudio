@@ -514,7 +514,7 @@ private:
         canvas.onSeek = [this](std::int64_t tick) { engine.timelineSeek.store(tick); };
         canvas.onPlayToggle = [this] { togglePlay(); };
         canvas.onOpenSource = [this](int row, int source) { openTimelineSource(row, source); };
-        canvas.onOpenPlacement = [this](std::uint64_t clip) { openPlacementClip(clip); };
+        canvas.onOpenPlacement = [this](std::uint32_t region) { openPlacementClip(region); };
         // A double-click on an empty lane made a new clip (and a Session scene for it when every cell of the track was taken).
         canvas.onClipCreated = [this](int, int, bool sceneAdded) {
             if (sceneAdded) sessionView.rebuildGrid();
@@ -545,11 +545,13 @@ private:
     }
 
     // Double-click on a placement clip: edit its notes in the piano roll. Every region that plays it follows.
-    void openPlacementClip(std::uint64_t clip) {
-        const int track = controller.placementTrack(clip);
-        if (track < 0) return;
-        controller.selectClip(track, controller.document().selectedScene);
-        rollTarget = {false, 0, clip};
+    void openPlacementClip(std::uint32_t id) {
+        const auto* region = controller.timeline().find(id);
+        if (!region || !region->ownsClip()) return;
+        const auto clip = region->clip;
+        pianoRoll.setSongChordAvailable(false);
+        controller.selectClip(region->row, controller.document().selectedScene);
+        rollTarget = {false, 0, clip, id};
         loadSelectedClip();
         sessionView.refreshFromDocument();
         showView(1);
@@ -557,6 +559,11 @@ private:
     }
 
     void wireController() {
+        pianoRoll.songChordAtCursor = [this](std::int64_t cursor, std::int64_t loop) -> std::optional<alien::timeline::SongChord> {
+            if (const auto* chord = controller.timeline().chordForPlacementCursor(
+                    rollTarget.region, rollTarget.placement, cursor, loop)) return *chord;
+            return std::nullopt;
+        };
         controller.onProjectStatus = [this](const juce::String& text, const juce::String& tip) {
             statusBar.setProjectStatus(text, tip);
             updateStatusState();
@@ -799,6 +806,7 @@ private:
         pianoRoll.setProjectScaleContext(controller.document().musicalScale, controller.document().identityScope);
         if (rollTarget.rack && !controller.channelRack().validChannel(rollTarget.channel)) rollTarget = {};
         if (rollTarget.placement != 0 && controller.placementTrack(rollTarget.placement) < 0) rollTarget = {};   // no region plays it any more
+        pianoRoll.setSongChordAvailable(rollTarget.region != 0);
         if (rollTarget.rack || rollTarget.placement != 0) multiClip.end();   // only Session clips are edited together
         loadingClip = true;
         if (rollTarget.placement != 0) {
@@ -2047,7 +2055,7 @@ private:
     // What the piano roll edits: the selected Session clip, or a Channel Rack channel in the rack's selected pattern.
     // What the piano roll edits: the selected Session clip (the default), a Channel Rack channel,
     // or a Song placement clip (placement: its library id).
-    struct RollTarget { bool rack{}; int channel{}; std::uint64_t placement{}; };
+    struct RollTarget { bool rack{}; int channel{}; std::uint64_t placement{}; std::uint32_t region{}; };
     alien::MultiClipEdit multiClip;
     alien::PianoRollAuditionRouter auditions;   // where each held piano-roll preview note plays   // the Session clips the piano roll edits together, while that is on
     RollTarget rollTarget;

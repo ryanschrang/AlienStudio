@@ -492,6 +492,36 @@ static void checkPianoRollProcessing() {
     roll.redo();
     require(roll.getPattern().count == 3, "redo restores the same stamped chord");
 
+    roll.setPattern(empty);
+    roll.songChordAtCursor = [](std::int64_t cursor, std::int64_t) -> std::optional<alien::timeline::SongChord> {
+        if (cursor < 4 * alien::PianoRollPattern::ticksPerStep)
+            return alien::timeline::SongChord{1, 0, 960, 7, alien::ChordType::dominant7};
+        return std::nullopt;
+    };
+    roll.setSongChordAvailable(true);
+    roll.grabKeyboardFocus();
+    shortcut('c', juce::ModifierKeys::altModifier);
+    auto* useSongChord = dynamic_cast<juce::ToggleButton*>(control("Use Song chord for stamp"));
+    require(useSongChord && useSongChord->isShowing() && !useSongChord->getToggleState(), "Song chord stamping is opt-in");
+    click("Use Song chord for stamp");
+    setValue("Chord root MIDI note", 60);
+    setValue("Chord inversion", 0);
+    click("Preview chord stamp");
+    require(previewHeld == std::set<int>({67, 71, 74, 77}), "preview uses Song chord quality and root");
+    roll.setInsertionStep(4);
+    require(previewHeld.empty(), "cursor in a gap releases the preview");
+    click("Apply piano roll processing");
+    require(roll.isProcessingPanelOpen() && !roll.canUndo() && roll.getPattern().count == 0, "gap refuses without creating history");
+    roll.setInsertionStep(0);
+    click("Apply piano roll processing");
+    std::set<int> stamped;
+    for (std::size_t i = 0; i < roll.getPattern().count; ++i) stamped.insert(roll.getPattern().notes[i].pitch);
+    require(stamped == std::set<int>({67, 71, 74, 77}), "Song chord stamp matches the preview");
+    roll.undo();
+    require(roll.getPattern().count == 0, "one undo removes the Song chord");
+    roll.setSongChordAvailable(false);
+    roll.songChordAtCursor = {};
+
     // Scale guides change the background immediately and snap only new pitch
     // entry or deliberate pitch moves while the option is enabled.
     roll.setPattern(empty);

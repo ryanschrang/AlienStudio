@@ -32,6 +32,15 @@ rooted at MIDI 60 plus the pitch class, with notes sustained for the exact chord
 range. The clip belongs to the Song and its notes are independent of later chord
 edits. One Undo removes the clip.
 
+Open a Song-owned MIDI placement in Piano Roll, then choose **Chord stamp** and
+enable **Use Song chord**. The source cursor maps to its first occurrence inside
+the opened placement, accounting for left trim and source repeats. The chord
+track supplies the root pitch class and quality. The Root MIDI control supplies
+the octave, with C4 at MIDI 60. Preview and Apply use the current Song chord.
+Apply in a gap or outside the placement leaves notes and history intact. A stamp
+creates ordinary MIDI notes in one Undo step, and shared placements still share
+those notes.
+
 Creation requires an empty range on the destination track and supports up to
 256 sixteenth notes. Recording, busy or frozen targets refuse the operation.
 The menu resolves the chosen track by identity, including after track reorder.

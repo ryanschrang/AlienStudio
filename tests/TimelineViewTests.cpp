@@ -2323,8 +2323,8 @@ static void sendAutomationEditorChecks() {
 // A placement clip (T1-03 B2b): a Song region with notes of its own and no Session cell.
 static void placementClipChecks() {
     Rig rig; rig.song();
-    std::vector<std::uint64_t> openedClips;
-    rig.c.onOpenPlacement = [&](std::uint64_t clip) { openedClips.push_back(clip); };
+    std::vector<std::uint32_t> openedRegions;
+    rig.c.onOpenPlacement = [&](std::uint32_t region) { openedRegions.push_back(region); };
     std::uint32_t second = 0;
     require(rig.controller.placeRegion(0, 0, 4 * bar, &second), "a second placement of clip a");
     rig.view.refresh();
@@ -2335,11 +2335,11 @@ static void placementClipChecks() {
             "it gets a clip of its own without taking a Session cell");
     rig.opened.clear();
     rig.doubleClick(rig.at(4 * bar + 100, 0));
-    require(openedClips == std::vector<std::uint64_t>{clip} && rig.opened.empty(), "double-clicking it opens its own notes, not the cell");
+    require(openedRegions == std::vector<std::uint32_t>{second} && rig.opened.empty(), "double-clicking opens the exact Song placement");
     rig.rightClick(rig.at(4 * bar + 100, 0));
     require(rig.menu.shown, "its menu opens");
     rig.menu.done(TimelineCanvas::cmdOpen);
-    require(openedClips.size() == 2 && openedClips[1] == clip, "Open in the menu does the same");
+    require(openedRegions.size() == 2 && openedRegions[1] == second, "Open in the menu keeps the placement identity");
     // Cut and paste: the clip is dropped with its last region, and the paste brings it back with its notes.
     rig.c.setSelection({second});
     require(rig.c.cutSelection() && !rig.has(second)
