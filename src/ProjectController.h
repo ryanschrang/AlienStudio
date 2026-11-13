@@ -22,6 +22,7 @@
 #include "SessionAudioImportPlan.h"
 #include "SongAudioImport.h"
 #include "SongPlacementEdit.h"
+#include "DrumPadEdit.h"
 #include "ArrangementWarp.h"
 #include "AudioRelink.h"
 #include "PortableProject.h"
@@ -2032,35 +2033,63 @@ public:
         const auto& owner = doc.tracks[track];
         return {doc.identityScope, owner.id, pad, owner.drumAssets[pad], owner.settings.frozen()};
     }
+    // Drum pad edits (see DrumPadEdit.h) -------------------------------------
+    // A sample cannot be sliced during a take, or while the last one is still finishing.
+    bool drumSliceOpen() const { return projectScaleOpen(); }
+    // Live side of the drum pad commands. CommandEngine owns the history entry.
+    bool applyDrumPadCommand(const drum_pad::Edit& e) {
+        if (busy || ((e.kind == drum_pad::Kind::range || e.kind == drum_pad::Kind::slice) && !drumSliceOpen())) return false;
+        auto candidate = doc;
+        if (drum_pad::apply(candidate, e).isNotEmpty()) return false;
+        if (e.kind == drum_pad::Kind::load && !retain(e.clip)) return false;
+        // Slice views own no PCM. Keep them alive past any in-flight callback, as with loaded samples;
+        // their source was counted and retained when it was loaded.
+        const auto& was = doc.tracks[static_cast<std::size_t>(e.track)].drumAssets;
+        const auto& now = candidate.tracks[static_cast<std::size_t>(e.track)].drumAssets;
+        for (std::size_t p = 0; p < now.size(); ++p) if (now[p] && now[p]->sliceSource && now[p] != was[p]) retained.push_back(now[p]);
+        doc = std::move(candidate);
+        pushDocumentToEngine();
+        return true;
+    }
+    // Set by the app (command::routeDrumPadEdits) so the edits below run as commands. Returns why not, or nothing.
+    std::function<juce::String(const drum_pad::Edit&, const juce::String&)> drumPadCommands;
+    // One drum pad edit as one undo step: through the command engine when the app has routed it, directly otherwise.
+    juce::String commitDrumPad(const drum_pad::Edit& e, const juce::String& label) {
+        if (drumPadCommands) return drumPadCommands(e, label);
+        if (busy) return "The project is busy; try again when it has finished.";
+        auto trial = doc;
+        if (const auto why = drum_pad::apply(trial, e); why.isNotEmpty()) return why;
+        const bool changed = !sameContent(trial, doc);
+        if (!applyDrumPadCommand(e)) return e.kind == drum_pad::Kind::load ? "Session audio storage is full (512 MiB limit)" : "The project could not change the drum pad.";
+        if (changed) commit(label);
+        return {};
+    }
+    // The track a deferred drum pad action was aimed at, if the project, the track and the pad's sample are still
+    // the ones it saw; -1 otherwise.
+    int drumTargetTrack(const DrumSliceTarget& target) const {
+        if (target.scope != doc.identityScope || !target.asset || target.frozen || target.pad < 0 || target.pad >= drumPadCount) return -1;
+        for (int t = 0; t < doc.trackCount(); ++t)
+            if (doc.tracks[t].id == target.trackId) return !isTrackFrozen(t) && doc.tracks[t].drumAssets[target.pad] == target.asset ? t : -1;
+        return -1;
+    }
     bool editDrumSlice(const DrumSliceTarget& target, DrumSlice range) {
-        if (busy || isRecording() || engine.recording.active() || target.scope != doc.identityScope
-            || !target.asset || target.frozen || target.pad < 0 || target.pad >= drumPadCount || !range.valid()) return false;
-        int track = -1;
-        for (int t = 0; t < doc.trackCount(); ++t) if (doc.tracks[t].id == target.trackId) { track = t; break; }
-        if (track < 0 || isTrackFrozen(track)) return false;
-        auto& owner = doc.tracks[track];
-        if (owner.drumAssets[target.pad] != target.asset) return false;
+        if (busy || !drumSliceOpen() || !range.valid()) return false;
+        const int track = drumTargetTrack(target);
+        if (track < 0) return false;
         const auto source = target.asset->sliceSource ? target.asset->sliceSource : target.asset;
-        if (source->streamed() || (!range.whole() && static_cast<std::size_t>(range.end) > source->frames)) return false;
-        // The entire source is one canonical state, preserving no-op/redo behavior.
-        if (range.start == 0 && static_cast<std::size_t>(range.end) == source->frames) range = {};
-        if (owner.drumSlices[target.pad] == range) return true;
-        const auto view = drumSliceView(source, range);
-        if (!view) return false;
-        if (view != source) retained.push_back(view); // source PCM already retained and counted
-        owner.drumAssets[target.pad] = view; owner.drumSlices[target.pad] = range;
-        pushDocumentToEngine(); commit(range.whole() ? "Restore whole drum sample" : "Edit drum slice");
-        if (onDocumentRestored) onDocumentRestored();
+        const bool whole = range.whole() || (range.start == 0 && static_cast<std::size_t>(range.end) == source->frames);
+        const auto slices = doc.tracks[track].drumSlices;
+        drum_pad::Edit e; e.kind = drum_pad::Kind::range; e.track = track; e.pad = target.pad; e.range = range;
+        if (commitDrumPad(e, whole ? "Restore whole drum sample" : "Edit drum slice").isNotEmpty()) return false;
+        if (doc.tracks[track].drumSlices != slices && onDocumentRestored) onDocumentRestored();
         return true;
     }
     bool autoSliceDrum(const DrumSliceTarget& target) {
-        if (busy || isRecording() || engine.recording.active() || target.scope != doc.identityScope
-            || target.frozen || !target.asset || target.pad < 0 || target.pad >= drumPadCount) return false;
-        int track = -1;
-        for (int t = 0; t < doc.trackCount(); ++t) if (doc.tracks[t].id == target.trackId) track = t;
-        if (track < 0 || isTrackFrozen(track)) return false;
+        if (busy || !drumSliceOpen()) return false;
+        const int track = drumTargetTrack(target);
+        if (track < 0) return false;
         const auto& owner = doc.tracks[track];
-        if (owner.drumAssets[target.pad] != target.asset || owner.drumPaths[target.pad].isEmpty()) return false;
+        if (owner.drumPaths[target.pad].isEmpty()) return false;
         if (target.asset->streamed() || target.asset->frames / target.asset->sampleRate > 60) {
             importStatus("Auto slice needs a decoded sample range of at most one minute.", {}); return false;
         }
@@ -2069,34 +2098,26 @@ public:
         setBusy(true); importStatus("Finding sample attacks...", {});
         std::weak_ptr<int> token = alive;
         std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, target, assets, ranges, paths, instrument] {
-            auto detected = detectDrumTransientSlices(*target.asset);
-            const auto source = target.asset->sliceSource ? target.asset->sliceSource : target.asset;
-            const int offset = static_cast<int>(target.asset->sliceSource ? target.asset->sliceOffset : 0);
-            std::array<std::shared_ptr<const SessionAudioClip>, drumPadCount> views{};
-            for (int p = 0; p < detected.count; ++p) {
-                detected.ranges[p].start += offset; detected.ranges[p].end += offset;
-                views[p] = drumSliceView(source, detected.ranges[p]);
-                if (!views[p]) { detected.count = 0; break; }
-            }
-            juce::MessageManager::callAsync([this, token, target, assets, ranges, paths, instrument, detected, views] {
+            const auto detected = detectDrumTransientSlices(*target.asset);
+            juce::MessageManager::callAsync([this, token, target, assets, ranges, paths, instrument, detected] {
                 if (!token.lock()) return;
                 setBusy(false);
                 if (target.scope != doc.identityScope || isRecording() || engine.recording.active()) {
                     importStatus("Auto slice discarded: project or recording state changed.", {}); return;
                 }
                 for (int t = 0; t < doc.trackCount(); ++t) if (doc.tracks[t].id == target.trackId) {
-                    auto& kit = doc.tracks[t];
+                    const auto& kit = doc.tracks[t];
                     if (isTrackFrozen(t) || kit.drumAssets != assets || kit.drumSlices != ranges
                         || kit.drumPaths != paths || kit.settings.instrument != instrument) break;
                     if (detected.count < 2) {
                         importStatus("No useful attack boundaries found. Kit unchanged; try equal slicing or edit ranges.", {}); return;
                     }
-                    for (const auto& view : views) if (view) retained.push_back(view);
-                    kit.drumAssets = views; kit.drumSlices = detected.ranges;
-                    for (int p = 0; p < drumPadCount; ++p)
-                        kit.drumPaths[p] = p < detected.count ? paths[target.pad] : juce::String{};
-                    kit.settings.instrument = 1;
-                    pushDocumentToEngine(); commit("Auto slice sample to pads");
+                    // The detected slices follow one another, inside the range the pad plays.
+                    const auto offset = static_cast<std::int64_t>(target.asset->sliceSource ? target.asset->sliceOffset : 0);
+                    drum_pad::Edit e; e.kind = drum_pad::Kind::slice; e.track = t; e.pad = target.pad;
+                    e.bounds.push_back(offset + detected.ranges[0].start);
+                    for (int p = 0; p < detected.count; ++p) e.bounds.push_back(offset + detected.ranges[p].end);
+                    if (const auto why = commitDrumPad(e, "Auto slice sample to pads"); why.isNotEmpty()) { importStatus(why, {}); return; }
                     if (onDocumentRestored) onDocumentRestored();
                     importStatus("Found " + juce::String(detected.count) + " slices. Unused pads cleared; Undo restores the kit.", {});
                     return;
@@ -2109,12 +2130,20 @@ public:
         return true;
     }
     bool sliceDrum(int track, int pad) {
-        if (busy || isRecording() || engine.recording.active() || isTrackFrozen(track) || track < 0 || track >= doc.trackCount() || pad < 0 || pad >= drumPadCount) return false;
+        if (busy || !drumSliceOpen() || isTrackFrozen(track) || track < 0 || track >= doc.trackCount() || pad < 0 || pad >= drumPadCount) return false;
         const auto& owner = doc.tracks[track];
-        if (!canSliceDrumSource(owner.drumAssets[pad], owner.drumPaths[pad])) {
+        const auto selected = owner.drumAssets[pad];
+        if (!canSliceDrumSource(selected, owner.drumPaths[pad])) {
             importStatus("Load a sample with at least eight frames before slicing.", {}); return false;
         }
-        return sliceDrumSource(track, owner.drumAssets[pad], owner.drumPaths[pad]);
+        // Eight equal parts of the range the pad plays.
+        const auto offset = selected->sliceSource ? selected->sliceOffset : std::size_t{};
+        drum_pad::Edit e; e.kind = drum_pad::Kind::slice; e.track = track; e.pad = pad;
+        for (int p = 0; p <= drumPadCount; ++p) e.bounds.push_back(static_cast<std::int64_t>(offset + selected->frames * static_cast<std::size_t>(p) / drumPadCount));
+        if (const auto why = commitDrumPad(e, "Slice sample to 8 pads"); why.isNotEmpty()) { importStatus(why, {}); return false; }
+        if (onDocumentRestored) onDocumentRestored();
+        importStatus("Sample split into eight pads. Undo restores the previous kit.", {});
+        return true;
     }
     bool canSliceSessionAudio(int track, int scene) const {
         if (!doc.isValidCell(track, scene) || !canEditMidiClips() || isTrackFrozen(track)) return false;
@@ -2155,11 +2184,11 @@ private:
     }
 public:
     void clearDrum(int track, int pad) {
-        if(isTrackFrozen(track))return;
-        if (track < 0 || track >= doc.trackCount() || pad < 0 || pad >= drumPadCount) return;
-        doc.tracks[track].drumPaths[pad].clear();
-        doc.tracks[track].drumAssets[pad].reset();
-        doc.tracks[track].drumSlices[pad] = {};
+        drum_pad::Edit e; e.kind = drum_pad::Kind::clear; e.track = track; e.pad = pad;
+        if (drumPadCommands) { drumPadCommands(e, "Clear drum pad"); return; }
+        // Not routed (tests and fixtures): the edit as it always was, an undo step even for an empty pad and
+        // even while a worker is busy.
+        if (track < 0 || track >= doc.trackCount() || isTrackFrozen(track) || drum_pad::apply(doc, e).isNotEmpty()) return;
         pushDocumentToEngine(); commit("Clear drum pad");
     }
     void loadDrum(const juce::File& file, int track, int pad) {
@@ -2173,13 +2202,9 @@ public:
             juce::MessageManager::callAsync([this, token, file, trackId, pad, result] {
                 if (!token.lock()) return;
                 setBusy(false);
-                for (auto& track : doc.tracks) if (track.id == trackId) {
-                    if (!result->clip || !retain(result->clip)) { importStatus("Could not load drum sample (format or memory limit)", {}); return; }
-                    track.drumAssets[pad] = result->clip;
-                    track.drumSlices[pad] = {};
-                    track.drumPaths[pad] = file.getFullPathName();
-                    track.settings.instrument = 1;
-                    pushDocumentToEngine(); commit("Load drum sample");
+                for (int t = 0; t < doc.trackCount(); ++t) if (doc.tracks[t].id == trackId) {
+                    drum_pad::Edit e; e.kind = drum_pad::Kind::load; e.track = t; e.pad = pad; e.path = file.getFullPathName(); e.clip = result->clip;
+                    if (!result->clip || commitDrumPad(e, "Load drum sample").isNotEmpty()) { importStatus("Could not load drum sample (format or memory limit)", {}); return; }
                     if (onDocumentRestored) onDocumentRestored();
                     return;
                 }

@@ -876,6 +876,25 @@ when there is none). The Song clip menu's "Make this placement unique" runs it u
 that already plays content of its own, a frozen track, recording, and a full Channel Rack or Session are refused. Both
 commands share their reducers (`SongPlacementEdit.h`) between Preview and the controller.
 
+## Drum pad commands
+
+A track's eight drum pads are edited by four commands, which share one reducer (`DrumPadEdit.h`) between Preview and
+the controller. Pads are numbered 0 to 7. A slice is in frames of the pad's source file, end exclusive.
+
+- `ClearDrumPad {track, pad}` empties a pad ("Clear drum pad").
+- `SetDrumPadSlice {track, pad, start, end}` makes the pad play a range of its sample; `{0, 0}`, or the sample's whole
+  length, is the whole sample ("Edit drum slice"; the Drums page names a return to the whole sample "Restore whole
+  drum sample").
+- `LoadDrumSample {track, pad, path, clip}` puts decoded audio on a pad and switches the track to its drum kit ("Load
+  drum sample"). It takes decoded audio, so it has no script form.
+- `SliceDrumPad {track, pad, bounds}` cuts the pad's sample at 3 to 9 ascending frame bounds and gives the 2 to 8
+  slices to the pads from 0 on; the other pads are cleared ("Slice sample to pads"). The Drums page's "Slice sample to
+  8 pads" and "Auto slice" both end here, with eight equal bounds and the detected attacks.
+
+A frozen track, an empty pad, a sample that plays from disk and bounds outside the sample are refused, and slicing is
+refused during a take. The Drums page still decodes files and finds attacks off the message thread in
+`ProjectController`; `command::routeDrumPadEdits` sends the edit each one ends in through the command engine.
+
 ## Project key and recording settings commands
 
 `SetProjectScale {root, type}` defines the project's key: `root` is a pitch class (0 = C to 11 = B) and `type` is a
