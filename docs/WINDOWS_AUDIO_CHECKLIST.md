@@ -692,3 +692,17 @@ Native UI and listening checks remain pending.
   beyond the loop. Refusal must leave all notes and redo unchanged, with settings
   open for correction. Cancel and tool switching must hide generator controls.
 - Check controls and messages at minimum window width and 100/150/200% DPI.
+
+## Mastering chain preset (T2-03, #298)
+
+Native listening and display checks remain pending.
+
+- More... > Plugins, destination Master FX: press **Add mastering chain** on an empty master.
+  Alien EQ, Alien Compressor and Alien Limiter appear as FX 1 to 3 and their editors show the
+  settings in the README. Compare against bypassing all three on a finished mix: the change
+  should be subtle, with no pumping, and the master meter should not pass -1 dBFS.
+- One Undo removes all three and Redo restores them; playback continues after the rack rebuild.
+- With effects already on Master FX they keep their order and sound; with six or more the
+  button reports the missing slots. While recording or counting in it refuses.
+- Save, reopen, Save portable and Song WAV export keep the chain and its settings.
+- The button shows only for Master FX and fits at minimum window width and 100/150/200% DPI.

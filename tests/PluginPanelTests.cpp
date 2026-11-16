@@ -140,6 +140,24 @@ int main() {
         check(impulse && !impulse->isVisible() && sidechain && sidechain->isVisible(),
               "other effects show the ordinary sidechain control");
     }
+    {
+        // T2-03: the mastering chain is offered on Master FX only, and its button asks the host for it.
+        PluginPanel masterPanel; masterPanel.setSize(900, 500);
+        juce::KnownPluginList known; int asked = 0;
+        masterPanel.onMasteringChain = [&] { ++asked; };
+        masterPanel.refresh({"Track 1", "Track 2"}, {}, known);
+        auto* chain = button(masterPanel, "Add mastering chain");
+        auto* destination = combos(masterPanel)[0];
+        check(chain != nullptr && !chain->isVisible() && &masterPanel.masteringChainButton() == chain, "a track's rack does not offer the mastering chain");
+        destination->setSelectedId(maxSessionTracks + 1, juce::dontSendNotification); destination->onChange();
+        check(masterPanel.stage() == RackStage::master && chain != nullptr && chain->isVisible() && chain->getWidth() > 0 && chain->getTooltip().contains("does not analyse"), "Master FX offers the mastering chain");
+        if (chain != nullptr) chain->onClick();
+        check(asked == 1, "the button asks for the chain once");
+        masterPanel.refresh({"Track 1", "Track 2"}, {}, known);
+        check(chain != nullptr && chain->isVisible(), "a refresh keeps it on Master FX");
+        destination->setSelectedId(maxSessionTracks + 2, juce::dontSendNotification); destination->onChange();
+        check(chain != nullptr && !chain->isVisible(), "a return's rack does not offer it");
+    }
     PluginPanel panel; panel.setSize(900, 400);
     auto boxes = combos(panel);
     check(boxes.size() == 3, "the panel has a destination, a slot and a live MIDI chooser beside its plugin browser");

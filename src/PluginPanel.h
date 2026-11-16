@@ -25,6 +25,10 @@ public:
         addAndMakeVisible(presets); presets.setButtonText("Presets..."); presets.setName("Plugin presets");
         presets.setTooltip("Browse and load the selected VST3 plugin's presets: its programs and .vstpreset files.");
         presets.onClick=[this]{if(onPresets && slot.getSelectedId()>0)onPresets(slot.getSelectedId()-2);};
+        // T2-03: offered only while Master FX is the destination.
+        addChildComponent(mastering); mastering.setButtonText("Add mastering chain"); mastering.setName("Add mastering chain");
+        mastering.setTooltip("Add a gentle starting point after the effects already on Master FX: Alien EQ, Alien Compressor and Alien Limiter with conservative settings. It does not analyse the mix; adjust each effect afterwards. One Undo removes all three.");
+        mastering.onClick=[this]{if(onMasteringChain)onMasteringChain();};
         scan.setButtonText("Scan VST3..."); cancelScan.setButtonText("Cancel scan"); addInstrument.setButtonText("Use instrument"); addEffect.setButtonText("Add FX");
         open.setButtonText("Open editor"); bypass.setButtonText("Bypass / enable"); up.setButtonText("Move FX up"); down.setButtonText("Move FX down"); remove.setButtonText("Remove");
         target.setName("Plugin destination track, return or master"); slot.setName("Instrument or FX slot");
@@ -83,6 +87,8 @@ public:
         liveInput.setSelectedId(rackChosen?liveRackBase+selectedRack:selected>=0 && selected<names.size()?selected+2:1,juce::dontSendNotification);
     }
     std::function<void(bool,int)> onAdd;
+    std::function<void()> onMasteringChain;   // T2-03: add the gentle mastering chain to Master FX
+    juce::Component& masteringChainButton() noexcept { return mastering; }
     // Whether a scanned plugin is blocked after crashing while hosted (T1-09); the browser marks it and it cannot be added.
     std::function<bool(const juce::PluginDescription&)> isBlocked;
     PluginBrowser& pluginBrowser() noexcept { return browser; }
@@ -259,6 +265,7 @@ public:
         if(!beside){r.removeFromTop(12);browser.setBounds(r.removeFromTop(juce::jmax(120,r.getHeight()-belowStackedBrowser)));}
         r.removeFromTop(12);row=r.removeFromTop(32);
         addInstrument.setBounds(row.removeFromLeft(150));row.removeFromLeft(10);addEffect.setBounds(row.removeFromLeft(120));
+        row.removeFromLeft(10);mastering.setBounds(row.removeFromLeft(170));
         r.removeFromTop(20);row=r.removeFromTop(30);presets.setBounds(row.removeFromRight(118));row.removeFromRight(8);slot.setBounds(row);
         r.removeFromTop(12);row=r.removeFromTop(32);
         for(auto* b:{&open,&bypass,&sidechain,&up,&down,&remove}){b->setBounds(row.removeFromLeft(118));row.removeFromLeft(8);}
@@ -300,6 +307,7 @@ private:
         const bool usable=chosen!=nullptr && !chosen->blocked;
         addInstrument.setEnabled(usable && chosen->instrument && destination()<maxSessionTracks);
         addEffect.setEnabled(usable && !chosen->instrument);
+        mastering.setVisible(destination()==maxSessionTracks);
     }
     static constexpr int controlsWidth=780;
     // Under a stacked browser: the add row (12+32), slot (20+30), slot buttons (12+32), and a gap (16)
@@ -307,7 +315,7 @@ private:
     static constexpr int belowStackedBrowser=12+32+20+30+12+32+16+72;
     juce::ComboBox target,slot,liveInput;
     PluginBrowser browser;
-    juce::TextButton scan,cancelScan,addInstrument,addEffect,open,bypass,sidechain,impulse,up,down,remove,presets;
+    juce::TextButton scan,cancelScan,addInstrument,addEffect,open,bypass,sidechain,impulse,up,down,remove,presets,mastering;
     std::vector<std::uint64_t> convolutionSlots;
     juce::String keyName(KeySource from,int i) const {
         const auto slotName=[&](const auto& names,const juce::String& fallback){
