@@ -46,6 +46,52 @@ static void sectionProgressionChecks() {
     require(rig.t().regions.empty(), "stale progression menu refuses changed chord context");
 }
 
+// The section menu's "Move section and clips to playhead".
+static void sectionMoveChecks() {
+    Rig rig; auto& c = rig.c;
+    const juce::String label = "Move section and clips to playhead (chords, tempo and automation stay)";
+    const auto at = [&](std::int64_t tick) { return juce::Point<int>{juce::roundToInt(c.xForTick(tick)), TimelineCanvas::sectionTop + 8}; };
+    const auto item = [&] {
+        for (const auto& i : rig.menu.items()) if (i.text == label) return i;
+        require(false, "section menu offers the move");
+        return rig.menu.items().front();
+    };
+    require(rig.controller.editTimeline("Set up section", [](tl::Timeline& t) {
+        return t.addSection(bar, 3 * bar, "Verse") && t.placeBars(0, 0, 1, 1) && t.placeBars(1, 0, 2, 1) && t.placeBars(0, 0, 5, 1);
+    }), "prepare a section with two clips and one outside it");
+    rig.view.refresh();
+    const auto section = rig.t().sections[0];
+    const auto before = rig.t();
+    const auto startOf = [&](int row, std::int64_t tick) {
+        return std::any_of(rig.t().regions.begin(), rig.t().regions.end(), [&](const tl::Region& r) { return r.row == row && r.start == tick; });
+    };
+    c.setCursor(bar, false);
+    rig.rightClick(at(2 * bar));
+    require(!item().enabled, "the move is off when the play position is the section's start");
+    c.setCursor(8 * bar, false);
+    rig.rightClick(at(2 * bar));
+    require(item().enabled, "the move is on when the play position is elsewhere");
+    { auto done = rig.menu.done; done(item().id); }
+    require(rig.t().sections[0].id == section.id && rig.t().sections[0].start == 8 * bar && rig.t().sections[0].end == 10 * bar
+        && startOf(0, 8 * bar) && startOf(1, 9 * bar) && startOf(0, 5 * bar) && rig.t().regions.size() == 3
+        && rig.controller.undoLabel() == "Move section and clips", "the menu moves the section and its clips to the play position");
+    rig.controller.undo(); rig.view.refresh();
+    require(rig.t() == before, "one Undo puts the section and its clips back");
+    // A blocked move says why and changes nothing.
+    const auto messages = rig.messages.size();
+    c.setCursor(5 * bar, false);
+    rig.rightClick(at(2 * bar));
+    { auto done = rig.menu.done; done(item().id); }
+    require(rig.t() == before && rig.messages.size() > messages, "a move onto another clip is refused and said");
+    // A menu left open while its section changes does nothing.
+    c.setCursor(8 * bar, false);
+    rig.rightClick(at(2 * bar));
+    const auto pending = rig.menu.done; const int id = item().id;
+    require(rig.controller.editTimeline("External section edit", [=](tl::Timeline& t) { auto changed = section; changed.name = "Changed"; return t.setSection(changed); }), "change the section while the menu is open");
+    pending(id);
+    require(rig.t().sections[0].start == bar && startOf(0, bar) && startOf(1, 2 * bar), "a stale section menu moves nothing");
+}
+
 static void sectionViewChecks() {
     Rig rig; auto& c = rig.c;
     const auto at = [&](std::int64_t tick) { return juce::Point<int>{juce::roundToInt(c.xForTick(tick)), TimelineCanvas::sectionTop + 8}; };

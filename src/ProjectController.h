@@ -1243,6 +1243,7 @@ public:
     juce::String songClipRefusal(const song_clip::Edit& e) const {
         if(!isRecording() && engine.recording.phase.load()==RecordControls::idle)return {};
         if(song_clip::takeEdit(e.kind))return e.kind==song_clip::Kind::comp?"Stop recording before comping a take.":"Stop recording before forgetting a take.";
+        if(e.kind==song_clip::Kind::moveSection)return "Stop recording before moving a section and its clips.";
         timeline::id_stream::Scope asking;   // a split or copy's new ids are the live edit's to take
         const auto o=song_clip::outcome(doc,e);
         if(!o.next)return {};

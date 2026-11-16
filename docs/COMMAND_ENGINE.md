@@ -651,6 +651,18 @@ and a 65th section or 257th chord. Sections and chords do not change what plays,
 The section and chord strips' Add, Edit (rename, recolour, resize, root and quality) and Delete menu items run these
 commands with their old Undo names. Their Loop items run `SetSongLoop` named "Loop Song section" and "Loop Song chord".
 
+`MoveSongSection {section, start}` (index 156, Undo name "Move section and clips") moves a section so it starts at
+`start`, together with every Song clip that lies wholly inside it (MIDI, audio and rack patterns), by the same number of
+ticks. Lanes, lengths, sources, groups and the space between the clips are kept. Tempo and time signature changes,
+chords, markers, automation, recorded takes and the loop stay where they are. It is an edit of the Song clip reducer
+(`SongClipCommands.h`), so Preview and the live edit agree. An unchanged start changes nothing and keeps Redo.
+
+Refused: a section that is not in the song, a destination outside the song or on another section, a clip that crosses
+either edge of the section, a clip inside it that is grouped with one outside it, a clip outside the section in the way
+where one of its clips would land (the section's own clips are not in the way, so a short move may overlap where it
+was), a frozen track's clips, a busy project and recording. The Song section menu's "Move section and clips to
+playhead" runs it with the play position as it was when the menu opened.
+
 ## Song length command
 
 `SetSongLength {bars}` sets how many bars the song lasts. It shares the marker and loop reducer. A length outside 1 to

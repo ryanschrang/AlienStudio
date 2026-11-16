@@ -154,6 +154,12 @@ public:
         if (scope != controller.document().identityScope || !current || *current != expected) return false;
         return songCommand(command::RemoveSongSection{expected.id}).changed;
     }
+    // The section and the clips wholly inside it, moved so the section starts at `tick`. A refusal is said.
+    bool moveSectionTo(const timeline::Section& expected, std::int64_t tick, std::uint32_t scope) {
+        const auto* current = committed().findSection(expected.id);
+        if (scope != controller.document().identityScope || !current || *current != expected) return false;
+        return clipCommand(command::MoveSongSection{expected.id, tick}).changed;
+    }
     bool loopSection(const timeline::Section& expected, std::uint32_t scope) {
         const auto* current = committed().findSection(expected.id);
         if (scope != controller.document().identityScope || !current || *current != expected) return false;
@@ -1871,7 +1877,8 @@ private:
                 }
             });
         } else if (hit.zone == Zone::sectionStrip) {
-            enum { add = 7001, jump, loop, rename, resize, remove, trackBase = 7100 };
+            enum { add = 7001, jump, loop, rename, resize, remove, moveHere, trackBase = 7100 };
+            const auto target = cursor;   // where the play position was when the menu opened
             const auto scope = controller.document().identityScope;
             const auto* found = committed().findSection(hit.section);
             const auto expected = found ? *found : timeline::Section{};
@@ -1883,6 +1890,8 @@ private:
             if (found) {
                 menu.addItem(jump, "Go to section start"); menu.addItem(loop, "Loop this section");
                 menu.addItem(rename, "Rename section..."); menu.addItem(resize, "Use current loop as section range");
+                // Only the section and its clips move: chords, tempo, time signature, markers, automation and the loop stay.
+                menu.addItem(moveHere, "Move section and clips to playhead (chords, tempo and automation stay)", target != found->start);
                 for (int c = 0; c < 8; ++c) colours.addColouredItem(cmdColourBase + c, "Colour " + juce::String(c + 1), ui::trackColour(c));
                 menu.addSubMenu("Colour", colours); menu.addItem(remove, "Delete section");
                 for (int row = 0; row < controller.document().trackCount(); ++row) {
@@ -1892,7 +1901,7 @@ private:
                 }
                 menu.addSubMenu("Create progression MIDI on", destinations, !chords.empty());
             }
-            launch(std::move(menu), area, [this, scope, expected, start, end, chords, tracks = std::move(tracks)](int id) {
+            launch(std::move(menu), area, [this, scope, expected, start, end, target, chords, tracks = std::move(tracks)](int id) {
                 if (scope != controller.document().identityScope) return;
                 if (id == add) {
                     if (committed().loopStart == start && committed().loopEnd == end) addSectionFromLoop();
@@ -1904,6 +1913,7 @@ private:
                 if (id == jump) setCursor(expected.start);
                 else if (id == loop) loopSection(expected, scope);
                 else if (id == remove) removeSection(expected, scope);
+                else if (id == moveHere) moveSectionTo(expected, target, scope);
                 else if (id >= trackBase && id - trackBase < static_cast<int>(tracks.size())) {
                     std::uint32_t regionId = 0;
                     const auto error = controller.placeSectionMidi(expected, chords, tracks[id - trackBase], scope, regionId);

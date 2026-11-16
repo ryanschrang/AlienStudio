@@ -24,8 +24,19 @@ notes exceed the clip limit.
 
 Sections keep musical ticks across tempo and meter changes. They prevent the
 song from being shortened past their ends. Metadata changes do not retime clips
-or affect playback; setting the playback loop remains a separate action. This
-increment does not move/copy the clips inside a section or reorder arrangements.
+or affect playback; setting the playback loop remains a separate action.
+
+**Move section and clips to playhead** (issue #309, command `MoveSongSection`, no
+format change) makes the play position the section's new start and shifts the
+section and every clip wholly inside it by the same distance, in one Undo step.
+Lanes, clip lengths, sources, groups and the gaps between clips are kept. Chords,
+tempo and time signature changes, markers, automation, recorded takes and the
+loop stay at their Song positions; the menu item says so. It is refused, with
+the reason shown, when a clip crosses a section edge, a clip inside is grouped
+with one outside, the destination is outside the song, on another section or on
+clips outside the section, a track holding one of the clips is frozen, or the
+project is busy or recording. Copying a section and reordering arrangements
+remain.
 The separate chord-track foundation is documented in SONG_CHORD_TRACK.md.
 CHORD-01 remains partial pending consumer adoption and clip rearrangement.
 
@@ -54,3 +65,9 @@ alongside the existing marker/loop/layout suites.
   with the same loop before adding annotation-only sections.
 - Leave a section menu or rename dialog open, change its section/project, then
   complete it: the old action must leave the new target untouched.
+- Fill a section with MIDI, audio and rack-pattern clips, put the play position
+  elsewhere and choose Move section and clips to playhead. Check each clip's
+  lane, spacing and sound at the new place, Undo/Redo and save/reopen. Try a
+  move of less than the section's length, a clip across a section edge, a
+  destination with clips in the way and a frozen track; each refusal should say
+  why and leave the Song as it was.

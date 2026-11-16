@@ -2451,6 +2451,7 @@ int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     chordViewChecks();
     sectionViewChecks();
+    sectionMoveChecks();
     sectionProgressionChecks();
     sampleDropChecks();
     explorerDropChecks();
