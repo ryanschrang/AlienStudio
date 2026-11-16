@@ -501,6 +501,7 @@ static void continuousCommandTests() {
 #include "StripBusCommandTests.h"
 #include "RoutingCommandTests.h"
 #include "DeviceCommandTests.h"
+#include "MasteringChainTests.h"
 #include "MasterVolumeCommandTests.h"
 #include "TempoCommandTests.h"
 #include "RackChannelCommandTests.h"
@@ -565,6 +566,7 @@ int main() {
     trackOutputCommandChecks();
     sidechainCommandChecks();
     deviceCommandChecks();
+    masteringChainChecks();
     importClipAudioNameChecks();
     importClipAudioCommandChecks();
     importClipAudioStorageChecks();

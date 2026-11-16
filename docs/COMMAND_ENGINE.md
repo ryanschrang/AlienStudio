@@ -477,6 +477,13 @@ input; one without an input stays unkeyed when the racks rebuild. A script runni
 
 ## Device commands
 
+T2-03's **Add mastering chain** (Plugins page, Master FX) adds no command. `MasteringChain.h`
+builds three `InsertDevice` commands for the master rack (Alien EQ, Alien Compressor, Alien
+Limiter, each carrying its settings as saved state, appended after the effects already there)
+and runs them as one batch named "Add mastering chain", so one Undo removes all three. It
+refuses when fewer than three Master FX slots are free, during recording or count-in and while
+the project is busy, before live plugin state is captured. MasteringChainTests.h covers it.
+
 `InsertDevice {stage, rack, slot, description}`, `RemoveDevice {stage, rack, slot}`,
 `MoveDevice {stage, rack, slot, to}` and `SetDeviceBypass {stage, rack, slot, bypassed}`
 edit the devices in a track, bus, return or master rack through a pure reducer in

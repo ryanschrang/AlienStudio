@@ -792,6 +792,13 @@ so a crash in the middle of a take loses that take.
 
 ### Stock effects: EQ, compressor, saturator, reverb, delay, limiter, filter
 
+With **Master FX** as the destination, **Add mastering chain** appends a gentle starting point
+after the effects already there: Alien EQ (-1 dB at 300 Hz, +1 dB shelf from 10 kHz), Alien
+Compressor (1.5:1 from -12 dB, 30 ms attack, 200 ms release, no make-up gain) and Alien Limiter
+(-1 dBFS ceiling, no input gain). It is a fixed preset: it does not listen to or analyse your
+mix, so open each editor and adjust it. One Undo removes all three; it needs three free Master
+FX slots and is refused while recording.
+
 Open **More... > Plugins**, pick a destination (a track or **Master FX**), choose one of the
 **[stock FX]** entries at the top of the list and press **Add FX**. They need no scanning and
 work in the same eight FX slots per track and on Master as VST3 effects, so everything

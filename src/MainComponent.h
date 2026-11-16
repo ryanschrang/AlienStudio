@@ -29,6 +29,7 @@
 #include "PluginHost.h"
 #include "ConvolutionImport.h"
 #include "PluginPanel.h"
+#include "MasteringChain.h"
 #include "PluginPresetBrowser.h"
 #include "PluginPreflight.h"
 #include "PluginBlocklist.h"
@@ -155,6 +156,7 @@ public:
         pluginPanel.onTarget = [this](int) { refreshPlugins(); };
         pluginPanel.onAdd = [this](bool instrument, int choice) { addPlugin(instrument,choice); };
         pluginPanel.onAction = [this](int op,int slot) { pluginAction(op,slot); };
+        pluginPanel.onMasteringChain = [this] { addMasteringChain(); };
         pluginPanel.onPresets = [this](int slot) { showPluginPresets(slot); };
         pluginPanel.onImpulseResponse = [this](int slot, std::uint64_t instance, bool chamber) {
             chooseConvolutionResponse(slot, instance, chamber);
@@ -1767,6 +1769,12 @@ private:
         juce::CallOutBox::launchAsynchronously(std::move(browser),button.getScreenBounds(),nullptr);
     }
 
+    // T2-03: EQ, compressor and limiter after what Master FX already holds, as one Undo step.
+    void addMasteringChain() {
+        if(projectBusy || controller.isBusy()){pluginPanel.setStatus("Wait for the save, import or export to finish.");return;}
+        const auto result=alien::mastering::add(controller,[this]{snapshotPlugins(SnapshotReason::always);},[this]{restorePlugins();});
+        pluginPanel.setStatus(result.ok?"Added Alien EQ, Alien Compressor and Alien Limiter to Master FX with gentle settings. It is a starting point, not an analysis of your mix: open each editor to adjust it. One Undo removes the chain.":result.error);
+    }
     void pluginAction(int op,int slot) {
         if(controller.isTrackFrozen(pluginTarget())){pluginPanel.setStatus("Unfreeze the track before editing its instrument or effects.");return;}
         if(projectBusy || controller.isBusy())return;
