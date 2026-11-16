@@ -137,6 +137,59 @@ static void batchTests() {
     require(!commands.batch({}, "Nothing").ok, "an empty batch is refused");
 }
 
+static void crossFamilyBatchTests() {
+    auto engine = std::make_unique<ToneEngine>();
+    alien::ProjectController controller(*engine);
+    cmd::CommandEngine commands(controller);
+    controller.pushDocumentToEngine();
+    const auto& document = controller.document();
+    const auto baseline = document;
+    const auto initialHistory = historyOf(controller);
+    constexpr auto start = alien::timeline::ticksPerBar;
+    const std::vector<cmd::Command> setup{
+        cmd::CreateClip{0, 0},
+        cmd::SetClipNotes{0, 0, std::make_shared<alien::PianoRollPattern>(patternWith(60))},
+        cmd::CreateBus{},
+        cmd::SetTrackOutput{0, 0},
+        cmd::PlaceSongClip{0, 0, start},
+    };
+
+    const auto preview = commands.preview(setup);
+    require(preview.ok && preview.changed, "Preview accepts dependent edits across command families");
+    require(alien::sameContent(document, baseline) && historyOf(controller) == initialHistory
+            && engine->tracks[0].output.load() == -1, "cross-family Preview leaves live state untouched");
+
+    const auto applied = commands.batch(setup, "Set up Song track");
+    require(applied.ok && applied.changed && alien::sameContent(document, preview.after),
+            "cross-family Batch matches Preview");
+    const auto& notes = document.clip(0, 0).notes();
+    const auto& regions = document.timeline.regions;
+    require(notes.count == 1 && notes.notes[0].pitch == 60 && regions.size() == 1
+            && regions.front().row == 0 && regions.front().source == 0 && regions.front().start == start
+            && engine->tracks[0].output.load() == 0 && controller.undoLabel() == "Set up Song track",
+            "Batch creates a MIDI clip, places it in Song and routes its track to the new bus");
+    require(commands.undo() && alien::sameContent(document, baseline)
+            && engine->tracks[0].output.load() == -1 && !controller.canUndo() && controller.canRedo(),
+            "one Undo restores every family and the live routing");
+
+    const auto redoHistory = historyOf(controller);
+    auto broken = setup;
+    broken.emplace_back(cmd::SetTrackOutput{0, alien::maxBuses});
+    const auto refusedIndex = static_cast<int>(setup.size());
+    const auto refusedPreview = commands.preview(broken);
+    require(!refusedPreview.ok && !refusedPreview.changed && refusedPreview.failedCommand == refusedIndex
+            && refusedPreview.changes.isEmpty() && alien::sameContent(refusedPreview.after, baseline),
+            "a late refusal discards the entire predicted batch");
+    const auto refusedBatch = commands.batch(broken, "Invalid Song track");
+    require(!refusedBatch.ok && !refusedBatch.changed && refusedBatch.failedCommand == refusedIndex,
+            "Batch identifies the same late refusal as Preview");
+    require(alien::sameContent(document, baseline) && historyOf(controller) == redoHistory
+            && engine->tracks[0].output.load() == -1, "refused Batch preserves the project, routing and redo");
+    require(commands.redo() && alien::sameContent(document, preview.after)
+            && engine->tracks[0].output.load() == 0 && !controller.canRedo(),
+            "one Redo restores the original cross-family Batch");
+}
+
 static void previewTests() {
     ToneEngine engine;
     alien::ProjectController c(engine);
@@ -527,6 +580,7 @@ int main() {
     nameTests();
     singleCommandTests();
     batchTests();
+    crossFamilyBatchTests();
     previewTests();
     invalidArgumentTests();
     parseTests();
