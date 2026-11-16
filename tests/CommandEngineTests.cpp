@@ -524,6 +524,7 @@ static void continuousCommandTests() {
 #include "SongPlacementCommandTests.h"
 #include "ProjectSettingsCommandTests.h"
 #include "DrumPadCommandTests.h"
+#include "SongSectionMoveCommandTests.h"
 #include "AutomationCommandTests.h"
 #include "SongLengthCommandTests.h"
 #include "SongTakeCommandTests.h"
@@ -556,6 +557,7 @@ int main() {
     songPlacementCommandChecks();
     projectSettingsCommandChecks();
     drumPadCommandChecks();
+    songSectionMoveCommandChecks();
     automationCommandChecks();
     removeClipAudioChecks();
     sendCommandChecks();

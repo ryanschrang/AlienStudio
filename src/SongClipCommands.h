@@ -8,13 +8,13 @@
 
 // Pure document edits for the clips placed in the Song: placing a Session cell or rack pattern, moving, trimming, slipping, deleting, muting,
 // gain, fades, crossfades, groups, audio source looping and reversing, warp markers, and splitting, duplicating and
-// copying and pasting them, and comping or forgetting recorded takes. The controller and command Preview share them, so
+// copying and pasting them, comping or forgetting recorded takes, and moving a section with the clips inside it. The controller and command Preview share them, so
 // what Preview predicts is what the live edit does. New clips take the next Song ids; a Preview hands out the
 // same ones (timeline::id_stream).
 namespace alien::song_clip {
 enum class Kind { move, trimStart, trimEnd, slip, remove, mute, gain, fades, fadeIn, fadeOut, fadeShape, clearFades,
                   crossfade, group, ungroup, loopSource, reverse, split, duplicate, copy, comp, forget,
-                  setWarp, addWarp, moveWarp, removeWarp, place, paste };
+                  setWarp, addWarp, moveWarp, removeWarp, place, paste, moveSection };
 // What a Song Paste carries: the copied clips, with rows and sources already this project's and starts relative to
 // the earliest, and the placement clips' notes and names as they were copied, so a paste can bring back one that was
 // cut (or edited since) as part of its own edit.
@@ -40,6 +40,7 @@ struct Edit {
     int row{}, source{};            // place: a track and scene, or a rack lane row and pattern; `ticks` is the start
     std::int64_t length{};          // place: in ticks; 0 is the clip's natural length
     std::shared_ptr<const Pasted> pasted;   // paste: what is pasted; `ticks` is where and `lanes` moves rack patterns
+    std::uint32_t section{};        // moveSection: the section's id; `ticks` is its new start (`clips` is empty)
 };
 
 inline bool audioOnly(Kind k) noexcept {
@@ -194,6 +195,39 @@ inline Outcome outcome(const ProjectDocument& d, const Edit& e) {
         if (o.next) { o.library = std::move(made); o.made = std::move(pasted); }
         return o;
     }
+    if (e.kind == Kind::moveSection) {
+        // A section moves with the clips that lie wholly inside it, by the same number of ticks. Tempo, time signature,
+        // chords, markers, automation, takes and the loop stay where they are. Nothing outside the section is touched:
+        // a clip that crosses its edge, a group that reaches outside it, or a clip in the way where it lands refuses it.
+        const auto* s = song.findSection(e.section);
+        if (s == nullptr) return refuse("There is no section " + juce::String(static_cast<juce::int64>(e.section)) + " in the song.");
+        const auto delta = e.ticks - s->start, length = s->end - s->start;
+        if (delta == 0) return {};
+        if (e.ticks < 0 || e.ticks > song.length() - length) return refuse("The section does not fit in the song there.");
+        for (const auto& o : song.sections)
+            if (o.id != s->id && e.ticks < o.end && e.ticks + length > o.start) return refuse("Another section is in the way there.");
+        Ids ids;
+        for (const auto& r : song.regions) {
+            if (r.end() <= s->start || r.start >= s->end) continue;
+            if (r.start < s->start || r.end() > s->end) return refuse("A clip crosses the section's edge. Trim or split it first.");
+            ids.push_back(r.id);
+        }
+        if (song.expandGroups(ids).size() != ids.size()) return refuse("A clip in the section is grouped with a clip outside it. Ungroup them first.");
+        for (const auto& o : song.regions) {
+            if (contains(ids, o.id)) continue;
+            for (const auto id : ids) {
+                const auto& r = *song.find(id);
+                if (r.row == o.row && r.start + delta < o.end() && r.end() + delta > o.start) return refuse("Clips outside the section are in the way there.");
+            }
+        }
+        Timeline next = song;
+        next.tempo = d.bpm;
+        if (!ids.empty() && !next.move(ids, delta)) return refuse("The section's clips do not fit there.");
+        auto moved = *s;
+        moved.start = e.ticks; moved.end = e.ticks + length;
+        if (!next.setSection(moved)) return refuse("The section does not fit in the song there.");
+        return settle(std::move(next), true);
+    }
     if (e.clips.empty()) return refuse("Choose at least one Song clip.");
     if (oneClip(e.kind) && e.clips.size() != 1) return refuse("Choose one Song clip.");
     if (e.kind == Kind::crossfade && e.clips.size() != 2) return refuse("A crossfade needs a left and a right clip.");
@@ -286,7 +320,7 @@ inline Outcome outcome(const ProjectDocument& d, const Edit& e) {
     case Kind::addWarp: done = next.addWarpMarker(ids[0], e.ticks); break;
     case Kind::moveWarp: done = next.moveWarpMarker(ids[0], static_cast<std::size_t>(e.index), e.ticks); break;
     case Kind::removeWarp: done = next.removeWarpMarker(ids[0], static_cast<std::size_t>(e.index)); break;
-    case Kind::place: case Kind::paste: break;   // handled above
+    case Kind::place: case Kind::paste: case Kind::moveSection: break;   // handled above
     }
     return settle(std::move(next), done);
 }
