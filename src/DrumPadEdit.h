@@ -4,14 +4,16 @@
 #include <limits>
 #include <vector>
 
-// Edits to a track's eight drum pads (the ClearDrumPad, SetDrumPadSlice, LoadDrumSample and SliceDrumPad commands).
+// Edits to a track's eight drum pads (the ClearDrumPad, SetDrumPadSlice, LoadDrumSample, SliceDrumPad and
+// SliceClipToDrumPads commands).
 // Pure: the controller and Preview both run them, and a refusal leaves the document as it was. A slice is a view of
 // the pad's decoded source, which holds no audio of its own.
 namespace alien::drum_pad {
-enum class Kind { clear, range, load, slice };
+enum class Kind { clear, range, load, slice, clip };
 struct Edit {
     Kind kind{Kind::clear};
     int track{-1}, pad{-1};
+    int scene{-1};                            // clip: the Session cell whose audio becomes the kit
     DrumSlice range;                          // range: source frames, {0, 0} = the whole sample
     juce::String path;                        // load
     std::shared_ptr<SessionAudioClip> clip;   // load
@@ -19,6 +21,28 @@ struct Edit {
 };
 
 inline juce::String apply(ProjectDocument& d, const Edit& e) {
+    if (e.kind == Kind::clip) {
+        // A Session clip's audio in eight equal parts, one to a pad: the track's whole kit is replaced, the clip is kept.
+        if (!d.isValidCell(e.track, e.scene)) return "Choose a Session clip to slice.";
+        auto& kit = d.tracks[static_cast<std::size_t>(e.track)];
+        if (kit.settings.frozen()) return "Unfreeze the track before changing its samples.";
+        const auto clip = d.clip(e.track, e.scene);
+        const auto selected = clip.audio;
+        if (selected == nullptr || selected->streamed() || selected->frames < static_cast<std::size_t>(drumPadCount) || clip.audioFilePath.isEmpty())
+            return "Slicing needs a Session clip with decoded audio of at least eight frames.";
+        const auto source = selected->sliceSource ? selected->sliceSource : selected;
+        const auto offset = selected->sliceSource ? selected->sliceOffset : std::size_t{};
+        std::array<std::shared_ptr<const SessionAudioClip>, drumPadCount> views{};
+        std::array<DrumSlice, drumPadCount> ranges{};
+        for (std::size_t p = 0; p < views.size(); ++p) {
+            ranges[p] = {static_cast<int>(offset + selected->frames * p / drumPadCount), static_cast<int>(offset + selected->frames * (p + 1) / drumPadCount)};
+            views[p] = drumSliceView(source, ranges[p]);
+            if (views[p] == nullptr) return "Those slices could not be made.";
+        }
+        kit.drumAssets = std::move(views); kit.drumSlices = ranges; kit.drumPaths.fill(clip.audioFilePath);
+        kit.settings.instrument = 1;
+        return {};
+    }
     if (e.track < 0 || e.track >= d.trackCount() || e.pad < 0 || e.pad >= drumPadCount) return "Choose one of a track's eight drum pads.";
     auto& kit = d.tracks[static_cast<std::size_t>(e.track)];
     if (kit.settings.frozen()) return "Unfreeze the track before changing its samples.";

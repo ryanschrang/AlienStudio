@@ -330,8 +330,10 @@ public:
             }
             if (choice == sliceToPads) {
                 const auto clip = c.document().clip(track, scene);
-                if (clip.audio != audio || clip.audioFilePath != path || !c.sliceSessionAudio(track, scene))
-                    safe->setImportStatus("The audio or track changed while the menu was open. Open the menu again.", {});
+                if (clip.audio != audio || clip.audioFilePath != path) { safe->setImportStatus("The audio or track changed while the menu was open. Open the menu again.", {}); return; }
+                const auto result = command::CommandEngine(c).execute(command::SliceClipToDrumPads{track, scene});
+                if (!result.ok) safe->setImportStatus(result.error, {});
+                else if (result.changed) c.sessionAudioSliced();
                 return;
             }
             if (moving) {

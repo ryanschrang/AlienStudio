@@ -2039,6 +2039,7 @@ public:
     // Live side of the drum pad commands. CommandEngine owns the history entry.
     bool applyDrumPadCommand(const drum_pad::Edit& e) {
         if (busy || ((e.kind == drum_pad::Kind::range || e.kind == drum_pad::Kind::slice) && !drumSliceOpen())) return false;
+        if (e.kind == drum_pad::Kind::clip && !canEditMidiClips()) return false;
         auto candidate = doc;
         if (drum_pad::apply(candidate, e).isNotEmpty()) return false;
         if (e.kind == drum_pad::Kind::load && !retain(e.clip)) return false;
@@ -2150,37 +2151,23 @@ public:
         const auto clip = doc.clip(track, scene);
         return canSliceDrumSource(clip.audio, clip.audioFilePath);
     }
+    // What the person sees once a Session clip has become a kit (SliceClipToDrumPads).
+    void sessionAudioSliced() {
+        if (onDocumentRestored) onDocumentRestored();
+        importStatus("Sample split into eight pads. Undo restores the previous kit.", {});
+    }
+    // The same edit as its own undo step, for callers that are not a view (the Session view runs the command).
     bool sliceSessionAudio(int track, int scene) {
         if (!canSliceSessionAudio(track, scene)) return false;
-        const auto clip = doc.clip(track, scene);
-        return sliceDrumSource(track, clip.audio, clip.audioFilePath);
+        drum_pad::Edit e; e.kind = drum_pad::Kind::clip; e.track = track; e.scene = scene;
+        if (commitDrumPad(e, "Slice sample to 8 pads").isNotEmpty()) return false;
+        sessionAudioSliced();
+        return true;
     }
 
 private:
     static bool canSliceDrumSource(const std::shared_ptr<const SessionAudioClip>& audio, const juce::String& path) {
         return audio && !audio->streamed() && audio->frames >= drumPadCount && path.isNotEmpty();
-    }
-    bool sliceDrumSource(int track, std::shared_ptr<const SessionAudioClip> selected, juce::String path) {
-        auto& owner = doc.tracks[track];
-        const auto source = selected->sliceSource ? selected->sliceSource : selected;
-        const auto offset = selected->sliceSource ? selected->sliceOffset : 0;
-        std::array<DrumSlice, drumPadCount> ranges{};
-        std::array<std::shared_ptr<const SessionAudioClip>, drumPadCount> views{};
-        for (int p = 0; p < drumPadCount; ++p) {
-            ranges[p] = {static_cast<int>(offset + selected->frames * p / drumPadCount),
-                         static_cast<int>(offset + selected->frames * (p + 1) / drumPadCount)};
-            views[p] = drumSliceView(source, ranges[p]);
-            if (!views[p]) return false;
-        }
-        // Views own no PCM. Keep them alive past any in-flight callback, as with
-        // loaded samples; the source was already counted and retained at load.
-        for (const auto& view : views) retained.push_back(view);
-        owner.drumSlices = ranges; owner.drumAssets = std::move(views); owner.drumPaths.fill(path);
-        owner.settings.instrument = 1;
-        pushDocumentToEngine(); commit("Slice sample to 8 pads");
-        if (onDocumentRestored) onDocumentRestored();
-        importStatus("Sample split into eight pads. Undo restores the previous kit.", {});
-        return true;
     }
 public:
     void clearDrum(int track, int pad) {

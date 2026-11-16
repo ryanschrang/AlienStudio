@@ -1,5 +1,5 @@
 #pragma once
-// ClearDrumPad, SetDrumPadSlice, LoadDrumSample and SliceDrumPad: a track's eight drum pads. The Drums page reaches
+// ClearDrumPad, SetDrumPadSlice, LoadDrumSample, SliceDrumPad and SliceClipToDrumPads: a track's eight drum pads. The Drums page reaches
 // them through ProjectController's drum methods, which routeDrumPadEdits sends through the command engine.
 static void drumPadCommandChecks() {
     auto engine = std::make_unique<ToneEngine>();
@@ -90,12 +90,39 @@ static void drumPadCommandChecks() {
     c.clearDrum(0, 7);
     require(c.undoLabel() == "Clear drum pad" && !kit().drumAssets[7] && c.undo() && c.undo() && c.undo() && alien::sameContent(threePads, c.document()), "and the routed edits are one Undo step each");
 
+    // A Session clip's audio cut to its track's eight pads: the kit is replaced and the clip stays.
+    auto loop = std::make_shared<alien::SessionAudioClip>();
+    loop->sampleRate = 8000; loop->channels = 1; loop->frames = 80;
+    loop->left.assign(80, 0.2f); loop->buildWaveform();
+    require(c.installAudio(juce::File("C:/kit/loop.wav"), 1, 0, loop), "fixture: a Session clip with audio");
+    const auto withLoop = c.document();
+    const auto loopBytes = c.availableAudioBytes();
+    const cmd::SliceClipToDrumPads toPads{1, 0};
+    const auto toPadsPreview = commands.preview(cmd::Command{toPads});
+    require(toPadsPreview.ok && toPadsPreview.changed && alien::sameContent(withLoop, c.document()), "SliceClipToDrumPads Preview changes no live state");
+    const auto kitMade = commands.execute(toPads);
+    require(kitMade.ok && kitMade.changed && c.undoLabel() == "Slice sample to 8 pads" && toPadsPreview.after.tracks[1].drumSlices == d.tracks[1].drumSlices, "SliceClipToDrumPads does what Preview said");
+    for (int p = 0; p < 8; ++p)
+        require(d.tracks[1].drumSlices[p] == alien::DrumSlice{10 * p, 10 * (p + 1)} && d.tracks[1].drumAssets[p]->sliceSource == loop && d.tracks[1].drumPaths[p] == d.clip(1, 0).audioFilePath
+                && engine->drumKits[1].samples[p].load() == d.tracks[1].drumAssets[p].get(), "each pad plays an eighth of the clip, which the engine has");
+    require(d.tracks[1].settings.instrument == 1 && d.clip(1, 0).audio == loop && c.availableAudioBytes() == loopBytes, "the track plays its kit, the clip is kept and no storage is charged");
+    require(c.undo() && alien::sameContent(withLoop, c.document()) && c.redo() && d.tracks[1].drumAssets[7] && c.undo(), "it is one Undo step");
+    for (const cmd::Command bad : {cmd::Command{cmd::SliceClipToDrumPads{0, 3}}, cmd::Command{cmd::SliceClipToDrumPads{99, 0}}, cmd::Command{cmd::SliceClipToDrumPads{1, 99}}}) {
+        const auto refused = commands.execute(bad);
+        require(!refused.ok && !refused.changed && refused.error.isNotEmpty() && !commands.preview(bad).ok && alien::sameContent(withLoop, c.document()), "a cell with no audio, and a cell that is not there, are refused");
+    }
+    engine->recording.phase.store(alien::RecordControls::countIn);
+    const auto recordingKit = commands.execute(toPads);
+    engine->recording.phase.store(alien::RecordControls::idle);
+    require(!recordingKit.ok && recordingKit.error.contains("recording") && alien::sameContent(withLoop, c.document()), "slicing a clip is refused during a count-in");
+    require(c.sliceSessionAudio(1, 0) && c.undoLabel() == "Slice sample to 8 pads" && d.tracks[1].drumAssets[7] && c.undo(), "the routed controller method runs the command");
+
     juce::String error;
-    for (const cmd::Command command : {cmd::Command{cmd::ClearDrumPad{2, 3}}, cmd::Command{part}, cmd::Command{cut}}) {
+    for (const cmd::Command command : {cmd::Command{cmd::ClearDrumPad{2, 3}}, cmd::Command{part}, cmd::Command{cut}, cmd::Command{toPads}}) {
         const auto parsed = cmd::parse(cmd::name(command), juce::JSON::parse(juce::JSON::toString(cmd::arguments(command))), error);
         require(parsed && juce::JSON::toString(cmd::arguments(*parsed)) == juce::JSON::toString(cmd::arguments(command)) && parsed->index() == command.index(), "the drum pad commands round-trip through JSON");
     }
     require(!cmd::parse("LoadDrumSample", juce::JSON::parse(juce::JSON::toString(cmd::arguments(cmd::Command{loadSample}))), error) && error.contains("decoded audio"), "LoadDrumSample has no script form");
     require(cmd::describe(c.document(), cmd::ClearDrumPad{0, 1}).contains("pad 2") && cmd::describe(c.document(), loadSample).contains("source.wav")
-            && cmd::describe(c.document(), cut).contains("3 pads") && cmd::describe(c.document(), part).contains("10 to 40"), "the descriptions name the pad, the file and the slices");
+            && cmd::describe(c.document(), cut).contains("3 pads") && cmd::describe(c.document(), toPads).contains("scene 1") && cmd::describe(c.document(), part).contains("10 to 40"), "the descriptions name the pad, the file and the slices");
 }
