@@ -891,6 +891,10 @@ the controller. Pads are numbered 0 to 7. A slice is in frames of the pad's sour
   slices to the pads from 0 on; the other pads are cleared ("Slice sample to pads"). The Drums page's "Slice sample to
   8 pads" and "Auto slice" both end here, with eight equal bounds and the detected attacks.
 
+- `SliceClipToDrumPads {track, scene}` cuts a Session clip's audio into eight equal parts, one to each pad of its
+  track ("Slice sample to 8 pads"). The kit is replaced and the clip is kept. The Session clip menu's "Slice audio to
+  8 drum pads" runs it. A cell with no decoded audio, or fewer than eight frames, is refused.
+
 A frozen track, an empty pad, a sample that plays from disk and bounds outside the sample are refused, and slicing is
 refused during a take. The Drums page still decodes files and finds attacks off the message thread in
 `ProjectController`; `command::routeDrumPadEdits` sends the edit each one ends in through the command engine.
