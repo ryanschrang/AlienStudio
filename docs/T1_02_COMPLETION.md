@@ -46,6 +46,13 @@ work. They are future command consumers, not authorization to build those
 features inside a Tier 1 command migration. Existing Song marker/region edits
 still belong in the current coverage audit.
 
+## Cross-family transaction acceptance
+
+`CommandEngineTests` covers a single transaction that creates a Session MIDI
+clip, adds notes, routes the track to a newly created bus and places the clip
+in Song. It checks Preview/Batch agreement, one-step Undo/Redo, and preservation
+of document content, live track routing and redo history on a late refusal.
+
 ## Identity safety
 
 Preview uses a scoped, local runtime-object identity stream and initializes its
