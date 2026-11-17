@@ -2447,9 +2447,11 @@ static void recordingCommandViewChecks() {
 
 #include "SongSectionViewTests.h"
 #include "SongChordViewTests.h"
+#include "SongChordDetectViewTests.h"
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     chordViewChecks();
+    chordDetectViewChecks();
     sectionViewChecks();
     sectionMoveChecks();
     sectionProgressionChecks();

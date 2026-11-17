@@ -46,6 +46,7 @@ public:
                     "Edit > Ghost notes shows other clips' notes, dimmed and read-only, behind this clip; "
                     "Edit them with this clip lets you edit those clips' notes too. "
                     "Edit > Import MIDI clip adds a MIDI file's notes, or a Starter Pack clip's, at the amber cursor. "
+                    "Edit > Capture MIDI adds what you just played on the keyboard or a MIDI controller, without recording, at the amber cursor. "
                     "Alt C opens chord stamps; Alt L opens scale guides; Alt I inverts, Alt V reverses, and Alt A arpeggiates. Tab moves between controls.");
         setWantsKeyboardFocus(true);
         setMouseClickGrabsKeyboardFocus(true);
@@ -442,6 +443,9 @@ public:
     // Pack's clips; the owner reads the chosen file (MidiClipImport.h) and answers with importNotes, so the
     // editor itself never parses MIDI files.
     std::function<void(const juce::File&)> onImportMidiFile;
+    // Capture MIDI (MIDI-04). With this set, the Edit menu offers "Capture MIDI"; the owner turns what was just
+    // played into notes (MidiCapture.h) and answers with importNotes, like an import.
+    std::function<void()> onCaptureMidi;
     juce::File starterFolder = starterPack::folder();   // where the Starter Pack's clips are; tests point it elsewhere
     // Adds `notes` (timed from their own start) at the amber cursor, keeping the notes already there, as one
     // undoable edit, and selects them. With `grow` the clip's loop first lengthens to hold them, in the same
@@ -1422,6 +1426,7 @@ private:
         menu.addSeparator();
         add(9, "Split selected notes at cursor", "", selection.count != 0);
         menu.addSeparator();
+        if (onCaptureMidi) add(51, "Capture MIDI (what you just played)", "", !locked);
         if (onImportMidiFile) {
             add(50, "Import MIDI clip...", "", !locked);
             menu.addSubMenu("Import from Starter Pack", starterClipMenu(), !locked);
@@ -1464,6 +1469,7 @@ private:
                 else if (action == 30 || action == 31) safe->setKeyLabels(action == 30 ? KeyLabels::cNotes : KeyLabels::all);
                 else if (action >= 40 && action <= 42) safe->setPitchView(static_cast<PitchView>(action - 40));
                 else if (action == 50) safe->chooseMidiFile();
+                else if (action == 51) safe->captureMidi();
                 else if (action >= starterClipBase) safe->importStarterClip(static_cast<std::size_t>(action - starterClipBase));
                 if (action != 0) safe->grabKeyboardFocus();
             });
@@ -1494,6 +1500,7 @@ private:
         if (starterClips.empty()) menu.addItem(starterClipBase - 1, "Starter Pack not found next to Alien Studio", false);
         return menu;
     }
+    void captureMidi() { if (!locked && onCaptureMidi) onCaptureMidi(); }
     void importStarterClip(std::size_t index) {
         if (index < starterClips.size() && onImportMidiFile) onImportMidiFile(starterClips[index].file);
     }

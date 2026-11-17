@@ -7,6 +7,7 @@
 // nothing from this file; a drag is previewed on a copy and committed once, so
 // each gesture is one undo step.
 #include "ClipBin.h"
+#include "ChordDetect.h"
 #include "CommandEngine.h"
 #include "ExternalFileDrop.h"
 #include "SampleDrag.h"
@@ -791,6 +792,43 @@ public:
                     say("The tempo there is already " + tempoLabel(bpm) + ".");
             });
     }
+    // Song region menu > Detect chords into the chord track (CONV-03): names the chords a MIDI clip plays, bar by
+    // bar, and writes them over the region's span of the chord track as one undo step (ChordDetect.h). Chords already
+    // there are replaced; ones that cross the region's edges are cut at them.
+    bool detectChords(std::uint32_t region) {
+        if (controller.isBusy()) { say("Wait for the save, import or export to finish before changing the arrangement."); return false; }
+        const auto* r = committed().find(region);
+        if (r == nullptr || r->isPattern()) return false;
+        const auto content = controller.document().placementContent(*r);
+        if (content.isAudioClip()) { say("Chords can only be read from a MIDI clip."); return false; }
+        const auto from = r->start, to = std::min(r->end(), committed().length());
+        const auto notes = chord_detect::regionNotes(*r, content.notes());
+        if (notes.empty()) {
+            say(content.notes().count == 0 ? "This clip has no notes to read chords from."
+                                           : "This clip repeats too many notes to read; shorten it or detect a part of it.");
+            return false;
+        }
+        const auto chords = chord_detect::detectRange(notes, from, to, committed().meterMap());
+        if (chords.empty()) { say("No chords found: in no bar do this clip's notes clearly name a chord."); return false; }
+        const auto change = chord_detect::plan(committed().chords, from, to, chords);
+        if (!change.changes()) { say("The chord track already has these chords."); return false; }
+        if (committed().chords.size() - change.removed.size() + change.added.size() > timeline::maxChords) {
+            say("The chord track cannot hold that many chords.");
+            return false;
+        }
+        std::vector<command::Command> commands;
+        for (const auto id : change.removed) commands.push_back(command::RemoveSongChord{id});
+        for (const auto& c : change.edited) commands.push_back(command::EditSongChord{c.id, c.start, c.end, c.root, c.quality});
+        for (const auto& c : change.added) commands.push_back(command::AddSongChord{c.start, c.end, c.root, c.quality});
+        const auto result = command::CommandEngine(controller).batch(commands, "Detect chords");
+        if (!result.ok) { say(result.error); return false; }
+        if (result.changed) afterEdit();
+        juce::String text = "Detected " + juce::String(static_cast<int>(chords.size())) + (chords.size() == 1 ? " chord: " : " chords: ");
+        for (std::size_t i = 0; i < chords.size() && i < 8; ++i)
+            text << (i == 0 ? "" : ", ") << timeline::chordRootName(chords[i].root) << " " << timeline::chordQualityName(chords[i].quality);
+        say(text + (chords.size() > 8 ? ", ..." : "") + ".");
+        return result.changed;
+    }
     // Edits what a region plays: its placement clip, or its cell or rack pattern.
     void openRegion(const timeline::Region& r) {
         if (r.ownsClip()) { if (onOpenPlacement) onOpenPlacement(r.id); }
@@ -1015,7 +1053,7 @@ public:
     // The items of the right-click menus.
     enum Command { cmdSplit = 1, cmdMute, cmdDuplicate, cmdCopy, cmdCut, cmdDelete, cmdGroup, cmdUngroup, cmdOpen, cmdPaste, cmdSelectAll, cmdAddMarker,
                    cmdSlipLeft, cmdSlipRight, cmdSourceLoop, cmdReverse, cmdNormalize, cmdFade, cmdCrossfade,
-                   cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdRemoveFades, cmdTempo, cmdRemoveTempo, cmdMeter, cmdRemoveMeter, cmdMakeUnique, cmdColourBase = 100, cmdFadeShapeBase = 500,
+                   cmdRename, cmdRemoveMarker, cmdJump, cmdLoopSelection, cmdRemoveFades, cmdTempo, cmdRemoveTempo, cmdMeter, cmdRemoveMeter, cmdMakeUnique, cmdDetectChords, cmdColourBase = 100, cmdFadeShapeBase = 500,
                    cmdWarp = 40, cmdAddWarp, cmdRemoveWarp, cmdDetectTransients, cmdDisableWarp, cmdRebuildWarp,
                    cmdArm = 200, cmdFreeze = 201, cmdUnfreeze = 202, cmdTakeLanes = 203, cmdPlayTake = 204, cmdPlayTakeLoop = 205, cmdForgetTake = 206,
                    cmdMonitorBase = 210, cmdInputMonoBase = 300, cmdInputStereoBase = 400 };
@@ -1782,6 +1820,8 @@ private:
             menu.addSeparator();
             menu.addItem(cmdOpen, r != nullptr && r->isPattern() ? "Open in Channel Rack" : "Open clip");
             if (r != nullptr && !r->isPattern()) menu.addItem(cmdMakeUnique, "Make this placement unique", controller.placementShared(hit.region));
+            if (r != nullptr && !r->isPattern() && !controller.document().placementContent(*r).isAudioClip())
+                menu.addItem(cmdDetectChords, "Detect chords into the chord track");
             launch(std::move(menu), area, [this, region = hit.region, warpIndex = hit.warp, tick](int id) {
                 switch (id) {
                 case cmdWarp: enableWarp(region); break;
@@ -1805,6 +1845,7 @@ private:
                 case cmdGroup: groupSelection(); break; case cmdUngroup: ungroupSelection(); break;
                 case cmdOpen: if (const auto* r = committed().find(region); r != nullptr) openRegion(*r); break;
                 case cmdMakeUnique: makePlacementUnique(region); break;
+                case cmdDetectChords: detectChords(region); break;
                 default: break;
                 }
             });
