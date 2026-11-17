@@ -7,7 +7,9 @@
 #include "SampleKeyDetect.h"
 #include "SampleDrag.h"
 #include "MidiClipDrag.h"
+#include "PianoRollScale.h"
 #include <functional>
+#include <optional>
 
 namespace alien {
 class SampleBrowser final : public juce::Component, private juce::ListBoxModel {
@@ -32,8 +34,10 @@ public:
             for (int i = 0; i < 12; ++i) key->addItem(previewKeyNames[i], i + 1);
             key->setSelectedId(1, juce::dontSendNotification); key->onChange = [this] { stop(); updateButtons(); };
         }
+        targetKey.addSeparator();
+        targetKey.addItem("Project", projectKeyId);
         sourceKey.setName("Sample source key"); sourceKey.setTooltip("Root key of the selected sample. Choose it, or press Detect key.");
-        targetKey.setName("Sample preview target key"); targetKey.setTooltip("Key to hear the preview in. It shifts by at most six semitones, the nearer way round.");
+        targetKey.setName("Sample preview target key"); targetKey.setTooltip("Choose a root or Project to follow the project scale's root. Preview shifts by at most six semitones.");
         matchKey.setButtonText("Match key"); matchKey.setName("Match sample preview key");
         matchKey.setTooltip("Shift the preview's pitch from the source key to the target key. Only preview is changed.");
         matchKey.onClick = [this] { stop(); updateButtons(); };
@@ -69,6 +73,16 @@ public:
         projectTempo = bpm;
         tempoLabel.setText("Source BPM   |   Project: " + juce::String(bpm, 1) + " BPM", juce::dontSendNotification);
         if (matchTempo.getToggleState()) { stop(); setStatus("Project tempo changed. Press Preview to hear the new tempo."); }
+        updateButtons();
+    }
+    void setProjectScale(const ProjectMusicalScale& scale) {
+        const auto root = scale.defined && scale.valid() ? std::optional<int>{scale.rootPitchClass} : std::nullopt;
+        if (projectRoot == root) return;
+        projectRoot = root;
+        if (followsProjectKey()) {
+            stop();
+            setStatus(projectRoot ? "Project key changed. Press Preview to hear the new key." : missingProjectKey);
+        }
         updateButtons();
     }
     void focusSearch() { search.grabKeyboardFocus(); }
@@ -139,10 +153,23 @@ private:
         if (!matches.empty()) { const auto found = std::find(matches.begin(), matches.end(), selected); list.selectRow(found == matches.end() ? 0 : static_cast<int>(found - matches.begin())); }
         updateButtons(); repaint();
     }
-    void updateButtons() { const bool selected = selectedIsSample(); starter.setEnabled(starterFolder.isDirectory()); empty.setVisible(matches.empty()); const bool valid = validPreviewSettings(matchTempo.getToggleState(), sourceTempo.getValue(), projectTempo, keyShift());
-        preview.setEnabled(selected && valid); detectTempo.setEnabled(selected && detecting.isEmpty()); detectKey.setEnabled(selected && detecting.isEmpty());
-        preview.setTooltip(valid ? "Preview up to five seconds without changing the project" : matchTempo.getToggleState() && !validPreviewTempoRatio(sourceTempo.getValue(), projectTempo)
-            ? "Use a source/project tempo ratio between 0.5 and 2." : "This key shift and tempo ratio together stretch the sample too far."); session.setEnabled(selected && canImport); song.setEnabled(selected && canImportSong); }
+    juce::String previewProblem() const {
+        if (followsProjectKey() && !projectRoot) return missingProjectKey;
+        const bool sync = matchTempo.getToggleState();
+        const double sourceBpm = sourceTempo.getValue();
+        if (sync && !validPreviewTempoRatio(sourceBpm, projectTempo)) return "Use a source/project tempo ratio between 0.5 and 2.";
+        if (!validPreviewSettings(sync, sourceBpm, projectTempo, keyShift())) return "This key shift and tempo ratio together stretch the sample too far.";
+        return {};
+    }
+    void updateButtons() {
+        const bool selected = selectedIsSample();
+        const auto problem = previewProblem();
+        starter.setEnabled(starterFolder.isDirectory()); empty.setVisible(matches.empty());
+        preview.setEnabled(selected && problem.isEmpty());
+        detectTempo.setEnabled(selected && detecting.isEmpty()); detectKey.setEnabled(selected && detecting.isEmpty());
+        preview.setTooltip(problem.isEmpty() ? "Preview up to five seconds without changing the project" : problem);
+        session.setEnabled(selected && canImport); song.setEnabled(selected && canImportSong);
+    }
     // One job at a time with preview: it shares the cancel flag and generation, so a new
     // selection, a typed value, Stop or leaving the browser all discard the result.
     template <class Run, class Finish>
@@ -181,14 +208,13 @@ private:
     void audition() {
         const auto file = selectedFile(); stop(); if (file == juce::File{}) return;
         if (mididrag::supported(file)) { setStatus(midiHint); return; }
+        if (const auto problem = previewProblem(); problem.isNotEmpty()) { setStatus(problem); return; }
         previewCancelled = std::make_shared<std::atomic<bool>>(false); const auto cancel = previewCancelled;
         const bool sync = matchTempo.getToggleState(); const double sourceBpm = sourceTempo.getValue(), targetBpm = projectTempo;
-        if (sync && !validPreviewTempoRatio(sourceBpm, targetBpm)) { setStatus("Use a source/project tempo ratio between 0.5 and 2."); return; }
         const int semitones = keyShift();
-        if (!validPreviewSettings(sync, sourceBpm, targetBpm, semitones)) { setStatus("This key shift and tempo ratio together stretch the sample too far."); return; }
         const auto generation = previewGeneration; setStatus(sync || semitones != 0 ? "Matching preview tempo and key..." : "Loading preview...");
         juce::String keyText;
-        if (semitones != 0) keyText = juce::String(previewKeyNames[sourceKey.getSelectedId() - 1]) + " to " + previewKeyNames[targetKey.getSelectedId() - 1]
+        if (semitones != 0 || followsProjectKey()) keyText = juce::String(previewKeyNames[sourceKey.getSelectedId() - 1]) + " to " + previewKeyNames[targetPitchClass()]
                                       + " (" + (semitones > 0 ? "+" : "") + juce::String(semitones) + " semitones)";
         juce::Component::SafePointer<SampleBrowser> safe(this);
         pool.addJob([safe, file, generation, cancel, sync, sourceBpm, targetBpm, semitones, keyText] {
@@ -229,7 +255,12 @@ private:
     juce::TextButton folder, starter, preview, stopButton, session, song, detectTempo;
     juce::ToggleButton matchTempo; juce::Slider sourceTempo; juce::Label tempoLabel;
     juce::ToggleButton matchKey; juce::ComboBox sourceKey, targetKey; juce::TextButton detectKey;
-    int keyShift() const { return matchKey.getToggleState() ? previewKeyShift(sourceKey.getSelectedId() - 1, targetKey.getSelectedId() - 1) : 0; }
+    static constexpr int projectKeyId = 13;
+    static constexpr const char* missingProjectKey = "Set a project key or choose a manual preview target.";
+    bool followsProjectKey() const { return matchKey.getToggleState() && targetKey.getSelectedId() == projectKeyId; }
+    int targetPitchClass() const { return targetKey.getSelectedId() == projectKeyId ? projectRoot.value_or(-1) : targetKey.getSelectedId() - 1; }
+    int keyShift() const { return matchKey.getToggleState() ? previewKeyShift(sourceKey.getSelectedId() - 1, targetPitchClass()) : 0; }
+    std::optional<int> projectRoot;
     double projectTempo{120};
     juce::ComboBox dragDestination;
     static constexpr const char* midiHint = "MIDI clip: drag it into the piano roll to add its notes at the drop point, or a drum groove onto the Channel Rack.";

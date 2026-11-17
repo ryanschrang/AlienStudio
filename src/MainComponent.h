@@ -615,7 +615,11 @@ private:
                 && alien::command::CommandEngine(controller).execute(alien::command::SetProjectScale{root, static_cast<int>(type)}).ok;
         };
         controller.onMusicalScaleChanged = [this] {
-            const auto& d = controller.document(); pianoRoll.setProjectScaleContext(d.musicalScale, d.identityScope); rackView.graphEditor().repaint(); updateEditorTitle();
+            const auto& d = controller.document();
+            pianoRoll.setProjectScaleContext(d.musicalScale, d.identityScope);
+            devicesView.samples().setProjectScale(d.musicalScale);
+            rackView.graphEditor().repaint();
+            updateEditorTitle();
         };
         pianoRoll.onChange = [this] {
             if (rollTarget.rack) {
@@ -808,6 +812,7 @@ private:
 
     void loadSelectedClip(bool allowMultiClip = true) {
         pianoRoll.setProjectScaleContext(controller.document().musicalScale, controller.document().identityScope);
+        devicesView.samples().setProjectScale(controller.document().musicalScale);
         if (rollTarget.rack && !controller.channelRack().validChannel(rollTarget.channel)) rollTarget = {};
         if (rollTarget.placement != 0 && controller.placementTrack(rollTarget.placement) < 0) rollTarget = {};   // no region plays it any more
         pianoRoll.setSongChordAvailable(rollTarget.region != 0);

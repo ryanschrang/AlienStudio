@@ -84,6 +84,33 @@ static void sampleBrowserChecks() {
         require(!preview->isEnabled() && preview->getTooltip().contains("key shift"), "half-tempo preview shifted down is refused with a reason");
         matchKey->setToggleState(false, juce::dontSendNotification); matchKey->onClick(); require(preview->isEnabled(), "turning Match key off allows the tempo-only preview");
         sync->setToggleState(false, juce::dontSendNotification); sync->onClick();
+
+        const auto projectTarget = targetKey->getItemId(targetKey->getNumItems() - 1);
+        require(targetKey->getItemText(targetKey->getNumItems() - 1) == "Project", "target menu offers the project key");
+        targetKey->setSelectedId(projectTarget, juce::sendNotificationSync);
+        require(preview->isEnabled(), "the project target only applies when Match key is on");
+        matchKey->setToggleState(true, juce::dontSendNotification); matchKey->onClick();
+        require(!preview->isEnabled() && preview->getTooltip().contains("Set a project key"), "undefined project key explains why Preview is unavailable");
+        search->onReturnKey();
+        require(previews == 4, "keyboard audition also refuses an undefined project key");
+        browser.setProjectScale({true, 2, alien::ScaleType::major});
+        require(preview->isEnabled(), "defining the project key enables preview");
+        preview->onClick();
+        browser.setProjectScale({true, 4, alien::ScaleType::naturalMinor});
+        for (int i = 0; i < 10; ++i) pump();
+        require(previews == 4, "changing the project root cancels an in-flight preview");
+        preview->onClick();
+        for (int i = 0; i < 400 && previews == 4; ++i) pump();
+        bool projectKeyStatus = false;
+        for (auto* child : browser.getChildren())
+            if (auto* label = dynamic_cast<juce::Label*>(child); label && label->getText().contains("key C to E (+4 semitones)"))
+                projectKeyStatus = true;
+        require(previews == 5 && imports == 0 && projectKeyStatus, "preview uses the updated project root and reports the shift");
+        browser.setProjectScale({});
+        require(!preview->isEnabled(), "clearing the project key disables the followed target");
+        targetKey->setSelectedId(3, juce::sendNotificationSync);
+        require(preview->isEnabled(), "a manual target still works without a project key");
+
         browser.setImportEnabled(true, true); import->onClick(); require(imports == 1, "import requires explicit action");
         search->setText("no match", false); search->onTextChange(); require(browser.dragDescriptionFor(0).isVoid(), "empty filtered list has no stale drag payload"); require(browser.resultCount() == 0 && !import->isEnabled() && !preview->isEnabled(), "empty search clears stale actions");
     }
