@@ -18,6 +18,7 @@
 #include "PluginRuntime.h"
 #include "StemCapture.h"
 #include "MidiRecording.h"
+#include "MidiCapture.h"
 #include "SongRecording.h"
 #include "RackEngine.h"
 #include <array>
@@ -67,6 +68,10 @@ public:
     // audio device reports between rendering a sample and hearing it.
     alien::RecordControls recording;
     std::atomic<int> deviceLatencySamples{0}, deviceInputLatencySamples{0};
+    // Capture MIDI (MIDI-04): every note played live, stamped with the capture clock (seconds of audio rendered
+    // since the engine was made), for the GUI to drain into its history. captureClockNow is where the clock is.
+    alien::capture::CaptureRing capturedNotes;
+    std::atomic<double> captureClockNow{0.0};
     // A Song-view audio take (recording.audioTake): the armed tracks' sinks and what was captured.
     std::unique_ptr<alien::SongTakeCapture> songTake = std::make_unique<alien::SongTakeCapture>();
     std::array<alien::DrumKitControls, sessionTracks> drumKits;
@@ -227,6 +232,9 @@ public:
     }
 private:
     void renderBlock(float* const* outputs, int channels, int samples, int outputOffset) {
+        captureBlockStart = captureClock;   // live notes that arrive in this block are stamped with its start
+        if (sampleRate > 0.0 && samples > 0) captureClock += samples / sampleRate;
+        captureClockNow.store(captureClock, std::memory_order_relaxed);
         handleRecording();
         // Track slots this block (T1-04 C): the project's tracks, not the compiled limit. A slot leaving use plays
         // one more block with its notes ended and its clips stopped, and is then skipped; one coming into use
@@ -1498,8 +1506,15 @@ private:
         else trackSynths[track].noteOff(note, source);
     }
     // Computer-keyboard and mouse piano notes.
+    void captureLive(int note, float velocity, int source) noexcept {
+        if (note > 127 || source < 0 || source >= alien::capture::sourceCount) return;
+        capturedNotes.push({captureBlockStart, static_cast<float>(bpm.load(std::memory_order_relaxed)),
+                            note < 0 ? 0.0f : std::max(0.0f, velocity), static_cast<std::int16_t>(note < 0 ? -1 : note),
+                            static_cast<std::uint8_t>(source)});
+    }
     void keyboardNote(int note, float velocity) noexcept {
         captureNote(note, velocity);
+        captureLive(note, velocity, alien::capture::typingSource);
         if (monitorTrack >= 0) { routeToTrack(static_cast<std::size_t>(monitorTrack), note, velocity, 64); return; }
         if (currentLiveDrumTrack >= 0) { routeToTrack(static_cast<std::size_t>(currentLiveDrumTrack), note, velocity, 64); return; }
         if (currentLiveRackChannel >= 0) { liveRackNote(note, velocity, 1); return; }
@@ -1509,6 +1524,7 @@ private:
 
     void sendMidi(int note, float velocity, int channel) noexcept {
         captureNote(note, velocity);
+        captureLive(note, velocity, channel);
         if (monitorTrack >= 0) {
             if (note < 0) releaseMonitor(static_cast<std::size_t>(monitorTrack));
             else routeToTrack(static_cast<std::size_t>(monitorTrack), note, velocity, 64 + channel);
@@ -1702,6 +1718,7 @@ private:
     std::unique_ptr<alien::SessionClipLaunch> launchScratch = std::make_unique<alien::SessionClipLaunch>();
     std::array<bool, sessionTracks> audioClipMode{};
     double sampleRate{44100.0};
+    double captureClock{}, captureBlockStart{};   // audio thread only; see capturedNotes
     bool wasPlaying{};
     int wasMode{};
     bool synchronizedScenePending{};

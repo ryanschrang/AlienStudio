@@ -6,6 +6,7 @@
 #include "PianoRollAudition.h"
 #include "PianoRollGhostSources.h"
 #include "MidiClipImport.h"
+#include "MidiCapture.h"
 #include "CompactWorkspace.h"
 #include "TrackMixerPanel.h"
 #include "ProjectController.h"
@@ -685,6 +686,15 @@ private:
             const auto result = pianoRoll.importNotes(notes, growable ? &growth : nullptr);
             pianoRoll.showStatus(alien::midi_import::describe(clip, result, file.getFileNameWithoutExtension()));
         };
+        // Edit > Capture MIDI: the last phrase played live goes in at the cursor the same way, as one undo step.
+        pianoRoll.onCaptureMidi = [this] {
+            captureHistory.drain(engine.capturedNotes);
+            const auto phrase = captureHistory.capture(engine.captureClockNow.load(std::memory_order_relaxed));
+            const bool growable = !rollTarget.rack && rollTarget.placement == 0 && !multiClip.active();
+            const auto growth = alien::capture::loopGrowth(phrase);
+            const auto result = phrase.empty() ? alien::NoteInsertResult{} : pianoRoll.importNotes(phrase.notes, growable ? &growth : nullptr);
+            pianoRoll.showStatus(juce::String(alien::capture::describe(phrase, result)));
+        };
         sessionView.onSelectionChanged = [this] { rollTarget = {}; loadSelectedClip(); };
         // Launching a clip plays it. With Song mode on, Play plays the Song instead, so say so rather than stay silent.
         sessionView.onLaunched = [this](bool) {
@@ -1203,6 +1213,7 @@ private:
         devicesView.presets().setApplyEnabled(!projectBusy && !controller.isBusy() && !controller.isRecording() && !activeCapture);
         applicationToolbar.refreshState();
         controller.pollRecording();
+        captureHistory.drain(engine.capturedNotes);   // keeps the engine's ring from filling between captures
         const int recordPhase = engine.recording.phase.load();
         // A take the engine has not picked up yet already shows as recording.
         topBar.setRecordState(controller.isRecording() && recordPhase == alien::RecordControls::idle
@@ -2029,6 +2040,7 @@ private:
     alien::ui::StudioLookAndFeel studioLookAndFeel;
     juce::TooltipWindow tooltipWindow{this, 650};
     ToneEngine engine;
+    alien::capture::CaptureHistory captureHistory;   // notes played live, for Edit > Capture MIDI (MIDI-04)
     juce::AudioDeviceManager audio;
     juce::MidiKeyboardState keyboardState;
     alien::ProjectController controller{engine};

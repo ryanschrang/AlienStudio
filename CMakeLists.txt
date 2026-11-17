@@ -546,6 +546,13 @@ if(BUILD_TESTING)
     target_link_libraries(MidiClipImportTests PRIVATE juce::juce_gui_basics juce::juce_audio_formats juce::juce_audio_basics)
     add_test(NAME MidiClipImportTests COMMAND MidiClipImportTests)
     set_tests_properties(MidiClipImportTests PROPERTIES TIMEOUT 60)
+
+    add_executable(MidiCaptureTests tests/MidiCaptureTests.cpp)
+    target_include_directories(MidiCaptureTests PRIVATE src)
+    target_compile_definitions(MidiCaptureTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(MidiCaptureTests PRIVATE juce::juce_audio_processors juce::juce_audio_devices juce::juce_audio_basics)
+    add_test(NAME MidiCaptureTests COMMAND MidiCaptureTests)
+    set_tests_properties(MidiCaptureTests PROPERTIES TIMEOUT 120)
 endif()
 
 if(BUILD_TESTING)
