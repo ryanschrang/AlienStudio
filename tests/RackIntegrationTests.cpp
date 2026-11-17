@@ -633,6 +633,7 @@ static void capacityReport() {
         std::cout << "# Shared playback capacity\n\n"
             << "Compiled limits: " << full << " Session tracks, " << alien::maxSessionScenes << " scenes.\n\n"
             << "| Engine heap (C++ new, cumulative) | Bytes | MiB |\n| --- | ---: | ---: |\n" << std::fixed << std::setprecision(3)
+            << "| sizeof(ToneEngine) (inline object only) | " << sizeof(ToneEngine) << " | " << sizeof(ToneEngine) / 1048576.0 << " |\n"
             << "| Constructed ToneEngine (incl. object) | " << constructed << " | " << constructed / 1048576.0 << " |\n"
             << "| After prepare(48 kHz) | " << prepared << " | " << prepared / 1048576.0 << " |\n\n"
             << "Cumulative bytes requested from operator new; frees and std::vector growth during prepare are not subtracted.\n"

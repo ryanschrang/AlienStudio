@@ -470,6 +470,33 @@ static void warpFormatChecks() {
 
 // T1-04 C2 (format 32): a Song rack lane is saved as its own number, so the saved rows of a project at the
 // compiled track limit never collide with the lanes, and formats 8-31 (lanes after 16 track rows) still load.
+// T1-04 C3: a project with more tracks or scenes than this build was compiled for is refused, with
+// both counts in the message, and the open project is kept (no truncation).
+static void capacityRefusalTests() {
+    const int tracks = alien::maxSessionTracks, scenes = alien::maxSessionScenes;
+    const auto json = alien::serializeSessionProject(alien::SessionProjectData(tracks, scenes));
+    const auto grow = [&](bool addTrack) {
+        auto root = juce::JSON::parse(json);
+        auto* sceneList = root.getProperty("scenes", {}).getArray();
+        require(sceneList != nullptr && sceneList->size() == scenes, "fixture: saved scenes");
+        if (addTrack) { for (auto& scene : *sceneList) if (auto* cells = scene.getArray()) cells->add(cells->getFirst()); }
+        else sceneList->add(sceneList->getFirst());
+        return juce::JSON::toString(root);
+    };
+    alien::SessionProjectData open(2, 3); open.bpm = 99;
+    juce::String error;
+    require(!alien::parseSessionProject(grow(true), open, error)
+        && error.contains(juce::String(tracks + 1) + " tracks") && error.contains("up to " + juce::String(tracks) + " tracks")
+        && open.trackCount() == 2 && open.sceneCount() == 3 && open.bpm == 99,
+        "one track past the compiled limit is refused with its count and the open project is kept");
+    error.clear();
+    require(!alien::parseSessionProject(grow(false), open, error)
+        && error.contains(juce::String(scenes + 1) + " scenes") && error.contains(juce::String(scenes) + " scenes.")
+        && open.trackCount() == 2 && open.sceneCount() == 3,
+        "one scene past the compiled limit is refused with its count and the open project is kept");
+    std::cout << "PASS: projects past the compiled track/scene capacity (" << tracks << "/" << scenes << ") are refused\n";
+}
+
 static void songRowFormatTests() {
     using namespace alien::timeline;
     const int tracks = alien::maxSessionTracks, scenes = alien::maxSessionScenes;
@@ -583,6 +610,7 @@ int main() {
     sectionFormatTests();
     projectScaleSerializationTests();
     drumSliceProjectTests();
+    capacityRefusalTests();
     songRowFormatTests();
     warpFormatChecks();
     freezeFormatTests();

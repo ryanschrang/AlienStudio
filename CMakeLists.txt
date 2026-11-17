@@ -3,6 +3,11 @@ project(AlienStudio VERSION 0.1.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Threads REQUIRED)
+# Session capacity profile (T1-04 C3, src/SessionCapacity.h). 16 tracks / 32 scenes is the
+# supported profile; larger values build a candidate profile for tests and measurement only.
+set(ALIEN_SESSION_TRACKS 16 CACHE STRING "Compiled Session track capacity (16-64; only 16 is supported)")
+set(ALIEN_SESSION_SCENES 32 CACHE STRING "Compiled Session scene capacity (32-256; only 32 is supported)")
+add_compile_definitions(ALIEN_MAX_SESSION_TRACKS=${ALIEN_SESSION_TRACKS} ALIEN_MAX_SESSION_SCENES=${ALIEN_SESSION_SCENES})
 include(FetchContent)
 FetchContent_Declare(JUCE GIT_REPOSITORY https://github.com/juce-framework/JUCE.git GIT_TAG 8.0.10 GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(JUCE)
@@ -221,6 +226,8 @@ if(BUILD_TESTING)
     target_compile_definitions(SessionViewTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
     target_link_libraries(SessionViewTests PRIVATE AlienStudioBranding juce::juce_audio_processors juce::juce_gui_basics juce::juce_gui_extra
         juce::juce_audio_devices juce::juce_audio_formats juce::juce_audio_basics)
+    # Each test keeps a whole engine, controller and view on the stack; larger capacity profiles need more than 1 MiB.
+    target_link_options(SessionViewTests PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/STACK:8388608>")
     add_test(NAME SessionViewTests COMMAND SessionViewTests)
     set_tests_properties(SessionViewTests PROPERTIES TIMEOUT 120)
 endif()
