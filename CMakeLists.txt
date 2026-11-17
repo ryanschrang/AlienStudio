@@ -414,6 +414,11 @@ if(BUILD_TESTING)
     target_include_directories(TakeCompTests PRIVATE src)
     add_test(NAME TakeCompTests COMMAND TakeCompTests)
 
+    add_executable(ChordDetectTests tests/ChordDetectTests.cpp)
+    target_include_directories(ChordDetectTests PRIVATE src)
+    add_test(NAME ChordDetectTests COMMAND ChordDetectTests)
+    set_tests_properties(ChordDetectTests PROPERTIES TIMEOUT 60)
+
     add_executable(TimelineTests tests/TimelineTests.cpp)
     target_include_directories(TimelineTests PRIVATE src)
     target_link_libraries(TimelineTests PRIVATE Threads::Threads)
