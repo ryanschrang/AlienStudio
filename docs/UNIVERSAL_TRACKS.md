@@ -1,10 +1,11 @@
 # T1-04: universal tracks and capacity foundation
 
 Status: design/baseline (A) and identity/document adapters (B, format 29)
-implemented. Playback adapters (C) are in progress: C1 (the callback processes
-only the track slots in use) is implemented; C2 (Song rack lanes saved apart
-from track rows, format 32) and C3 (a measured larger profile) are pending, as
-are resource budgets (D) and higher supported limits (E).
+implemented. Playback adapters (C) are implemented: C1 (the callback processes
+only the track slots in use), C2 (Song rack lanes saved apart from track rows,
+format 32) and C3 (a build-time capacity setting with a measured, CI-tested
+32-track, 64-scene candidate profile). Resource budgets (D) and higher
+supported limits (E) are pending.
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
 Dependency: [T1-03 shared clip/pattern design, PR #102](https://github.com/ryanschrang/AlienStudio/pull/102).
@@ -289,3 +290,89 @@ so a saved row never depends on the compiled track limit (`timeline::savedRow`, 
 
 No track, scene or engine change. Tests: `SessionProjectTests` (`songRowFormatTests`), a
 project at the track and scene limits round-trips byte for byte.
+
+## Increment C3: a measured 32-track, 64-scene candidate profile
+
+No project format change, and the supported limits stay 16 tracks and 32 scenes. C3 makes the
+capacity a build setting, so that a larger profile can be compiled, tested and measured, and
+records what that profile costs. Raising the supported limit is still D and E.
+
+- **Build setting.** `ALIEN_SESSION_TRACKS` (16-64) and `ALIEN_SESSION_SCENES` (32-256) in
+  CMake set `maxSessionTracks` and `maxSessionScenes` (`src/SessionCapacity.h`). The defaults
+  are 16 and 32, and `isSupportedCapacityProfile` is true only for them. The bounds are asserted:
+  scene launches wait on a 64-bit track mask, and formats 8-31 numbered rack lanes after 16 rows.
+- **CI.** A `capacity-candidate` job builds the 32/64 profile in Release, runs every test and
+  prints both capacity reports. It uploads nothing: that build is for evidence, not release.
+- **Saved files do not depend on the profile.** Session cells are saved as nested lists, Song
+  rack lanes as their own number (C2), returns and buses by their slot, and plugin automation by
+  plugin instance ID. A 32/64 build reads and writes the same format 38 as a 16/32 build.
+- **Too many tracks or scenes is refused, not truncated.** A build that opens a project with more
+  tracks or scenes than it was compiled for now says how many the project has and how many the
+  build supports; the open project is kept (`SessionProjectTests`, `capacityRefusalTests`). A 16/32
+  build therefore refuses a project saved with 17 or more tracks by a 32/64 build. Until E ships
+  one supported profile, projects past 16/32 are not portable between builds.
+
+### Boundary audit at 32/64
+
+Every use of `maxSessionTracks` and `maxSessionScenes` in `src` was checked. Arrays sized by the
+limit (engine slots, plugin racks, mailboxes, schedulers, stems, recording sinks, drum pads),
+rack bus numbers, plugin rack indices (master, then returns, then buses, after the tracks), the
+Song track and lane rows and the stream voice pool (four per slot) all follow the constant. The
+Session grid and the Song view already scroll. Fixed bounds that do not follow it, by design:
+`legacySavedRackRowBase` (16, for formats 8-31), the MIDI controller's scene buttons (scenes
+1-4, `MidiControllerMappings::sceneCount`) and the 16 MIDI channels a plugin accepts.
+
+The whole suite (78 tests) was run on the 32/64 build. Two failed, neither in the app:
+`ProjectControllerTests` assumed 12 added tracks reach the limit (it now adds up to the compiled
+limit), and `SessionViewTests` overflowed the 1 MiB default stack, because each test keeps an
+engine, controller and view on the stack (MSVC `/analyze` C6262: `layoutChecks` uses 1.16 MB at
+32/64). It now links with an 8 MiB stack, like ProjectControllerTests and TimelinePlaybackTests.
+The same analysis found no `src` function in that translation unit above 66 KB of stack, and the
+app creates `MainComponent` (and so its engine) on the heap.
+
+### Measurements
+
+Recorded 2026-11-17 on Intel Core Ultra 9 288V, 32 GB, Windows 11 x64, MSVC 14.51 (Visual
+Studio 18 2026), Release, offline: no audio device, plugins or media, other desktop activity
+uncontrolled. One run per profile; reproduce with the commands in
+[SHARED_PLAYBACK_CAPACITY.md](SHARED_PLAYBACK_CAPACITY.md) on each build directory.
+
+| Engine memory (RackIntegrationTests `--capacity-report`) | 16 / 32 | 32 / 64 |
+| --- | ---: | ---: |
+| `sizeof(ToneEngine)`, inline object | 100,008 B | 144,888 B |
+| Engine heap after construction and `prepare(48 kHz)` | 89.3 MiB | 130.4 MiB |
+| Selected note state (TrackCapacityReport) | 5.28 MiB | 10.56 MiB |
+| Three Song source-reference tables | 36,864 B | 147,456 B |
+| `ArrangementPlayback`, shallow | 12,616 B | 49,480 B |
+
+Each extra track slot costs about 2.6 MiB of engine heap whether or not it is used. Most of it is
+the two 96,001-frame stereo alignment delay lines per slot in `PluginRuntime` (about 0.73 MiB
+each), then the note mailboxes and scheduler (0.33 MiB). The heap figure counts C++ `new` only;
+it excludes plugins, media, snapshots, document/history, UI and allocator overhead.
+
+| Callback, p95 / block budget (48 kHz) | Tracks in use | 64 frames | 256 frames | 1024 frames |
+| --- | ---: | ---: | ---: | ---: |
+| 16/32 build: transport, no clips | 16 | 6.6 % | 5.9 % | 5.7 % |
+| 32/64 build: transport, no clips | 16 | 6.4 % | 5.7 % | 5.5 % |
+| 32/64 build: transport, no clips | 32 | 18.9 % | 15.7 % | 15.8 % |
+| 16/32 build: every Session track plays MIDI | 16 | 8.8 % | 12.8 % | 12.0 % |
+| 32/64 build: every Session track plays MIDI | 32 | 28.7 % | 24.4 % | 23.3 % |
+| 16/32 build: a rack occurrence on every track | 16 | 13.3 % | 12.1 % | 12.9 % |
+| 32/64 build: a rack occurrence on every track | 32 | 32.7 % | 30.4 % | 29.5 % |
+
+Every row produced finite, audible output with zero callback allocations. With 16 tracks in
+use, the larger build costs about the same as the 16/32 build (C1: slots out of use are
+skipped). With all 32 in use the p95 cost is 1.9 to 3.3 times the 16-track cost, more than
+linear at 64 frames. One run per profile cannot say whether that is cache pressure or noise;
+a repeated, controlled measurement is part of D. These are sparse offline workloads, not
+physical-device latency or a supported-limit guarantee.
+
+### What C3 does not do
+
+- It does not raise the supported limit or change saved projects; release builds stay 16/32.
+- Per-slot memory is still fixed by the compiled maximum. Before a profile above 16/32 is
+  supported (D), the delay lines and note state need budgets that do not multiply by the
+  maximum: for example, delay lines sized to the latency actually reported, or prepared only
+  for slots in use, outside the callback.
+- Not measured: physical devices, plugins, media, dense note/ratchet loads, peak memory during
+  load/undo/export, Debug timings, and a 64-track profile.

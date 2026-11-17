@@ -995,7 +995,10 @@ inline bool parseSessionProject(const juce::String& json, SessionProjectData& de
         error = "Project must contain exactly four scenes of four tracks."; return false;
     }
     if (trackCount < 1 || trackCount > maxSessionTracks || sceneCount > maxSessionScenes) {
-        error = "Project has more tracks or scenes than this version of Alien Studio supports."; return false;
+        error = "Project has " + juce::String(trackCount) + " tracks and " + juce::String(sceneCount)
+              + " scenes; this version of Alien Studio supports up to " + juce::String(maxSessionTracks)
+              + " tracks and " + juce::String(maxSessionScenes) + " scenes.";
+        return false;
     }
 
     SessionProjectData parsed(trackCount, sceneCount);

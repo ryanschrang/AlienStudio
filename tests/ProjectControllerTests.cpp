@@ -26,17 +26,18 @@ static void structureTests() {
     c.pushDocumentToEngine();
     require(engine.activeTracks.load() == 4, "engine knows how many tracks are in use");
 
-    for (int i = 0; i < 12; ++i) require(c.addTrack(), "tracks can be added up to the limit");
+    for (int i = 4; i < alien::maxSessionTracks; ++i) require(c.addTrack(), "tracks can be added up to the limit");
     require(d.trackCount() == alien::maxSessionTracks && !c.addTrack(), "track count is capped");
     require(engine.activeTracks.load() == alien::maxSessionTracks, "engine follows added tracks");
-    require(d.tracks[4].name == "Track 5" && d.tracks[15].name == "Track 16", "new tracks get the next free name");
+    require(d.tracks[4].name == "Track 5" && d.tracks[alien::maxSessionTracks - 1].name == "Track " + juce::String(alien::maxSessionTracks),
+            "new tracks get the next free name");
     for (const auto& scene : d.cells) require(static_cast<int>(scene.size()) == d.trackCount(), "every scene has a clip per track");
 
     // Delete a middle track: later tracks shift left and keep their content.
     c.setClipPattern(5, 0, patternWith(65), false);
     c.selectClip(5, 2);
     require(c.deleteTrack(2), "delete a middle track");
-    require(d.trackCount() == 15 && d.tracks[4].name == "Track 6" && d.clip(4, 0).notes().count == 1
+    require(d.trackCount() == alien::maxSessionTracks - 1 && d.tracks[4].name == "Track 6" && d.clip(4, 0).notes().count == 1
             && d.clip(4, 0).notes().notes[0].pitch == 65, "content moves with its track");
     require(d.selectedTrack == 4 && d.selectedScene == 2, "selection follows the moved track");
     while (d.trackCount() > 1) require(c.deleteTrack(0), "delete tracks");
