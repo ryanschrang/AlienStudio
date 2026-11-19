@@ -1,3 +1,4 @@
+#include "CommandEngine.h"
 #include "ProjectController.h"
 #include "MidiRecording.h"
 #include <algorithm>
@@ -1040,8 +1041,7 @@ void refusalAndGuardTests() {
         const auto song = root.getChildFile("Song.alienstudio");
         {
             ControllerRig saver;
-            saver.controller.setBpm(133);
-            saver.controller.commit("Tempo");
+            alien::command::CommandEngine(saver.controller).execute(alien::command::SetTempo{133});
             bool done = false, ok = false;
             saver.controller.writeProject(song, false, [&](bool r) { ok = r; done = true; });
             for (int i = 0; i < 400 && !done; ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil(10);

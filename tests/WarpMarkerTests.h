@@ -84,7 +84,7 @@ static void warpEditorChecks() {
     require(c.undo(),"undo marker drag");waitForWarp(c);rig->view.refresh();require(c.timeline()==before,"one undo restores the complete marker drag");
     require(c.redo(),"redo marker drag");waitForWarp(c);
     const auto marked=c.timeline().find(id)->warp;
-    require(c.setTempoChange(bar,90),"change Song tempo after warp");require(c.isBusy() && rig->engine.arrangementPreparing.load(),"tempo edits prepare a replacement cache before playback");waitForWarp(c);
+    require(alien::command::CommandEngine(c).execute(alien::command::SetTempoChange{bar,90}).changed,"change Song tempo after warp");require(c.isBusy() && rig->engine.arrangementPreparing.load(),"tempo edits prepare a replacement cache before playback");waitForWarp(c);
     require(c.timeline().find(id)->warp==marked,"tempo edit preserves musical marker anchors");
     c.setExternalBusy(true);require(!alien::tlui::enableWarp(c,id).ok,"busy warp edits refuse");c.setExternalBusy(false);
     require(alien::command::CommandEngine(c).execute(alien::command::SetSongClipWarp{id,{}}).changed && !c.isBusy(),"disabling warp restores ordinary playback without a render");
@@ -93,10 +93,10 @@ static void warpEditorChecks() {
     require(!rig->engine.arrangementPreparing.load() && lastStatus.containsIgnoreCase("cancelled") && !c.timeline().find(id)->warp.empty(),"cancellation keeps editable markers, reports its result and releases transport gate");
     require(c.retryWarpPreparation(),"retry cache preparation");waitForWarp(c);
     require(lastStatus=="Warped audio ready","rebuild recovers a cancelled cache");
-    c.setBpm(130);require(rig->engine.arrangementPreparing.load(),"base tempo drag gates playback before its commit");
-    c.setBpm(120);c.commit("Tempo drag returning to start");waitForWarp(c);
+    c.auditionTempo(130);require(rig->engine.arrangementPreparing.load(),"base tempo drag gates playback before its commit");
+    c.auditionTempo(120);alien::command::setProjectTempo(c,120);waitForWarp(c);
     require(!rig->engine.arrangementPreparing.load(),"returning a tempo drag to its starting value cannot strand transport preparation");
-    c.setBpm(100);c.commit("Warp base tempo change");require(c.isBusy(),"base tempo commit invalidates prepared warp audio");waitForWarp(c);
+    require(alien::command::CommandEngine(c).execute(alien::command::SetTempo{100}).changed && c.isBusy(),"base tempo commit invalidates prepared warp audio");waitForWarp(c);
     rig->engine.arrangementMailbox.consume();
     const auto* changed=rig->engine.arrangementMailbox.current();const auto* savedRegion=c.timeline().find(id);
     const timeline::TempoMap changedTempo{c.timeline().tempoChanges,100};
@@ -129,7 +129,7 @@ static void warpEditorChecks() {
         require(rig->engine.bpm.load()==100,"and a drag while recording");
         rig->engine.recording.phase.store(alien::RecordControls::idle);
     }
-    c.setBpm(120);c.commit("Restore base tempo");waitForWarp(c);
+    require(alien::command::CommandEngine(c).execute(alien::command::SetTempo{120}).changed,"restore base tempo");waitForWarp(c);
     const auto publications=rig->engine.arrangementMailbox.publishedCount();
     require(c.retryWarpPreparation(),"prepare concurrent-edit fixture");
     auto notes=c.document().clip(0,0).notes();notes.add(77,12,1);c.setClipPattern(0,0,notes,false);c.commit("Concurrent note gesture");

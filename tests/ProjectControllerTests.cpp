@@ -155,13 +155,12 @@ static void undoTests() {
     const auto copy = d.clip(1, 2).notes();
     c.setClipPattern(1, 2, copy, false);
     require(d.clip(1, 2).pattern == unchanged, "re-loading identical notes is not treated as an edit");
-    c.setBpm(130);
-    c.commit("Change tempo");
+    alien::command::CommandEngine(c).execute(alien::command::SetTempo{130});
     require(!c.canRedo(), "a new edit clears redo");
     require(restored == 5, "every undo/redo notifies the views");
 
     // Rapid continuous edits merge into one step.
-    for (int bpm = 131; bpm < 140; ++bpm) { c.setBpm(bpm); c.commit("Change tempo", -1, -1, "tempo"); }
+    for (int bpm = 131; bpm < 140; ++bpm) { alien::command::CommandEngine(c).execute(alien::command::SetTempo{bpm}, "tempo"); }
     require(c.undo() && d.bpm == 130, "coalesced tempo changes undo in one step");
 
     // Undo of a reorder keeps playing slots consistent.
@@ -226,12 +225,12 @@ static void recoveryAndPortableRegressionTests() {
     const auto root=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("AlienRegression","",false);
     root.createDirectory(); alien::ProjectController::recoveryDirectoryOverride()=root.getChildFile("Recovery");
     auto engine=std::make_unique<ToneEngine>(); alien::ProjectController c(*engine);
-    c.setBpm(131);c.commit("Tempo");c.autosaveIfNeeded();
+    alien::command::CommandEngine(c).execute(alien::command::SetTempo{131});c.autosaveIfNeeded();
     // Deliberately discard immediately; the worker may be queued or writing.
     c.newProject();
     for(int i=0;i<20;++i)pump(10);
     require(!alien::ProjectController::hasRecoverableSession(),"New fences an in-flight autosave");
-    c.setBpm(132);c.commit("Tempo");c.autosaveIfNeeded();c.discardRecovery();
+    alien::command::CommandEngine(c).execute(alien::command::SetTempo{132});c.autosaveIfNeeded();c.discardRecovery();
     for(int i=0;i<20;++i)pump(10);
     require(!alien::ProjectController::hasRecoverableSession(),"Quit/discard fences an in-flight autosave");
 
@@ -239,7 +238,7 @@ static void recoveryAndPortableRegressionTests() {
     const auto original=root.getChildFile("Original.wav");std::atomic<bool> cancel{false};juce::String error;
     require(alien::writeClipWav(original,*clip,cancel,error),"create source WAV");
     require(c.installAudio(original,0,0,clip),"install source audio");
-    c.setBpm(140);c.commit("Tempo before portable save");
+    alien::command::CommandEngine(c).execute(alien::command::SetTempo{140});
     bool done=false,ok=false;const auto portable=root.getChildFile("Portable.alienstudio");
     c.writeProject(portable,true,[&](bool result){ok=result;done=true;});
     for(int i=0;i<100 && !done;++i)pump(10);
@@ -297,7 +296,7 @@ static void arrangementPublishTests() {
 
     c.renameTrack(0, "Bass"); c.commit("Rename track");
     c.renameScene(0, "Verse"); c.commit("Rename scene");
-    c.setBpm(133); c.commit("Change tempo");
+    alien::command::CommandEngine(c).execute(alien::command::SetTempo{133});
     c.trackSettingsEdited(0); c.commit("Change mix");
     require(published() == base, "renames, tempo and mixer edits leave the song snapshot alone");
 
@@ -322,19 +321,21 @@ static void tempoMapControllerTests() {
     constexpr auto bar = alien::timeline::ticksPerBar;
     const auto published = [&] { return engine.arrangementMailbox.publishedCount(); };
     const auto base = published();
-    require(c.setTempoChange(2 * bar, 60.0) && c.undoLabel() == "Tempo change" && published() == base + 1,
+    const auto tempo = [&](const alien::command::Command& edit) { return alien::command::CommandEngine(c).execute(edit).changed; };
+    using alien::command::SetTempoChange; using alien::command::MoveTempoChange;
+    require(tempo(SetTempoChange{2 * bar, 60.0}) && c.undoLabel() == "Tempo change" && published() == base + 1,
         "a tempo change is one undo step and republishes the song");
-    require(!c.setTempoChange(0, 90.0) && !c.setTempoChange(bar, 300.0) && !c.setTempoChange(2 * bar, 60.0),
+    require(!tempo(SetTempoChange{0, 90.0}) && !tempo(SetTempoChange{bar, 300.0}) && !tempo(SetTempoChange{2 * bar, 60.0}),
         "tick 0, out-of-range tempos and repeats are refused");
-    require(c.moveTempoChange(2 * bar, bar) && c.timeline().tempoAt(bar) == 60.0 && c.undoLabel() == "Move tempo change", "a change moves");
+    require(tempo(MoveTempoChange{2 * bar, bar}) && c.timeline().tempoAt(bar) == 60.0 && c.undoLabel() == "Move tempo change", "a change moves");
     require(c.undo() && c.timeline().tempoAt(bar) == 120.0 && c.timeline().tempoAt(2 * bar) == 60.0, "and the move undoes");
-    require(c.removeTempoChange(2 * bar) && c.timeline().tempoChanges.empty(), "a change is removed");
+    require(tempo(alien::command::RemoveTempoChange{2 * bar}) && c.timeline().tempoChanges.empty(), "a change is removed");
     require(c.undo() && c.timeline().tempoChanges.size() == 1, "and the removal undoes");
     require(c.redo() && c.timeline().tempoChanges.empty() && c.undo(), "redo removes it again");
-    c.setBpm(100); c.commit("Tempo");
+    alien::command::CommandEngine(c).execute(alien::command::SetTempo{100});
     require(c.songTempo().tempoAt(0) == 100.0 && c.songTempo().tempoAt(2 * bar) == 60.0,
         "the project tempo plays until the first change");
-    require(c.clearTempoChanges() && c.timeline().tempoChanges.empty() && !c.clearTempoChanges(), "all changes can be cleared");
+    require(tempo(alien::command::ClearTempoChanges{}) && c.timeline().tempoChanges.empty() && !tempo(alien::command::ClearTempoChanges{}), "all changes can be cleared");
     alien::SessionProjectData saved = alien::toProjectData(c.document());
     require(c.undo() && alien::toProjectData(c.document()).timeline.tempoChanges.size() == 1 && saved.timeline.tempoChanges.empty(),
         "the tempo map is part of the saved project");
@@ -410,7 +411,7 @@ static void missingAudioTests() {
         require(c.installAudio(loop, 1, 2, makeClip(0.2f)), "install clip");
         c.loadDrum(kick, 2, 3); waitIdle(c);
         require(c.document().tracks[2].drumAssets[3] != nullptr, "drum pad loaded");
-        c.setClipPattern(0, 0, patternWith(65), false); c.setBpm(133); c.commit("Edit");
+        c.setClipPattern(0, 0, patternWith(65), false); alien::command::CommandEngine(c).execute(alien::command::SetTempo{133});
         bool done = false, ok = false;
         c.writeProject(song, false, [&](bool r) { ok = r; done = true; });
         for (int i = 0; i < 200 && !done; ++i) pump(10);
@@ -518,7 +519,7 @@ static void timelineIntegrationTests() {
         require(alien::writeClipWav(wav, *makeClip(8000, 10400), cancel, error), "write a 1.3 second sample");
         ToneEngine engine; alien::ProjectController c(engine); c.pushDocumentToEngine();
         require(c.installAudio(wav, 1, 0, makeClip(8000, 10400)), "install the audio");
-        c.setBpm(100); c.commit("Tempo");
+        alien::command::CommandEngine(c).execute(alien::command::SetTempo{100});
         require(c.naturalLength(1, 0) == 9 * ticksPerStep, "1.3 seconds at 100 BPM is 2080 ticks, rounded up to 9 sixteenths");
         std::uint32_t id = 0;
         require(c.placeRegion(1, 0, 0, &id) && c.timeline().find(id) != nullptr && c.timeline().find(id)->length == 9 * ticksPerStep, "a placed audio clip has that length");

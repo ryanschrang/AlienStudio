@@ -384,7 +384,6 @@ public:
     std::function<void()> onRelinkAudio;                // choose a folder to search for missing audio
     std::function<void()> onTitleChanged;               // header subtitle text changed
     std::function<void()> onStructureChanged;           // tracks/scenes added, removed, renamed or moved
-    std::function<void(const juce::String&)> onEdited;  // a committed document edit, with an undo label
     // Optional presenter for deterministic UI tests and alternative menu hosts.
     // The native asynchronous popup remains the default.
     std::function<void(juce::PopupMenu, std::function<void(int)>)> trackMenuLauncher, sceneMenuLauncher;
@@ -843,16 +842,16 @@ private:
 
     void executeTrackCommand(const command::Command& edit) {
         const auto result = command::CommandEngine(controller).execute(edit);
-        if (result.ok && result.changed) structureChanged(true, {}, false);
+        if (result.ok && result.changed) structureChanged(true);
     }
 
-    void structureChanged(bool shapeChanged, const juce::String& label, bool needsCommit = true) {
+    // Every edit here is a command that made its own Undo step; the host only refreshes.
+    void structureChanged(bool shapeChanged) {
         if (shapeChanged) rebuildGrid();
         refreshSelectedClip();
         repaint();
         if (onStructureChanged) onStructureChanged();
         if (onTitleChanged) onTitleChanged();
-        if (needsCommit && onEdited) onEdited(label);
     }
 
     SessionClipButton* clipButton(int track, int scene) const {
