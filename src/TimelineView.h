@@ -1819,7 +1819,7 @@ private:
             menu.addItem(cmdGroup, "Group", selected.size() > 1); menu.addItem(cmdUngroup, "Ungroup", anyGrouped);
             menu.addSeparator();
             menu.addItem(cmdOpen, r != nullptr && r->isPattern() ? "Open in Channel Rack" : "Open clip");
-            if (r != nullptr && !r->isPattern()) menu.addItem(cmdMakeUnique, "Make this placement unique", controller.placementShared(hit.region));
+            if (r != nullptr) menu.addItem(cmdMakeUnique, "Make this placement unique", controller.placementShared(hit.region));
             if (r != nullptr && !r->isPattern() && !controller.document().placementContent(*r).isAudioClip())
                 menu.addItem(cmdDetectChords, "Detect chords into the chord track");
             launch(std::move(menu), area, [this, region = hit.region, warpIndex = hit.warp, tick](int id) {

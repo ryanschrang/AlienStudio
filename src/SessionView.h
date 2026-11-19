@@ -363,7 +363,7 @@ public:
             if (choice >= 1000 && choice < 1000 + static_cast<int>(rackIds.size()))
                 changed = command::CommandEngine(c).execute(command::AssignRackClip{track, scene, rackIds[static_cast<std::size_t>(choice - 1000)]}).changed;
             if (!changed) { safe->setImportStatus("Nothing changed: that cell cannot take it (it may be frozen, recording or already linked).", {}); return; }
-            safe->setImportStatus(moving ? "Moved the Session clip to its new cell." : choice >= 1000 ? "Assigned a shared rack source. One rack source can launch per scene; its channels keep their routing."
+            safe->setImportStatus(moving ? "Moved the Session clip to its new cell." : choice >= 1000 ? "Assigned a shared rack source. Each assigned row can launch its own occurrence; the source's channels keep their routing."
                                   : choice == 5 ? "Placed the shared rack source in Song."
                                   : choice == 6 ? "Created an empty MIDI clip." : choice == 7 ? "Duplicated clip into a free cell; its edits are independent."
                                   : choice == 2 ? "Pasted an independent copy." : choice == 3 ? "Pasted a linked clip: editing it edits every linked cell."
