@@ -1047,7 +1047,7 @@ static void audioSlipDragChecks() {
     require(rig.oneUndoRestores(mixed), "several audio slips form one undo step");
 
     // The existing tempo-aware slip operation supplies source seconds.
-    require(rig.controller.setTempoChange(240, 60), "add a tempo change under the slipped source range");
+    require(alien::command::CommandEngine(rig.controller).execute(alien::command::SetTempoChange{240, 60}).changed, "add a tempo change under the slipped source range");
     rig.view.refresh();
     c.setSelection({audio});
     rig.drag(from, {to}, altLeft);
@@ -1575,7 +1575,7 @@ static void tempoChecks() {
     rig.doubleClick(rig.ruler(0));
     require(!rig.asked && !rig.messages.empty() && rig.t().tempoChanges.empty(), "no tempo change at the very start");
     // A clip placed after a slower tempo lasts more ticks: the audio clip is four seconds.
-    require(rig.controller.setTempoChange(8 * bar, 60.0), "fixture: 60 BPM from bar 9");
+    require(alien::command::CommandEngine(rig.controller).execute(alien::command::SetTempoChange{8 * bar, 60.0}).changed, "fixture: 60 BPM from bar 9");
     require(rig.controller.naturalLength(2, 0, 0) == 2 * bar && rig.controller.naturalLength(2, 0, 8 * bar) == bar,
         "an audio clip's length on the song follows the tempo where it is placed");
 }
@@ -2268,7 +2268,7 @@ static void freezeMenuChecks() {
         require(rig->controller.installFrozenTrack(track,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("Freeze-UI.wav"),audio,expected),"UI installs a frozen track");
         rig->view.refresh();
     };
-    rig->view.onUnfreezeTrack=[&](int track){unfrozen=track;require(rig->controller.unfreezeTrack(track),"UI unfreezes track");rig->view.refresh();};
+    rig->view.onUnfreezeTrack=[&](int track){unfrozen=track;require(alien::command::CommandEngine(rig->controller).execute(alien::command::UnfreezeTrack{track}).changed,"UI unfreezes track");rig->view.refresh();};
     const auto header=juce::Point<int>{40,c.rowTop(c.displayRowOf(2))+20};
     rig->rightClick(header);require(entry(rig->menu.items(),TimelineCanvas::cmdFreeze)!=nullptr,"track header offers freeze");
     rig->menu.done(TimelineCanvas::cmdFreeze);

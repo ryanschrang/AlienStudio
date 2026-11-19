@@ -10,6 +10,7 @@
 #include "SidechainCommands.h"
 #include "DeviceCommands.h"
 #include "TempoCommands.h"
+#include "FreezeCommands.h"
 #include "SongMarkerCommands.h"
 #include "SongClipCommands.h"
 #include "ClipNotesCommands.h"
@@ -1200,23 +1201,6 @@ public:
         engine.stepVelocities[static_cast<std::size_t>(step)].store(velocity);
         return true;
     }
-    void setBpm(int bpm) {
-        if (busy || (std::any_of(doc.timeline.regions.begin(),doc.timeline.regions.end(),[](const auto& r){return !r.warp.empty();}) && (isRecording() || engine.recording.phase.load()!=RecordControls::idle))) return;
-        const bool unfreezing=juce::jlimit(60,200,bpm)!=doc.bpm && unfreezeForTempo();
-        const bool hasWarp=std::any_of(doc.timeline.regions.begin(),doc.timeline.regions.end(),[](const auto& r){return !r.warp.empty();});
-        if(hasWarp && juce::jlimit(60,200,bpm)!=doc.bpm) {engine.arrangementPreparing.store(true);engine.playing.store(false);}
-        doc.bpm = juce::jlimit(60, 200, bpm);
-        engine.bpm.store(doc.bpm);
-        if(unfreezing && onDocumentRestored)onDocumentRestored();
-    }
-    // Frozen audio was rendered at the old tempo, so a tempo edit unfreezes every frozen track first.
-    bool unfreezeForTempo() {
-        if(!anyFrozenTrack())return false;
-        tempo_edit::unfreezeAll(doc);
-        pushDocumentToEngine();
-        status("Tracks unfrozen for tempo change.",{});
-        return true;
-    }
     bool hasWarpedAudio() const {
         return std::any_of(doc.timeline.regions.begin(),doc.timeline.regions.end(),[](const auto& r){return !r.warp.empty();});
     }
@@ -1302,29 +1286,6 @@ public:
     }
     // The song's tempo map: its tempo changes after the project tempo.
     timeline::TempoMap songTempo() const noexcept { return {doc.timeline.tempoChanges, static_cast<double>(doc.bpm)}; }
-    // Tempo changes on the Song, each one undo step. Frozen tracks are unfrozen first.
-    bool setTempoChange(std::int64_t tick, double bpm) {
-        return editTempoMap("Tempo change", [=](timeline::Timeline& t) { return t.setTempoChange(tick, bpm); });
-    }
-    bool moveTempoChange(std::int64_t from, std::int64_t to) {
-        return editTempoMap("Move tempo change", [=](timeline::Timeline& t) { return t.moveTempoChange(from, to); });
-    }
-    bool removeTempoChange(std::int64_t tick) {
-        return editTempoMap("Remove tempo change", [=](timeline::Timeline& t) { return t.removeTempoChange(tick); });
-    }
-    bool clearTempoChanges() {
-        return editTempoMap("Remove tempo changes", [](timeline::Timeline& t) { return t.clearTempoChanges(); });
-    }
-    bool editTempoMap(const juce::String& label, const std::function<bool(timeline::Timeline&)>& edit) {
-        if (busy || isRecording()) return false;
-        auto probe = doc.timeline;
-        if (!edit(probe) || !probe.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount)) return false;
-        const bool unfrozen = unfreezeForTempo();
-        const bool changed = editTimeline(label, edit);
-        if (unfrozen && !changed) commit("Unfreeze tracks", -1, -1, {});
-        if (unfrozen && onDocumentRestored) onDocumentRestored();
-        return changed;
-    }
     // Live side of SetLivePreset and SetLaunchQuantization. CommandEngine owns the history entry.
     bool setLivePreset(int preset) {
         if (busy || preset < 0 || preset >= presetCount) return false;
@@ -2007,17 +1968,15 @@ public:
         if(!toProjectData(doc).valid())return fail();
         pushDocumentToEngine();commit("Freeze track");if(onDocumentRestored)onDocumentRestored();return true;
     }
-    bool unfreezeTrack(int track) {
-        if(busy || isRecording() || !isTrackFrozen(track))return false;
-        const int scene=doc.tracks[static_cast<std::size_t>(track)].settings.freezeScene;
-        if(!doc.timeline.unfreezeTrack(track))return false;
-        doc.tracks[static_cast<std::size_t>(track)].settings.freezeScene=-1;
-        if(doc.isValidCell(track,scene))doc.clearClip(track,scene);
-        if(!anyFrozenTrack()) {
-            doc.timeline.lengthBars=std::max(doc.timeline.freezeBaseLengthBars,doc.timeline.minLengthBars());
-            doc.timeline.freezeBaseLengthBars=0;
-        }
-        pushDocumentToEngine();commit("Unfreeze track");if(onDocumentRestored)onDocumentRestored();return true;
+    // Live side of UnfreezeTrack (the Song track menu's Unfreeze). CommandEngine owns the history entry.
+    bool applyUnfreezeCommand(int track) {
+        if(!canEditMidiClips())return false;
+        auto candidate=doc;
+        if(freeze_edit::unfreeze(candidate,track).isNotEmpty())return false;
+        doc=std::move(candidate);
+        pushDocumentToEngine();
+        if(onDocumentRestored)onDocumentRestored();
+        return true;
     }
 
     // Deleting a pattern renumbers the ones after it, and the timeline must follow.

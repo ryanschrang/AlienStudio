@@ -503,7 +503,11 @@ private:
         };
         // ...and on the master, the returns and buses in use, and the Channel Rack's instruments.
         timelineView.trackAutomation().pluginTargets = [this] { return alien::PluginHost::automationTargets(controller.document()); };
-        timelineView.onUnfreezeTrack=[this](int track){if(controller.unfreezeTrack(track)){refreshExtraViews();timelineView.setStatus("Track unfrozen; original clips and saved settings restored.");}};
+        timelineView.onUnfreezeTrack=[this](int track){
+            const auto result=alien::command::CommandEngine(controller).execute(alien::command::UnfreezeTrack{track});
+            if(result.ok && result.changed){refreshExtraViews();timelineView.setStatus("Track unfrozen; original clips and saved settings restored.");}
+            else if(!result.ok)timelineView.setStatus(result.error);
+        };
         timelineView.onTitleChanged = [this] { if (tabs.getCurrentTabIndex() == 5) updateEditorTitle(); };
         auto& canvas = timelineView.timelineCanvas();
         // The audio callback receives only the enabled inputs, in order; a track's input counts among those.
@@ -735,11 +739,6 @@ private:
         };
         sessionView.onRelinkAudio = [this] { chooseRelinkFolder(); };
         sessionView.onTitleChanged = [this] { updateEditorTitle(); };
-        sessionView.onEdited = [this](const juce::String& label) {
-            const auto& d = controller.document();
-            const bool clipEdit = label == "Remove audio";
-            controller.commit(label, clipEdit ? d.selectedTrack : -1, clipEdit ? d.selectedScene : -1);
-        };
         sessionView.onStructureChanged = [this] {
             mixerPanel.rebuild();
             restorePlugins();

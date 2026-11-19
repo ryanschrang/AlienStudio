@@ -379,16 +379,16 @@ static void freezeWorkflow() {
         && alien::toProjectData(c.document()).valid(),"frozen cache references follow reordered scenes");
     require(c.undo() && c.timeline()==frozen,"scene reorder undo restores frozen references");
 
-    require(c.unfreezeTrack(0) && !c.isTrackFrozen(0) && c.timeline().lengthBars==1
+    require(alien::command::CommandEngine(c).execute(alien::command::UnfreezeTrack{0}).changed && !c.isTrackFrozen(0) && c.timeline().lengthBars==1
         && c.timeline().find(original.regions.front().id)!=nullptr && c.timeline().frozenOriginals.empty(),"unfreeze restores originals and song length");
     require(c.timeline().parameterLanes == original.parameterLanes
         && c.document().tracks[0].plugins.effects[0].instanceId == instance,
         "unfreeze restores the same plugin automation target");
     require(c.undo() && c.isTrackFrozen(0),"unfreeze is undoable");
-    c.setBpm(130);c.commit("Tempo");
+    alien::command::CommandEngine(c).execute(alien::command::SetTempo{130});
     require(!c.anyFrozenTrack() && c.document().bpm==130 && c.timeline().frozenOriginals.empty(),"tempo change safely unfreezes");
     require(c.undo() && c.isTrackFrozen(0) && c.document().bpm==120,"tempo undo restores freeze state");
-    require(c.setTempoChange(alien::timeline::ticksPerBar,90.0) && !c.anyFrozenTrack() && c.timeline().tempoChanges.size()==1
+    require(alien::command::CommandEngine(c).execute(alien::command::SetTempoChange{alien::timeline::ticksPerBar,90.0}).changed && !c.anyFrozenTrack() && c.timeline().tempoChanges.size()==1
         && c.undoLabel()=="Tempo change","a tempo change on the song unfreezes too, in one undo step");
     require(c.undo() && c.isTrackFrozen(0) && c.timeline().tempoChanges.empty(),"undoing it restores the freeze");
     // The commands: Preview predicts the unfreeze, execute does it in one Undo step, and nothing else thaws.
@@ -409,6 +409,26 @@ static void freezeWorkflow() {
         require(mapped.ok && mapped.changed && mapped.after.timeline.tempoChanges.size()==1 && mapped.after.timeline.frozenOriginals.empty() && c.isTrackFrozen(0),"SetTempoChange Preview predicts the unfreeze");
         require(commands.execute(alien::command::SetTempoChange{alien::timeline::ticksPerBar/2,90.0}).changed && !c.anyFrozenTrack() && alien::sameContent(mapped.after,c.document()),"SetTempoChange does what Preview said");
         require(c.undo() && c.isTrackFrozen(0) && c.timeline()==frozen,"one Undo restores the map and the freeze");
+        // UnfreezeTrack (the Song track menu's Unfreeze): Preview predicts it without thawing anything, and it is one Undo step.
+        const auto thawed=commands.preview(alien::command::UnfreezeTrack{0});
+        require(thawed.ok && thawed.changed && c.isTrackFrozen(0) && c.timeline()==frozen && thawed.after.tracks[0].settings.freezeScene==-1
+            && thawed.after.timeline.frozenOriginals.empty() && thawed.after.timeline.lengthBars==1 && thawed.changes[0].contains("Unfreeze"),
+            "UnfreezeTrack Preview predicts the original clips and song length and leaves the track frozen");
+        require(commands.execute(alien::command::UnfreezeTrack{0}).changed && !c.isTrackFrozen(0) && alien::sameContent(thawed.after,c.document())
+            && c.undoLabel()=="Unfreeze track" && engine->tracks[0].freezeScene.load()==-1,"UnfreezeTrack does what Preview said and tells the engine");
+        require(!commands.execute(alien::command::UnfreezeTrack{0}).ok && commands.preview(alien::command::UnfreezeTrack{0}).error.contains("not frozen")
+            && !commands.preview(alien::command::UnfreezeTrack{9}).ok,"a track that is not frozen, or missing, is refused");
+        require(c.undo() && c.isTrackFrozen(0) && c.timeline()==frozen && engine->tracks[0].freezeScene.load()==c.document().tracks[0].settings.freezeScene,
+            "one Undo freezes the track again");
+        engine->recording.phase.store(alien::RecordControls::countIn);
+        require(!commands.execute(alien::command::UnfreezeTrack{0}).ok && c.isTrackFrozen(0),"unfreezing is refused while recording counts in");
+        engine->recording.phase.store(alien::RecordControls::idle);
+        {
+            juce::String error;
+            const auto parsed=alien::command::parse("UnfreezeTrack",alien::command::arguments(alien::command::UnfreezeTrack{0}),error);
+            require(parsed && std::holds_alternative<alien::command::UnfreezeTrack>(*parsed) && std::get<alien::command::UnfreezeTrack>(*parsed).track==0,
+                "UnfreezeTrack round-trips through its written arguments");
+        }
         // A rack channel may not be routed into a frozen track, and a channel in one holds the rack's channels still.
         require(commands.execute(alien::command::AddRackChannel{"kick"}).changed,"rack channel fixture");
         const int channel=c.document().channelRack.channelCount-1;
@@ -484,7 +504,7 @@ static void freezeAudioAndSuspension() {
     require(c.editTimeline("Frozen automation",[](alien::timeline::Timeline& t){alien::automation::Lane lane{0,alien::automation::Parameter::volume};lane.put({0,0.2f});t.automationLanes.push_back(lane);return true;}),"automation remains editable");
     live->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,512,{});
     require(approx(l[400],0.24f) && approx(right[400],0.48f),"automation applies once after frozen cache");
-    require(c.unfreezeTrack(0),"restore original DSP");live->timelineSeek.store(0);
+    require(alien::command::CommandEngine(c).execute(alien::command::UnfreezeTrack{0}).changed,"restore original DSP");live->timelineSeek.store(0);
     live->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,512,{});
     require(instrumentRaw->processCalls>0 && effectRaw->processCalls>0,"unfreeze resumes original processing");
     imported.clip.reset();file.deleteFile();

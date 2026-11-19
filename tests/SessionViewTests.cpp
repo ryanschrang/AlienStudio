@@ -496,16 +496,15 @@ static void selectionAndStructure() {
     menuResult(0);
     require(rig.controller.document().trackCount() == 4 && rig.controller.document().tracks[1].name == "Track 2",
         "cancelling the track menu leaves the document unchanged");
-    // Command-backed menus own their commit, even when the host's legacy edit callback commits.
-    int legacyEdits = 0, structureEdits = 0;
-    rig.view.onEdited = [&](const juce::String& label) { ++legacyEdits; rig.controller.commit(label); };
+    // Command-backed menus own their commit; the view has no separate edit callback for the host to commit.
+    int structureEdits = 0;
     rig.view.onStructureChanged = [&] { ++structureEdits; };
     rig.controller.commit("Baseline");
     const auto baseline = rig.controller.document();
     menuResult(4);
     require(rig.controller.document().trackCount() == 5 && rig.controller.undoLabel() == "Add track",
         "the menu adds a track through a named command");
-    require(structureEdits == 1 && legacyEdits == 0, "command menus refresh the host without a second commit");
+    require(structureEdits == 1, "command menus refresh the host without a second commit");
     require(rig.controller.undo() && sameContent(rig.controller.document(), baseline), "one undo restores the menu edit");
     require(rig.controller.redo() && rig.controller.document().trackCount() == 5, "the menu edit can be redone");
     require(rig.controller.undo(), "restore baseline for move");
@@ -544,9 +543,8 @@ static void selectionAndStructure() {
     clickButton(*addButton);
     require(rig.controller.document().trackCount() == 5 && rig.controller.undoLabel() == "Add track",
         "the toolbar also creates a track through a command");
-    require(rig.controller.undo() && sameContent(rig.controller.document(), baseline) && legacyEdits == 0,
+    require(rig.controller.undo() && sameContent(rig.controller.document(), baseline),
         "toolbar and dialog commands each commit once without legacy notifications");
-    rig.view.onEdited = {};
     rig.view.onStructureChanged = {};
     rig.view.trackMenuLauncher = {};
     rig.view.rebuildGrid();
@@ -1210,12 +1208,12 @@ static void explorerDropChecks() {
 
 static void sceneMenuCommands() {
     Rig rig; auto& c = rig.controller; auto& view = rig.view;
-    int legacy = 0, refresh = 0; view.onEdited = [&](const juce::String& label) { ++legacy; c.commit(label); }; view.onStructureChanged = [&] { ++refresh; };
+    int refresh = 0; view.onStructureChanged = [&] { ++refresh; };
     std::function<void(int)> choose; juce::PopupMenu menu;
     view.sceneMenuLauncher = [&](juce::PopupMenu shown, std::function<void(int)> callback) { menu = std::move(shown); choose = std::move(callback); };
     const auto open = [&](int scene) { view.sceneLauncher(scene)->onRightClick(); };
     const int original = c.document().sceneCount(); open(0); choose(2);
-    require(c.document().sceneCount() == original + 1 && c.undoLabel() == "Duplicate scene" && legacy == 0 && refresh == 1, "scene menu owns one named command commit and refreshes host");
+    require(c.document().sceneCount() == original + 1 && c.undoLabel() == "Duplicate scene" && refresh == 1, "scene menu owns one named command commit and refreshes host");
     require(c.undo() && c.document().sceneCount() == original && !c.canUndo(), "one Undo removes scene duplicate without a legacy step"); view.rebuildGrid();
     open(0); auto stale = choose; require(c.moveScene(0, 1), "stale menu fixture reorder"); c.commit("Fixture reorder");
     stale(5); require(c.document().sceneCount() == original, "stale scene menu cannot delete replacement row"); view.rebuildGrid();
@@ -1223,7 +1221,7 @@ static void sceneMenuCommands() {
     view.namePrompt = [&](const juce::String&, const juce::String&, std::function<void(const juce::String&)> done) { rename = std::move(done); };
     open(0); choose(1); const auto renamedId = c.document().scenes[0].id;
     require(c.moveScene(0, 1), "pending rename fixture reorder"); c.commit("Move fixture"); rename("My scene");
-    require(c.document().scenes[1].id == renamedId && c.document().scenes[1].name == "My scene" && legacy == 0, "deferred scene rename follows identity without extra commit");
+    require(c.document().scenes[1].id == renamedId && c.document().scenes[1].name == "My scene", "deferred scene rename follows identity without extra commit");
     c.setExternalBusy(true); view.rebuildGrid(); open(0);
     for (juce::PopupMenu::MenuItemIterator item(menu); item.next();) if (item.getItem().itemID > 0) require(!item.getItem().isEnabled, "scene menu actions disabled while busy");
     const auto label = c.undoLabel(); choose(2); require(c.undoLabel() == label && c.document().sceneCount() == original, "busy scene menu refuses queued action");
@@ -1263,9 +1261,9 @@ static void removeAudioCommandButton() {
     require(remove!=nullptr,"Remove audio button exists");
     auto audio=std::make_shared<SessionAudioClip>();audio->sampleRate=8000;audio->channels=1;audio->frames=80;audio->left.assign(80,.2f);audio->buildWaveform();
     require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("remove-button.wav"),0,0,audio),"remove button fixture");
-    c.selectClip(0,0);c.markAsNewBaseline();rig.view.refreshSelectedClip();int refresh=0,legacy=0;
-    rig.view.onCellContentChanged=[&]{++refresh;};rig.view.onEdited=[&](const juce::String&){++legacy;};clickButton(*remove);
-    require(!c.document().clip(0,0).isAudioClip() && c.undoLabel()=="Remove audio" && refresh==1 && legacy==0 && !remove->isEnabled(),"remove button uses command and refresh-only notification");
+    c.selectClip(0,0);c.markAsNewBaseline();rig.view.refreshSelectedClip();int refresh=0;
+    rig.view.onCellContentChanged=[&]{++refresh;};clickButton(*remove);
+    require(!c.document().clip(0,0).isAudioClip() && c.undoLabel()=="Remove audio" && refresh==1 && !remove->isEnabled(),"remove button uses command and refresh-only notification");
     require(c.undo() && !c.canUndo() && c.document().clip(0,0).audio==audio,"remove button Undo restores audio in one step");
     rig.view.refreshSelectedClip();rig.engine.recording.phase.store(RecordControls::countIn);clickButton(*remove);
     require(c.document().clip(0,0).audio==audio && refresh==1 && c.canRedo(),"queued remove button refuses during count-in and preserves redo");rig.engine.recording.phase.store(RecordControls::idle);
@@ -1275,9 +1273,8 @@ static void rackAssignmentCommandMenu() {
     Rig rig; auto& c = rig.controller; rig.fillClip(0,0); c.selectClip(0,0); c.markAsNewBaseline();
     std::function<void(int)> choose;
     rig.view.linkMenuLauncher = [&](juce::PopupMenu, std::function<void(int)> done) { choose = std::move(done); };
-    int refresh = 0, legacy = 0; rig.view.onCellContentChanged = [&] { ++refresh; }; rig.view.onEdited = [&](const juce::String&) { ++legacy; };
-    const auto before = c.document(); rig.view.showLinkMenu(); choose(1000);
-    require(c.document().clip(0,0).rackClip == c.channelRack().clips[0] && c.undoLabel() == "Assign rack clip" && refresh == 1 && legacy == 0,
+    int refresh = 0; rig.view.onCellContentChanged = [&] { ++refresh; }; const auto before = c.document(); rig.view.showLinkMenu(); choose(1000);
+    require(c.document().clip(0,0).rackClip == c.channelRack().clips[0] && c.undoLabel() == "Assign rack clip" && refresh == 1,
         "Session assignment uses command and refresh-only host notification");
     require(c.undo() && !c.canUndo() && sameContent(before,c.document()), "rack assignment menu Undo restores replaced MIDI in one step");
     rig.view.showLinkMenu(); rig.fillClip(1,0); require(c.moveTrack(0,1), "stale rack assignment row fixture"); c.commit("Move fixture");
@@ -1289,19 +1286,18 @@ static void allTypeDuplicateMenu() {
     Rig rig; auto& c = rig.controller;
     std::function<void(int)> choose; juce::PopupMenu shown;
     rig.view.linkMenuLauncher = [&](juce::PopupMenu menu, std::function<void(int)> done) { shown = std::move(menu); choose = std::move(done); };
-    int notifications = 0, legacy = 0;
+    int notifications = 0;
     rig.view.onCellContentChanged = [&] { ++notifications; };
-    rig.view.onEdited = [&](const juce::String&) { ++legacy; };
     auto audio = std::make_shared<SessionAudioClip>(); audio->sampleRate = 8000; audio->channels = 1;
     audio->frames = 80; audio->left.assign(80,.2f); audio->buildWaveform();
     require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("menu-duplicate.wav"),0,0,audio), "audio menu fixture");
     c.selectClip(0,0); c.markAsNewBaseline(); rig.view.showLinkMenu(); choose(7);
-    require(c.document().clip(0,1).audio == audio && c.document().selectedScene == 1 && c.undoLabel() == "Duplicate clip" && notifications == 1 && legacy == 0,
+    require(c.document().clip(0,1).audio == audio && c.document().selectedScene == 1 && c.undoLabel() == "Duplicate clip" && notifications == 1,
         "audio duplicate menu uses one command and selects independent destination");
     require(c.undo() && !c.canUndo() && !c.document().cellClip(0,1), "audio menu Undo has no legacy second commit");
     require(c.assignRackClip(1,0,c.channelRack().clips[0]), "rack menu fixture"); c.selectClip(1,0); c.markAsNewBaseline();
     rig.view.showLinkMenu(); choose(7);
-    require(c.document().clip(1,1).rackClip && c.document().clip(1,1).rackClip != c.document().clip(1,0).rackClip && notifications == 2 && legacy == 0,
+    require(c.document().clip(1,1).rackClip && c.document().clip(1,1).rackClip != c.document().clip(1,0).rackClip && notifications == 2,
         "rack duplicate menu allocates independent pattern");
     require(c.undo() && !c.canUndo(), "rack menu undo is one step");
     rig.view.showLinkMenu(); require(c.moveTrack(1,1), "stale all-type duplicate fixture"); c.commit("Move row fixture"); const auto moved = c.document(); choose(7);
@@ -1312,33 +1308,31 @@ static void moveClipMenuCommands() {
     Rig rig; auto& c = rig.controller; rig.fillClip(0,0); c.selectClip(0,0); c.markAsNewBaseline();
     std::function<void(int)> choose;
     rig.view.linkMenuLauncher = [&](juce::PopupMenu, std::function<void(int)> done) { choose = std::move(done); };
-    int selection = 0, refreshed = 0, legacy = 0;
+    int selection = 0, refreshed = 0;
     rig.view.onSelectionChanged = [&] { ++selection; };
     rig.view.onCellContentChanged = [&] { ++refreshed; };
-    rig.view.onEdited = [&](const juce::String&) { ++legacy; };
     const auto source = c.document().cellClip(0,0);
     rig.view.showLinkMenu(); choose(2000); // first empty cell: same track, next scene
     require(!c.document().cellClip(0,0) && c.document().cellClip(0,1) == source && c.document().selectedScene == 1
-        && c.undoLabel() == "Move clip" && selection == 1 && refreshed == 1 && legacy == 0, "Move submenu executes command and refreshes without legacy commit");
+        && c.undoLabel() == "Move clip" && selection == 1 && refreshed == 1, "Move submenu executes command and refreshes without legacy commit");
     require(c.undo() && !c.canUndo() && c.document().selectedScene == 0 && c.document().cellClip(0,0) == source, "menu move undoes once and restores selection");
     rig.view.showLinkMenu(); rig.fillClip(0,1); const auto replacement = c.document(); choose(2000);
     require(sameContent(replacement,c.document()) && refreshed == 1, "stale destination cannot overwrite newly inserted clip");
     rig.view.showLinkMenu(); require(c.moveScene(2,1), "stale destination scene reorder fixture"); c.commit("Reorder fixture"); const auto reordered = c.document(); choose(2000);
     require(sameContent(reordered,c.document()) && refreshed == 1, "stale destination scene identity refuses after reorder");
     c.selectClip(0,0); rig.view.showLinkMenu(); rig.engine.recording.phase.store(RecordControls::countIn); const auto countIn = c.document(); choose(2000);
-    require(sameContent(countIn,c.document()) && legacy == 0, "queued move refuses during count-in"); rig.engine.recording.phase.store(RecordControls::idle);
+    require(sameContent(countIn,c.document()), "queued move refuses during count-in"); rig.engine.recording.phase.store(RecordControls::idle);
 }
 
 static void clipboardMenuCommands() {
     Rig rig; auto& c = rig.controller; rig.fillClip(0, 0); c.selectClip(0, 0);
     std::function<void(int)> choose;
     rig.view.linkMenuLauncher = [&](juce::PopupMenu, std::function<void(int)> done) { choose = std::move(done); };
-    int refresh = 0, legacy = 0;
+    int refresh = 0;
     rig.view.onCellContentChanged = [&] { ++refresh; };
-    rig.view.onEdited = [&](const juce::String&) { ++legacy; };
     rig.view.showLinkMenu(); choose(1); c.selectClip(1, 1); c.markAsNewBaseline();
     rig.view.showLinkMenu(); choose(2);
-    require(c.undoLabel() == "Paste clip" && c.document().cellClip(1, 1) && refresh == 1 && legacy == 0,
+    require(c.undoLabel() == "Paste clip" && c.document().cellClip(1, 1) && refresh == 1,
         "Paste copy menu uses a command with refresh-only notification");
     require(c.undo() && !c.canUndo() && !c.document().cellClip(1, 1), "menu paste has one undo step");
     rig.view.showLinkMenu(); choose(3);
@@ -1346,7 +1340,7 @@ static void clipboardMenuCommands() {
     rig.view.showLinkMenu(); choose(4);
     require(c.document().linkOf(1, 1) != c.document().linkOf(0, 0) && c.undoLabel() == "Make clip independent", "menu independence uses named all-type command");
     c.selectClip(2, 2); rig.view.showLinkMenu(); rig.fillClip(2, 2); const auto stale = c.document(); choose(2);
-    require(sameContent(stale, c.document()) && legacy == 0, "stale paste cannot overwrite replacement content");
+    require(sameContent(stale, c.document()), "stale paste cannot overwrite replacement content");
     rig.view.showLinkMenu(); const auto before = c.document(); rig.engine.recording.phase.store(RecordControls::countIn); choose(3);
     require(sameContent(before, c.document()), "queued linked paste refuses during count-in"); rig.engine.recording.phase.store(RecordControls::idle);
 }
@@ -1357,12 +1351,11 @@ static void clearClipCommandButton() {
     for (auto* child : rig.view.getChildren())
         if (child->getName() == "Clear selected Session clip") clear = dynamic_cast<juce::Button*>(child);
     require(clear != nullptr, "Session clear button exists");
-    int refreshed = 0, legacy = 0;
+    int refreshed = 0;
     rig.view.onClearClip = [&] { ++refreshed; };
-    rig.view.onEdited = [&](const juce::String&) { ++legacy; };
     rig.fillClip(0, 0); c.selectClip(0, 0); c.markAsNewBaseline(); rig.view.refreshSelectedClip();
     clickButton(*clear);
-    require(!c.document().cellClip(0, 0) && c.undoLabel() == "Clear clip" && refreshed == 1 && legacy == 0 && !clear->isEnabled(),
+    require(!c.document().cellClip(0, 0) && c.undoLabel() == "Clear clip" && refreshed == 1 && !clear->isEnabled(),
         "real clear control commits the command and only notifies its host to refresh");
     require(c.undo() && !c.canUndo() && c.document().clip(0, 0).notes().count == 1,
         "button clear has exactly one undo step");
