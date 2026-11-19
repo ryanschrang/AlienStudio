@@ -50,20 +50,35 @@ The application reports Windows Audio, Speaker (Realtek(R) Audio), output channe
 
 The local acceptance session is at `C:/Users/ryans/AlienStudio/.worktrees/t1-03-windows-acceptance/SharedClipVisualAcceptance.alienstudio`. It contains original built-in drum sounds and test edits made during this pass.
 
-### Findings
+### Findings fixed and retested
 
-1. The assignment status still says “One rack source can launch per scene” after assigning a rack source. Two distinct sources were assigned and launched successfully. The obsolete text is in `src/SessionView.h`, in the successful assignment status message.
-2. The Song rack placement context menu offers Open in Channel Rack, Duplicate, Copy, Cut and Delete, but omits Make this placement unique. The D2 hardware checklist describes making a rack Song placement unique. `src/TimelineView.h` explicitly adds that menu item only when `!r->isPattern()`. Session Make unique works and was tested. The Song rack placement procedure remains an acceptance gap.
+The follow-up code revision is `7d884e9773cdcf65b3453fdc5a3dde6a310c2c33`.
 
-Both findings remain unresolved by this documentation PR.
+1. Corrected the successful Session assignment status to explain that each assigned row launches its own occurrence while the source channels keep their routing. Reassigned Pattern 1 in the rebuilt application and observed the corrected text.
+2. Exposed Make this placement unique for Song rack placements using the existing `MakeSongClipUnique` command. The reducer, history handling and rack publication already support this operation. In the rebuilt application, the Song region menu created Pattern 4 from Pattern 1. One toolbar Undo restored Pattern 1 and Redo restored Pattern 4. Opening Pattern 4 and adding kick step 13 left Pattern 1 with only its original steps 1 and 5.
+
+Added `rackPlacementUniqueMenuChecks` to TimelineViewTests. It drives the actual context menu, checks busy-project refusal with unchanged document/history, verifies the new rack identity and retained Session source, proves a single Undo/Redo step, and checks that editing the copied content preserves the original. The test failed before the menu fix with “the Song rack placement menu offers Make this placement unique”, then passed after the fix.
+
+The fresh follow-up Debug app, TimelineViewTests and SessionViewTests built successfully. The affected regression run passed 5/5 suites in 31.86 seconds.
+
+```powershell
+cmake --build "$qaSource/build" --config Debug --target AlienStudio TimelineViewTests SessionViewTests --parallel 2 -- /nr:false
+ctest --test-dir "$qaSource/build" -C Debug -R '^(TimelineView|SessionView|RackProject|RackIntegration|RackLaunch)Tests$' --output-on-failure --no-tests=error
+```
+
+The local acceptance project was saved with Session Pattern 1 / Pattern 2, the independent Pattern 3 retained in the bank, and the Song placement using Pattern 4 with kick steps 1, 5 and 13. The transport was stopped.
+
+### Listening confirmation
+
+The user answered “Both sound clear” when asked whether the test scene's kick and clap through Realtek speakers were clear without clicks, dropouts or a stuck sound. This confirms the basic two-source drum playback listening check. Sustained synth ownership, physical device changes and the remaining scenarios below still require their own acceptance.
 
 ### Remaining acceptance
 
-- Audible quality, dropouts and stuck sounds await listening confirmation. UI playback indicators establish only the observed UI behavior.
+- Basic kick/clap playback has user listening confirmation. Longer dropout/stability checks and listening across other instruments and buffer sizes remain pending.
 - Sustained same-pitch synth ownership, nudges, ratchets, fractional notes, choke groups and loaded sample channels still need the physical listening pass.
 - Physical MIDI disconnection, audio-device changes with held notes, panic/restart, and project replacement during playback still need the hardware pass.
 - Manual overlapping Song lane edits, live-versus-export listening, portable media, and format 26/27 legacy reopen checks remain pending. Existing automated coverage is listed above.
 - Layout was observed at the available 1190 × 746 captured window size. Attempts to resize through the computer-use tool did not change that size. Minimum-size and 150/200% DPI acceptance remain pending.
-- The D1/D2/D3 procedures in `docs/WINDOWS_AUDIO_CHECKLIST.md` remain the full manual matrix, subject to the Song rack Make unique gap above.
+- The D1/D2/D3 procedures in `docs/WINDOWS_AUDIO_CHECKLIST.md` remain the full manual matrix, with the Song rack Make unique action now available and retested.
 
-ARCH-01 and QA-03 remain pending the unresolved findings and remaining acceptance checks.
+ARCH-01 and QA-03 remain pending the remaining hardware, listening and display acceptance checks.
