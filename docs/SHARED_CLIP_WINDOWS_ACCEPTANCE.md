@@ -35,44 +35,35 @@ ctest --test-dir "$qaSource/build" -C Debug -R '^(ClipLibrary|RackLibrary|RackLa
 
 ## Windows interactive verification
 
-Pending. Launch through the computer-use integration returned `Computer Use app approval timed out`. No app interaction or visual behavior has been verified. The device inventory query was refused, so interface, driver, sample rate, buffer size and MIDI-controller identity are unverified.
+The user enabled app control for the same fresh Debug executable used for the automated pass. The first launch returned no targetable window. A retry opened the application, and the following checks ran in the Windows UI.
 
-The manual D1/D2/D3 procedures remain in `docs/WINDOWS_AUDIO_CHECKLIST.md`. Record an exact build commit and the device configuration before performing them.
+The application reports Windows Audio, Speaker (Realtek(R) Audio), output channels 1–2, 48000 Hz, and a 480-sample / 10.0 ms buffer. Audio input is disabled. The MIDI selector offers None (off) and Test input (no controller). A physical MIDI controller was unavailable. Driver version, Windows build and display scale were not recorded.
 
-- Launch distinct sources in one scene with Beat and Bar quantization.
-- Launch the same source and pitch on two rows, stop one, and confirm the other continues.
-- Exercise nudges, ratchets, fractional notes, choke groups and sample voices during replacement.
-- Edit linked content from Create, Perform and Arrange, then Undo/Redo. Verify independent copies and Make unique.
-- Change the editor selection while playing and confirm the playing source stays selected for playback.
-- Overlap Song rack lanes, trim/move/mute/remove/replace one occurrence, seek and loop, and compare a WAV export with playback.
-- Save/reopen new and format 26/27 projects, preserving legacy duplicate-source scene behavior.
-- Hold notes through stop/panic, transport restart, document replacement and MIDI/audio-device changes.
-- Inspect queued/playing row indicators at minimum window size and 150/200% display scaling.
+| Scenario | Observed result |
+| --- | --- |
+| Distinct rack sources | Created Pattern 1 with a kick on step 1 and Pattern 2 with a clap on step 5. Assigned them to Track 1 / Scene 1 and Track 2 / Scene 1. Both assignments were accepted. |
+| Scene launch with Bar and Beat | Launched the scene under both settings. The two rack tiles entered playback and showed progress. Exact sample timing remains covered by the automated scheduler tests. |
+| Scoped row stop | Stopped Track 1 at its row stop button. Its tile lost the playback progress while Track 2 continued progressing. |
+| Shared editing from Perform and Arrange | Opening the Session rack tile entered Pattern 1 in Channel Rack. Added kick step 5. Toolbar Undo removed it and Redo restored it. Placed the shared source into Song, then double-clicked that Song region. Pattern 1 opened with steps 1 and 5. |
+| Independent copy | Session Copy / link > Make unique changed the assignment to Pattern 3. Added kick step 9 to Pattern 3. Reopened the original Pattern 1 from Song and confirmed it still had only steps 1 and 5. |
+| Save and reopen | Saved a new local SharedClipVisualAcceptance.alienstudio, reopened it through the application, and confirmed Session assignments Pattern 3 / Pattern 2. Opened Pattern 3 and confirmed steps 1, 5 and 9 survived. Transport was stopped after reopening. |
 
-ARCH-01 and QA-03 remain pending hardware and listening acceptance.
- --output-on-failure --no-tests=error
-```
+The local acceptance session is at `C:/Users/ryans/AlienStudio/.worktrees/t1-03-windows-acceptance/SharedClipVisualAcceptance.alienstudio`. It contains original built-in drum sounds and test edits made during this pass.
 
-The first local build stopped making progress during CMake build-system regeneration and was interrupted. Reconfiguration with `CMAKE_SUPPRESS_REGENERATION=ON` allowed the fresh build to complete. This setting applies only to the isolated build directory. Build output includes MSVC C4244 float-conversion warnings traced to `StreamingTempoWarp.h`, plus JUCE bundle-ID warnings at configure time. No source or CMake project configuration was edited.
+### Findings
 
-Full GitHub Actions Debug/Release builds and tests were still running when the local results were recorded. They must be checked on the current PR head before merge. Local Release testing was not performed.
+1. The assignment status still says “One rack source can launch per scene” after assigning a rack source. Two distinct sources were assigned and launched successfully. The obsolete text is in `src/SessionView.h`, in the successful assignment status message.
+2. The Song rack placement context menu offers Open in Channel Rack, Duplicate, Copy, Cut and Delete, but omits Make this placement unique. The D2 hardware checklist describes making a rack Song placement unique. `src/TimelineView.h` explicitly adds that menu item only when `!r->isPattern()`. Session Make unique works and was tested. The Song rack placement procedure remains an acceptance gap.
 
-These suites exercise existing automated scenarios. Physical-device behavior, audible playback and manual visual acceptance remain pending.
+Both findings remain unresolved by this documentation PR.
 
-## Windows interactive verification
+### Remaining acceptance
 
-Pending. Launch through the computer-use integration returned `Computer Use app approval timed out`. No app interaction or visual behavior has been verified. The device inventory query was refused, so interface, driver, sample rate, buffer size and MIDI-controller identity are unverified.
+- Audible quality, dropouts and stuck sounds await listening confirmation. UI playback indicators establish only the observed UI behavior.
+- Sustained same-pitch synth ownership, nudges, ratchets, fractional notes, choke groups and loaded sample channels still need the physical listening pass.
+- Physical MIDI disconnection, audio-device changes with held notes, panic/restart, and project replacement during playback still need the hardware pass.
+- Manual overlapping Song lane edits, live-versus-export listening, portable media, and format 26/27 legacy reopen checks remain pending. Existing automated coverage is listed above.
+- Layout was observed at the available 1190 × 746 captured window size. Attempts to resize through the computer-use tool did not change that size. Minimum-size and 150/200% DPI acceptance remain pending.
+- The D1/D2/D3 procedures in `docs/WINDOWS_AUDIO_CHECKLIST.md` remain the full manual matrix, subject to the Song rack Make unique gap above.
 
-The manual D1/D2/D3 procedures remain in `docs/WINDOWS_AUDIO_CHECKLIST.md`. Record an exact build commit and the device configuration before performing them.
-
-- Launch distinct sources in one scene with Beat and Bar quantization.
-- Launch the same source and pitch on two rows, stop one, and confirm the other continues.
-- Exercise nudges, ratchets, fractional notes, choke groups and sample voices during replacement.
-- Edit linked content from Create, Perform and Arrange, then Undo/Redo. Verify independent copies and Make unique.
-- Change the editor selection while playing and confirm the playing source stays selected for playback.
-- Overlap Song rack lanes, trim/move/mute/remove/replace one occurrence, seek and loop, and compare a WAV export with playback.
-- Save/reopen new and format 26/27 projects, preserving legacy duplicate-source scene behavior.
-- Hold notes through stop/panic, transport restart, document replacement and MIDI/audio-device changes.
-- Inspect queued/playing row indicators at minimum window size and 150/200% display scaling.
-
-ARCH-01 and QA-03 remain pending hardware and listening acceptance.
+ARCH-01 and QA-03 remain pending the unresolved findings and remaining acceptance checks.
