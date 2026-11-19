@@ -2356,6 +2356,48 @@ static void placementClipChecks() {
     require(sharing == 2, "the two placements share one clip");
 }
 
+static void rackPlacementUniqueMenuChecks() {
+    auto rig = std::make_unique<Rig>();
+    rig->song();
+    auto& controller = rig->controller;
+    const auto originalClip = rig->reg(rig->id.p).rackClip;
+    const auto originalPattern = controller.channelRack().pattern(0);
+    const int patternsBefore = controller.channelRack().patternCount;
+    require(controller.assignRackClip(3, 0, originalClip), "share the Song rack source with a Session cell");
+    controller.markAsNewBaseline();
+    const auto before = controller.document();
+    const auto point = rig->at(2 * bar + 100, tl::rackRowBase);
+    rig->rightClick(point);
+    const auto items = rig->menu.items();
+    const auto* unique = entry(items, TimelineCanvas::cmdMakeUnique);
+    require(unique != nullptr && unique->enabled, "the Song rack placement menu offers Make this placement unique");
+
+    controller.setExternalBusy(true);
+    rig->menu.done(TimelineCanvas::cmdMakeUnique);
+    controller.setExternalBusy(false);
+    require(alien::sameContent(before, controller.document()) && !controller.canUndo(), "a busy rack copy leaves the document and history unchanged");
+
+    rig->rightClick(point);
+    rig->menu.done(TimelineCanvas::cmdMakeUnique);
+    const int copy = rig->reg(rig->id.p).source;
+    require(copy == patternsBefore && controller.channelRack().patternCount == patternsBefore + 1
+            && rig->reg(rig->id.p).rackClip != originalClip
+            && controller.channelRack().pattern(copy) == originalPattern
+            && controller.document().clip(3, 0).rackClip == originalClip,
+            "the menu copies the pattern for this placement and preserves the Session source");
+    const auto after = controller.document();
+    require(controller.undoLabel() == "Make placement unique" && controller.undo()
+            && alien::sameContent(before, controller.document()) && !controller.canUndo()
+            && controller.redo() && alien::sameContent(after, controller.document()),
+            "the rack menu edit is exactly one Undo and Redo step");
+    require(controller.editRack("Edit independent pattern", [copy](rack::Project& rack) {
+        rack.setStepOn(copy, 0, 12, true);
+        return true;
+    }) && controller.channelRack().pattern(copy).steps[0][12].on
+            && controller.channelRack().pattern(0) == originalPattern,
+            "editing the independent Song pattern preserves the original shared content");
+}
+
 // Fade shapes (T1-08): the audio clip menu offers a shape for each fade, applies it to every selected audio clip as one
 // undo step, and the shape is saved from format 27.
 static void fadeShapeChecks() {
@@ -2462,6 +2504,7 @@ int main() {
     warpEditorChecks();
     freezeMenuChecks();
     placementClipChecks();
+    rackPlacementUniqueMenuChecks();
     fadeShapeChecks();
     sendAutomationEditorChecks();
     takeCompChecks();
