@@ -1342,7 +1342,7 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
     if (index == 143) { error = "ImportSongAudio takes decoded audio, which cannot be written as arguments."; return std::nullopt; }
     if (index == 132) { error = "PasteSongClips takes copied Song clips, which cannot be written as arguments."; return std::nullopt; }
     if (index == 133 || index == 134) { error = juce::String(detail::names[index]) + " takes a note sequence, which cannot be written as arguments."; return std::nullopt; }
-    static const std::array<juce::StringArray, 158> allowed{
+    static const std::array<juce::StringArray, 159> allowed{
         juce::StringArray{}, juce::StringArray{"track"}, juce::StringArray{"track", "to"},
         juce::StringArray{"track", "name"}, juce::StringArray{"track", "colour"},
         juce::StringArray{"track", "gain"}, juce::StringArray{"track", "pan"},
@@ -1373,7 +1373,7 @@ inline std::optional<Command> parse(const juce::String& commandName, const juce:
         juce::StringArray{"row", "start"}, juce::StringArray{"clip"},
         juce::StringArray{"root", "type"}, juce::StringArray{"metronome", "metronomeVolume", "countInBars", "latencyOffsetMs", "replace", "audioLatencyOffsetMs", "punch"},
         juce::StringArray{"track", "pad"}, juce::StringArray{"track", "pad", "start", "end"}, juce::StringArray{}, juce::StringArray{"track", "pad", "bounds"},
-        juce::StringArray{"track", "scene"}, juce::StringArray{"section", "start"}, juce::StringArray{"track"}
+        juce::StringArray{"track", "scene"}, juce::StringArray{"section", "start"}, juce::StringArray{"track"}, juce::StringArray{}
     };
     static_assert(std::tuple_size_v<std::remove_cvref_t<decltype(allowed)>> == detail::names.size(), "every command lists its arguments");
     const auto* object = args.getDynamicObject();
