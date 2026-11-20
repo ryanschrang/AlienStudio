@@ -110,6 +110,44 @@ int main(){
         pdc->begin(16,120,true,0);pdc->tracks[1].setSample(0,0,1);pdc->effectsAndAlign(16);
         require(pdc->tracks[1].getSample(0,4)==1,"a reused slot still aligns its new audio");
     }
+    // T1-04 D: the alignment lines are sized to the latency the plugins report, not to maxDelay.
+    {
+        using R=alien::PluginRuntime;
+        auto idle=std::make_unique<R>();idle->prepare(48000);
+        for(int s=0;s<R::alignmentStageCount;++s)require(idle->alignmentCapacity(static_cast<R::AlignmentStage>(s))==0,"a project without latent plugins reserves alignment audio");
+        require(idle->alignmentBytes()<4096,"empty alignment stages still hold audio");
+        require(runtime->alignmentCapacity(R::trackAlignment)==R::alignmentGranule,"a 4-sample plugin's stage is one granule long");
+        require(runtime->alignmentCapacity(R::returnAlignment)==0 && runtime->alignmentCapacity(R::busAlignment)==0,"stages without latent plugins grew");
+
+        // A plugin that reports more latency while playing: the callback clamps and counts, allocates nothing,
+        // and the host's poll grows only that stage, which the next block adopts.
+        auto grow=std::make_unique<R>();grow->racks[0].effectCount=1;grow->racks[0].effects[0].processor=std::make_unique<TestProcessor>(false,1,4);grow->prepare(48000);
+        alien::PluginHost growHost(*grow);
+        const auto before=grow->alignmentShortfalls();
+        grow->racks[0].effects[0].processor->setLatencySamples(3000);
+        auto block=[&](int impulseAt){grow->begin(512,120,true,0);grow->useTracks(2);if(impulseAt>=0){grow->tracks[1].setSample(0,impulseAt,1);grow->tracks[1].setSample(1,impulseAt,1);}grow->effectsAndAlign(512);};
+        const auto quiet=allocations;block(-1);block(-1);
+        require(allocations==quiet,"a too-short alignment line allocated in the callback");
+        require(grow->alignmentShortfalls()==before+2,"each short block is counted once");
+        growHost.poll();
+        require(grow->alignmentCapacity(R::trackAlignment)==R::alignmentGranule,"the callback's storage changed before it adopted the new one");
+        const auto adopt=allocations;block(0);
+        require(allocations==adopt,"adopting grown alignment storage allocated in the callback");
+        require(grow->alignmentCapacity(R::trackAlignment)==3072 && grow->alignmentCapacity(R::returnAlignment)==0,"only the track stage grew, to whole granules");
+        int heardAt=grow->tracks[1].getSample(0,0)!=0?0:-1;
+        for(int b=1;b<7&&heardAt<0;++b){block(-1);for(int i=0;i<512;++i)if(grow->tracks[1].getSample(0,i)!=0){heardAt=b*512+i;break;}}
+        require(heardAt==3000,"after growing, the faster track waits exactly as long as the latent one");
+        require(grow->alignmentShortfalls()==before+2,"the grown stage is long enough");
+        growHost.poll();   // frees the storage the callback gave back; nothing more to grow
+        require(grow->reserveAlignment()==0,"a stage that fits is not replaced");
+        // Latency falls again: polling never shrinks (so a wobbling plugin does not reallocate); a restore does.
+        grow->racks[0].effects[0].processor->setLatencySamples(4);
+        growHost.poll();block(-1);
+        require(grow->alignmentCapacity(R::trackAlignment)==3072,"polling shrank a stage");
+        require(grow->reserveAlignment(true)==1,"a restore fits the stage to the plugins");
+        block(-1);
+        require(grow->alignmentCapacity(R::trackAlignment)==R::alignmentGranule,"the stage shrank after a restore");
+    }
     runtime->racks[0].effects[0].bypass=true;runtime->begin(16,120,true,0);runtime->tracks[0].setSample(0,0,0.25f);runtime->effectsAndAlign(16);require(runtime->tracks[0].getSample(0,0)==0.25f,"FX bypass altered audio");
     alien::SessionProjectData project;juce::PluginDescription desc;desc.name="Missing instrument";desc.pluginFormatName="VST3";desc.fileOrIdentifier="/missing/original.vst3";desc.isInstrument=true;
     project.plugins[0].instrument={desc.createXml()->toString(),"YWJj",true};project.plugins[1].effects.push_back({desc.createXml()->toString(),{},false});

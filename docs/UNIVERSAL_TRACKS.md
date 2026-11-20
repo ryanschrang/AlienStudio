@@ -4,8 +4,9 @@ Status: design/baseline (A) and identity/document adapters (B, format 29)
 implemented. Playback adapters (C) are implemented: C1 (the callback processes
 only the track slots in use), C2 (Song rack lanes saved apart from track rows,
 format 32) and C3 (a build-time capacity setting with a measured, CI-tested
-32-track, 64-scene candidate profile). Resource budgets (D) and higher
-supported limits (E) are pending.
+32-track, 64-scene candidate profile). Resource budgets (D) are in progress:
+D1 sizes the plugin alignment delay lines to the latency actually reported.
+Higher supported limits (E) are pending.
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
 Dependency: [T1-03 shared clip/pattern design, PR #102](https://github.com/ryanschrang/AlienStudio/pull/102).
@@ -372,7 +373,64 @@ physical-device latency or a supported-limit guarantee.
 - It does not raise the supported limit or change saved projects; release builds stay 16/32.
 - Per-slot memory is still fixed by the compiled maximum. Before a profile above 16/32 is
   supported (D), the delay lines and note state need budgets that do not multiply by the
-  maximum: for example, delay lines sized to the latency actually reported, or prepared only
-  for slots in use, outside the callback.
+  maximum: for example, delay lines sized to the latency actually reported (done in D1), or
+  prepared only for slots in use, outside the callback.
 - Not measured: physical devices, plugins, media, dense note/ratchet loads, peak memory during
   load/undo/export, Debug timings, and a 64-track profile.
+
+## Increment D1: alignment delay lines sized to reported latency
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+C3 found that most of each track slot's 2.6 MiB was two 96,001-frame stereo delay lines in
+`PluginRuntime`, which line every track up behind the slowest plugin chain. Every line held the
+maximum delay, whether or not any plugin had latency. D1 sizes them to what the plugins report.
+
+- **Four stages, sized apart.** The track lines (each track and `live`), the source lines that
+  wait for the Channel Rack's plugin instruments, the bus stage (bus chains, sends, the direct
+  mix) and the return stage (return chains, the dry mix). Each stage's lines are as long as the
+  largest latency that stage must give, rounded up to 1,024 samples. A stage with no latent
+  plugin holds one sample per line.
+- **Allocated off the callback, adopted at the block start.** `reserveAlignment` (message
+  thread) allocates a stage's new storage and publishes it through an atomic pointer; the
+  callback takes it at its next `begin()` and hands the old storage back through a second one,
+  which the message thread frees. No allocation, lock or free in the callback.
+- **When it grows.** After each plugin slot is prepared (grow only), after a whole set of plugins
+  is restored (fit exactly, so removing a latent plugin frees its memory) and on every plugin
+  host poll (grow only, so a plugin whose latency wobbles does not reallocate).
+- **A plugin that reports more latency while playing.** Until the next poll grows its stage, the
+  callback delays by as much as the line holds and counts a shortfall block
+  (`alignmentShortfalls`). The stage that grows starts empty, so it loses at most the audio it was
+  delaying, at a moment the latency changed anyway; the other stages are untouched. An export
+  that sees a shortfall fails with a message instead of writing tracks that are out of step.
+- **Not changed.** The Channel Rack's per-instrument lines keep their full length while an
+  instrument is loaded (they were already allocated only then). `maxDelay` is still the most any
+  chain can be compensated for.
+
+`PluginRuntimeTests` covers it: an idle runtime reserves no alignment audio; a 4-sample plugin's
+stage is one granule and the others stay empty; a plugin that jumps to 3,000 samples while
+playing is clamped and counted once per block with no callback allocation; the host's poll grows
+only the track stage, the next block adopts it without allocating, and an impulse on the other
+track then comes out at exactly sample 3,000; polling never shrinks, a restore does.
+
+### Measurements
+
+2026-11-19, the same machine as C3, Release, 16/32, offline. Run back to back with the build of
+main before this change, alternating, two runs each:
+
+| `RackIntegrationTests --capacity-report` | Before | D1 |
+| --- | ---: | ---: |
+| Engine heap after construction and `prepare(48 kHz)` | 89.4 MiB | 45.4 MiB |
+| p95 / budget, 16 tracks, transport, 64 frames | 8.1-9.3 % | 9.1-9.9 % |
+| p95 / budget, 16 Session MIDI tracks, 64 frames | 17.3-18.8 % | 15.5-16.2 % |
+| p95 / budget, 16 Session rack occurrences, 64 frames | 20.2-21.0 % | 19.9-20.1 % |
+
+The callback cost is the same within run-to-run noise. Every run on this day was slower than the
+2026-11-17 C3 run of the same code, so compare rows within one table only. 44 MiB is
+the 60 track, source, bus and return lines at 0.73 MiB each; per extra track slot the fixed cost
+falls from about 2.6 MiB to about 1.1 MiB (the note mailboxes, scheduler and the rest). The
+32/64 build was not re-measured.
+
+Not done in D1: note state and mailboxes still scale with the compiled maximum, peak memory during
+load/undo/export is not measured, and no latent third-party plugin was tested; the test plugin
+reports a latency it is told to.
