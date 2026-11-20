@@ -2435,37 +2435,65 @@ public:
         return result;
     }
 
+    struct RelinkTarget {
+        MissingMedia item;
+        std::uint32_t trackId{}, sceneId{};
+        library::ClipId cell;
+        RelinkedAudio found;
+    };
+    struct PreparedRelink {
+        std::uint32_t scope{};
+        juce::File folder;
+        std::vector<RelinkTarget> targets;
+        bool truncated{};
+    };
+    using RelinkCompletion = std::function<void(std::shared_ptr<const PreparedRelink>)>;
+
     // Looks for every missing file by name inside `folder` and its subfolders,
     // loads what it finds off the message thread, and installs it all as one
     // undoable step. Files that are not found stay offline and keep their saved
     // reference, so nothing is lost by trying.
-    void relinkMissingAudio(const juce::File& folder) {
-        if (busy) return;
+    void relinkMissingAudio(const juce::File& folder, RelinkCompletion complete) {
+        if (!canEditMidiClips()) {
+            importStatus("Wait until recording or project work finishes.", {});
+            return;
+        }
         const auto missing = missingMedia();
         if (missing.empty()) { importStatus("No audio is missing.", {}); return; }
         if (!folder.isDirectory()) { importStatus("Choose a folder to search for the missing audio.", {}); return; }
-        auto wanted = std::make_shared<std::vector<RelinkWant>>();
-        for (const auto& item : missing)
-            wanted->push_back(item.rackChannel ? RelinkWant{item, 0u, 0u}
-                : RelinkWant{item, doc.tracks[static_cast<std::size_t>(item.track)].id,
-                             item.drumPad ? 0u : doc.scenes[static_cast<std::size_t>(item.slot)].id});
+        auto prepared = std::make_shared<PreparedRelink>();
+        prepared->scope = doc.identityScope;
+        prepared->folder = folder;
+        for (const auto& item : missing) {
+            RelinkTarget target;
+            target.item = item;
+            if (!item.rackChannel) {
+                target.trackId = doc.tracks[static_cast<std::size_t>(item.track)].id;
+                if (!item.drumPad) {
+                    target.sceneId = doc.scenes[static_cast<std::size_t>(item.slot)].id;
+                    target.cell = doc.cellClip(item.track, item.slot);
+                }
+            }
+            prepared->targets.push_back(std::move(target));
+        }
         setBusy(true);
         importStatus(ui8("Searching for missing audio\xe2\x80\xa6"), folder.getFullPathName());
         std::weak_ptr<int> token = alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, folder, wanted] {
-            auto outcome = std::make_shared<RelinkOutcome>();
-            const MediaIndex index(folder);
-            outcome->truncated = index.wasTruncated();
+        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, prepared, complete = std::move(complete)] {
+            const MediaIndex index(prepared->folder);
+            prepared->truncated = index.wasTruncated();
             // A source used by several clips is decoded once and shared; decoded audio is immutable.
             std::map<juce::String, RelinkedAudio> decodedByPath;
-            for (const auto& want : *wanted) {
-                auto found = decodedByPath.find(want.item.path);
+            for (auto& target : prepared->targets) {
+                auto found = decodedByPath.find(target.item.path);
                 if (found == decodedByPath.end())
-                    found = decodedByPath.emplace(want.item.path, decodeFirstCandidate(index.candidates(want.item.path))).first;
-                outcome->found.push_back(found->second);
+                    found = decodedByPath.emplace(target.item.path, decodeFirstCandidate(index.candidates(target.item.path))).first;
+                target.found = found->second;
             }
-            juce::MessageManager::callAsync([this, token, wanted, outcome, folder] {
-                if (token.lock() != nullptr) finishRelink(*wanted, *outcome, folder);
+            juce::MessageManager::callAsync([this, token, prepared, complete] {
+                if (token.lock() == nullptr) return;
+                setBusy(false);
+                complete(prepared);
             });
             return juce::ThreadPoolJob::jobHasFinished;
         };
@@ -2610,106 +2638,144 @@ private:
     void registerStream(const std::shared_ptr<SessionAudioClip>& clip) {
         if (clip && clip->streamed()) engine.retainDiskAudioSource(clip->streamSource);
     }
-    struct RelinkWant {
-        MissingMedia item;
-        std::uint32_t trackId{}, sceneId{}; // identify the target even if tracks or scenes move while searching
-    };
-    struct RelinkOutcome {
-        std::vector<RelinkedAudio> found; // parallel to the wanted list
-        bool truncated{};
-    };
-    bool retainOnce(const std::shared_ptr<SessionAudioClip>& clip, std::set<const SessionAudioClip*>& counted) {
-        if (counted.count(clip.get()) != 0) return true;
-        if (!retain(clip)) return false;
-        counted.insert(clip.get());
-        return true;
-    }
-    void finishRelink(const std::vector<RelinkWant>& wanted, const RelinkOutcome& outcome, const juce::File& folder) {
-        setBusy(false);
-        int relinked = 0;
-        bool memoryFull = false;
-        std::set<const SessionAudioClip*> counted;
+public:
+    struct RelinkPlan {
+        explicit RelinkPlan(const ProjectDocument& document) : after(document) {}
+        ProjectDocument after;
+        juce::String error;
         juce::StringArray stillOffline;
-        const auto trackIndex = [this](std::uint32_t id) {
-            for (int t = 0; t < doc.trackCount(); ++t) if (doc.tracks[static_cast<std::size_t>(t)].id == id) return t;
+        std::vector<std::shared_ptr<const SessionAudioClip>> sources, drumViews;
+        std::map<std::string, std::shared_ptr<const SessionAudioClip>> rackAssets;
+        std::vector<std::pair<int, int>> cells;
+        int relinked{};
+        bool memoryFull{};
+    };
+
+    RelinkPlan planRelink(const PreparedRelink& prepared) const {
+        RelinkPlan plan(doc);
+        if (doc.identityScope != prepared.scope || !canEditMidiClips()) {
+            plan.error = "The project changed or is recording. Search for missing audio again.";
+            return plan;
+        }
+        auto remaining = availableAudioBytes();
+        std::set<const SessionAudioClip*> counted;
+        const auto reserve = [&](const std::shared_ptr<SessionAudioClip>& clip) {
+            if (counted.contains(clip.get())) return true;
+            const auto bytes = clip->decodedBytes();
+            if (bytes > remaining) return false;
+            remaining -= bytes;
+            counted.insert(clip.get());
+            plan.sources.push_back(clip);
+            return true;
+        };
+        const auto trackIndex = [&plan](std::uint32_t id) {
+            for (int t = 0; t < plan.after.trackCount(); ++t) if (plan.after.tracks[static_cast<std::size_t>(t)].id == id) return t;
             return -1;
         };
-        const auto sceneIndex = [this](std::uint32_t id) {
-            for (int s = 0; s < doc.sceneCount(); ++s) if (doc.scenes[static_cast<std::size_t>(s)].id == id) return s;
+        const auto sceneIndex = [&plan](std::uint32_t id) {
+            for (int s = 0; s < plan.after.sceneCount(); ++s) if (plan.after.scenes[static_cast<std::size_t>(s)].id == id) return s;
             return -1;
         };
-        for (std::size_t i = 0; i < wanted.size(); ++i) {
-            const auto& want = wanted[i];
-            const auto& found = outcome.found[i];
+        for (const auto& want : prepared.targets) {
+            const auto& found = want.found;
             if (want.item.rackChannel) {
-                if (!found.clip) { stillOffline.addIfNotAlreadyThere(want.item.fileName()); continue; }
+                if (!found.clip || !found.clip->valid() || found.file == juce::File{}) { plan.stillOffline.addIfNotAlreadyThere(want.item.fileName()); continue; }
                 const auto oldPath = want.item.path.toStdString();
                 bool stillWanted = false; // skip anything the user changed while the search ran
-                for (int c = 0; c < doc.channelRack.channelCount; ++c)
-                    stillWanted = stillWanted || (doc.channelRack.info[static_cast<std::size_t>(c)].sample == oldPath && rackAudio.find(oldPath) == rackAudio.end());
+                for (int c = 0; c < plan.after.channelRack.channelCount; ++c)
+                    stillWanted = stillWanted || (plan.after.channelRack.info[static_cast<std::size_t>(c)].sample == oldPath && rackAudio.find(oldPath) == rackAudio.end());
                 if (!stillWanted) continue;
                 const auto newPath = found.file.getFullPathName().toStdString();
-                if (newPath.size() > static_cast<std::size_t>(rack::maxSampleBytes) || !retainOnce(found.clip, counted)) {
-                    memoryFull = memoryFull || newPath.size() <= static_cast<std::size_t>(rack::maxSampleBytes);
-                    stillOffline.addIfNotAlreadyThere(want.item.fileName());
+                if (newPath.size() > static_cast<std::size_t>(rack::maxSampleBytes)) {
+                    plan.stillOffline.addIfNotAlreadyThere(want.item.fileName());
                     continue;
                 }
-                rackAudio[newPath] = found.clip;
-                for (int c = 0; c < doc.channelRack.channelCount; ++c)
-                    if (doc.channelRack.info[static_cast<std::size_t>(c)].sample == oldPath) doc.channelRack.setSample(c, newPath);
-                ++relinked;
+                if (!rackAudio.contains(newPath) && !plan.rackAssets.contains(newPath)) {
+                    if (!reserve(found.clip)) {
+                        plan.memoryFull = true;
+                        plan.stillOffline.addIfNotAlreadyThere(want.item.fileName());
+                        continue;
+                    }
+                    plan.rackAssets.emplace(newPath, found.clip);
+                }
+                for (int c = 0; c < plan.after.channelRack.channelCount; ++c)
+                    if (plan.after.channelRack.info[static_cast<std::size_t>(c)].sample == oldPath) plan.after.channelRack.setSample(c, newPath);
+                ++plan.relinked;
                 continue;
             }
             const int track = trackIndex(want.trackId);
             const int scene = want.item.drumPad ? 0 : sceneIndex(want.sceneId);
-            if (track < 0 || scene < 0) continue; // removed while searching
-            auto& owner = doc.tracks[static_cast<std::size_t>(track)];
+            if (track < 0 || scene < 0 || (want.item.drumPad && (want.item.slot < 0 || want.item.slot >= drumPadCount))) continue; // removed while searching
+            auto& owner = plan.after.tracks[static_cast<std::size_t>(track)];
             const auto pad = static_cast<std::size_t>(want.item.slot);
             // Skip anything the user changed while the search ran.
             const bool unchanged = want.item.drumPad
                 ? owner.drumPaths[pad] == want.item.path && owner.drumAssets[pad] == nullptr
-                : doc.clip(track, scene).audioOffline() && doc.clip(track, scene).audioFilePath == want.item.path;
-            if (!unchanged) continue;
-            if (!found.clip) { stillOffline.addIfNotAlreadyThere(want.item.fileName()); continue; }
+                : plan.after.cellClip(track, scene) == want.cell && plan.after.clip(track, scene).audioOffline()
+                    && plan.after.clip(track, scene).audioFilePath == want.item.path;
+            if (!unchanged || owner.settings.frozen()) continue;
+            if (!want.item.drumPad && session_audio_import::destinationRefusal(plan.after, track, scene).isNotEmpty())
+                continue;
+            if (!found.clip || !found.clip->valid() || found.file == juce::File{}) { plan.stillOffline.addIfNotAlreadyThere(want.item.fileName()); continue; }
             const auto drumView = want.item.drumPad ? drumSliceView(found.clip, owner.drumSlices[pad]) : std::shared_ptr<const SessionAudioClip>{};
-            if (want.item.drumPad && !drumView) { stillOffline.addIfNotAlreadyThere(want.item.fileName()); continue; }
-            if (!retainOnce(found.clip, counted)) {
-                memoryFull = true;
-                stillOffline.addIfNotAlreadyThere(want.item.fileName());
+            if (want.item.drumPad && !drumView) { plan.stillOffline.addIfNotAlreadyThere(want.item.fileName()); continue; }
+            if (!reserve(found.clip)) {
+                plan.memoryFull = true;
+                plan.stillOffline.addIfNotAlreadyThere(want.item.fileName());
                 continue;
             }
             if (want.item.drumPad) {
                 owner.drumAssets[pad] = drumView;
-                retained.push_back(drumView);
+                plan.drumViews.push_back(drumView);
                 owner.drumPaths[pad] = found.file.getFullPathName();
             } else {
-                auto clip = doc.clip(track, scene);
+                auto clip = plan.after.clip(track, scene);
                 clip.audio = found.clip;
                 clip.audioFilePath = found.file.getFullPathName();
                 clip.audioFileName = found.file.getFileName();
-                doc.setClip(track, scene, clip);
-                republishIfLive(track, scene);
+                plan.after.setClip(track, scene, clip);
+                plan.cells.emplace_back(track, scene);
             }
-            ++relinked;
+            ++plan.relinked;
         }
-        if (relinked > 0) {
-            pushDocumentToEngine();
-            commit("Relink audio");
-            if (onDocumentRestored) onDocumentRestored();
+        return plan;
+    }
+
+    void installRelink(RelinkPlan& plan) {
+        for (const auto& clip : plan.sources) {
+            retainedBytes += clip->decodedBytes();
+            retained.push_back(clip);
         }
-        auto text = "Relinked " + juce::String(relinked) + " of " + juce::String(static_cast<int>(wanted.size()))
-                  + " missing audio file" + (wanted.size() == 1 ? "" : "s");
-        if (outcome.truncated) text += " (only the first " + juce::String(static_cast<int>(MediaIndex::maxFilesIndexed)) + " files were searched)";
-        if (memoryFull) text += "; audio memory limit reached";
-        if (!stillOffline.isEmpty()) {
+        retained.insert(retained.end(), plan.drumViews.begin(), plan.drumViews.end());
+        for (auto& [path, clip] : plan.rackAssets) rackAudio.try_emplace(path, std::move(clip));
+        doc = std::move(plan.after);
+        for (const auto& [track, scene] : plan.cells) {
+            republishIfLive(track, scene);
+            republishLinked(track, scene);
+        }
+        pushDocumentToEngine();
+    }
+
+    void reportRelink(const PreparedRelink& prepared, const RelinkPlan& plan) {
+        const auto& folder = prepared.folder;
+        if (plan.error.isNotEmpty()) {
+            importStatus(plan.error, folder.getFullPathName());
+            return;
+        }
+        auto text = "Relinked " + juce::String(plan.relinked) + " of " + juce::String(static_cast<int>(prepared.targets.size()))
+                  + " missing audio file" + (prepared.targets.size() == 1 ? "" : "s");
+        if (prepared.truncated) text += " (only the first " + juce::String(static_cast<int>(MediaIndex::maxFilesIndexed)) + " files were searched)";
+        if (plan.memoryFull) text += "; audio memory limit reached";
+        if (!plan.stillOffline.isEmpty()) {
             text += ". Still offline: ";
-            for (int i = 0; i < stillOffline.size() && i < 3; ++i) text += (i ? ", " : "") + stillOffline[i];
-            if (stillOffline.size() > 3) text += " and " + juce::String(stillOffline.size() - 3) + " more";
+            for (int i = 0; i < plan.stillOffline.size() && i < 3; ++i) text += (i ? ", " : "") + plan.stillOffline[i];
+            if (plan.stillOffline.size() > 3) text += " and " + juce::String(plan.stillOffline.size() - 3) + " more";
         }
         importStatus(text, folder.getFullPathName());
         status(text, folder.getFullPathName());
     }
 
+private:
     static juce::String describeOffline(const std::vector<MissingMedia>& missing) {
         juce::String text;
         for (std::size_t i = 0; i < missing.size() && i < 10; ++i) {

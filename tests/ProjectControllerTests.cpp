@@ -454,12 +454,12 @@ static void missingAudioTests() {
     require(done && !ok && lastStatus.contains("Missing audio"), "a portable save reports the missing file instead of dropping it");
 
     // Searching the wrong folder changes nothing.
-    c.relinkMissingAudio(elsewhere); waitIdle(c);
+    alien::command::relinkMissingAudio(c, elsewhere); waitIdle(c);
     require(c.missingMedia().size() == 2 && lastStatus.contains("Relinked 0 of 2"), "nothing is relinked from a folder without the files");
     const auto undoDepthMarker = c.undoLabel();
 
     // Searching the folder that now holds them restores both in one undoable step.
-    c.relinkMissingAudio(moved); waitIdle(c);
+    alien::command::relinkMissingAudio(c, moved); waitIdle(c);
     require(c.missingMedia().empty() && lastStatus.contains("Relinked 2 of 2"), "both files are found by name");
     require(c.document().clip(1, 2).hasAudio() && !c.document().clip(1, 2).audioOffline()
         && c.document().clip(1, 2).audioFilePath == moved.getChildFile("sub/loop.wav").getFullPathName()
@@ -469,7 +469,7 @@ static void missingAudioTests() {
     require(c.undoLabel() == "Relink audio" && c.isDirty(), "relinking is one undoable, unsaved edit");
     require(c.undo() && c.missingMedia().size() == 2 && c.undoLabel() == undoDepthMarker, "undo returns both to offline");
     require(c.redo() && c.missingMedia().empty(), "redo brings them back");
-    c.relinkMissingAudio(moved); waitIdle(c);
+    alien::command::relinkMissingAudio(c, moved); waitIdle(c);
     require(lastStatus == "No audio is missing." || c.missingMedia().empty(), "relinking with nothing missing is harmless");
 
     c.discardRecovery();

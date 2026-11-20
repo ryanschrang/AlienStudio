@@ -497,6 +497,54 @@ static void continuousCommandTests() {
 #include "RackCommandTests.h"
 #include "RemoveClipAudioTests.h"
 #include "ImportClipAudioCommandTests.h"
+
+static void relinkAudioCommandChecks() {
+    auto engine = std::make_unique<ToneEngine>();
+    alien::ProjectController controller(*engine);
+    cmd::CommandEngine commands(controller);
+    auto offline = controller.document();
+    const auto folder = juce::File::getSpecialLocation(juce::File::tempDirectory);
+    const auto old = folder.getChildFile("old").getChildFile("relink.wav");
+    const auto recovered = folder.getChildFile("relink.wav");
+    alien::SessionClip missing;
+    missing.audioFilePath = old.getFullPathName();
+    missing.audioFileName = old.getFileName();
+    for (int scene = 0; scene < 4; ++scene) offline.setClip(0, scene, missing);
+    controller.revertTo(offline);
+    controller.markAsNewBaseline();
+
+    const auto audio = importFixtureClip();
+    auto prepared = std::make_shared<alien::ProjectController::PreparedRelink>();
+    prepared->folder = folder;
+    prepared->scope = offline.identityScope;
+    for (int scene = 0; scene < 4; ++scene) {
+        const auto cell = scene == 3 ? alien::library::ClipId{} : offline.cellClip(0, scene);
+        const auto decoded = scene == 2 ? alien::RelinkedAudio{} : alien::RelinkedAudio{recovered, audio, {}};
+        prepared->targets.push_back({{false, 0, scene, old.getFullPathName(), {}, false},
+                                     offline.tracks[0].id, offline.scenes[scene].id, cell, decoded});
+    }
+
+    const auto bytes = controller.availableAudioBytes();
+    const auto history = historyOf(controller);
+    const auto relink = cmd::RelinkAudio{prepared};
+    const auto preview = commands.preview(relink);
+    require(preview.ok && preview.changed && preview.after.clip(0, 0).audio == audio
+            && preview.after.clip(0, 1).audio == audio && preview.after.clip(0, 2).audioOffline()
+            && preview.after.clip(0, 3).audioOffline(), "relink preview shows shared recovery and skips unmatched or stale targets");
+    require(alien::sameContent(offline, controller.document()) && controller.availableAudioBytes() == bytes
+            && historyOf(controller) == history, "relink preview leaves media, document, and history alone");
+    require(!commands.batch({cmd::RenameTrack{0, "Pending"}, relink}, "Mixed").ok
+            && alien::sameContent(offline, controller.document()), "mixed batch refuses before applying either command");
+    require(commands.execute(relink).changed && alien::sameContent(preview.after, controller.document())
+            && controller.availableAudioBytes() == bytes - audio->decodedBytes()
+            && controller.undoLabel() == "Relink audio", "execute matches Preview and retains the shared decode once");
+    require(commands.undo() && alien::sameContent(offline, controller.document()), "undo restores all offline references");
+    auto stale = std::make_shared<alien::ProjectController::PreparedRelink>(*prepared);
+    ++stale->scope;
+    require(!commands.execute(cmd::RelinkAudio{stale}).ok && commands.redo()
+            && alien::sameContent(preview.after, controller.document()), "stale project refusal preserves Redo");
+    require(!commands.execute(relink).changed, "retrying a result with no remaining matches is a no-op");
+}
 #include "SendReturnCommandTests.h"
 #include "StripBusCommandTests.h"
 #include "RoutingCommandTests.h"
@@ -569,6 +617,7 @@ int main() {
     sidechainCommandChecks();
     deviceCommandChecks();
     masteringChainChecks();
+    relinkAudioCommandChecks();
     importClipAudioNameChecks();
     importClipAudioCommandChecks();
     importClipAudioStorageChecks();

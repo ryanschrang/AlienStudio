@@ -109,5 +109,15 @@ worker render installed by `installFrozenTrack` (one Undo step, outside the comm
 recording and audio import completion); unfreezing is the `UnfreezeTrack` command.
 
 Still direct, for later slices: the Song chord and section "create MIDI" actions
-(`placeChordMidi`, `placeSectionMidi`, T2-04), freeze installation, missing-audio relinking and
+(`placeChordMidi`, `placeSectionMidi`, T2-04), freeze installation and
 convolution impulse loading.
+
+## Missing-audio relinking
+
+Relink audio searches and decodes in the existing worker, then submits
+`RelinkAudio` as a single Command Engine transaction. Preview and Execute plan
+the same partial recovery using the captured project and Session cell identities.
+Unmatched media keeps its saved reference. A shared decode counts against the
+audio budget once, and recovered references commit together under Relink audio.
+A Rack file rediscovered at its original path refreshes the runtime cache
+without a separate Undo entry. The project format is unchanged.

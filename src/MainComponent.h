@@ -997,7 +997,8 @@ private:
         juce::Component::SafePointer<MainComponent> safe(this);
         relinkChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
             [safe](const juce::FileChooser& chooser) {
-                if (safe && chooser.getResult().isDirectory()) safe->controller.relinkMissingAudio(chooser.getResult());
+                if (safe && chooser.getResult().isDirectory())
+                    alien::command::relinkMissingAudio(safe->controller, chooser.getResult());
             });
     }
 
