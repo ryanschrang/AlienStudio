@@ -108,7 +108,7 @@ static void routing() {
 static void engine() {
     auto engine = std::make_unique<ToneEngine>();
     engine->prepare(48000);
-    engine->activeTracks.store(4);
+    engine->setActiveTracks(4);
     std::array<float, 512> left{}, right{};
     const auto render = [&](int blocks) {
         float* outputs[]{left.data(), right.data()};

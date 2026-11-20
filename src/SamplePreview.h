@@ -4,20 +4,29 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <new>
+#include <vector>
 
 namespace alien {
-// One GUI producer, one audio consumer. Slots are allocated before playback;
-// only the owner of a slot touches its samples. Reclamation never deletes in the callback.
+// One GUI producer, one audio consumer. A slot's samples grow on the GUI thread, while it owns the
+// slot; only the owner of a slot touches its samples. Reclamation never deletes in the callback.
 class SamplePreview {
 public:
     static_assert(std::atomic<int>::is_always_lock_free && std::atomic<unsigned>::is_always_lock_free);
     static constexpr int capacity = 5 * 192000;
     SamplePreview() : slots(std::make_unique<std::array<Slot, 3>>()) {}
-    bool request(const float* left, const float* right, int frames, double rate) noexcept {
+    // GUI thread. A slot's storage grows here, to the longest preview it has held (T1-04 D): the audio
+    // thread never reads a slot it has handed back as free, so the GUI owns it while writing. Nothing is
+    // reserved until something is previewed. Returns false if the preview cannot be queued.
+    bool request(const float* left, const float* right, int frames, double rate) {
         if (!left || frames <= 0 || frames > capacity || !std::isfinite(rate) || rate < 8000 || rate > 192000) return false;
         for (auto& slot : *slots) {
             int expected = free;
             if (!slot.state.compare_exchange_strong(expected, writing, std::memory_order_acquire)) continue;
+            if (slot.left.size() < static_cast<std::size_t>(frames)) {
+                try { slot.left.resize(static_cast<std::size_t>(frames)); slot.right.resize(static_cast<std::size_t>(frames)); }
+                catch (const std::bad_alloc&) { slot.state.store(free, std::memory_order_release); return false; }
+            }
             std::copy_n(left, frames, slot.left.data());
             std::copy_n(right ? right : left, frames, slot.right.data());
             slot.frames = frames; slot.rate = rate;
@@ -56,9 +65,16 @@ public:
 private:
     void release() noexcept { if (active >= 0) (*slots)[active].state.store(free, std::memory_order_release); active = -1; }
     enum { free, writing, ready, playing };
-    struct Slot { std::atomic<int> state{free}; std::array<float, capacity> left{}, right{}; int frames{}; double rate{}; unsigned generation{}; };
+    struct Slot { std::atomic<int> state{free}; std::vector<float> left, right; int frames{}; double rate{}; unsigned generation{}; };
     std::unique_ptr<std::array<Slot, 3>> slots;
     std::atomic<unsigned> generation{0};
     int active{-1}; double position{}, outputRate{44100};
+public:
+    // GUI thread: bytes of preview audio the slots hold now.
+    std::size_t reservedBytes() const noexcept {
+        std::size_t bytes = 0;
+        for (const auto& slot : *slots) bytes += (slot.left.capacity() + slot.right.capacity()) * sizeof(float);
+        return bytes;
+    }
 };
 } // namespace alien

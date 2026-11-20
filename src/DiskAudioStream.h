@@ -187,13 +187,15 @@ public:
         std::atomic<bool> deterministic{};   // see DiskAudioStreamService::setDeterministic
     };
 
-    DiskAudioStreamService() : voices(std::make_unique<std::array<Voice, voiceCount>>()),
-        worker([this] { run(); }) {}
+    // No voice exists until reserve() asks for it (T1-04 D): a project pays for the track slots it
+    // has used, not for the compiled maximum.
+    DiskAudioStreamService() : worker([this] { run(); }) {}
     ~DiskAudioStreamService() {
         stopping.store(true, std::memory_order_release);
         if (worker.joinable()) worker.join();
         // Release readers before their source metadata, after the worker exits.
-        for (auto& voice : *voices) voice.reader.reset();
+        for (auto& slot : voices) if (auto* voice = slot.load(std::memory_order_acquire)) voice->reader.reset();
+        for (auto& slot : voices) delete slot.exchange(nullptr, std::memory_order_acq_rel);
     }
     DiskAudioStreamService(const DiskAudioStreamService&) = delete;
     DiskAudioStreamService& operator=(const DiskAudioStreamService&) = delete;
@@ -204,14 +206,32 @@ public:
         retained.push_back(std::move(source));
         return result;
     }
-    Voice* voice(std::size_t index) noexcept {
-        return index < voiceCount ? &(*voices)[index] : nullptr;
+    // Control thread only. Allocates voice `index` if it does not exist yet and publishes it to the
+    // worker. Never frees one while the service runs, so a pointer once handed out stays valid.
+    // Answers the voice, or nullptr for an index out of range.
+    Voice* reserve(std::size_t index) {
+        if (index >= voiceCount) return nullptr;
+        auto& slot = voices[index];
+        if (auto* existing = slot.load(std::memory_order_acquire)) return existing;
+        auto voice = std::make_unique<Voice>();
+        if (allDeterministic) voice->deterministic.store(true, std::memory_order_release);
+        auto* raw = voice.release();
+        slot.store(raw, std::memory_order_release);
+        reservedCount.fetch_add(1, std::memory_order_acq_rel);
+        return raw;
     }
+    // Any thread. The voice, or nullptr if it was never reserved (or is out of range).
+    Voice* voice(std::size_t index) const noexcept {
+        return index < voiceCount ? voices[index].load(std::memory_order_acquire) : nullptr;
+    }
+    std::size_t reservedVoices() const noexcept { return reservedCount.load(std::memory_order_acquire); }
     // Offline rendering: serve every voice on the thread that plays it, so a render is the same
     // however the machine happens to schedule threads. For a service that has not played anything
     // yet (a render's own engine); the worker then leaves these voices alone for good.
+    // Control thread, like reserve(): voices reserved later are served here too.
     void setDeterministic() noexcept {
-        for (auto& voice : *voices) voice.deterministic.store(true, std::memory_order_release);
+        allDeterministic = true;
+        for (auto& slot : voices) if (auto* voice = slot.load(std::memory_order_acquire)) voice->deterministic.store(true, std::memory_order_release);
     }
     static constexpr std::size_t totalSampleStorageBytes = voiceCount * Voice::sampleStorageBytes;
 private:
@@ -266,19 +286,23 @@ private:
     void run() noexcept {
         while (!stopping.load(std::memory_order_acquire)) {
             bool work = false;
-            for (auto& voice : *voices) {
+            for (auto& slot : voices) {
                 if (stopping.load(std::memory_order_acquire)) return;
-                try { work = step(voice) || work; }
+                auto* voice = slot.load(std::memory_order_acquire);
+                if (voice == nullptr) continue;
+                try { work = step(*voice) || work; }
                 catch (...) {
-                    voice.failedGeneration.store(voice.current.generation, std::memory_order_release);
-                    voice.reader.reset();
+                    voice->failedGeneration.store(voice->current.generation, std::memory_order_release);
+                    voice->reader.reset();
                 }
             }
             if (!work) std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
     // Destruction order: thread, retained sources, voices (worker joined first).
-    std::unique_ptr<std::array<Voice, voiceCount>> voices;
+    std::array<std::atomic<Voice*>, voiceCount> voices{};   // reserved voices; owned here, freed after the worker
+    std::atomic<std::size_t> reservedCount{};
+    bool allDeterministic{};                                 // control thread
     std::vector<std::shared_ptr<const DiskAudioFile>> retained;
     std::atomic<bool> stopping{};
     std::thread worker;

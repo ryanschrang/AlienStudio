@@ -57,7 +57,13 @@ public:
 int main() {
     using Service = alien::DiskAudioStreamService;
     Service service;
-    require(service.voice(Service::voiceCount) == nullptr, "bounded admission rejects excess endpoint");
+    require(service.voice(Service::voiceCount) == nullptr && service.reserve(Service::voiceCount) == nullptr, "bounded admission rejects excess endpoint");
+    // T1-04 D: no voice exists until it is reserved; reserving is idempotent and the pointer stays put.
+    require(service.reservedVoices() == 0 && service.voice(0) == nullptr, "a new service allocates no stream voices");
+    auto* reservedA = service.reserve(0);
+    require(reservedA != nullptr && service.reserve(0) == reservedA && service.voice(0) == reservedA && service.reservedVoices() == 1,
+            "reserving a voice twice returns the same voice");
+    require(service.reserve(1) != nullptr && service.reservedVoices() == 2, "a second voice is reserved on its own");
     require(service.retain({}) == nullptr, "null source rejected");
     require(service.retain(std::make_shared<VirtualFile>(0)) == nullptr, "invalid source rejected");
     auto source = std::make_shared<VirtualFile>(5000000000LL);

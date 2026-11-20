@@ -51,8 +51,8 @@ int main() {
         "large Session clip validates without decoded sample storage");
 
     alien::SessionAudioPlayer first, duplicate;
-    first.bind(streams.voice(0),streams.voice(1));
-    duplicate.bind(streams.voice(2),streams.voice(3));
+    first.bind(streams.reserve(0),streams.reserve(1));
+    duplicate.bind(streams.reserve(2),streams.reserve(3));
     require(first.queue(&clip,16) && duplicate.queue(&clip,16),"duplicate launches receive independent endpoints");
     require(!first.launchPendingNow(48000),"launch waits instead of replacing the current clip before prebuffer");
     require(waitFor([&]{return first.pendingReady()&&duplicate.pendingReady();}),"both playback instances prebuffer");

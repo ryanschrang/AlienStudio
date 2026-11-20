@@ -101,7 +101,24 @@ public:
     std::array<std::atomic<int>, sessionTracks> requestedPianoRollClip;
     std::array<std::atomic<int>, sessionTracks> activePianoRollClip;
     // Number of Session tracks in use (scene launches wait for this many).
+    // How many Session track slots the project uses. Set it with setActiveTracks (control thread), which
+    // first prepares what those slots need; the audio thread only reads it.
     std::atomic<int> activeTracks{alien::sessionProjectTrackCount};
+    // Control thread (T1-04 D). Reserves the four stream voices (two for its clips, two for a crossfade's
+    // outgoing clip) of every slot below `tracks` that has none yet, then publishes the count; the callback
+    // binds a reserved slot's players at its next block. Voices are kept once reserved (a later, smaller
+    // project reuses them), so a project pays for the most track slots it has used, not the compiled limit.
+    void setActiveTracks(int tracks) {
+        const auto count = static_cast<std::size_t>(std::clamp(tracks, 1, static_cast<int>(sessionTracks)));
+        for (auto t = reservedSlots.load(std::memory_order_acquire); t < count; ++t) {
+            diskStreams.reserve(t * 2); diskStreams.reserve(t * 2 + 1);
+            diskStreams.reserve(sessionTracks * 2 + t * 2); diskStreams.reserve(sessionTracks * 2 + t * 2 + 1);
+            reservedSlots.store(t + 1, std::memory_order_release);
+        }
+        activeTracks.store(tracks);
+    }
+    // Stream voices the engine holds, of DiskAudioStreamService::voiceCount (four per reserved slot).
+    std::size_t reservedStreamVoices() const noexcept { return diskStreams.reservedVoices(); }
     std::atomic<bool> synchronizedSceneLaunch{false};
     std::atomic<std::uint64_t> sceneRackClip{alien::rack::RackPlayer::noLaunchRequest};
     // Slot zero is the Rack menu; slots 1..16 belong to Session tracks.
@@ -136,11 +153,8 @@ public:
     }
     std::atomic<int> rackStep{-1}; // step of the selected pattern that started last, or -1
 
-    ToneEngine() noexcept {
-        for (std::size_t t = 0; t < sessionTracks; ++t)
-            audioPlayers[t].bind(diskStreams.voice(t * 2), diskStreams.voice(t * 2 + 1));
-        for (std::size_t t = 0; t < sessionTracks; ++t)
-            tailPlayers[t].bind(diskStreams.voice(sessionTracks * 2 + t * 2), diskStreams.voice(sessionTracks * 2 + t * 2 + 1));
+    ToneEngine() {
+        setActiveTracks(activeTracks.load());   // stream voices for the default project's tracks
         for (auto& pitch : stepPitches) pitch.store(57, std::memory_order_relaxed);
         for (auto& velocity : stepVelocities) velocity.store(102, std::memory_order_relaxed);
         for (std::size_t t = 0; t < sessionTracks; ++t) {
@@ -232,6 +246,13 @@ public:
     }
 private:
     void renderBlock(float* const* outputs, int channels, int samples, int outputOffset) {
+        // Slots whose stream voices were reserved since the last block get them now (pointers only). A slot
+        // without them had no streamed clip to play: its players refuse one until then.
+        for (const auto reserved = reservedSlots.load(std::memory_order_acquire); boundSlots < reserved; ++boundSlots) {
+            const auto t = boundSlots;
+            audioPlayers[t].bind(diskStreams.voice(t * 2), diskStreams.voice(t * 2 + 1));
+            tailPlayers[t].bind(diskStreams.voice(sessionTracks * 2 + t * 2), diskStreams.voice(sessionTracks * 2 + t * 2 + 1));
+        }
         captureBlockStart = captureClock;   // live notes that arrive in this block are stamped with its start
         if (sampleRate > 0.0 && samples > 0) captureClock += samples / sampleRate;
         captureClockNow.store(captureClock, std::memory_order_relaxed);
@@ -1724,6 +1745,8 @@ private:
     bool synchronizedScenePending{};
     std::uint64_t synchronizedSceneTracksQueued{};   // a bit per track slot
     std::size_t tracksInUse{sessionTracks}, blockTracks{sessionTracks};   // audio thread: renderBlock
+    std::atomic<std::size_t> reservedSlots{};   // control thread: slots whose stream voices exist (setActiveTracks)
+    std::size_t boundSlots{};                   // audio thread: slots whose players have them
     static_assert(sessionTracks <= 64, "Scene launch tracking uses a 64-bit mask");
     int synchronizedSceneQuantizationSteps{16};
     int activeStepPitch{-1};

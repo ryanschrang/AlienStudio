@@ -635,7 +635,7 @@ void endOfTakeTests() {
         require(events.size() == 1 && events[0].kind == RecordEventKind::refused && events[0].take == 9 && rig.phase() == RecordControls::idle
                 && !rig.engine.playing.load(), "outside the clip views a take is refused and reported");
         rig.engine.patternMode.store(1);
-        rig.engine.activeTracks.store(4);
+        rig.engine.setActiveTracks(4);
         startTake(rig.engine, 15, 0, 10, s); // the track is not in use
         rig.render(256);
         const auto second = drain(rig.engine);
