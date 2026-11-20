@@ -157,6 +157,7 @@ public:
         // Automation finds its parameters through these (the callback is detached, as for the slots).
         runtime.parameterBindings = parameterBindings();
         automation::sortBindings(runtime.parameterBindings);
+        runtime.reserveAlignment(true);   // the alignment lines fit exactly this set of plugins (T1-04 D)
         drain(errors);           // a plugin that failed while preparing is part of this restore's result
         return errors;
     }
@@ -251,6 +252,7 @@ public:
         // The rack's instruments can be automated too, so automation looks them up again.
         runtime.parameterBindings = parameterBindings();
         automation::sortBindings(runtime.parameterBindings);
+        runtime.reserveAlignment(true);
         drain(errors);
         return errors;
     }
@@ -335,6 +337,9 @@ public:
     }
     // Message thread, from the UI timer: reports any plugin the audio thread has switched off.
     void poll() {
+        // A plugin may report more latency while playing than when it was loaded: grow the alignment
+        // stages that are now too short (allocated here, adopted by the callback; T1-04 D).
+        runtime.reserveAlignment();
         juce::String text; drain(text);
         if (text.isNotEmpty() && onProblem) onProblem(text.trim());
     }

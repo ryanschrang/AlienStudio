@@ -162,6 +162,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         for (auto& slot : engine->plugins->racks[PluginRuntime::masterIndex].effects) slot.bypass = true;
     } else engine->stemCapture.reset();
     const auto faultsBefore = engine->plugins->faultCount.load();
+    const auto shortfallsBefore = engine->plugins->alignmentShortfalls();
     engine->renderStreamsDeterministically();   // streamed clips are read here, on this thread, in order
     engine->masterControls.gain.store(project.masterGain);
     for (std::size_t r = 0; r < engine->returns.size(); ++r) {
@@ -307,6 +308,11 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         const int start=static_cast<int>(std::clamp<std::int64_t>(latency-offset,0,count));
         if (capture && engine->plugins->faultCount.load() != faultsBefore) {
             error="Plugin failed during offline capture; no output published."; return false;
+        }
+        // A plugin reported more latency than its alignment stage held (T1-04 D): this pass is out of step.
+        if (engine->plugins->alignmentShortfalls() != shortfallsBefore) {
+            error="A plugin's latency grew during export, so the tracks were not lined up; no output published. Export again.";
+            return false;
         }
         if (count > start) {
             if (options.stems) {
