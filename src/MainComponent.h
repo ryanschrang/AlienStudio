@@ -1806,22 +1806,23 @@ private:
             return;
         }
         const auto [stage, rack] = pluginRackAddress();
+        const auto scope = controller.document().identityScope;
         const auto request = ++impulseRequest;
-        if (chamber) { applyConvolutionResponse(stage, rack, slot, instance, {}); return; }
+        if (chamber) { applyConvolutionResponse(stage, rack, slot, instance, scope, {}); return; }
 
         impulseChooser = std::make_unique<juce::FileChooser>("Load a WAV impulse response", juce::File{}, "*.wav");
         juce::Component::SafePointer<MainComponent> safe(this);
         impulseChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-            [safe, stage, rack, slot, instance, request](const juce::FileChooser& chooser) {
+            [safe, stage, rack, slot, instance, scope, request](const juce::FileChooser& chooser) {
                 const auto file = chooser.getResult();
                 if (!safe || safe->impulseRequest != request || file == juce::File{}) return;
                 safe->pluginPanel.setStatus("Reading impulse response…");
-                std::function<juce::ThreadPoolJob::JobStatus()> job = [safe, stage, rack, slot, instance, request, file] {
+                std::function<juce::ThreadPoolJob::JobStatus()> job = [safe, stage, rack, slot, instance, scope, request, file] {
                     auto result = alien::decodeConvolutionWav(file);
-                    juce::MessageManager::callAsync([safe, stage, rack, slot, instance, request, result = std::move(result)]() mutable {
+                    juce::MessageManager::callAsync([safe, stage, rack, slot, instance, scope, request, result = std::move(result)]() mutable {
                         if (!safe || safe->impulseRequest != request) return;
                         if (result.error.isNotEmpty()) safe->pluginPanel.setStatus(result.error);
-                        else safe->applyConvolutionResponse(stage, rack, slot, instance, std::move(result));
+                        else safe->applyConvolutionResponse(stage, rack, slot, instance, scope, std::move(result));
                     });
                     return juce::ThreadPoolJob::jobHasFinished;
                 };
@@ -1829,7 +1830,7 @@ private:
             });
     }
 
-    void applyConvolutionResponse(alien::RackStage stage, int rack, int slot, std::uint64_t instance,
+    void applyConvolutionResponse(alien::RackStage stage, int rack, int slot, std::uint64_t instance, std::uint32_t scope,
                                   alien::ConvolutionImport response) {
         const auto currentEffect = [&]() -> const alien::PluginState* {
             const auto* target = alien::sidechain_edit::rackOf(controller.document(), stage, rack);
@@ -1837,9 +1838,13 @@ private:
             const auto& effect = target->effects[slot];
             return effect.instanceId == instance ? &effect : nullptr;
         };
-        if (projectBusy || !controller.canEditMidiClips() || !currentEffect() ||
-            (stage == alien::RackStage::track && controller.isTrackFrozen(rack))) {
-            pluginPanel.setStatus("The effect is no longer available for this edit.");
+        if (projectBusy || !controller.canEditMidiClips()) {
+            pluginPanel.setStatus("Finish project work or stop recording before changing the response.");
+            return;
+        }
+        if (const auto why = alien::device_edit::convolutionRefusal(controller.document(), {scope, stage, rack, slot, instance, {}});
+            why.isNotEmpty()) {
+            pluginPanel.setStatus(why);
             return;
         }
         snapshotPlugins(SnapshotReason::always);
@@ -1855,7 +1860,10 @@ private:
         if (!changed) { pluginPanel.setStatus(chamber ? "The built-in chamber is already selected." : "Invalid impulse response."); return; }
         juce::MemoryBlock bytes;
         convolution.getStateInformation(bytes);
-        if (!controller.setConvolutionResponseState(stage, rack, slot, instance, bytes.toBase64Encoding())) return;
+        const auto result = alien::command::CommandEngine(controller).execute(
+            alien::command::SetConvolutionResponse{scope, stage, rack, slot, instance, bytes.toBase64Encoding()});
+        if (!result.ok) { pluginPanel.setStatus(result.error); return; }
+        if (!result.changed) return;
         restorePlugins();
         pluginPanel.setStatus(chamber ? "Using the built-in chamber." : "Custom impulse response loaded and embedded in the project.");
     }

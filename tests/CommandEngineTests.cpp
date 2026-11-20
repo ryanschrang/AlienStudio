@@ -616,6 +616,7 @@ int main() {
     trackOutputCommandChecks();
     sidechainCommandChecks();
     deviceCommandChecks();
+    convolutionResponseCommandChecks();
     masteringChainChecks();
     relinkAudioCommandChecks();
     importClipAudioNameChecks();

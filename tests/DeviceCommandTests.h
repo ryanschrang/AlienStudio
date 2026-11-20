@@ -159,3 +159,40 @@ static void deviceCommandChecks() {
         require(!cmd::parse(commandName, juce::JSON::parse(text), error), "malformed device arguments refuse");
     std::cout << "PASS: device commands\n";
 }
+
+static void convolutionResponseCommandChecks() {
+    using alien::RackStage;
+    auto engine = std::make_unique<ToneEngine>();
+    alien::ProjectController controller(*engine);
+    cmd::CommandEngine commands(controller);
+    alien::stock::ConvolutionEffect convolution;
+    juce::MemoryBlock chamberBytes, customBytes;
+    convolution.getStateInformation(chamberBytes);
+    require(convolution.setResponseForNextPrepare(48000, {1.f, .2f}, {1.f, .3f}), "prepare test impulse");
+    convolution.getStateInformation(customBytes);
+    auto device = alien::PluginState{
+        alien::stock::describe(alien::stock::catalog[16]).createXml()->toString(),
+        chamberBytes.toBase64Encoding(), true};
+    require(commands.execute(cmd::InsertDevice{RackStage::track, 0, 0, device}).changed, "insert convolution fixture");
+    controller.markAsNewBaseline();
+    const auto before = controller.document();
+    auto change = cmd::SetConvolutionResponse{before.identityScope, RackStage::track, 0, 0,
+                                              device.instanceId, customBytes.toBase64Encoding()};
+    const auto preview = commands.preview(change);
+    require(preview.ok && preview.changed && !controller.canUndo()
+        && alien::sameContent(before, controller.document()), "convolution preview leaves the document and history alone");
+    require(commands.execute(change).changed && alien::sameContent(preview.after, controller.document())
+        && controller.document().tracks[0].plugins.effects[0].bypass, "execute matches preview and preserves bypass");
+    require(commands.undo() && alien::sameContent(before, controller.document()), "undo restores the chamber");
+    auto unchanged = change;
+    unchanged.state = chamberBytes.toBase64Encoding();
+    require(!commands.execute(unchanged).changed && controller.canRedo(), "unchanged response keeps redo");
+    auto stale = change;
+    ++stale.scope;
+    require(!commands.execute(stale).ok, "a stale project refuses the response");
+    stale = change;
+    ++stale.instance;
+    require(!commands.preview(stale).ok && !commands.execute(stale).ok, "a replaced effect refuses the response");
+    require(commands.redo() && alien::sameContent(preview.after, controller.document()), "redo restores the custom response");
+    require(commands.execute(unchanged).changed, "the chamber can be selected again");
+}
