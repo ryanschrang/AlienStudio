@@ -92,14 +92,14 @@ static void drumSliceControllerTests() {
     {
         ToneEngine engine; alien::ProjectController c(engine); c.openProject(project); wait(c);
         require(!c.document().tracks[0].drumAssets[0] && c.document().tracks[0].drumSlices[0] == alien::DrumSlice{0, 10}, "missing source preserves saved boundaries offline");
-        c.relinkMissingAudio(moved); wait(c); checkKit(c);
+        alien::command::relinkMissingAudio(c, moved); wait(c); checkKit(c);
         c.undo(); require(!c.document().tracks[0].drumAssets[0], "relink is one Undo"); c.redo(); checkKit(c);
     }
     audio->frames = 4; audio->left.resize(4); audio->right.resize(4); audio->buildWaveform();
     require(alien::writeClipWav(moved.getChildFile("source.wav"), *audio, cancel, error), "write shorter relink candidate");
     {
         ToneEngine engine; alien::ProjectController c(engine); c.openProject(project); wait(c);
-        const auto bytes = c.availableAudioBytes(); c.relinkMissingAudio(moved); wait(c);
+        const auto bytes = c.availableAudioBytes(); alien::command::relinkMissingAudio(c, moved); wait(c);
         for (const auto& asset : c.document().tracks[0].drumAssets) require(!asset, "shorter relink cannot silently expand or truncate slices");
         require(c.availableAudioBytes() == bytes, "rejected relink does not retain source audio");
     }

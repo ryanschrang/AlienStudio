@@ -409,7 +409,7 @@ static void reloadAndRelinkEdgeCases() {
         c.pushDocumentToEngine();
         c.editRack("Three", [&](Project& p) { p.addChannel("A", sharedOld); p.addChannel("B", sharedOld); p.addChannel("C", otherOld); return true; });
         require(c.missingMedia().size() == 2, "two files are missing");
-        c.relinkMissingAudio(found); waitIdle(c);
+        alien::command::relinkMissingAudio(c, found); waitIdle(c);
         const auto newPath = shared.getFullPathName().toStdString();
         require(c.channelRack().info[4].sample == newPath && c.channelRack().info[5].sample == newPath, "both channels that used the file now point at the found copy");
         require(c.channelRack().info[6].sample == otherOld && c.rackChannelOffline(6) && !c.rackChannelOffline(4) && !c.rackChannelOffline(5),
@@ -430,7 +430,7 @@ static void reloadAndRelinkEdgeCases() {
         c.onProjectStatus = [&](const juce::String& text, const juce::String&) { lastStatus = text; };
         c.editRack("Offline", [&](Project& p) { return p.setSample(0, oldPath); });
         require(c.rackChannelOffline(0), "the channel is offline");
-        c.relinkMissingAudio(found);                // the search starts...
+        alien::command::relinkMissingAudio(c, found);                // the search starts...
         require(c.editRack("Back to a built-in", [](Project& p) { return p.setSample(0, "builtin:snare"); }), "...and the user picks another sound before it finishes");
         waitIdle(c);
         require(c.channelRack().info[0].sample == "builtin:snare" && c.undoLabel() == "Back to a built-in", "the finished search does not overwrite the user's choice or add an undo step");
@@ -556,10 +556,10 @@ static void saveOpenAndRelink() {
     for (int i = 0; i < 300 && !done; ++i) pump(10);
     require(done && !ok && lastStatus.contains("Missing audio"), "a portable save reports the missing sample");
 
-    c.relinkMissingAudio(empty); waitIdle(c);
+    alien::command::relinkMissingAudio(c, empty); waitIdle(c);
     require(c.missingMedia().size() == 2 && lastStatus.contains("Relinked 0 of 2"), "the wrong folder relinks nothing");
     const auto marker = c.undoLabel();
-    c.relinkMissingAudio(moved); waitIdle(c);
+    alien::command::relinkMissingAudio(c, moved); waitIdle(c);
     require(c.missingMedia().empty() && lastStatus.contains("Relinked 2 of 2"), "searching the right folder finds both");
     require(c.channelRack().info[0].sample == moved.getChildFile("sub/boom.wav").getFullPathName().toStdString()
             && c.channelRack().info[4].sample == moved.getChildFile("snap.wav").getFullPathName().toStdString(), "channels point at the found files");
