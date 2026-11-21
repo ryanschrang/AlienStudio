@@ -20,6 +20,8 @@
 
 namespace {
 std::atomic<std::int64_t> liveBytes{0}, peakBytes{0};
+// T1-04 D7: a throwing allocation of exactly this many bytes fails, as if memory had run out (0: none).
+std::atomic<std::size_t> failSize{0};
 
 void track(std::int64_t delta) noexcept {
     const auto now = liveBytes.fetch_add(delta, std::memory_order_relaxed) + delta;
@@ -47,6 +49,7 @@ void release(void* pointer) noexcept {
     std::free(reinterpret_cast<void*>(words[-1]));
 }
 void* allocateOrThrow(std::size_t size, std::size_t alignment) {
+    if (size != 0 && size == failSize.load(std::memory_order_relaxed)) throw std::bad_alloc();
     if (auto* p = allocate(size, alignment)) return p;
     throw std::bad_alloc();
 }
@@ -331,11 +334,73 @@ static void replacedAudioSafetyTests() {
     root.deleteRecursively();
 }
 
+// T1-04 D7: when an engine's track slots cannot be prepared, the edit or open is refused with a reason, and
+// the project, the engine and the track count stay as they were.
+static void resourceRefusalTests() {
+    const auto slotMemory = sizeof(alien::PianoRollMailbox);   // one of a track slot's objects, made only when it is reserved
+    {
+        auto engine = std::make_unique<ToneEngine>(); engine->prepare(48000);
+        require(engine->preparedTracks() == 4, "a new engine prepares the default four tracks");
+        failSize.store(slotMemory);
+        const bool grew = engine->setActiveTracks(8);
+        failSize.store(0);
+        require(!grew && engine->preparedTracks() == 4 && engine->activeTracks.load() == 4 && engine->reservedNoteSlots() == 4,
+                "a slot that cannot be prepared is not counted, and the published count stays at the slots that exist");
+        std::array<float, 512> left{}, right{};
+        float* outputs[]{left.data(), right.data()};
+        engine->audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
+        require(engine->prepareTracks(8) && engine->preparedTracks() == 8 && engine->reservedNoteSlots() == 8,
+                "once memory is available again, preparing carries on");
+        require(engine->setActiveTracks(8) && engine->activeTracks.load() == 8, "and the count is published");
+        engine->audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
+    }
+    const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("alien-track-refusal", "");
+    require(root.createDirectory().wasOk(), "scratch folder");
+    const auto eight = root.getChildFile("Eight.alienstudio");
+    {
+        auto engine = std::make_unique<ToneEngine>(); engine->prepare(48000);
+        auto c = std::make_unique<alien::ProjectController>(*engine);
+        for (int t = 4; t < 8; ++t) require(c->addTrack(), "add a track");
+        require(writeProject(*c, eight), "save an eight-track project");
+    }
+    auto engine = std::make_unique<ToneEngine>(); engine->prepare(48000);
+    auto c = std::make_unique<alien::ProjectController>(*engine);
+    juce::String said, why;
+    c->onProjectStatus = [&](const juce::String& text, const juce::String& tip) { said = text; why = tip; };
+    const auto four = root.getChildFile("Four.alienstudio");
+    require(writeProject(*c, four), "save a four-track project");
+    c->openProject(four); waitIdle(*c);
+    require(engine->pianoRollLaunches.reservedCount() == 4, "stopping playback for an open creates no launch mailbox for unused slots");
+    const auto before = c->document().tracks.front().id;
+
+    failSize.store(slotMemory);
+    c->openProject(eight); waitIdle(*c);
+    failSize.store(0);
+    require(said.startsWith("Open failed: not enough memory for 8 tracks") && why.contains("could prepare 4 tracks"),
+            "an open whose tracks cannot be prepared says why");
+    require(c->document().trackCount() == 4 && c->document().tracks.front().id == before && engine->activeTracks.load() == 4,
+            "and leaves the open project and the engine as they were");
+
+    c->openProject(eight); waitIdle(*c); settle(*engine, *c);
+    require(c->document().trackCount() == 8 && engine->preparedTracks() == 8, "with memory available, the same open succeeds");
+
+    failSize.store(slotMemory);
+    const bool added = c->addTrack();
+    failSize.store(0);
+    require(!added && c->document().trackCount() == 8 && said.startsWith("Could not add a track: not enough memory for 9 tracks"),
+            "adding a track whose slot cannot be prepared is refused with a reason");
+    require(c->addTrack() && c->document().trackCount() == 9 && engine->preparedTracks() == 9, "and succeeds once memory is available");
+    c->onProjectStatus = nullptr;
+    c.reset(); engine.reset();
+    root.deleteRecursively();
+}
+
 int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI juce;
     const bool report = argc == 2 && std::string_view(argv[1]) == "--report";
     trackerTests();
     replacedAudioSafetyTests();
+    resourceRefusalTests();
     projectPeakTests(report);
     std::cout << "PASS: peak heap tracking and memory returned after save, open, undo/redo and export\n";
     return 0;

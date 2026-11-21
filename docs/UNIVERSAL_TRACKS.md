@@ -9,7 +9,8 @@ D1 sizes the plugin alignment delay lines to the latency actually reported; D2 r
 voices for the track slots a project uses and sample-preview audio when something is previewed;
 D3 reserves each slot's note mailboxes and scheduler with it; D4 measures peak memory during
 save, open, undo/redo and export; D5 frees the audio of a replaced project once the engine lets go of it; D6 frees old Song and Channel
-Rack snapshots one audio block after the engine leaves them.
+Rack snapshots one audio block after the engine leaves them; D7 refuses an open or added track whose
+engine slots cannot be prepared, with a reason, and changes nothing.
 Higher supported limits (E) are pending.
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
@@ -744,3 +745,50 @@ small (`SynthEngine` 4.4 KiB, `DrumSampler` 2.3 KiB, `TrackMixer` 20 bytes, `Ses
 120 bytes per slot, plus what they allocate when prepared), so reserving them with the slot would
 save little; they stay fixed. Audio replaced by edits inside one session, rack sample caches,
 disk-stream sources, plugins and the 32/64 build are as after D5.
+
+## Increment D7: a refusal when track slots cannot be prepared
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+Measurement gate 4 asks for an actionable refusal when resources cannot be prepared, never a silent
+drop. Since D2 and D3, a track slot's stream voices and note state are allocated when a project first
+uses the slot, on the control thread. If memory ran out there, `setActiveTracks` threw after the
+document had already changed: the open or added track was half applied, and the exception reached
+whatever had called it.
+
+What D7 changes:
+
+- **The engine prepares, then says whether it could.** `ToneEngine::prepareTracks(n)` reserves the
+  slots below `n` and answers false if an allocation fails, keeping what it made; a slot counts as
+  prepared (`preparedTracks()`) only when all of it exists, so a later call carries on. Nothing is
+  freed. `setActiveTracks` uses it and, if it fails, publishes only the slots that exist, so the
+  callback never processes a missing one.
+- **Prepared before anything is committed.** An open prepares the loaded project's track count right
+  after its existing checks, before it stops playback or replaces the document; `addTrack` (and with
+  it the Command Engine's CreateTrack) prepares one more slot before it adds the track. On failure the
+  status bar says what failed and how many tracks could be prepared ("Open failed: not enough memory
+  for 8 tracks"; "Close other programs or open a project with fewer tracks"), and the open project, its
+  history and the engine are as they were. Undo and redo only return to track counts that were
+  prepared before, and prepared slots are never freed, so they need no check.
+- **Export.** The WAV export's render engine reports "Not enough memory to prepare N tracks for the
+  export" instead of throwing.
+- **An open no longer creates launch mailboxes for unused slots.** Stopping playback before an open
+  published a stop to every compiled slot, which created a launch mailbox (96 KiB) for slots the
+  project never used, undoing part of D3 on every open. Slots without a mailbox never played, so they
+  are now skipped.
+
+Tests (`MemoryPeakTests`, whose allocator can now fail every allocation of one chosen size, here a
+slot's note mailbox):
+- the engine refuses to grow from 4 to 8 slots, keeps 4 prepared and published, still runs a block,
+  and grows once memory is available;
+- an open of an 8-track project is refused with the reason in the status bar and leaves the open
+  4-track project (same track identity) and the engine's track count unchanged; the same open then
+  succeeds;
+- adding a ninth track is refused with a reason and the project keeps 8; it then succeeds;
+- after an open of a 4-track project, only 4 slots have launch mailboxes (checked to fail without the
+  fix).
+
+Not tested: the export refusal (its render engine prepares four slots when it is built, so this
+failure injection stops it earlier, in construction); running out of memory anywhere other than a
+track slot, such as decoding audio or building the loaded document, which the loader already reports
+as a failed open; plugins.
