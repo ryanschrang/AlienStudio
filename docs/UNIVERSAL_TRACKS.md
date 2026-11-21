@@ -8,7 +8,7 @@ format 32) and C3 (a build-time capacity setting with a measured, CI-tested
 D1 sizes the plugin alignment delay lines to the latency actually reported; D2 reserves stream
 voices for the track slots a project uses and sample-preview audio when something is previewed;
 D3 reserves each slot's note mailboxes and scheduler with it; D4 measures peak memory during
-save, open, undo/redo and export.
+save, open, undo/redo and export; D5 frees the audio of a replaced project once the engine lets go of it.
 Higher supported limits (E) are pending.
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
@@ -620,3 +620,61 @@ What this shows:
 Not measured: freeze, stems, source replacement, plugins and their state, malloc-based storage
 (JUCE `HeapBlock`), the 32/64 build, and anything but this one synthetic project. A next step for
 D is to release retained audio of a replaced project once the engine no longer refers to it.
+
+## Increment D5: the audio of a replaced project is freed
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+D4 found that each open over an open project kept the audio it replaced for the controller's
+lifetime. `ProjectController::retained` exists because the engine holds raw pointers into decoded
+audio, so nothing it might still read may be freed; with no way to know when it had stopped, the
+controller kept everything until `maxSessionAudioBytes` (512 MiB) refused the next open.
+
+What D5 changes:
+
+- **The engine answers a release request.** `ToneEngine::audioReleaseRequest` / `audioReleaseDone`
+  are a pair of counters. The callback reads the request before it takes anything from its
+  mailboxes, so the block that sees a new number has adopted everything the controller published
+  before asking: the new Song snapshot, Session launches and drum pads. After the drum pads are
+  brought up to date it stops and clears what could still point into old audio (clip players and
+  crossfade tails, every adopted slot's timeline lane, drum voices, the rack player), refreshes
+  every slot's drum pads, and stores the same number in `audioReleaseDone`. A playing Song picks
+  its lanes up again from the new snapshot. Nothing is allocated or freed on the audio thread.
+- **The controller sets replaced audio aside.** After an open (or File > New) has put the new
+  project, its history and its published Song in place, every clip that only `retained` still owns
+  is moved to a waiting list, and the controller asks the engine to let go. Nothing else can hand
+  such a clip out again: not the document, history, the clipboard, the rack caches or a running
+  job. A clip with any other owner stays retained, as before; a drum slice source goes with its
+  views when they are its only other owners.
+- **Freed on the message thread once answered.** `releaseReplacedAudio()` (called by the app's
+  timer and at the next open) frees the waiting list once `audioReleaseDone` has reached the
+  request, and takes its bytes off the 512 MiB budget. With no device running nothing is freed,
+  as before. It also waits while warped audio is being prepared, because the old Song can still be
+  the published one then.
+
+Tests (`MemoryPeakTests`):
+- with no callback since the open, the replaced audio waits;
+- one callback answers the request;
+- then the audio is freed (its last `weak_ptr` expires), including a clip that was playing;
+- a clip on the clipboard is not freed and still pastes;
+- File > New frees the replaced audio too;
+- on the full project, once settled, an open over an open project keeps nothing, and the audio
+  budget does not shrink.
+
+### Measurements
+
+2026-11-21, Release, 16/32 (`MemoryPeakTests --report`), same project as D4:
+
+| Step | D4: live after (MiB) | D5: live after (MiB) |
+| --- | ---: | ---: |
+| Open over itself | 86.0 | 71.3 |
+| Open over itself, fourth time | 146.0 | 87.2 |
+| Growth per open once settled | 14.6 (until 512 MiB refuses) | 0.0 |
+
+Live memory now settles about 32 MiB above a single open: two replaced documents' note patterns,
+consistent with the engine's three-slot Song snapshot mailbox, which keeps older snapshots until it
+overwrites them. That is bounded and was not traced further.
+
+Not done: audio replaced by edits inside one session (removing or replacing a clip's audio) is still
+kept, since undo can bring it back; rack sample caches and disk-stream sources are still kept for the
+controller's or engine's lifetime; plugins were not part of the test.

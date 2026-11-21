@@ -145,6 +145,7 @@ void settle(ToneEngine& engine, alien::ProjectController& c) {
         for (int i = 0; i < 5; ++i) pump();
         c.pushDocumentToEngine();
     }
+    c.releaseReplacedAudio();   // what the app's timer does
 }
 
 bool writeProject(alien::ProjectController& c, const juce::File& file) {
@@ -220,7 +221,7 @@ static void projectPeakTests(bool report) {
         const auto afterExport = liveBytes.load();
         require(afterExport - phases.back().before < (1 << 20), "an export returns its render engine and copies when it ends");
     }
-    std::int64_t firstOpen = 0, keptAudioPerOpen = 0;
+    std::int64_t firstOpen = 0, settledReopen = 0;
     for (int pass = 0; pass < 2; ++pass) {
         auto engine = std::make_unique<ToneEngine>();
         engine->prepare(48000);
@@ -237,21 +238,19 @@ static void projectPeakTests(bool report) {
         }
         firstOpen = opened.after - opened.before;
         phases.push_back(opened);
-        // The controller keeps every decoded clip it has loaded for as long as it lives (the engine may still
-        // point at one), within maxSessionAudioBytes, so each open over an open project keeps the audio it replaced.
+        // T1-04 D5: the audio of the project an open replaces is freed once the engine has let go of it.
         for (int again = 0; again < 6; ++again) {
             const auto available = c->availableAudioBytes();
             auto reopened = measure(again == 0 ? "Open the same project over itself" : "Open it over itself a fourth time", [&] {
                 c->openProject(song); waitIdle(*c); settle(*engine, *c);
             });
-            const auto kept = static_cast<std::int64_t>(available) - static_cast<std::int64_t>(c->availableAudioBytes());
-            require(kept > 0, "the replaced project's audio is counted as kept");
-            // The first two also keep about one replaced document each, then that stops growing: consistent with the
-            // engine's three-slot Song snapshot mailbox, whose old snapshots share the document's note patterns.
+            require(c->availableAudioBytes() == available && c->replacedAudioBytes() == 0,
+                    "an open over an open project frees the audio it replaced");
+            // The first two still keep about one replaced document each, then that stops growing: consistent with
+            // the engine's three-slot Song snapshot mailbox, whose old snapshots share the document's note patterns.
             if (again >= 3) {
-                require(std::llabs((reopened.after - reopened.before) - kept) < (1 << 20),
-                        "once settled, an open over an open project keeps nothing but the replaced audio");
-                keptAudioPerOpen = kept;
+                require(reopened.after - reopened.before < (1 << 20), "once settled, an open over an open project keeps nothing");
+                settledReopen = reopened.after - reopened.before;
             }
             if (again == 0 || again == 3) phases.push_back(reopened);
         }
@@ -272,18 +271,73 @@ static void projectPeakTests(bool report) {
             std::cout << "| " << p.name << " | " << mib(p.before) << " | " << mib(p.peak) << " | " << mib(p.peak - p.before)
                       << " | " << mib(p.after) << " |\n";
         std::cout << "\nLive with one engine, controller and the project: " << mib(builtProject) << " MiB.\n"
-                  << "Each open over an open project keeps the replaced decoded audio: " << mib(keptAudioPerOpen)
-                  << " MiB here, until the controller's "
-                  << mib(static_cast<std::int64_t>(alien::ProjectController::maxSessionAudioBytes))
-                  << " MiB limit refuses further opens.\n"
+                  << "Once settled, an open over an open project keeps " << mib(settledReopen)
+                  << " MiB: the audio it replaced is freed when the engine has let go of it.\n"
                   << "Not counted: malloc storage (JUCE HeapBlock, such as plugin MIDI buffers), the OS, allocator overhead.\n";
     }
+}
+
+// T1-04 D5: replaced audio is freed only after the engine answers, and never while anything else owns it.
+static void replacedAudioSafetyTests() {
+    const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("alien-audio-release", "");
+    require(root.createDirectory().wasOk(), "scratch folder");
+    const auto song = root.getChildFile("Small.alienstudio");
+    {
+        auto engine = std::make_unique<ToneEngine>(); engine->prepare(48000);
+        auto c = std::make_unique<alien::ProjectController>(*engine);
+        for (int t = 0; t < 2; ++t) {
+            const auto file = root.getChildFile("clip" + juce::String(t) + ".wav");
+            auto clip = toneClip(2.0);
+            std::atomic<bool> cancel{false}; juce::String error;
+            require(alien::writeClipWav(file, *clip, cancel, error) && c->installAudio(file, t, 0, clip), "install audio");
+        }
+        require(writeProject(*c, song), "save the small project");
+    }
+    auto engine = std::make_unique<ToneEngine>(); engine->prepare(48000);
+    auto c = std::make_unique<alien::ProjectController>(*engine);
+    c->openProject(song); waitIdle(*c); settle(*engine, *c);
+    std::weak_ptr<const alien::SessionAudioClip> played = c->document().clip(0, 0).audio, copied = c->document().clip(1, 0).audio;
+    require(!played.expired() && !copied.expired(), "the opened project has its audio");
+    require(c->copyCell(1, 0), "copy an audio clip");
+    // Play the first clip, so the engine is reading it when the project is replaced.
+    engine->patternMode.store(1);
+    c->launchClip(0, 0);
+    engine->playing.store(true);
+    std::array<float, 512> left{}, right{};
+    float* outputs[]{left.data(), right.data()};
+    double energy = 0;
+    for (int b = 0; b < 8; ++b) {
+        engine->audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
+        for (float v : left) energy += static_cast<double>(v) * v;
+    }
+    require(energy > 0, "the audio clip is playing");
+    const auto available = c->availableAudioBytes();
+
+    c->openProject(song); waitIdle(*c);
+    require(c->replacedAudioBytes() > 0 && c->releaseReplacedAudio() == 0 && !played.expired(),
+            "with no callback since the open, the replaced audio waits");
+    engine->audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
+    require(engine->audioReleaseDone.load() == engine->audioReleaseRequest.load(), "one callback answers the request");
+    require(c->releaseReplacedAudio() > 0 && played.expired() && c->replacedAudioBytes() == 0,
+            "after the engine answers, the replaced audio is freed");
+    require(!copied.expired(), "a clip on the clipboard is not freed");
+    require(c->availableAudioBytes() <= available, "only freed audio is taken off the budget");
+    require(c->pasteCell(2, 0, false) && c->document().clip(2, 0).audio.get() == copied.lock().get(), "the copied clip still pastes");
+    for (int b = 0; b < 8; ++b) engine->audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
+
+    std::weak_ptr<const alien::SessionAudioClip> opened = c->document().clip(0, 0).audio;
+    c->newProject();
+    engine->audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
+    require(c->releaseReplacedAudio() > 0 && opened.expired() && !copied.expired(), "File > New frees the replaced audio too");
+    c.reset(); engine.reset();
+    root.deleteRecursively();
 }
 
 int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI juce;
     const bool report = argc == 2 && std::string_view(argv[1]) == "--report";
     trackerTests();
+    replacedAudioSafetyTests();
     projectPeakTests(report);
     std::cout << "PASS: peak heap tracking and memory returned after save, open, undo/redo and export\n";
     return 0;
