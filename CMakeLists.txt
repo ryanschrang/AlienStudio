@@ -170,6 +170,15 @@ if(BUILD_TESTING)
     set_tests_properties(ProjectControllerTests PROPERTIES TIMEOUT 60)
     # Its test functions hold many projects, and the rack model grew with key zones (T2-01): a Debug build overflowed Windows' default 1 MB stack.
     target_link_options(ProjectControllerTests PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/STACK:8388608>")
+    # T1-04 D4: peak C++ heap while a full project is saved, opened, edited and exported (--report prints it).
+    add_executable(MemoryPeakTests tests/MemoryPeakTests.cpp)
+    target_include_directories(MemoryPeakTests PRIVATE src)
+    target_compile_definitions(MemoryPeakTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(MemoryPeakTests PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_audio_devices
+        juce::juce_audio_formats juce::juce_audio_basics)
+    add_test(NAME MemoryPeakTests COMMAND MemoryPeakTests)
+    set_tests_properties(MemoryPeakTests PROPERTIES TIMEOUT 300)
+    target_link_options(MemoryPeakTests PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/STACK:8388608>")
     add_executable(CommandEngineTests tests/CommandEngineTests.cpp)
     target_include_directories(CommandEngineTests PRIVATE src)
     target_compile_definitions(CommandEngineTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
