@@ -1899,50 +1899,19 @@ public:
         for(const auto& track:doc.tracks) if(track.settings.frozen())return true;
         return false;
     }
-    std::int64_t freezeEndTick(int track) const noexcept {
-        std::int64_t end=0; for(const auto& region:doc.timeline.regions)if(region.row==track)end=std::max(end,region.end());
-        return end;
-    }
+    std::int64_t freezeEndTick(int track) const noexcept { return freeze_edit::endTick(doc, track); }
     juce::String freezeRefusal(int track) const {
-        for (int s = 0; s < doc.sceneCount(); ++s)
-            if (doc.isValidCell(track, s) && doc.clip(track, s).rackClip != 0)
-                return "Clear rack launch assignments before freezing this Session track. Rack channels keep their own routing.";
-        if(busy || isRecording())return "Finish the current operation before freezing.";
-        if(track<0 || track>=doc.trackCount())return "Choose a Session track.";
-        if(isTrackFrozen(track))return "Track is already frozen.";
-        if(freezeEndTick(track)==0)return "Place this track's clips in Song before freezing.";
-        for(int c=0;c<doc.channelRack.channelCount;++c)if(doc.channelRack.channels[static_cast<std::size_t>(c)].output==track)
-            return "Freeze currently supports Session tracks without Channel Rack inputs. Reroute those channels first.";
-        for(const auto& region:doc.timeline.regions)if(region.row==track) {
-            if(doc.placementContent(region).audioOffline())return "Relink missing audio before freezing.";
-            if(region.group!=0)for(const auto& other:doc.timeline.regions)if(other.group==region.group && other.row!=track)
-                return "Ungroup clips shared with other tracks before freezing.";
-        }
-        return {};
+        if (!canEditMidiClips()) return "Finish the current operation before freezing.";
+        return freeze_edit::freezeRefusal(doc, track);
     }
-    // Called only after the worker has rendered/imported a fresh cache. One undo transaction.
-    bool installFrozenTrack(int track,const juce::File& file,std::shared_ptr<SessionAudioClip> audio,
-                            const timeline::Timeline& expected) {
-        if(freezeRefusal(track).isNotEmpty() || doc.timeline!=expected || !audio || !audio->valid())return false;
-        const auto saved=doc; const auto retainedBefore=retained.size(); const auto bytesBefore=retainedBytes;
-        auto fail=[&] { doc=saved; retained.resize(retainedBefore);retainedBytes=bytesBefore;return false; };
-        int scene=-1;
-        for(int i=0;i<doc.sceneCount() && scene<0;++i)if(doc.clip(track,i).isEmpty()) {
-            bool used=false;
-            for(const auto* regions:{&doc.timeline.regions,&doc.timeline.takes,&doc.timeline.frozenOriginals})
-                for(const auto& region:*regions)used=used || (region.row==track && region.source==i);
-            if(!used)scene=i;
-        }
-        if(scene<0){if(!insertScene(doc.sceneCount(),nullptr))return fail();scene=doc.sceneCount()-1;}
-        if(!retain(audio))return fail();
-        auto cache=doc.clip(track,scene);cache.audio=audio;cache.audioFilePath=file.getFullPathName();cache.audioFileName=file.getFileName();
-        doc.setClip(track,scene,cache);
-        if(!anyFrozenTrack())doc.timeline.freezeBaseLengthBars=doc.timeline.lengthBars;
-        const double ticks=songTempo().tickAfter(0.0,static_cast<double>(audio->frames)/audio->sampleRate);
-        if(!std::isfinite(ticks) || ticks<1 || ticks>timeline::maxLength || !doc.timeline.freezeTrack(track,scene,static_cast<std::int64_t>(std::ceil(ticks)),1.0/ToneEngine::audioClipLevel))return fail();
-        doc.tracks[static_cast<std::size_t>(track)].settings.freezeScene=scene;
-        if(!toProjectData(doc).valid())return fail();
-        pushDocumentToEngine();commit("Freeze track");if(onDocumentRestored)onDocumentRestored();return true;
+
+    bool applyFreezeTrackCommand(const freeze_edit::Install& edit) {
+        if (!canEditMidiClips()) return false;
+        auto candidate = doc;
+        if (freeze_edit::install(candidate, edit, ToneEngine::audioClipLevel).isNotEmpty() || !retain(edit.audio)) return false;
+        doc = std::move(candidate);
+        pushDocumentToEngine();
+        return true;
     }
     // Live side of UnfreezeTrack (the Song track menu's Unfreeze). CommandEngine owns the history entry.
     bool applyUnfreezeCommand(int track) {

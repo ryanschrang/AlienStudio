@@ -1,5 +1,6 @@
 #pragma once
 #include "ProjectDocument.h"
+#include "SceneCommands.h"
 #include <algorithm>
 
 // Pure document edit for unfreezing one Song track (the UnfreezeTrack command). The controller and
@@ -25,6 +26,94 @@ inline juce::String unfreeze(ProjectDocument& d, int track) {
         d.timeline.lengthBars = std::max(d.timeline.freezeBaseLengthBars, d.timeline.minLengthBars());
         d.timeline.freezeBaseLengthBars = 0;
     }
+    return {};
+}
+
+struct Target {
+    std::uint32_t scope{}, trackId{};
+    int track{-1};
+    int bpm{};
+    std::shared_ptr<const timeline::Timeline> timeline;
+};
+
+inline Target capture(const ProjectDocument& doc, int track) {
+    if (track < 0 || track >= doc.trackCount()) return {};
+    return {doc.identityScope, doc.tracks[static_cast<std::size_t>(track)].id, track, doc.bpm,
+            std::make_shared<const timeline::Timeline>(doc.timeline)};
+}
+
+struct Install {
+    Target target;
+    juce::File file;
+    std::shared_ptr<SessionAudioClip> audio;
+};
+
+inline std::int64_t endTick(const ProjectDocument& doc, int track) noexcept {
+    std::int64_t end = 0;
+    for (const auto& region : doc.timeline.regions)
+        if (region.row == track) end = std::max(end, region.end());
+    return end;
+}
+
+inline juce::String freezeRefusal(const ProjectDocument& doc, int track) {
+    for (int s = 0; s < doc.sceneCount(); ++s)
+        if (doc.isValidCell(track, s) && doc.clip(track, s).rackClip != 0)
+            return "Clear rack launch assignments before freezing this Session track. Rack channels keep their own routing.";
+    if(track<0 || track>=doc.trackCount())return "Choose a Session track.";
+    if(doc.tracks[static_cast<std::size_t>(track)].settings.frozen())return "Track is already frozen.";
+    if(endTick(doc, track)==0)return "Place this track's clips in Song before freezing.";
+    for(int c=0;c<doc.channelRack.channelCount;++c)if(doc.channelRack.channels[static_cast<std::size_t>(c)].output==track)
+        return "Freeze currently supports Session tracks without Channel Rack inputs. Reroute those channels first.";
+    for(const auto& region:doc.timeline.regions)if(region.row==track) {
+        if(doc.placementContent(region).audioOffline())return "Relink missing audio before freezing.";
+        if(region.group!=0)for(const auto& other:doc.timeline.regions)if(other.group==region.group && other.row!=track)
+            return "Ungroup clips shared with other tracks before freezing.";
+    }
+    return {};
+}
+
+inline juce::String install(ProjectDocument& doc, const Install& edit, float playbackLevel) {
+    const auto& target = edit.target;
+    const int track = target.track;
+    if (target.scope != doc.identityScope || track < 0 || track >= doc.trackCount()
+        || doc.tracks[static_cast<std::size_t>(track)].id != target.trackId
+        || doc.bpm != target.bpm || !target.timeline || doc.timeline != *target.timeline)
+        return "The project or track changed while rendering the freeze.";
+    if (const auto why = freezeRefusal(doc, track); why.isNotEmpty()) return why;
+    if (edit.file == juce::File{} || !edit.audio || !edit.audio->valid())
+        return "The freeze render did not produce valid audio.";
+    const timeline::TempoMap tempo{doc.timeline.tempoChanges, static_cast<double>(doc.bpm)};
+    const auto ticks = tempo.tickAfter(0.0, static_cast<double>(edit.audio->frames) / edit.audio->sampleRate);
+    if (!std::isfinite(ticks) || ticks < 1 || ticks > timeline::maxLength)
+        return "The freeze render is outside the supported Song length.";
+
+    auto candidate = doc;
+    int scene = 0;
+    for (; scene < candidate.sceneCount(); ++scene) {
+        if (!candidate.clip(track, scene).isEmpty()) continue;
+        const auto usesCell = [=](const timeline::Region& region) {
+            return region.row == track && region.source == scene;
+        };
+        if (std::none_of(candidate.timeline.regions.begin(), candidate.timeline.regions.end(), usesCell)
+            && std::none_of(candidate.timeline.takes.begin(), candidate.timeline.takes.end(), usesCell)
+            && std::none_of(candidate.timeline.frozenOriginals.begin(), candidate.timeline.frozenOriginals.end(), usesCell))
+            break;
+    }
+    if (scene == candidate.sceneCount())
+        if (const auto why = scene_edit::apply(candidate, {scene_edit::Kind::create}); why.isNotEmpty()) return why;
+
+    auto cache = candidate.clip(track, scene);
+    cache.audio = edit.audio;
+    cache.audioFilePath = edit.file.getFullPathName();
+    cache.audioFileName = edit.file.getFileName();
+    candidate.setClip(track, scene, cache);
+    if (std::none_of(candidate.tracks.begin(), candidate.tracks.end(), [](const auto& t) { return t.settings.frozen(); }))
+        candidate.timeline.freezeBaseLengthBars = candidate.timeline.lengthBars;
+    if (!candidate.timeline.freezeTrack(track, scene, static_cast<std::int64_t>(std::ceil(ticks)), 1.0 / playbackLevel))
+        return "The freeze render could not replace the original Song clips.";
+    candidate.tracks[static_cast<std::size_t>(track)].settings.freezeScene = scene;
+    if (!toProjectData(candidate).valid()) return "The frozen track would make the project invalid.";
+    doc = std::move(candidate);
     return {};
 }
 } // namespace alien::freeze_edit
