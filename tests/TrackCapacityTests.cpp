@@ -129,29 +129,29 @@ static void everyTrackAndSceneLaunches() {
 // the slot again nothing from before comes back.
 static void slotsLeavingUseFallSilent() {
     Engine rig;
-    rig.engine->activeTracks.store(tracks);
+    rig.engine->setActiveTracks(tracks);
     rig.engine->patternMode.store(alien::sessionMode);
     rig.engine->playing.store(true);
     rig.launch(tracks - 1, 60);
     require(rig.render(2 * blocksPerBar) > 0.0f, "the last track slot plays");
     require(rig.engine->activePianoRollClip[static_cast<std::size_t>(tracks - 1)].load() == 0, "the last slot's clip is active");
 
-    rig.engine->activeTracks.store(tracks - 1);   // the last track was deleted
+    rig.engine->setActiveTracks(tracks - 1);   // the last track was deleted
     rig.render(2);
     require(rig.render(blocksPerBar) == 0.0f, "a slot leaving use is silent from its next block");
     require(rig.engine->activePianoRollClip[static_cast<std::size_t>(tracks - 1)].load() == -1, "its clip is stopped");
 
     const auto before = allocationCount;
-    rig.engine->activeTracks.store(tracks);       // a new track takes the slot
+    rig.engine->setActiveTracks(tracks);       // a new track takes the slot
     require(rig.render(2 * blocksPerBar) == 0.0f, "no note or clip resumes when the slot is used again");
     require(allocationCount == before, "slots leaving and entering use allocate nothing");
 
     // A launch for a slot that is not in use waits for a track to use it, and plays then.
-    rig.engine->activeTracks.store(1);
+    rig.engine->setActiveTracks(1);
     rig.render(2);
     rig.launch(tracks - 1, 64);
     require(rig.render(2 * blocksPerBar) == 0.0f, "a slot out of use stays silent");
-    rig.engine->activeTracks.store(tracks);
+    rig.engine->setActiveTracks(tracks);
     require(rig.render(2 * blocksPerBar) > 0.0f, "its launch plays once a track uses the slot");
 }
 
@@ -159,7 +159,7 @@ static void slotsLeavingUseFallSilent() {
 // the clips start again from the top, and nothing from before the restart outlives a stop.
 static void deviceRestartAtTheLimit() {
     Engine rig;
-    rig.engine->activeTracks.store(tracks);
+    rig.engine->setActiveTracks(tracks);
     rig.engine->patternMode.store(alien::sessionMode);
     rig.engine->playing.store(true);
     for (int t = 0; t < tracks; ++t) rig.launch(t, 48 + t % 24);
@@ -177,13 +177,13 @@ static void deviceRestartAtTheLimit() {
     rig.engine->playing.store(true);
     rig.launch(tracks - 1, 60);
     require(rig.render(2 * blocksPerBar) > 0.0f, "the last slot plays again");
-    rig.engine->activeTracks.store(1);
+    rig.engine->setActiveTracks(1);
     rig.engine->audioDeviceStopped();
     rig.engine->prepare(48000.0);
     rig.engine->playing.store(false);
     rig.render(4);
     rig.engine->playing.store(true);
-    rig.engine->activeTracks.store(tracks);
+    rig.engine->setActiveTracks(tracks);
     std::vector<float> peaks(static_cast<std::size_t>(tracks), 0.0f);
     for (int b = 0; b < 2 * blocksPerBar; ++b) {
         rig.render(1);

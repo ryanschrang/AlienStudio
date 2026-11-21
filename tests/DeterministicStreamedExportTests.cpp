@@ -276,7 +276,7 @@ int main() {
         check(maxDifference(normal, streamed) == 0, "send export is identical for streamed sources and odd blocks");
         put(song, 0, 0, *material, 0);
         auto live = std::make_unique<ToneEngine>(); live->prepare(48000); live->bpm.store(120);
-        live->patternMode.store(2); live->activeTracks.store(4);
+        live->patternMode.store(2); live->setActiveTracks(4);
         check(live->arrangementMailbox.publish(std::make_shared<const alien::ArrangementPlayback>(*song.playback)), "publish live send song");
         live->playing.store(true);
         float l[257]{}, r[257]{}; float* out[]{l, r};
@@ -286,6 +286,41 @@ int main() {
             for (int c = 0; c < 2; ++c) for (int i = 0; i < n; ++i)
                 check(std::abs(out[c][i] - normal.samples.getSample(c, offset + i)) < 3e-7f, "live and WAV send automation agree within PCM quantization");
         }
+    }
+
+    // T1-04 D: stream voices exist only for track slots the project has used. A streamed clip on track 7
+    // plays once the project grows to seven tracks, live exactly as exported.
+    {
+        constexpr int row = 6;
+        static_assert(row < alien::maxSessionTracks);
+        auto material = makeMaterial(48000, 2, 2, 3);
+        Song song; song.project->bpm = 120; song.project->resize(row + 1, std::max(1, song.project->sceneCount()));
+        auto& t = song.playback->timeline; t.setLengthBars(1);
+        check(t.place(region(row, 0, 0, ticksPerBar)), "place a clip on track 7");
+        put(song, row, 0, *material, 1); finish(song);
+        const auto exported = render(song);
+        check(energy(exported, 0, 96000) > 1, "a streamed clip on track 7 is exported");
+        auto live = std::make_unique<ToneEngine>();
+        check(live->reservedStreamVoices() == 4 * static_cast<std::size_t>(alien::sessionProjectTrackCount),
+              "a new engine holds stream voices only for the default project's tracks");
+        live->prepare(48000); live->bpm.store(120); live->patternMode.store(2);
+        live->renderStreamsDeterministically();   // voices reserved after this are served on the playing thread too
+        live->setActiveTracks(row + 1);
+        check(live->reservedStreamVoices() == 4 * static_cast<std::size_t>(row + 1), "growing the project reserves its slots' voices");
+        live->setActiveTracks(2);
+        check(live->reservedStreamVoices() == 4 * static_cast<std::size_t>(row + 1), "a smaller project keeps the voices already reserved");
+        live->setActiveTracks(row + 1);
+        check(live->arrangementMailbox.publish(std::make_shared<const alien::ArrangementPlayback>(*song.playback)), "publish the track 7 song");
+        live->playing.store(true);
+        float l[256]{}, r[256]{}; float* out[]{l, r};
+        for (int offset = 0; offset < exported.frames; offset += 256) {
+            const int n = static_cast<int>(std::min<std::int64_t>(256, exported.frames - offset));
+            live->audioDeviceIOCallbackWithContext(nullptr, 0, out, 2, n, {});
+            for (int c = 0; c < 2; ++c) for (int i = 0; i < n; ++i)
+                check(std::abs(out[c][i] - exported.samples.getSample(c, offset + i)) < 3e-7f,
+                      "a streamed clip on a slot reserved after construction plays live as exported");
+        }
+        check(!live->sessionStreamFailed(row) && live->sessionStreamUnderruns(row) == 0, "the late slot's stream neither failed nor ran dry");
     }
 
     // A comp export reads only its active pieces; retained alternate passes stay silent.

@@ -236,7 +236,7 @@ static void trackRoutingUsesTheMixerStrip() {
         rig.project.setChannel(0, channel);
         rig.project.setStepOn(0, 0, 0, true);
         rig.publish();
-        rig.engine.activeTracks.store(4);
+        rig.engine.setActiveTracks(4);
         rig.engine.patternMode.store(3);
         rig.engine.playing.store(true);
         require(rig.render(3000).peak > 0.05f, "a missing track falls back to the master bus");
@@ -403,7 +403,7 @@ static void tracksThatAreNotInUseFallBackToTheMaster() {
     rig.project.setChannel(0, channel);
     rig.project.setStepOn(0, 0, 0, true);
     rig.publish();
-    rig.engine.activeTracks.store(4);               // track 10 is not part of this session...
+    rig.engine.setActiveTracks(4);               // track 10 is not part of this session...
     rig.engine.tracks[9].mute.store(true);          // ...so what its strip does is none of the rack's business
     rig.render(4096);
     rig.engine.patternMode.store(3);
@@ -630,14 +630,19 @@ static void capacityReport() {
         const auto constructed = allocatedBytes - before;
         engine->prepare(48000.0);
         const auto prepared = allocatedBytes - before;
+        engine->setActiveTracks(full);   // every slot's stream voices (T1-04 D: reserved as a project grows)
+        const auto everySlot = allocatedBytes - before;
         std::cout << "# Shared playback capacity\n\n"
             << "Compiled limits: " << full << " Session tracks, " << alien::maxSessionScenes << " scenes.\n\n"
             << "| Engine heap (C++ new, cumulative) | Bytes | MiB |\n| --- | ---: | ---: |\n" << std::fixed << std::setprecision(3)
             << "| sizeof(ToneEngine) (inline object only) | " << sizeof(ToneEngine) << " | " << sizeof(ToneEngine) / 1048576.0 << " |\n"
             << "| Constructed ToneEngine (incl. object) | " << constructed << " | " << constructed / 1048576.0 << " |\n"
-            << "| After prepare(48 kHz) | " << prepared << " | " << prepared / 1048576.0 << " |\n\n"
+            << "| After prepare(48 kHz) | " << prepared << " | " << prepared / 1048576.0 << " |\n"
+            << "| After setActiveTracks(" << full << ") | " << everySlot << " | " << everySlot / 1048576.0 << " |\n\n"
             << "Cumulative bytes requested from operator new; frees and std::vector growth during prepare are not subtracted.\n"
-            << "Excludes plugins, media, Song/rack snapshots, document/history, UI and allocator overhead.\n\n";
+            << "Excludes plugins, media, Song/rack snapshots, document/history, UI and allocator overhead.\n"
+            << "A new engine holds stream voices for the default project's tracks; a project reserves more as it grows.\n"
+            << "Sample preview audio is reserved by the first preview, not counted here.\n\n";
     }
     std::cout << "# Shared playback callback baseline\n\n"
         << "48 kHz, 120 BPM; stock synth preset 9; no plugins, device or disk I/O.\n"
@@ -657,7 +662,7 @@ static void capacityReport() {
     }
     for (const auto& c : cases) for (int frames : {64, 256, 1024}) {
         auto rig = std::make_unique<Rig>();
-        rig->engine.activeTracks.store(c.tracks);
+        rig->engine.setActiveTracks(c.tracks);
         rig->project.clips[0] = 101;
         rig->project.setInstrumentPreset(0, 9);
         alien::PianoRollPattern chord; chord.loopSteps = 16;

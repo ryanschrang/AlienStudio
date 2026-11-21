@@ -5,7 +5,8 @@ implemented. Playback adapters (C) are implemented: C1 (the callback processes
 only the track slots in use), C2 (Song rack lanes saved apart from track rows,
 format 32) and C3 (a build-time capacity setting with a measured, CI-tested
 32-track, 64-scene candidate profile). Resource budgets (D) are in progress:
-D1 sizes the plugin alignment delay lines to the latency actually reported.
+D1 sizes the plugin alignment delay lines to the latency actually reported; D2 reserves stream
+voices for the track slots a project uses and sample-preview audio when something is previewed.
 Higher supported limits (E) are pending.
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
@@ -428,9 +429,72 @@ main before this change, alternating, two runs each:
 The callback cost is the same within run-to-run noise. Every run on this day was slower than the
 2026-11-17 C3 run of the same code, so compare rows within one table only. 44 MiB is
 the 60 track, source, bus and return lines at 0.73 MiB each; per extra track slot the fixed cost
-falls from about 2.6 MiB to about 1.1 MiB (the note mailboxes, scheduler and the rest). The
-32/64 build was not re-measured.
+falls from about 2.6 MiB to about 1.1 MiB. The 32/64 build was not re-measured. (D2 found that
+"the rest" was mostly the four stream voices per slot, 0.75 MiB, and that 22 MiB of the remaining
+heap was the sample preview, not a per-slot cost.)
 
 Not done in D1: note state and mailboxes still scale with the compiled maximum, peak memory during
 load/undo/export is not measured, and no latent third-party plugin was tested; the test plugin
 reports a latency it is told to.
+
+## Increment D2: stream voices and sample preview reserved as they are used
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+After D1 the engine still requested 45.4 MiB at construction. Measuring it allocation by
+allocation (C++ `new`, grouped by object) found two fixed costs that did not depend on the project:
+
+- **Stream voices.** `DiskAudioStreamService` built all 64 voices (four per compiled track slot:
+  two for a slot's clips, two for a crossfade's outgoing clip) in one block. Each voice is an
+  8,192-frame ring of 24-byte frames, about 0.19 MiB, so 0.75 MiB per slot whether the slot was
+  ever used.
+- **Sample preview.** The browser's preview kept three slots of five seconds of stereo at
+  192 kHz each: 22 MiB, allocated even if nothing was ever previewed.
+
+What D2 changes:
+
+- **A voice exists once a slot is used.** `DiskAudioStreamService::reserve(index)` (control
+  thread) allocates one voice and publishes it through an atomic pointer; the worker skips voices
+  not reserved. Voices are never freed while the service runs, so a pointer once handed out stays
+  valid. `ToneEngine::setActiveTracks(n)` reserves the four voices of every slot below `n`, then
+  publishes the track count; at its next block the callback binds those slots' players (pointer
+  assignment only). `ProjectController` and the WAV export set the count this way, and so do the
+  tests. A new engine reserves the default project's four tracks. Voices are kept when a project
+  shrinks, so the cost is the most track slots the project has used.
+- **A slot without voices** has no streamed clip to play: its player already refuses one cleanly
+  (`queue` answers false). The voices of a slot are reserved before the track count that uses it is
+  published, so this does not happen in the app.
+- **Deterministic export.** `setDeterministic` now also applies to voices reserved afterwards, so a
+  render whose project grows after it starts is still served on the rendering thread.
+- **Preview audio grows on the GUI thread.** A preview slot's storage is resized in `request`,
+  while the GUI owns the slot (state `writing`); the audio thread never reads a slot it has handed
+  back as free. A slot keeps the length of the longest preview it has held, up to the same five
+  seconds at 192 kHz. Nothing is reserved until the first preview.
+
+Tests: `DiskAudioStreamTests` (no voice before `reserve`, reserving twice returns the same voice);
+`DeterministicStreamedExportTests` (a new engine holds 16 voices; growing to seven tracks reserves
+28 and shrinking keeps them; a streamed clip on track 7, whose voices were reserved after
+construction, plays live within 3e-7 of its export, with no stream failure or underrun);
+`ToneEngineTests` (an idle preview holds no audio; each preview reserves its own length in one
+slot; only the slot that needs more grows; the grown slot plays its whole preview; the length
+limit is unchanged; the existing allocation-free callback check still passes).
+
+### Measurements
+
+2026-11-20, same machine, Release, 16/32, offline (`RackIntegrationTests --capacity-report`):
+
+| Engine heap (C++ `new`) | After D1 | D2 |
+| --- | ---: | ---: |
+| After construction and `prepare(48 kHz)` (four tracks reserved) | 45.4 MiB | 14.5 MiB |
+| With every slot reserved (`setActiveTracks(16)`) | 45.4 MiB | 23.5 MiB |
+
+The 9.0 MiB between the two D2 rows is the 48 voices of slots 5-16. Callback p95 on this run: 16
+tracks transport 6.3 % at 64 frames, 16 Session MIDI tracks 8.3 % (64) and 9.0 % (256), 16 Session
+rack occurrences 13.6 % (64), with zero callback allocations; this machine was faster today than
+in the D1 run, so these are not a before/after comparison. JUCE `HeapBlock` storage (such as the
+plugin MIDI buffers) is allocated with `malloc` and is not in these figures.
+
+What still scales with the compiled maximum: the note mailboxes and schedulers (0.33 MiB per slot,
+TrackCapacityReport), the per-slot mixer, synth and sampler objects, and the voices of slots a
+project once used. Not measured: the 32/64 build, peak memory during load/undo/export, and a
+physical device.

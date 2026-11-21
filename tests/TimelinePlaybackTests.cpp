@@ -48,7 +48,7 @@ struct Rig {
     ToneEngine& engine = *owned;
     std::vector<float> out;                  // everything rendered so far, left channel
     int block = 257;                         // an awkward size, so nothing lines up by luck
-    Rig() { engine.prepare(48000); engine.patternMode.store(2); engine.bpm.store(120); engine.activeTracks.store(4); }
+    Rig() { engine.prepare(48000); engine.patternMode.store(2); engine.bpm.store(120); engine.setActiveTracks(4); }
     void publish(const std::shared_ptr<alien::ArrangementPlayback>& song) {
         require(engine.arrangementMailbox.publish(std::shared_ptr<const alien::ArrangementPlayback>(song)), "publish the song");
     }
@@ -1564,7 +1564,7 @@ static void streamedSessionRackScene() {
     auto rack = alien::rack::Project::createDefault(); rack.clips[0] = 101;
     require(rack.setStepOn(0, 0, 0, true), "scene rack step"); s.rig.publishRack(rack);
     auto& e = s.rig.engine;
-    e.patternMode.store(1); e.launchQuantizationSteps.store(4); e.activeTracks.store(4);
+    e.patternMode.store(1); e.launchQuantizationSteps.store(4); e.setActiveTracks(4);
     e.sceneRackClip.store(101); e.synchronizedSceneLaunch.store(true);
     for (int t = 0; t < 4; ++t) {
         alien::SessionClipLaunch launch; launch.clipIndex = 3;

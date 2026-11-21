@@ -177,7 +177,7 @@ static void activeEditingTests() {
 static void sessionClipLaunchTests() {
     OfflineEngine offline;
     auto& engine = offline.engine;
-    engine.activeTracks.store(static_cast<int>(ToneEngine::sessionTracks));   // every slot plays a clip
+    engine.setActiveTracks(static_cast<int>(ToneEngine::sessionTracks));   // every slot plays a clip
     engine.patternMode.store(1);
     engine.playing.store(true);
     for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track) {
@@ -836,8 +836,11 @@ static void factoryPresetPreviewTests() {
 static void samplePreviewTests() {
     alien::SamplePreview preview; preview.prepare(48000);
     std::vector<float> left(4800, .8f), right(4800, -.4f);
+    // T1-04 D: no preview audio is reserved until something is previewed, then only as much as it needs.
+    require(preview.reservedBytes() == 0, "an idle sample preview holds no audio");
     require(!preview.request(nullptr, nullptr, 1, 48000), "invalid sample preview refused");
     require(preview.request(left.data(), right.data(), 4800, 48000), "sample preview accepted");
+    require(preview.reservedBytes() == 2 * 4800 * sizeof(float), "a preview reserves its own length in one slot");
     preview.beginBlock(); for (int i = 0; i < 500; ++i) preview.nextSample();
     const auto stereo = preview.nextSample();
     require(stereo[0] > .39f && stereo[1] < -.19f, "preview retains stereo at bounded gain");
@@ -849,6 +852,15 @@ static void samplePreviewTests() {
     require(!preview.request(left.data(), nullptr, 4800, 48000), "mailbox bounded");
     preview.beginBlock(true); require(preview.nextSample()[0] == 0, "panic cancels pending previews");
     require(preview.request(left.data(), nullptr, 4800, 48000), "panic reclaims slots");
+    require(preview.reservedBytes() == 3 * 2 * 4800 * sizeof(float), "three queued previews use the three slots, no more");
+    std::vector<float> longer(48000, .5f);
+    preview.beginBlock(true);   // free the slots, then a longer preview grows the one it lands in
+    require(preview.request(longer.data(), nullptr, 48000, 48000), "a longer preview is accepted");
+    require(preview.reservedBytes() == (2 * 48000 + 2 * 2 * 4800) * sizeof(float), "only the slot that needed more grew");
+    preview.beginBlock(); for (int i = 0; i < 24000; ++i) preview.nextSample();
+    require(preview.nextSample()[0] > .2f, "the grown slot plays its whole preview");
+    std::vector<float> tooLong(static_cast<std::size_t>(alien::SamplePreview::capacity) + 1, .5f);
+    require(!preview.request(tooLong.data(), nullptr, alien::SamplePreview::capacity + 1, 192000), "a preview past the limit is still refused");
     auto rig = std::make_unique<OfflineEngine>();
     rig->engine.samplePreview.request(left.data(), nullptr, 4800, 48000);
     const auto before = allocationCount;

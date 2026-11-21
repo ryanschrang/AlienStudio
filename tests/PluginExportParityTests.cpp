@@ -168,7 +168,7 @@ struct Rig {
     }
     // Plays the song live, from the start, and returns the master output.
     std::vector<std::array<float, 2>> playLive(const Song& song, int frames) {
-        engine->activeTracks.store(song.project->trackCount());
+        engine->setActiveTracks(song.project->trackCount());
         engine->bpm.store(song.project->bpm);
         engine->rackMailbox.publish(song.project->channelRack.snapshot());
         require(engine->arrangementMailbox.publish(*song.playback), "the song is accepted");

@@ -107,7 +107,7 @@ struct Rig {
     explicit Rig(int width = 1200, int height = 640) {
         TimelineCanvas::clipboard() = {};
         engine.prepare(48000);
-        engine.patternMode.store(2); engine.bpm.store(120); engine.activeTracks.store(4);
+        engine.patternMode.store(2); engine.bpm.store(120); engine.setActiveTracks(4);
         controller.pushDocumentToEngine();
         view.setSize(width, height);
         c.onSeek = [this](std::int64_t tick) { seeks.push_back(tick); engine.timelineSeek.store(tick); };

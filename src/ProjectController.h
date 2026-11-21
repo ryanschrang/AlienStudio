@@ -321,7 +321,7 @@ public:
         }
         for (std::size_t t = 0; t < engine.tracks.size(); ++t)
             engine.tracks[t].set(t < doc.tracks.size() ? doc.tracks[t].settings : TrackSettings{});
-        engine.activeTracks.store(doc.trackCount());
+        engine.setActiveTracks(doc.trackCount());
         engine.masterControls.gain.store(doc.masterGain);
         for (std::size_t r = 0; r < engine.returns.size(); ++r) {
             engine.returns[r].set(doc.returns[r].settings);
