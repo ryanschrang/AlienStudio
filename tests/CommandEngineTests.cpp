@@ -578,6 +578,37 @@ static void relinkAudioCommandChecks() {
 #include "SongTakeCommandTests.h"
 #include "SceneCommandTests.h"
 
+static void freezeCommandChecks() {
+    auto engine = std::make_unique<ToneEngine>();
+    alien::ProjectController controller(*engine);
+    cmd::CommandEngine commands(controller);
+    controller.setClipPattern(0, 0, patternWith(60), false);
+    require(controller.editTimeline("Place source", [](auto& timeline) {
+        alien::timeline::Region region;
+        region.row = 0;
+        region.source = 0;
+        region.length = alien::PianoRollPattern::ticksPerStep * 4;
+        return timeline.place(region);
+    }), "place original for freeze");
+    controller.markAsNewBaseline();
+    const auto file = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("freeze-command.wav");
+    const auto before = controller.document();
+    const auto remaining = controller.availableAudioBytes();
+    cmd::FreezeTrack freeze{alien::freeze_edit::capture(before, 0), file, importFixtureClip()};
+    const auto prediction = commands.preview(freeze);
+    require(prediction.ok && prediction.changed && !controller.canUndo()
+        && controller.availableAudioBytes() == remaining, "freeze Preview leaves storage and history alone");
+    auto stale = freeze;
+    ++stale.target.scope;
+    require(!commands.execute(stale).ok && controller.availableAudioBytes() == remaining
+        && alien::sameContent(before, controller.document()), "stale freeze leaves the document and storage alone");
+    require(commands.execute(freeze).changed && controller.isTrackFrozen(0)
+        && alien::sameContent(prediction.after, controller.document())
+        && controller.undoLabel() == "Freeze track", "install matches Preview as one Undo step");
+    require(commands.undo() && alien::sameContent(before, controller.document()), "Undo restores original clips");
+    require(commands.redo() && alien::sameContent(prediction.after, controller.document()), "Redo restores the freeze");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     masterVolumeCommandChecks();
@@ -604,6 +635,7 @@ int main() {
     trackRecordingCommandChecks();
     songPlacementCommandChecks();
     harmonicMidiCommandChecks();
+    freezeCommandChecks();
     projectSettingsCommandChecks();
     drumPadCommandChecks();
     songSectionMoveCommandChecks();

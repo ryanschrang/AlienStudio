@@ -362,7 +362,7 @@ static void freezeWorkflow() {
     const auto file=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("AlienFreezeWorkflow",".wav");
     {auto writer=alien::openExportWriter(file,true);juce::AudioBuffer<float> data(2,144000);data.clear();
      require(writer && writer->writeFromAudioSampleBuffer(data,0,144000) && writer->flush(),"freeze fixture WAV");}
-    require(c.installFrozenTrack(0,file,cached,original) && c.isTrackFrozen(0),"install freezes one track");
+    require(alien::command::CommandEngine(c).execute(alien::command::FreezeTrack{alien::freeze_edit::capture(c.document(), 0), file, cached}).changed && c.isTrackFrozen(0),"install freezes one track");
     require(c.undoLabel()=="Freeze track" && c.timeline().frozenOriginals.size()==1 && c.timeline().lengthBars==2,"freeze archives source and extends for tail");
     const auto frozen=c.timeline();
     require(frozen.parameterLanes == original.parameterLanes
@@ -493,7 +493,7 @@ static void freezeAudioAndSuspension() {
     auto effect=std::make_unique<TestProcessor>(false,12.0f,4);auto* effectRaw=effect.get();liveRack.effects[0].processor=std::move(effect);liveRack.effectCount=1;
     live->plugins->prepare(48000);
     live->tracks[0].gain.store(0.1f);live->tracks[0].pan.store(0.5f);c.trackSettingsEdited(0);c.commit("Mix");
-    const auto expected=c.timeline();require(c.installFrozenTrack(0,file,imported.clip,expected),"install rendered cache");
+    require(alien::command::CommandEngine(c).execute(alien::command::FreezeTrack{alien::freeze_edit::capture(c.document(), 0), file, imported.clip}).changed, "install rendered cache");
     live->patternMode.store(2);live->timelineSeek.store(0);live->playing.store(true);
     std::array<float,512> l{},right{};float* outputs[]{l.data(),right.data()};
     for(int block=0;block<24;++block)live->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,512,{});

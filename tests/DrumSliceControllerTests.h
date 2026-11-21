@@ -205,8 +205,8 @@ static void drumSliceBoundaryTests() {
         require(!frozen.isBusy(), "freeze fixture sample loaded");
         frozen.setClipPattern(0, 0, patternWith(36), false);
         require(frozen.editTimeline("Place freeze source", [](alien::timeline::Timeline& timeline) { return timeline.placeBars(0, 0, 0, 1); }), "place freeze fixture");
-        const auto before = frozen.drumSliceTarget(0, 0); const auto expected = frozen.timeline();
-        require(frozen.installFrozenTrack(0, file, audio, expected), "freeze sampler track");
+        const auto before = frozen.drumSliceTarget(0, 0);
+        require(alien::command::CommandEngine(frozen).execute(alien::command::FreezeTrack{alien::freeze_edit::capture(frozen.document(), 0), file, audio}).changed, "freeze sampler track");
         require(!frozen.editDrumSlice(before, {1, 20}), "frozen track refuses formerly editable target");
         require(!frozen.autoSliceDrum(before), "frozen track refuses auto slicing");
         alien::DrumSamplerPanel panel;

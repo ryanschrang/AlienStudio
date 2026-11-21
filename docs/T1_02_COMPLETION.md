@@ -104,11 +104,12 @@ imports placed on the Song timeline run their own command, `ImportSongAudio`, th
 
 The Session view no longer has an `onEdited` callback or a `needsCommit` path: every edit it
 makes is a command with its own Undo step, so the host only refreshes. The app's handler, which
-committed a second history entry under a label, was unreachable and is removed. Freezing stays a
-worker render installed by `installFrozenTrack` (one Undo step, outside the command layer, like
-recording and audio import completion); unfreezing is the `UnfreezeTrack` command.
+committed a second history entry under a label, was unreachable and is removed. The offline freeze
+worker submits its prepared render through `FreezeTrack`. Preview and Execute share the same
+document reducer and leave the original track intact if installation is refused. Freezing and
+unfreezing each record one Undo step.
 
-Freeze installation remains direct. Song chord and section MIDI creation now
+Song chord and section MIDI creation now
 uses `PlaceHarmonicMidi` with captured source and destination identities, a shared
 Preview reducer, and one Undo step per placement. The Plugins panel now submits prepared convolution responses through
 `SetConvolutionResponse`. Preview checks the target without constructing a plugin, and

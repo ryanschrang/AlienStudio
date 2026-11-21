@@ -2263,9 +2263,11 @@ static void freezeMenuChecks() {
     auto rig=std::make_unique<Rig>();rig->song();auto& c=rig->c;
     int frozen=-1,unfrozen=-1;
     rig->view.onFreezeTrack=[&](int track){
-        frozen=track;const auto expected=rig->controller.timeline();
+        frozen=track;
         auto audio=std::const_pointer_cast<SessionAudioClip>(rig->controller.document().clip(2,0).audio);
-        require(rig->controller.installFrozenTrack(track,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("Freeze-UI.wav"),audio,expected),"UI installs a frozen track");
+        require(alien::command::CommandEngine(rig->controller).execute(alien::command::FreezeTrack{
+            alien::freeze_edit::capture(rig->controller.document(), track),
+            juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("Freeze-UI.wav"), audio}).changed,"UI installs a frozen track");
         rig->view.refresh();
     };
     rig->view.onUnfreezeTrack=[&](int track){unfrozen=track;require(alien::command::CommandEngine(rig->controller).execute(alien::command::UnfreezeTrack{track}).changed,"UI unfreezes track");rig->view.refresh();};
