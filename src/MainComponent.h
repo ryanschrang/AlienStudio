@@ -1478,8 +1478,7 @@ private:
         if(!folder.createDirectory().wasOk()){timelineView.setStatus("Cannot create the freeze audio folder.");return;}
         const auto file=folder.getChildFile("Freeze-"+juce::Uuid().toString()+".wav");
         auto song=controller.captureArrangement();auto assets=controller.document();
-        auto expected=std::make_shared<alien::timeline::Timeline>(controller.timeline());
-        const auto trackId=assets.tracks[static_cast<std::size_t>(track)].id;
+        const auto target = alien::freeze_edit::capture(assets, track);
         auto project=std::make_shared<alien::SessionProjectData>(alien::toProjectData(assets));
         alien::WavExportOptions options;options.freezeTrack=track;options.toTick=controller.freezeEndTick(track);
         auto renderEngine=std::make_shared<ToneEngine>();renderEngine->prepare(48000);
@@ -1494,20 +1493,22 @@ private:
         exportCancellation=std::make_shared<std::atomic<bool>>(false);auto cancel=exportCancellation;
         setProjectBusy(true);timelineView.setExporting(true);timelineView.setStatus("Freezing track. Cancel export stops this operation.");
         juce::Component::SafePointer<MainComponent> safe(this);
-        std::function<juce::ThreadPoolJob::JobStatus()> job=[safe,track,trackId,file,song,project,assets,expected,options,drums,cancel,renderEngine,renderHost]()mutable{
+        std::function<juce::ThreadPoolJob::JobStatus()> job=[safe,target,file,song,project,assets,options,drums,cancel,renderEngine,renderHost]()mutable{
             juce::String error;
             const bool rendered=alien::exportArrangementWav(file,*project,*song,drums,*cancel,error,renderEngine.get(),options);
             auto result=std::make_shared<alien::AudioClipImportResult>();
             if(rendered && !cancel->load())*result=alien::importSessionAudioClip(file);
-            juce::MessageManager::callAsync([safe,track,trackId,file,expected,cancel,result,error,engine=std::move(renderEngine),host=std::move(renderHost)]{
+            juce::MessageManager::callAsync([safe,target,file,cancel,result,error,engine=std::move(renderEngine),host=std::move(renderHost)]{
                 if(!safe){file.deleteFile();return;}
                 safe->exportCancellation.reset();safe->setProjectBusy(false);safe->timelineView.setExporting(false);
-                const auto& doc=safe->controller.document();
-                const bool current=track>=0 && track<doc.trackCount() && doc.tracks[static_cast<std::size_t>(track)].id==trackId;
-                if(cancel->load() || !current || !result->clip || !safe->controller.installFrozenTrack(track,file,result->clip,*expected)){
+                alien::command::Result installed;
+                if (!cancel->load() && result->clip)
+                    installed = alien::command::CommandEngine(safe->controller).execute(
+                        alien::command::FreezeTrack{target, file, result->clip});
+                if (!installed.changed) {
                     file.deleteFile();
                     safe->timelineView.setStatus(cancel->load()?"Freeze cancelled; original track unchanged."
-                        :error.isNotEmpty()?error:result->error.isNotEmpty()?result->error:"Could not install frozen audio (project changed, scene or memory limit). Original track unchanged.");
+                        :error.isNotEmpty()?error:result->error.isNotEmpty()?result->error:installed.error.isNotEmpty()?installed.error:"Could not install frozen audio (project changed, scene or memory limit). Original track unchanged.");
                 }else{safe->refreshExtraViews();safe->timelineView.setStatus("Track frozen. Fader, pan, sends and automation remain live; right-click the track header to unfreeze.");}
             });
             return juce::ThreadPoolJob::jobHasFinished;
