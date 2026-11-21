@@ -254,6 +254,9 @@ static void mailboxTests() {
     const Snapshot* latest = box.consume();
     check(latest != nullptr && latest->swing == 0.75f, "only the newest of several snapshots arrives");
     check(first->swing == 0.25f || true, "(the earlier pointer is only guaranteed until the next consume)");
+    // T1-04 D6: snapshots the reader has left are freed one block after it leaves them.
+    box.consume();
+    check(box.collect() == 0 && box.current() == latest && latest->swing == 0.75f, "left snapshots are freed; the current one stays");
     // A producer hammering while a consumer reads: snapshots are never torn or empty.
     std::atomic<bool> stop{false}; std::atomic<int> torn{0}, seen{0};
     SnapshotMailbox busy;

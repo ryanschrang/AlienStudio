@@ -29,6 +29,34 @@ static void mailboxTests() {
     require_(box.current()==thirdAddress,"reader's snapshot stays alive while it is current");
     for(int i=0;i<4;++i) { auto next=songOfBars(5+i); box.publish(std::shared_ptr<const alien::ArrangementPlayback>(next)); }
     require_(weakSecond.expired(),"superseded snapshots are freed by the publishing thread");
+    // T1-04 D6: a snapshot the reader has left goes once the reader has begun a later block, not two publishes later.
+    {
+        alien::ArrangementMailbox retiring;
+        auto older=songOfBars(4), newer=songOfBars(6);
+        std::weak_ptr<const alien::ArrangementPlayback> weakOlder=older, weakNewer=newer;
+        require_(retiring.publish(std::shared_ptr<const alien::ArrangementPlayback>(older)) && retiring.consume()==older.get(),"the reader takes the first snapshot");
+        older.reset();
+        require_(retiring.publish(std::shared_ptr<const alien::ArrangementPlayback>(newer)),"publish its replacement");
+        newer.reset();
+        require_(!weakOlder.expired(),"the snapshot being read is kept");
+        require_(retiring.consume()!=nullptr && !weakOlder.expired(),"a snapshot the reader has just left is kept: its block may still read it");
+        retiring.collect();
+        require_(!weakOlder.expired(),"collecting before the reader's next block keeps it");
+        require_(retiring.consume()==nullptr && retiring.collect()==0 && weakOlder.expired(),"after the reader's next block it is freed, with nothing else held");
+        require_(!weakNewer.expired() && retiring.current()==weakNewer.lock().get(),"the current snapshot is never freed");
+        // A publish that needs the left snapshot's slot before the reader's next block waits for that block too.
+        auto third=songOfBars(8), fourth=songOfBars(10);
+        std::weak_ptr<const alien::ArrangementPlayback> weakThird=third;
+        retiring.publish(std::shared_ptr<const alien::ArrangementPlayback>(third)); third.reset();
+        require_(retiring.consume()!=nullptr,"the reader moves to the third");
+        retiring.publish(std::shared_ptr<const alien::ArrangementPlayback>(fourth)); fourth.reset();
+        retiring.publish(std::shared_ptr<const alien::ArrangementPlayback>(songOfBars(12)));
+        require_(!weakNewer.expired(),"a snapshot left in this block survives publishes that reuse its slot");
+        require_(retiring.consume()!=nullptr && retiring.collect()<=1 && weakNewer.expired() && !weakThird.expired(),
+                 "it goes once the reader begins its next block; the one it just left waits");
+        retiring.consume(); retiring.collect();
+        require_(weakThird.expired(),"and that one goes a block later");
+    }
     auto invalid=songOfBars(5);
     alien::timeline::Region beyond; beyond.id=1; beyond.row=0; beyond.source=0; beyond.start=0; beyond.length=9*alien::timeline::ticksPerBar;
     invalid->timeline.regions.push_back(beyond);   // runs past the end of the song

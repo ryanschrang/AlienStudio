@@ -1,4 +1,5 @@
 #pragma once
+#include "RetiringMailbox.h"
 #include "SessionAudioClip.h"
 #include "SessionCapacity.h"
 #include "Timeline.h"
@@ -54,18 +55,12 @@ struct ArrangementPlayback {
 };
 
 // Hands complete, immutable song snapshots from the message thread to the audio
-// thread. Only a pointer ever crosses threads:
-// the audio callback swaps a slot index and reads through a raw pointer, and
-// never copies, allocates, or frees a snapshot. All three slots hold
-// shared_ptrs that only the publishing thread assigns, so an old snapshot (and
-// with it any clip notes nothing else holds) is released on the message thread,
-// and only after the audio thread has moved on.
+// thread (a RetiringMailbox): only a pointer ever crosses threads, and an old
+// snapshot (and with it any clip notes nothing else holds) is released on the
+// message thread once the audio thread has begun a block after leaving it.
 class ArrangementMailbox {
 public:
-    ArrangementMailbox() {
-        const auto empty = std::make_shared<const ArrangementPlayback>();
-        for (auto& slot : slots) slot = empty;
-    }
+    ArrangementMailbox() : box(std::make_shared<const ArrangementPlayback>()) {}
     static bool validSnapshot(const ArrangementPlayback& value) {
         if (!value.timeline.valid()) return false;
         for (const auto& r : value.timeline.regions) if (!r.warp.empty()) return false; // prepare worker caches before publication
@@ -96,31 +91,24 @@ public:
         return publishValidated(std::move(value));
     }
     // Audio thread. Returns the newest snapshot if one arrived since the last
-    // call, otherwise nullptr. The pointer stays valid until the next consume()
-    // that returns non-null. Wait-free, no allocation, no copy.
-    const ArrangementPlayback* consume() noexcept {
-        if ((middle.load(std::memory_order_acquire) & dirty) == 0) return nullptr;
-        front = middle.exchange(front, std::memory_order_acq_rel) & 3;
-        return slots[front].get();
-    }
+    // call, otherwise nullptr. The pointer stays valid until a later consume()
+    // returns non-null and one more has begun. Wait-free, no allocation, no copy.
+    const ArrangementPlayback* consume() noexcept { return box.consume(); }
     // Audio thread (or any thread while no consume() runs concurrently): the
     // snapshot most recently returned by consume(), or the initial empty one.
-    const ArrangementPlayback* current() const noexcept { return slots[front].get(); }
+    const ArrangementPlayback* current() const noexcept { return box.current(); }
+    // Message thread: releases snapshots the audio thread has finished with (T1-04 D6).
+    // Returns how many old snapshots are still held.
+    std::size_t collect() { return box.collect(); }
     // Number of snapshots accepted so far (diagnostics and tests).
     unsigned publishedCount() const noexcept { return published.load(std::memory_order_relaxed); }
 private:
     bool publishValidated(std::shared_ptr<const ArrangementPlayback> value) {
-        std::lock_guard<std::mutex> guard(producerMutex); // producers only; the audio thread never takes it
-        slots[back] = std::move(value);
-        back = middle.exchange(back | dirty, std::memory_order_acq_rel) & 3;
+        if (!box.publish(std::move(value))) return false;
         published.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
-    static constexpr unsigned dirty = 4;
-    std::array<std::shared_ptr<const ArrangementPlayback>, 3> slots;
-    std::atomic<unsigned> middle{1};
+    RetiringMailbox<ArrangementPlayback> box;
     std::atomic<unsigned> published{0};
-    std::mutex producerMutex;
-    unsigned front{}, back{2};
 };
 } // namespace alien
