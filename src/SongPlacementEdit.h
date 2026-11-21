@@ -1,5 +1,7 @@
 #pragma once
 #include "ProjectDocument.h"
+#include "PianoRollChordStamp.h"
+#include <variant>
 #include "SceneCommands.h"
 #include "SongClipCommands.h"
 #include <utility>
@@ -122,5 +124,81 @@ inline std::pair<int, int> audioCell(const ProjectDocument& d, std::uint32_t reg
     const auto* r = d.timeline.find(regionId);
     if (r == nullptr || !r->playsCell() || !d.isValidCell(r->row, r->source) || !d.placementContent(*r).isAudioClip()) return {-1, -1};
     return {r->row, r->source};
+}
+struct SectionProgression {
+    timeline::Section section;
+    std::vector<timeline::SongChord> chords;
+};
+
+struct HarmonicMidi {
+    std::uint32_t scope{};
+    TrackId track;
+    std::variant<timeline::SongChord, SectionProgression> source;
+};
+
+inline std::int64_t startOf(const HarmonicMidi& edit) {
+    if (const auto* chord = std::get_if<timeline::SongChord>(&edit.source)) return chord->start;
+    return std::get<SectionProgression>(edit.source).section.start;
+}
+
+inline juce::String placeHarmonicMidi(ProjectDocument& doc, std::int64_t start, std::int64_t end,
+                                      std::span<const timeline::SongChord> chords, TrackId track,
+                                      const juce::String& name) {
+    const int row = doc.trackSlot(track, TrackRole::session);
+    if (row < 0) return "The destination track changed.";
+    if (chords.empty()) return "There are no chords in this section.";
+    if (doc.tracks[static_cast<std::size_t>(row)].settings.frozen()) return "Unfreeze the destination track first.";
+    const auto ticks = end - start;
+    if (ticks > PianoRollPattern::maxLoopSteps * PianoRollPattern::ticksPerStep)
+        return "The range exceeds the MIDI clip limit of 256 sixteenth notes.";
+    for (const auto& region : doc.timeline.regions)
+        if (region.row == row && region.start < end && region.end() > start)
+            return "MIDI placement needs an empty range on the destination track.";
+
+    PianoRollPattern pattern;
+    pattern.loopSteps = static_cast<int>((ticks + pattern.ticksPerStep - 1) / pattern.ticksPerStep);
+    for (const auto& chord : chords) {
+        const auto noteStart = std::max(start, chord.start);
+        const auto noteEnd = std::min(end, chord.end);
+        ChordStampSettings stamp;
+        stamp.root = 60 + chord.root;
+        stamp.type = chord.quality;
+        stamp.lengthSteps = PianoRollPattern::fromTicks(static_cast<int>(noteEnd - noteStart));
+        const auto offset = PianoRollPattern::fromTicks(static_cast<int>(noteStart - start));
+        if (!stampChord(pattern, offset, stamp).changed()) return "The progression exceeds the clip's note limit or could not be voiced.";
+    }
+
+    auto candidate = doc;
+    const auto clip = candidate.addPlacementClip(std::make_shared<const PianoRollPattern>(pattern), name);
+    if (!clip) return "The project has no room for another clip.";
+    timeline::Region region;
+    region.row = row;
+    region.source = -1;
+    region.start = start;
+    region.length = ticks;
+    region.clip = clip.value;
+    if (!candidate.timeline.place(region)
+        || !candidate.timeline.valid(candidate.trackCount(), candidate.sceneCount(), candidate.channelRack.patternCount))
+        return "The chord clip could not be placed.";
+
+    doc = std::move(candidate);
+    return {};
+}
+
+inline juce::String applyHarmonicMidi(ProjectDocument& doc, const HarmonicMidi& edit) {
+    if (doc.identityScope != edit.scope) return "The project changed.";
+    if (const auto* expected = std::get_if<timeline::SongChord>(&edit.source)) {
+        const auto* chord = doc.timeline.findChord(expected->id);
+        if (!chord || *chord != *expected) return "The chord changed.";
+        const auto name = juce::String(timeline::chordRootName(chord->root)) + " " + timeline::chordQualityName(chord->quality);
+        return placeHarmonicMidi(doc, chord->start, chord->end, std::span{chord, 1u}, edit.track, name);
+    }
+    const auto& expected = std::get<SectionProgression>(edit.source);
+    const auto* section = doc.timeline.findSection(expected.section.id);
+    if (!section || *section != expected.section) return "The section changed.";
+    const auto chords = doc.timeline.chordsOverlapping(section->start, section->end);
+    if (chords != expected.chords) return "The section's chords changed.";
+    return placeHarmonicMidi(doc, section->start, section->end, chords, edit.track,
+                             juce::String::fromUTF8(section->name.c_str()));
 }
 } // namespace alien::song_placement

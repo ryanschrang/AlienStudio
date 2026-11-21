@@ -1803,24 +1803,8 @@ public:
         if (sceneAddedOut != nullptr) *sceneAddedOut = doc.sceneCount() != scenesBefore;
         return true;
     }
-    juce::String placeChordMidi(const timeline::SongChord& expected, TrackId track,
-                               std::uint32_t scope, std::uint32_t& regionId) {
-        const auto* chord = doc.timeline.findChord(expected.id);
-        if (scope != doc.identityScope || !chord || *chord != expected) return "The chord changed.";
-        const auto name = juce::String(timeline::chordRootName(chord->root)) + " " + timeline::chordQualityName(chord->quality);
-        return placeHarmonicMidi(chord->start, chord->end, std::span{chord, 1u}, track, name,
-                                 "Create chord MIDI clip", regionId);
-    }
-
-    juce::String placeSectionMidi(const timeline::Section& expected,
-                                  const std::vector<timeline::SongChord>& expectedChords, TrackId track,
-                                  std::uint32_t scope, std::uint32_t& regionId) {
-        const auto* section = doc.timeline.findSection(expected.id);
-        if (scope != doc.identityScope || !section || *section != expected) return "The section changed.";
-        const auto chords = doc.timeline.chordsOverlapping(section->start, section->end);
-        if (chords != expectedChords) return "The section's chords changed.";
-        return placeHarmonicMidi(section->start, section->end, chords, track,
-                                 juce::String::fromUTF8(section->name.c_str()), "Create section progression MIDI", regionId);
+    bool applyHarmonicMidiCommand(const song_placement::HarmonicMidi& edit) {
+        return canEditMidiClips() && song_placement::applyHarmonicMidi(doc, edit).isEmpty();
     }
     // A finished Song-view audio take on one track: its file, the loaded (or streamed) audio, and
     // where it goes on the timeline.
@@ -2493,54 +2477,6 @@ public:
     }
 
 private:
-    juce::String placeHarmonicMidi(std::int64_t start, std::int64_t end,
-                                   std::span<const timeline::SongChord> chords, TrackId track,
-                                   const juce::String& name, const juce::String& label,
-                                   std::uint32_t& regionId) {
-        if (!canEditMidiClips()) return "Wait until recording or project work finishes.";
-        const int row = doc.trackSlot(track, TrackRole::session);
-        if (row < 0) return "The destination track changed.";
-        if (chords.empty()) return "There are no chords in this section.";
-        if (isTrackFrozen(row)) return "Unfreeze the destination track first.";
-        const auto ticks = end - start;
-        if (ticks > PianoRollPattern::maxLoopSteps * PianoRollPattern::ticksPerStep)
-            return "The range exceeds the MIDI clip limit of 256 sixteenth notes.";
-        for (const auto& region : doc.timeline.regions)
-            if (region.row == row && region.start < end && region.end() > start)
-                return "MIDI placement needs an empty range on the destination track.";
-
-        PianoRollPattern pattern;
-        pattern.loopSteps = static_cast<int>((ticks + pattern.ticksPerStep - 1) / pattern.ticksPerStep);
-        for (const auto& chord : chords) {
-            const auto noteStart = std::max(start, chord.start);
-            const auto noteEnd = std::min(end, chord.end);
-            ChordStampSettings stamp;
-            stamp.root = 60 + chord.root;
-            stamp.type = chord.quality;
-            stamp.lengthSteps = PianoRollPattern::fromTicks(static_cast<int>(noteEnd - noteStart));
-            const auto offset = PianoRollPattern::fromTicks(static_cast<int>(noteStart - start));
-            if (!stampChord(pattern, offset, stamp).changed()) return "The progression exceeds the clip's note limit or could not be voiced.";
-        }
-
-        auto candidate = doc;
-        const auto clip = candidate.addPlacementClip(std::make_shared<const PianoRollPattern>(pattern), name);
-        if (!clip) return "The project has no room for another clip.";
-        timeline::Region region;
-        region.row = row;
-        region.source = -1;
-        region.start = start;
-        region.length = ticks;
-        region.clip = clip.value;
-        std::uint32_t made = 0;
-        if (!candidate.timeline.place(region, &made)
-            || !candidate.timeline.valid(candidate.trackCount(), candidate.sceneCount(), candidate.channelRack.patternCount))
-            return "The chord clip could not be placed.";
-
-        doc = std::move(candidate);
-        commit(label);
-        regionId = made;
-        return {};
-    }
     // The sound a channel plays: a built-in drum sound (generated once and kept
     // for the life of the program), a loaded file, or nothing (silent or offline).
     const SessionAudioClip* rackClip(const rack::ChannelInfo& info) const { return rackAsset(info).get(); }

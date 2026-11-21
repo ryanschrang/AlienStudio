@@ -71,3 +71,38 @@ static void songPlacementCommandChecks() {
     require(cmd::describe(c.document(), cmd::NewSongClip{0, 0}).contains(d.tracks[0].name) && cmd::describe(c.document(), cmd::MakeSongClipUnique{a}).contains(juce::String(a)),
             "the descriptions name the track and the clip");
 }
+
+static void harmonicMidiCommandChecks() {
+    auto engine = std::make_unique<ToneEngine>();
+    alien::ProjectController controller(*engine);
+    cmd::CommandEngine commands(controller);
+    constexpr auto beat = alien::PianoRollPattern::ticksPerStep * 4;
+    require(controller.editTimeline("Harmony", [](auto& song) {
+        return song.addChord(0, 2 * beat, 0, alien::ChordType::major)
+            && song.addChord(3 * beat, 5 * beat, 7, alien::ChordType::major)
+            && song.addSection(beat, 4 * beat, "Verse");
+    }), "prepare harmonic surfaces");
+    controller.markAsNewBaseline();
+    const auto before = controller.document();
+    const auto target = before.trackId(alien::TrackRole::session, 0);
+    const auto section = before.timeline.sections.front();
+    alien::song_placement::SectionProgression source{section, before.timeline.chordsOverlapping(section.start, section.end)};
+    cmd::PlaceHarmonicMidi place{before.identityScope, target, source};
+    const auto prediction = commands.preview(place);
+    require(prediction.ok && prediction.changed && controller.timeline().regions.empty() && !controller.canUndo(),
+        "harmonic preview does not change the document or history");
+    require(commands.execute(place).changed && controller.timeline().regions == prediction.after.timeline.regions,
+        "harmonic execute creates the same placement as preview");
+    const auto region = controller.timeline().regions.front();
+    const auto notes = controller.document().contentOf(alien::library::ClipId{region.clip}).pattern;
+    require(region.start == beat && region.end() == 4 * beat && notes->count == 6
+        && notes->notes[0].pitch == 60 && notes->notes[0].lengthSteps == 4
+        && notes->notes[3].pitch == 67 && notes->notes[3].startStep == 8,
+        "section clips both chord edges and preserves the gap");
+    require(controller.undoLabel() == "Create section progression MIDI" && commands.undo()
+        && controller.timeline().regions.empty(), "one Undo removes only the placement");
+    source.chords.pop_back();
+    require(!commands.execute(cmd::PlaceHarmonicMidi{before.identityScope, target, source}).ok
+        && controller.canRedo(), "stale section chord data refuses and preserves Redo");
+    require(commands.redo() && controller.timeline().regions.front() == region, "Redo restores the exact placement");
+}
