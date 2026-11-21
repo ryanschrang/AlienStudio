@@ -164,6 +164,10 @@ public:
     std::size_t reservedStreamVoices() const noexcept { return diskStreams.reservedVoices(); }
     // Track slots whose note scheduler exists (T1-04 D3), of sessionTracks.
     std::size_t reservedNoteSlots() const noexcept { return rolls.reservedCount(); }
+    // T1-04 D5. To free the audio of a project it replaced, the controller first publishes the new project,
+    // then stores a new number in audioReleaseRequest. The callback stops everything that could still point
+    // into the old audio and answers with the same number in audioReleaseDone; only then may it be freed.
+    std::atomic<std::uint64_t> audioReleaseRequest{0}, audioReleaseDone{0};
     std::atomic<bool> synchronizedSceneLaunch{false};
     std::atomic<std::uint64_t> sceneRackClip{alien::rack::RackPlayer::noLaunchRequest};
     // Slot zero is the Rack menu; slots 1..16 belong to Session tracks.
@@ -291,6 +295,9 @@ public:
     }
 private:
     void renderBlock(float* const* outputs, int channels, int samples, int outputOffset) {
+        // Read before this block takes anything from its mailboxes: whatever the controller published before
+        // asking is then what this block adopts (T1-04 D5).
+        const auto releaseAsked = audioReleaseRequest.load(std::memory_order_acquire);
         // Slots reserved since the last block are adopted now (pointers only): their players get their stream
         // voices, and their note state may be read. A slot not yet adopted is never processed.
         for (const auto reserved = reservedSlots.load(std::memory_order_acquire); boundSlots < reserved; ++boundSlots) {
@@ -418,6 +425,7 @@ private:
             for (int pad = 0; pad < alien::drumPadCount; ++pad)
                 drumSamplers[t].setSample(pad, drumKits[t].samples[static_cast<std::size_t>(pad)].load());
         }
+        if (releaseAsked != releaseAnswered) letGoOfReplacedAudio(releaseAsked);
         const int requestedRoute = std::clamp(liveDrumTrack.load(), -1, static_cast<int>(sessionTracks) - 1);
         const int route = requestedRoute;
         const int rackRoute = route >= 0 ? -1 : std::clamp(liveRackChannel.load(), -1, alien::PluginRuntime::maxRackChannels - 1);
@@ -1021,6 +1029,24 @@ private:
     // The outgoing side of a crossfade `x` of the way through it: the incoming shape mirrored.
     static double fadeOutGain(alien::timeline::FadeCurve curve, double x) noexcept {
         return curve == alien::timeline::FadeCurve::equalPower ? equalPowerOut(x) : alien::timeline::fadeGain(curve, 1.0 - x);
+    }
+    // T1-04 D5, audio thread. The controller replaced the project and wants to free the audio it held. By now
+    // this block has adopted the new Song snapshot, launches and drum pads, so the only pointers left into the
+    // old audio are in what is playing: clip players and crossfade tails, timeline lanes, drum voices and the
+    // rack player. They are stopped and cleared (a playing Song picks its lanes up again from the new snapshot),
+    // every slot's drum pads are brought up to date, and the request is answered.
+    void letGoOfReplacedAudio(std::uint64_t request) noexcept {
+        for (std::size_t t = 0; t < boundSlots; ++t) { clearTrack(t, true); trackLanes[t].boundary = -1.0; }
+        stopClipPlayers();
+        audioClipMode.fill(false);
+        for (std::size_t t = 0; t < sessionTracks; ++t) {
+            drumSamplers[t].stop();
+            for (int pad = 0; pad < alien::drumPadCount; ++pad)
+                drumSamplers[t].setSample(pad, drumKits[t].samples[static_cast<std::size_t>(pad)].load());
+        }
+        rackPlayer.stop();
+        releaseAnswered = request;
+        audioReleaseDone.store(request, std::memory_order_release);
     }
     void stopClipPlayers() noexcept {
         for (auto& player : audioPlayers) player.stop();
@@ -1795,6 +1821,7 @@ private:
     std::size_t tracksInUse{}, blockTracks{};   // audio thread: renderBlock (no slot is in use before the first block)
     std::atomic<std::size_t> reservedSlots{};   // control thread: slots whose voices and note state exist (setActiveTracks)
     std::size_t boundSlots{};                   // audio thread: slots adopted (players bound, note state readable)
+    std::uint64_t releaseAnswered{};            // audio thread: the last audioReleaseRequest answered
     static_assert(sessionTracks <= 64, "Scene launch tracking uses a 64-bit mask");
     int synchronizedSceneQuantizationSteps{16};
     int activeStepPitch{-1};

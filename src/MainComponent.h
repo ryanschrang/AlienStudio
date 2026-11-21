@@ -1213,6 +1213,7 @@ private:
         devicesView.presets().setApplyEnabled(!projectBusy && !controller.isBusy() && !controller.isRecording() && !activeCapture);
         applicationToolbar.refreshState();
         controller.pollRecording();
+        controller.releaseReplacedAudio();   // audio of a replaced project, once the engine has let go of it
         captureHistory.drain(engine.capturedNotes);   // keeps the engine's ring from filling between captures
         const int recordPhase = engine.recording.phase.load();
         // A take the engine has not picked up yet already shows as recording.

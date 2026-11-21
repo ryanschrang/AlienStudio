@@ -197,12 +197,14 @@ public:
         copiedCell = {};
         if (copiedContent && copiedContent->rackClip != 0) copiedContent.reset();
         if (beforeDocumentReplaced) beforeDocumentReplaced();
+        releaseReplacedAudio();
         stopEverySlot();
         doc = ProjectDocument::createDefault();
         projectFile = juce::File{};
         pushDocumentToEngine();
         runtimeDirty = false;
         history.reset(doc);
+        awaitAudioRelease(setAsideRetainedAudio());   // the replaced project's audio, freed once the engine lets go of it
         savedId = history.currentId();
         discardRecovery();
         if (onDocumentReplaced) onDocumentReplaced();
@@ -2532,6 +2534,58 @@ private:
         if (clip->streamed() && !engine.retainDiskAudioSource(clip->streamSource)) return false;
         retained.push_back(clip); retainedBytes += bytes; return true;
     }
+    // T1-04 D5. Opening a project used to keep the audio of the one it replaced for the controller's
+    // lifetime, so every open over an open project grew memory until maxSessionAudioBytes refused the next.
+    // Called once the new project, its history and its published Song are in place: a clip that only
+    // `retained` still owns belongs to nothing that could hand it out again (not the document, history,
+    // clipboard, rack caches or a running job), so the engine's raw pointers are the only other way to reach
+    // it. Those clips are set aside until the engine confirms it has let go. A drum slice source goes with
+    // them when its only other owners are slice views being set aside. Anything else stays, as before.
+    struct ReplacedAudio { std::vector<std::shared_ptr<const SessionAudioClip>> clips; std::size_t bytes{}; };
+    ReplacedAudio setAsideRetainedAudio() {
+        std::map<const SessionAudioClip*, long> viewOwners;   // references held by views that are set aside
+        for (const auto& clip : retained)
+            if (clip.use_count() == 1 && clip->sliceSource) ++viewOwners[clip->sliceSource.get()];
+        ReplacedAudio out;
+        std::vector<std::shared_ptr<const SessionAudioClip>> kept;
+        for (auto& clip : retained) {
+            const auto views = viewOwners.find(clip.get());
+            const long others = views == viewOwners.end() ? 0 : views->second;
+            if (clip.use_count() - others != 1) { kept.push_back(std::move(clip)); continue; }
+            out.bytes += clip->decodedBytes();
+            out.clips.push_back(std::move(clip));
+        }
+        out.bytes = std::min(out.bytes, retainedBytes);
+        retained = std::move(kept);
+        return out;
+    }
+    // Message thread, after the new project has been published to the engine: asks the callback to let go.
+    void awaitAudioRelease(ReplacedAudio replaced) {
+        if (replaced.clips.empty()) return;
+        for (auto& clip : replaced.clips) replacedAudio.push_back(std::move(clip));
+        replacedBytes += replaced.bytes;
+        replacedFence = engine.audioReleaseRequest.load() + 1;   // covers everything set aside so far
+        engine.audioReleaseRequest.store(replacedFence, std::memory_order_release);
+    }
+public:
+    // Message thread (the app's timer calls it). Frees the audio of replaced projects once the engine has
+    // answered the request made after the last of them; until then (or with no device running) it waits.
+    // Returns the bytes freed.
+    std::size_t releaseReplacedAudio() {
+        // Old Song and Channel Rack snapshots go once the engine has begun a block after leaving them (T1-04 D6).
+        engine.arrangementMailbox.collect();
+        engine.rackMailbox.collect();
+        if (replacedAudio.empty() || warpWorkActive
+            || engine.audioReleaseDone.load(std::memory_order_acquire) < replacedFence) return 0;
+        const auto freed = replacedBytes;
+        replacedAudio.clear();
+        retainedBytes -= std::min(retainedBytes, replacedBytes);
+        replacedBytes = 0;
+        return freed;
+    }
+    // Audio of replaced projects still waiting for the engine (T1-04 D5).
+    std::size_t replacedAudioBytes() const noexcept { return replacedBytes; }
+private:
     void registerStream(const std::shared_ptr<SessionAudioClip>& clip) {
         if (clip && clip->streamed()) engine.retainDiskAudioSource(clip->streamSource);
     }
@@ -2788,6 +2842,7 @@ private:
     void finishLoad(const juce::File& file, const LoadResult& result, bool recovered) {
         setBusy(false);
         if (result.error.isNotEmpty()) { status("Open failed: " + result.error, result.error); return; }
+        releaseReplacedAudio();   // what earlier opens replaced, if the engine has let go of it
         if (result.decodedBytes > maxSessionAudioBytes - retainedBytes) {
             status("Open failed: retained audio memory limit reached",
                    "Close and restart Alien Studio to release audio from older sessions.");
@@ -2847,6 +2902,7 @@ private:
         pushDocumentToEngine();
         runtimeDirty = false;
         history.reset(doc);
+        awaitAudioRelease(setAsideRetainedAudio());   // the replaced project's audio, freed once the engine lets go of it
         // A recovered session has never been saved by the user.
         savedId = recovered ? 0 : history.currentId();
         autosavedId = 0;
@@ -3183,7 +3239,10 @@ private:
     bool busy{};
     // Every decoded clip stays alive while the engine might reference it.
     std::vector<std::shared_ptr<const SessionAudioClip>> retained;
-    std::size_t retainedBytes{};
+    std::size_t retainedBytes{};   // includes replacedAudio until it is freed
+    std::vector<std::shared_ptr<const SessionAudioClip>> replacedAudio;   // T1-04 D5: waits for audioReleaseDone
+    std::size_t replacedBytes{};
+    std::uint64_t replacedFence{};
     juce::ThreadPool pool{1};
     std::unique_ptr<juce::FileChooser> audioFileChooser, projectFileChooser;
     DocumentHistory history;

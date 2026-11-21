@@ -9,6 +9,7 @@
 // what the audio thread reads; it is built on the message thread and never
 // changes afterwards.
 #include "PianoRollSequence.h"
+#include "RetiringMailbox.h"
 #include "SynthEngine.h"
 #include <algorithm>
 #include <array>
@@ -748,39 +749,22 @@ private:
 };
 
 // Hands complete, immutable snapshots from the message thread to the audio
-// thread. Only a pointer ever crosses threads: the audio callback swaps a slot
-// index and reads through a raw pointer, and never copies, allocates, or frees
-// a snapshot. The three slots hold shared_ptrs that only the publishing side
-// assigns, so an old snapshot is released on the message thread, and only
-// after the audio thread has moved on.
+// thread (a RetiringMailbox): only a pointer ever crosses threads, and an old
+// snapshot is released on the message thread once the audio thread has begun a
+// block after leaving it (T1-04 D6).
 class SnapshotMailbox {
 public:
-    SnapshotMailbox() {
-        const auto initial = Project::createDefault().snapshot();
-        for (auto& slot : slots) slot = initial;
-    }
+    SnapshotMailbox() : box(Project::createDefault().snapshot()) {}
     // Message thread (producers are serialised by a mutex the audio thread never takes).
-    bool publish(std::shared_ptr<const Snapshot> value) {
-        if (value == nullptr) return false;
-        std::lock_guard<std::mutex> guard(producerMutex);
-        slots[back] = std::move(value);
-        back = middle.exchange(back | dirty, std::memory_order_acq_rel) & 3;
-        return true;
-    }
+    bool publish(std::shared_ptr<const Snapshot> value) { return box.publish(std::move(value)); }
     // Audio thread. The newest snapshot if one arrived since the last call, else nullptr.
-    // The pointer stays valid until the next consume() that returns non-null.
-    const Snapshot* consume() noexcept {
-        if ((middle.load(std::memory_order_acquire) & dirty) == 0) return nullptr;
-        front = middle.exchange(front, std::memory_order_acq_rel) & 3;
-        return slots[front].get();
-    }
-    const Snapshot* current() const noexcept { return slots[front].get(); }
+    // The pointer stays valid until a later consume() returns non-null and one more has begun.
+    const Snapshot* consume() noexcept { return box.consume(); }
+    const Snapshot* current() const noexcept { return box.current(); }
+    // Message thread: releases snapshots the audio thread has finished with.
+    std::size_t collect() { return box.collect(); }
 private:
-    static constexpr unsigned dirty = 4;
-    std::array<std::shared_ptr<const Snapshot>, 3> slots;
-    std::atomic<unsigned> middle{1};
-    std::mutex producerMutex;
-    unsigned front{}, back{2};
+    alien::RetiringMailbox<Snapshot> box;
 };
 
 } // namespace alien::rack
