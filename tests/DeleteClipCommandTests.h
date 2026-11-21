@@ -20,7 +20,7 @@ static void deleteClipCommandChecks() {
     engine->activePianoRollClip[0].store(0); engine->requestedPianoRollClip[0].store(0);
     engine->activePianoRollClip[1].store(0); engine->requestedPianoRollClip[1].store(0);
     alien::SessionClipLaunch launch;
-    for (auto& mailbox : engine->pianoRollLaunches) mailbox.consume(launch);
+    for (std::size_t t = 0; t < engine->pianoRollLaunches.size(); ++t) engine->pianoRollLaunches[t].consume(launch);
     const std::vector<cmd::Command> edits{cmd::DeleteClip{0, 0}, cmd::DeleteClip{2, 0}, cmd::DeleteClip{3, 0}, cmd::DeleteClip{0, 1}};
     const auto preview = commands.preview(edits);
     require(preview.ok && preview.changed && preview.changes.size() == 4

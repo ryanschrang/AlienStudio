@@ -43,7 +43,7 @@ static void allClipDuplicateChecks() {
     require(!commands.batch({cmd::RenameTrack{0,"Never"},cmd::DuplicateClip{1,0,1,1}},"Count-in copy").ok
         && alien::sameContent(protectedDoc,c.document()), "count-in rejects entire all-type batch before mutation"); engine->recording.phase.store(alien::RecordControls::idle);
     engine->playing.store(true); engine->activePianoRollClip[1].store(1); engine->requestedPianoRollClip[1].store(3);
-    alien::SessionClipLaunch launch; for (auto& mailbox : engine->pianoRollLaunches) mailbox.consume(launch);
+    alien::SessionClipLaunch launch; for (std::size_t t = 0; t < engine->pianoRollLaunches.size(); ++t) engine->pianoRollLaunches[t].consume(launch);
     require(commands.execute(cmd::DuplicateClip{1,0,1,1}).changed && engine->playing.load() && engine->requestedPianoRollClip[1].load() == 3
         && !engine->pianoRollLaunches[1].consume(launch), "duplicate preserves another scene's pending launch");
     engine->requestedPianoRollClip[1].store(2);

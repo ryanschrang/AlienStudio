@@ -9,7 +9,7 @@ static void moveClipCommandChecks() {
     require(c.assignRackClip(3, 0, c.channelRack().clips[0]), "move rack fixture");
     c.selectClip(1, 3); c.markAsNewBaseline();
     const auto before = c.document(); const auto history = historyOf(c); const auto sourceId = before.cellClip(0, 0);
-    alien::SessionClipLaunch launch; for (auto& mailbox : engine->pianoRollLaunches) mailbox.consume(launch);
+    alien::SessionClipLaunch launch; for (std::size_t t = 0; t < engine->pianoRollLaunches.size(); ++t) engine->pianoRollLaunches[t].consume(launch);
     const std::vector<cmd::Command> edits{cmd::MoveClip{0, 0, 0, 1}, cmd::MoveClip{0, 1, 1, 1}, cmd::MoveClip{2, 0, 2, 1}, cmd::MoveClip{3, 0, 3, 1}};
     const auto preview = commands.preview(edits);
     require(preview.ok && preview.changed && preview.after.cellClip(1, 1) == sourceId
@@ -51,7 +51,7 @@ static void moveClipCommandChecks() {
     require(!commands.batch({cmd::RenameTrack{0,"Never"},cmd::MoveClip{1,0,1,1}}, "Recording move").ok && alien::sameContent(song,c.document()), "count-in refuses mixed batch before live effects");
     engine->recording.phase.store(alien::RecordControls::idle);
     engine->playing.store(true); engine->activePianoRollClip[1].store(0); engine->requestedPianoRollClip[1].store(2);
-    for (auto& mailbox : engine->pianoRollLaunches) mailbox.consume(launch);
+    for (std::size_t t = 0; t < engine->pianoRollLaunches.size(); ++t) engine->pianoRollLaunches[t].consume(launch);
     require(commands.execute(cmd::MoveClip{1,0,1,1}).changed && engine->playing.load() && engine->requestedPianoRollClip[1].load() == 2
         && !engine->pianoRollLaunches[1].consume(launch), "moving active source preserves another scene's queued request");
     engine->requestedPianoRollClip[1].store(1);

@@ -12,7 +12,7 @@ static void removeClipAudioChecks() {
         && preview.after.clip(0,0).notes().notes[0].pitch==65 && preview.after.cellClip(0,0)==before.cellClip(0,0),"Preview removes shared audio while retaining notes and identity");
     require(alien::sameContent(before,c.document()) && historyOf(c)==history,"remove Preview leaves live document/history untouched");
     engine->playing.store(true); engine->requestedPianoRollClip[0].store(0); engine->requestedPianoRollClip[1].store(2);
-    alien::SessionClipLaunch launch; for(auto& mailbox:engine->pianoRollLaunches)mailbox.consume(launch);
+    alien::SessionClipLaunch launch; for (std::size_t t = 0; t < engine->pianoRollLaunches.size(); ++t) engine->pianoRollLaunches[t].consume(launch);
     require(commands.execute(cmd::RemoveClipAudio{0,0}).changed && alien::sameContent(preview.after,c.document())
         && engine->playing.load() && engine->requestedPianoRollClip[1].load()==2,"live removal matches Preview and preserves unrelated pending launch");
     require(engine->pianoRollLaunches[0].consume(launch) && !launch.audio && launch.pattern.count==1

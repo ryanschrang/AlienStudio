@@ -6,7 +6,8 @@ only the track slots in use), C2 (Song rack lanes saved apart from track rows,
 format 32) and C3 (a build-time capacity setting with a measured, CI-tested
 32-track, 64-scene candidate profile). Resource budgets (D) are in progress:
 D1 sizes the plugin alignment delay lines to the latency actually reported; D2 reserves stream
-voices for the track slots a project uses and sample-preview audio when something is previewed.
+voices for the track slots a project uses and sample-preview audio when something is previewed;
+D3 reserves each slot's note mailboxes and scheduler with it.
 Higher supported limits (E) are pending.
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
@@ -499,7 +500,6 @@ TrackCapacityReport), the per-slot mixer, synth and sampler objects, and the voi
 project once used. Not measured: the 32/64 build, peak memory during load/undo/export, and a
 physical device.
 
-
 ### Comparing both profiles after D2
 
 The Windows CI capacity job runs the Release capacity reports for 16/32 and
@@ -513,3 +513,56 @@ To reproduce locally, configure separate x64 build directories with
 64. Build the Release `TrackCapacityReport` and `RackIntegrationTests` targets
 in both directories. Run `TrackCapacityReport.exe` and
 `RackIntegrationTests.exe --capacity-report` for each profile on the same machine.
+
+## Increment D3: note state reserved with the track slot
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+After D2 every compiled slot still carried its note state from construction: the note mailbox
+(three 1,024-note buffers, 96 KiB), the launch mailbox (96 KiB) and the note scheduler (146 KiB),
+0.33 MiB per slot (TrackCapacityReport) whether a project used the slot or not.
+
+What D3 changes:
+
+- **Note state exists once a slot is used.** A `SlotStore` holds one object per slot behind an
+  atomic pointer. `ToneEngine::setActiveTracks(n)` (control thread) reserves the note mailbox,
+  launch mailbox and scheduler of every slot below `n` together with its stream voices, and only
+  then publishes the count. Objects are never freed while the engine lives; a smaller project keeps
+  them.
+- **The callback reads only adopted slots.** At the start of a block it adopts the slots reserved
+  since the last one (`boundSlots`), and the track count it processes is limited to those slots, so
+  a count that arrives before its slots are adopted, or one stored without `setActiveTracks`, never
+  reaches a missing object. Loops that used to stop every compiled slot's notes (device start/stop,
+  transport stop, panic, a timeline seek) now cover the adopted slots; the others never played.
+- **GUI publishes never meet a missing mailbox.** Indexing `pianoRollNotes` or `pianoRollLaunches`
+  from the control thread creates that slot's mailbox if needed, so a clip published to a slot
+  before the project grows waits there, as before, and plays once the slot is in use.
+
+Tests: `ToneEngineTests` (a new engine holds note state for the default four tracks; a launch
+published to slot 16 before it is reserved creates its mailbox only; a track count stored without
+reserving processes nothing beyond the adopted slots; after growing, the waiting clip plays with no
+callback allocation; shrinking ends its notes and keeps the state); `DeterministicStreamedExportTests`
+(growing to seven tracks reserves seven slots' note state and shrinking keeps it).
+
+The callback now starts with no slot in use. It used to start as if every compiled slot had been,
+so its first block ended the notes of slots 5-16 although they had never played; with D3 that would
+read note state that does not exist.
+
+### Measurements
+
+2026-11-21, same machine, Release, 16/32, offline (`RackIntegrationTests --capacity-report`):
+
+| Engine heap (C++ `new`) | D2 | D3 |
+| --- | ---: | ---: |
+| After construction and `prepare(48 kHz)` (four tracks reserved) | 14.5 MiB | 10.5 MiB |
+| With every slot reserved (`setActiveTracks(16)`) | 23.5 MiB | 23.5 MiB |
+
+The 4.0 MiB saved is the note state of slots 5-16 (12 x 0.33 MiB). It is a saving for projects
+with fewer tracks than the build allows; a project that uses every slot holds the same memory as
+before. Callback p95 on this run: 16 tracks transport 7.6 % at 64 frames, 16 Session MIDI tracks
+9.6 % (64 and 256), 16 Session rack occurrences 14.7 % (64), with zero callback allocations. This
+is a different day from D2's run, so it is not a before/after comparison.
+
+What still scales with the compiled maximum: the per-slot mixer, synth, sampler and send objects,
+and the resources of slots a project once used. Not measured: the 32/64 build, peak memory during
+load/undo/export, and a physical device.

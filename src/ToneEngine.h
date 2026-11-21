@@ -47,6 +47,47 @@ private:
     std::unique_ptr<std::array<T, N>> data;
 };
 
+// One object per track slot, created when a project first uses the slot (T1-04 D3) instead of for
+// every compiled slot. reserve() runs on the control thread and publishes the object through an
+// atomic pointer; objects are never freed while the store lives, so a reference once handed out
+// stays valid. operator[] reads a slot that has been reserved: the audio thread only reads slots
+// below a count published after reserving them.
+template <class T, std::size_t N>
+class SlotStore {
+public:
+    SlotStore() = default;
+    SlotStore(const SlotStore&) = delete;
+    SlotStore& operator=(const SlotStore&) = delete;
+    ~SlotStore() { for (auto& slot : slots) delete slot.load(std::memory_order_relaxed); }
+    T& reserve(std::size_t i) {
+        if (auto* held = slots[i].load(std::memory_order_acquire)) return *held;
+        auto* made = new T();
+        slots[i].store(made, std::memory_order_release);
+        return *made;
+    }
+    T& operator[](std::size_t i) noexcept { return *slots[i].load(std::memory_order_acquire); }
+    const T& operator[](std::size_t i) const noexcept { return *slots[i].load(std::memory_order_acquire); }
+    bool reserved(std::size_t i) const noexcept { return i < N && slots[i].load(std::memory_order_acquire) != nullptr; }
+    std::size_t reservedCount() const noexcept {
+        std::size_t count = 0;
+        for (const auto& slot : slots) count += slot.load(std::memory_order_acquire) != nullptr ? 1 : 0;
+        return count;
+    }
+    static constexpr std::size_t size() noexcept { return N; }
+private:
+    std::array<std::atomic<T*>, N> slots{};
+};
+
+// Per-slot mailboxes the GUI writes and the callback reads. operator[] (control thread) creates the
+// slot's mailbox on first use, so a publish never meets a missing one; the callback reads with ready(),
+// and only for slots it has adopted (T1-04 D3).
+template <class T, std::size_t N>
+class MailboxSlots : public SlotStore<T, N> {
+public:
+    T& operator[](std::size_t i) { return this->reserve(i); }
+    T& ready(std::size_t i) noexcept { return SlotStore<T, N>::operator[](i); }
+};
+
 class ToneEngine : public juce::AudioIODeviceCallback {
 public:
     // Pre-allocated capacity; activeTracks says how many the session uses.
@@ -94,8 +135,8 @@ public:
     alien::MidiInputPipe midi;
     alien::MidiControllerMappings controllerMappings;
     alien::MidiControllerActionQueue controllerActions;
-    FixedHeapArray<alien::PianoRollMailbox, sessionTracks> pianoRollNotes;
-    FixedHeapArray<alien::SessionClipMailbox, sessionTracks> pianoRollLaunches;
+    MailboxSlots<alien::PianoRollMailbox, sessionTracks> pianoRollNotes;      // created as slots are used (T1-04 D3)
+    MailboxSlots<alien::SessionClipMailbox, sessionTracks> pianoRollLaunches;
     std::array<std::atomic<int>, sessionTracks> sessionTrackPositions;
     std::atomic<int> patternMode{0}, pianoRollPosition{-1};
     std::array<std::atomic<int>, sessionTracks> requestedPianoRollClip;
@@ -104,21 +145,25 @@ public:
     // How many Session track slots the project uses. Set it with setActiveTracks (control thread), which
     // first prepares what those slots need; the audio thread only reads it.
     std::atomic<int> activeTracks{alien::sessionProjectTrackCount};
-    // Control thread (T1-04 D). Reserves the four stream voices (two for its clips, two for a crossfade's
-    // outgoing clip) of every slot below `tracks` that has none yet, then publishes the count; the callback
-    // binds a reserved slot's players at its next block. Voices are kept once reserved (a later, smaller
-    // project reuses them), so a project pays for the most track slots it has used, not the compiled limit.
+    // Control thread (T1-04 D). Reserves what every slot below `tracks` needs and has not got yet: four stream
+    // voices (two for its clips, two for a crossfade's outgoing clip, D2) and its note state, the note and
+    // launch mailboxes and the note scheduler (D3). Then it publishes the count; the callback adopts a
+    // reserved slot at its next block. Nothing is freed when a project shrinks (a later, larger one reuses
+    // it), so a project pays for the most track slots it has used, not the compiled limit.
     void setActiveTracks(int tracks) {
         const auto count = static_cast<std::size_t>(std::clamp(tracks, 1, static_cast<int>(sessionTracks)));
         for (auto t = reservedSlots.load(std::memory_order_acquire); t < count; ++t) {
             diskStreams.reserve(t * 2); diskStreams.reserve(t * 2 + 1);
             diskStreams.reserve(sessionTracks * 2 + t * 2); diskStreams.reserve(sessionTracks * 2 + t * 2 + 1);
+            pianoRollNotes.reserve(t); pianoRollLaunches.reserve(t); rolls.reserve(t);
             reservedSlots.store(t + 1, std::memory_order_release);
         }
         activeTracks.store(tracks);
     }
     // Stream voices the engine holds, of DiskAudioStreamService::voiceCount (four per reserved slot).
     std::size_t reservedStreamVoices() const noexcept { return diskStreams.reservedVoices(); }
+    // Track slots whose note scheduler exists (T1-04 D3), of sessionTracks.
+    std::size_t reservedNoteSlots() const noexcept { return rolls.reservedCount(); }
     std::atomic<bool> synchronizedSceneLaunch{false};
     std::atomic<std::uint64_t> sceneRackClip{alien::rack::RackPlayer::noLaunchRequest};
     // Slot zero is the Rack menu; slots 1..16 belong to Session tracks.
@@ -197,7 +242,7 @@ public:
         plugins->prepare(sampleRate);
         for (auto& buffer : clipBuffers) buffer.setSize(2, alien::PluginRuntime::blockSize);
         if (stemCapture) stemCapture->prepare();
-        for (std::size_t track = 0; track < sessionTracks; ++track)
+        for (std::size_t track = 0; track < boundSlots; ++track)   // only adopted slots have note state
             rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
         stopClipPlayers();
         audioClipMode.fill(false);
@@ -221,7 +266,7 @@ public:
     void audioDeviceStopped() override {
         if (auto* take = capture.load()) take->done.store(true);
         resetRecordingForDeviceChange();
-        for (std::size_t track = 0; track < sessionTracks; ++track)
+        for (std::size_t track = 0; track < boundSlots; ++track)   // only adopted slots have note state
             rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
         stopClipPlayers();
         audioClipMode.fill(false);
@@ -246,8 +291,8 @@ public:
     }
 private:
     void renderBlock(float* const* outputs, int channels, int samples, int outputOffset) {
-        // Slots whose stream voices were reserved since the last block get them now (pointers only). A slot
-        // without them had no streamed clip to play: its players refuse one until then.
+        // Slots reserved since the last block are adopted now (pointers only): their players get their stream
+        // voices, and their note state may be read. A slot not yet adopted is never processed.
         for (const auto reserved = reservedSlots.load(std::memory_order_acquire); boundSlots < reserved; ++boundSlots) {
             const auto t = boundSlots;
             audioPlayers[t].bind(diskStreams.voice(t * 2), diskStreams.voice(t * 2 + 1));
@@ -260,7 +305,9 @@ private:
         // Track slots this block (T1-04 C): the project's tracks, not the compiled limit. A slot leaving use plays
         // one more block with its notes ended and its clips stopped, and is then skipped; one coming into use
         // starts from silence. Everything per track below runs for blockTracks slots.
-        const auto inUse = static_cast<std::size_t>(std::clamp(activeTracks.load(), 1, static_cast<int>(sessionTracks)));
+        // The count may already be newer than the slots adopted above: never process a slot not adopted.
+        const auto inUse = std::min(boundSlots,
+            static_cast<std::size_t>(std::clamp(activeTracks.load(), 1, static_cast<int>(sessionTracks))));
         const auto entering = tracksInUse;
         blockTracks = std::max(inUse, tracksInUse);
         bool playNow = playing.load();
@@ -290,7 +337,7 @@ private:
             if (modeNow == 2 && playNow && wasPlaying && wasMode == 2) resyncTimeline();
         }
         if ((wasPlaying && !playNow) || wasMode != modeNow) {
-            for (std::size_t track = 0; track < sessionTracks; ++track)
+            for (std::size_t track = 0; track < boundSlots; ++track)
                 rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
             stopClipPlayers();
             audioClipMode.fill(false);
@@ -416,7 +463,7 @@ private:
             if (rackAuditions.panic.exchange(false)) { rackPlayer.stop(); cancelRackRequests(); }
         }
         if (panic) {
-            for (std::size_t track = 0; track < sessionTracks; ++track)
+            for (std::size_t track = 0; track < boundSlots; ++track)
                 rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
             stopClipPlayers();
             audioClipMode.fill(false);
@@ -446,7 +493,7 @@ private:
             });
         for (std::size_t track = 0; track < blockTracks; ++track) {
             auto& requestedClip = *launchScratch;
-            if (modeNow != 2 && pianoRollLaunches[track].consume(requestedClip)) {
+            if (modeNow != 2 && pianoRollLaunches.ready(track).consume(requestedClip)) {
                 const int quantization = synchronizedScenePending
                     ? synchronizedSceneQuantizationSteps : launchQuantizationSteps.load();
                 const int clipIndex = requestedClip.clipIndex == -2
@@ -460,7 +507,7 @@ private:
             if (modeNow == 2)
                 rolls[track].setTiming(sampleRate, songTempo().tempoAt(timelineTick));   // the timeline starts and stops each clip itself
             else
-                rolls[track].beginBlock(pianoRollNotes[track], playNow && modeNow == 1, sampleRate, bpm.load(),
+                rolls[track].beginBlock(pianoRollNotes.ready(track), playNow && modeNow == 1, sampleRate, bpm.load(),
                     [this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
         }
         const bool countingIn = recording.phase.load(std::memory_order_relaxed) == alien::RecordControls::countIn;
@@ -1295,7 +1342,7 @@ private:
     void seekTimeline(double tick, bool hard) noexcept {
         setTimelineTick(std::max(0.0, tick));
         loopArmed = timelineTick < static_cast<double>(song->timeline.loopEnd);
-        for (std::size_t t = 0; t < sessionTracks; ++t) { clearTrack(t, hard); trackLanes[t].boundary = -1.0; }   // look again at the new place
+        for (std::size_t t = 0; t < boundSlots; ++t) { clearTrack(t, hard); trackLanes[t].boundary = -1.0; }   // look again at the new place
         for (auto& lane : rackLaneState) lane = {};
         rackLaneReset.fill(true);
         if (hard) rackPlayer.stop();
@@ -1350,7 +1397,7 @@ private:
             left -= (next - at) / rate; at = next;
         }
         const double tempo = map.tempoAt(timelineTick);
-        for (std::size_t t = 0; t < sessionTracks; ++t) if (trackLanes[t].midi) rolls[t].retime(tempo);
+        for (std::size_t t = 0; t < blockTracks; ++t) if (trackLanes[t].midi) rolls[t].retime(tempo);
     }
     // The song's tempo map: the snapshot's tempo changes after the live project tempo.
     alien::timeline::TempoMap songTempo() const noexcept {
@@ -1394,7 +1441,8 @@ private:
         const bool validTarget = target >= 0 && target < static_cast<int>(sessionTracks);
         if (!validTarget && kind != alien::RecordEventKind::end && kind != alien::RecordEventKind::refused) return;
         // A refused take still reports its end so the GUI is never left waiting.
-        const auto position = validTarget ? recordPositionNow(static_cast<std::size_t>(target)) : alien::RecordPosition{};
+        const auto position = validTarget && static_cast<std::size_t>(target) < boundSlots
+            ? recordPositionNow(static_cast<std::size_t>(target)) : alien::RecordPosition{};
         recording.events.push({kind, static_cast<std::uint8_t>(std::clamp(note, 0, 127)), velocity, position.cycle, position.tick,
                                recording.take.load(std::memory_order_relaxed)});
     }
@@ -1730,7 +1778,7 @@ private:
     alien::rack::RackPlayer rackPlayer;
     const alien::rack::Snapshot* rackSnapshot = rackMailbox.current();
     alien::DiskAudioStreamService diskStreams;
-    FixedHeapArray<alien::PianoRollScheduler, sessionTracks> rolls;
+    SlotStore<alien::PianoRollScheduler, sessionTracks> rolls;   // reserved with a slot; the callback reads slots below boundSlots
     FixedHeapArray<alien::SessionAudioPlayer, sessionTracks> audioPlayers;
     FixedHeapArray<alien::SessionAudioPlayer, sessionTracks> tailPlayers;   // a crossfade's outgoing clip
     FixedHeapArray<CrossfadeTail, sessionTracks> tails;   // on the heap: tests keep whole engines on the stack
@@ -1744,9 +1792,9 @@ private:
     int wasMode{};
     bool synchronizedScenePending{};
     std::uint64_t synchronizedSceneTracksQueued{};   // a bit per track slot
-    std::size_t tracksInUse{sessionTracks}, blockTracks{sessionTracks};   // audio thread: renderBlock
-    std::atomic<std::size_t> reservedSlots{};   // control thread: slots whose stream voices exist (setActiveTracks)
-    std::size_t boundSlots{};                   // audio thread: slots whose players have them
+    std::size_t tracksInUse{}, blockTracks{};   // audio thread: renderBlock (no slot is in use before the first block)
+    std::atomic<std::size_t> reservedSlots{};   // control thread: slots whose voices and note state exist (setActiveTracks)
+    std::size_t boundSlots{};                   // audio thread: slots adopted (players bound, note state readable)
     static_assert(sessionTracks <= 64, "Scene launch tracking uses a 64-bit mask");
     int synchronizedSceneQuantizationSteps{16};
     int activeStepPitch{-1};

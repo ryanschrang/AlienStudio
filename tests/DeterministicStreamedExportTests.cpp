@@ -309,6 +309,7 @@ int main() {
         check(live->reservedStreamVoices() == 4 * static_cast<std::size_t>(row + 1), "growing the project reserves its slots' voices");
         live->setActiveTracks(2);
         check(live->reservedStreamVoices() == 4 * static_cast<std::size_t>(row + 1), "a smaller project keeps the voices already reserved");
+        check(live->reservedNoteSlots() == static_cast<std::size_t>(row + 1), "and the note state of those slots");
         live->setActiveTracks(row + 1);
         check(live->arrangementMailbox.publish(std::make_shared<const alien::ArrangementPlayback>(*song.playback)), "publish the track 7 song");
         live->playing.store(true);
