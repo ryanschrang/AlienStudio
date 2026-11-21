@@ -8,7 +8,8 @@ format 32) and C3 (a build-time capacity setting with a measured, CI-tested
 D1 sizes the plugin alignment delay lines to the latency actually reported; D2 reserves stream
 voices for the track slots a project uses and sample-preview audio when something is previewed;
 D3 reserves each slot's note mailboxes and scheduler with it; D4 measures peak memory during
-save, open, undo/redo and export; D5 frees the audio of a replaced project once the engine lets go of it.
+save, open, undo/redo and export; D5 frees the audio of a replaced project once the engine lets go of it; D6 frees old Song and Channel
+Rack snapshots one audio block after the engine leaves them.
 Higher supported limits (E) are pending.
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
@@ -673,8 +674,73 @@ Tests (`MemoryPeakTests`):
 
 Live memory now settles about 32 MiB above a single open: two replaced documents' note patterns,
 consistent with the engine's three-slot Song snapshot mailbox, which keeps older snapshots until it
-overwrites them. That is bounded and was not traced further.
+overwrites them. That is bounded and was not traced further (D6 traced and fixed it).
 
 Not done: audio replaced by edits inside one session (removing or replacing a clip's audio) is still
 kept, since undo can bring it back; rack sample caches and disk-stream sources are still kept for the
 controller's or engine's lifetime; plugins were not part of the test.
+
+## Increment D6: old Song and Channel Rack snapshots freed once the engine leaves them
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+D5 left live memory about 32 MiB above a single open after repeated opens. Tracing it: the Song
+mailbox (`ArrangementMailbox`) is a three-slot buffer, and a slot is only reassigned when a later
+publish needs it. After the audio thread moves to a new snapshot, the snapshot it left and the one
+before stay in the other two slots until two more publishes overwrite them. Each Song snapshot
+shares every Session cell's note pattern with the document it came from, so after an open the two
+replaced documents' patterns stayed alive: 16 MiB each on the D4 project (512 cells of 32 KiB). At
+32/64 the same project shape would hold four times that. The Channel Rack mailbox had the same
+structure.
+
+The old rule was also only safe by delay: the slot holding the snapshot the audio thread had just
+left could be overwritten by the second publish after it, with nothing checking that the block that
+left it had finished.
+
+What D6 changes:
+
+- **One mailbox for both.** `RetiringMailbox<T>` (new, `src/RetiringMailbox.h`) is the same triple
+  buffer with an explicit release rule; `ArrangementMailbox` keeps its validation on top, and
+  `rack::SnapshotMailbox` wraps it.
+- **The audio thread stamps what it leaves.** Every `consume()` (once per block) counts a visit; when
+  it moves to a newer snapshot it stamps the old slot with that visit, before the exchange that
+  publishes the move. It does nothing else: no allocation, no free, no lock.
+- **Producers release only finished snapshots.** A snapshot may be freed once the audio thread never
+  read it, or has begun a later visit than the one that left it: one audio thread runs blocks in
+  order, so that block is over. A publish that needs the slot of an unfinished one moves it to a
+  waiting list instead of overwriting it. `collect()` frees what is finished; producers call it on
+  every publish, and `ProjectController::releaseReplacedAudio()` (the app's timer) calls it for both
+  mailboxes, so an idle project lets go too.
+- **The current snapshot is never touched.** The audio thread holds `front`; producers touch only the
+  back slot and the middle slot when it is not marked new, which only a producer can change.
+
+Tests:
+- `ArrangementTests`: a snapshot the reader has just left is kept, also through a `collect()` in the
+  same block; after the reader's next block it is freed and nothing else is held; the current
+  snapshot is never freed; publishes that reuse a just-left snapshot's slot keep it until the
+  reader's next block; superseded snapshots that were never read are freed by the publishing thread.
+- `RackModelTests`: left snapshots are freed after the reader's next block; the existing concurrent
+  producer/consumer check (40,000 publishes against a reading thread, no torn or empty snapshot) runs
+  against the new mailbox.
+- `MemoryPeakTests`: every open over an open project, once settled, holds what a single open holds
+  (within 1 MiB), not only from the fourth open on.
+
+### Measurements
+
+2026-11-21, Release, 16/32 (`MemoryPeakTests --report`), same project as D4 and D5:
+
+| Step | D5: live after (MiB) | D6: live after (MiB) |
+| --- | ---: | ---: |
+| Open into a new engine and controller | 55.3 | 55.3 |
+| Open over itself | 71.3 | 55.4 |
+| Open over itself, fourth time | 87.2 | 55.4 |
+| Most kept by one open over an open project, once settled | 16 (first two opens), then 0.0 | 0.1 |
+
+Peaks are unchanged (an open still builds the loaded project beside the open one: 86.7 MiB at its
+peak here). The other D4 rows (build, save, undo/redo, export) are within 0.1 MiB of D5.
+
+Not done: the per-slot mixer, synth and sampler objects were measured for this increment and are
+small (`SynthEngine` 4.4 KiB, `DrumSampler` 2.3 KiB, `TrackMixer` 20 bytes, `SessionAudioPlayer`
+120 bytes per slot, plus what they allocate when prepared), so reserving them with the slot would
+save little; they stay fixed. Audio replaced by edits inside one session, rack sample caches,
+disk-stream sources, plugins and the 32/64 build are as after D5.

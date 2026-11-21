@@ -2667,6 +2667,9 @@ public:
     // answered the request made after the last of them; until then (or with no device running) it waits.
     // Returns the bytes freed.
     std::size_t releaseReplacedAudio() {
+        // Old Song and Channel Rack snapshots go once the engine has begun a block after leaving them (T1-04 D6).
+        engine.arrangementMailbox.collect();
+        engine.rackMailbox.collect();
         if (replacedAudio.empty() || warpWorkActive
             || engine.audioReleaseDone.load(std::memory_order_acquire) < replacedFence) return 0;
         const auto freed = replacedBytes;

@@ -246,12 +246,10 @@ static void projectPeakTests(bool report) {
             });
             require(c->availableAudioBytes() == available && c->replacedAudioBytes() == 0,
                     "an open over an open project frees the audio it replaced");
-            // The first two still keep about one replaced document each, then that stops growing: consistent with
-            // the engine's three-slot Song snapshot mailbox, whose old snapshots share the document's note patterns.
-            if (again >= 3) {
-                require(reopened.after - reopened.before < (1 << 20), "once settled, an open over an open project keeps nothing");
-                settledReopen = reopened.after - reopened.before;
-            }
+            // T1-04 D6: the replaced Song snapshots (which share the old document's note patterns) go too.
+            require(reopened.after - reopened.before < (1 << 20), "an open over an open project keeps nothing once settled");
+            settledReopen = std::max(settledReopen, reopened.after - reopened.before);
+            require(reopened.after - opened.after < (1 << 20), "an open over an open project holds what a single open holds");
             if (again == 0 || again == 3) phases.push_back(reopened);
         }
     }
@@ -272,7 +270,7 @@ static void projectPeakTests(bool report) {
                       << " | " << mib(p.after) << " |\n";
         std::cout << "\nLive with one engine, controller and the project: " << mib(builtProject) << " MiB.\n"
                   << "Once settled, an open over an open project keeps " << mib(settledReopen)
-                  << " MiB: the audio it replaced is freed when the engine has let go of it.\n"
+                  << " MiB at most: the audio and Song snapshots it replaced are freed once the engine has left them.\n"
                   << "Not counted: malloc storage (JUCE HeapBlock, such as plugin MIDI buffers), the OS, allocator overhead.\n";
     }
 }
