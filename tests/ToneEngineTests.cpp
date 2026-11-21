@@ -872,7 +872,35 @@ static void samplePreviewTests() {
     require(rig->render(1024) == 0, "sample preview follows master gain");
 }
 
+// T1-04 D3: a slot's note mailboxes and scheduler exist once a project uses the slot, not for every
+// compiled slot. A slot reserved late plays like any other, and one never reserved is never processed.
+static void lateNoteSlotTests() {
+    auto offline = std::make_unique<OfflineEngine>();
+    auto& engine = offline->engine;
+    const auto defaultSlots = static_cast<std::size_t>(alien::sessionProjectTrackCount);
+    const auto last = ToneEngine::sessionTracks - 1;
+    require(engine.reservedNoteSlots() == defaultSlots, "a new engine holds note state only for the default project's tracks");
+    engine.patternMode.store(1);
+    engine.playing.store(true);
+    engine.requestedPianoRollClip[last].store(0);
+    require(engine.pianoRollLaunches[last].publish(heldPattern(72)), "a launch can be published to a slot not yet in use");
+    require(engine.reservedNoteSlots() == defaultSlots, "publishing creates the slot's mailbox, not its scheduler");
+    engine.activeTracks.store(static_cast<int>(ToneEngine::sessionTracks));   // a count published without reserving
+    offline->render(4096);
+    require(engine.activePianoRollClip[last].load() == -1, "a slot that was never reserved is never processed");
+    engine.setActiveTracks(static_cast<int>(ToneEngine::sessionTracks));
+    require(engine.reservedNoteSlots() == ToneEngine::sessionTracks, "growing the project reserves its slots' note state");
+    const auto before = allocationCount;
+    const double energy = offline->render(96000 + 4096);
+    require(allocationCount == before, "adopting newly reserved slots does not allocate in the callback");
+    require(engine.activePianoRollClip[last].load() == 0 && energy > 0.001, "the waiting launch plays on the slot reserved late");
+    engine.setActiveTracks(static_cast<int>(defaultSlots));
+    require(offline->settledEnergy() == 0, "the slot's notes end when it leaves use");
+    require(engine.reservedNoteSlots() == ToneEngine::sessionTracks, "a smaller project keeps the note state already reserved");
+}
+
 int main() {
+    lateNoteSlotTests();
     samplePreviewTests();
     factoryPresetPreviewTests();
     inputMonitoringTests();

@@ -641,7 +641,7 @@ static void capacityReport() {
             << "| After setActiveTracks(" << full << ") | " << everySlot << " | " << everySlot / 1048576.0 << " |\n\n"
             << "Cumulative bytes requested from operator new; frees and std::vector growth during prepare are not subtracted.\n"
             << "Excludes plugins, media, Song/rack snapshots, document/history, UI and allocator overhead.\n"
-            << "A new engine holds stream voices for the default project's tracks; a project reserves more as it grows.\n"
+            << "A new engine holds stream voices and note state for the default project's tracks; a project reserves more as it grows.\n"
             << "Sample preview audio is reserved by the first preview, not counted here.\n\n";
     }
     std::cout << "# Shared playback callback baseline\n\n"
