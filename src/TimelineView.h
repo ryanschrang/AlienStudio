@@ -1741,6 +1741,20 @@ private:
         else preview.reset();
         repaint();
     }
+    void createHarmonicMidi(const command::PlaceHarmonicMidi& edit) {
+        const auto result = command::CommandEngine(controller).execute(edit);
+        if (!result.ok) { say(result.error); return; }
+        if (!result.changed) return;
+        const auto row = controller.document().trackSlot(edit.track, TrackRole::session);
+        const auto tick = song_placement::startOf(edit);
+        const auto& regions = committed().regions;
+        const auto found = std::find_if(regions.begin(), regions.end(), [=](const auto& region) {
+            return region.row == row && region.start == tick;
+        });
+        const auto id = found == regions.end() ? 0u : found->id;
+        afterEdit();
+        if (id != 0) setSelection({id});
+    }
     void afterEdit() {
         timeline::Ids keep;
         for (const auto id : selected) if (committed().find(id) != nullptr) keep.push_back(id);
@@ -1910,11 +1924,7 @@ private:
                 else if (id >= rootBase && id < rootBase + 12) { next.root = id - rootBase; updateChord(expected, next, scope); }
                 else if (id >= qualityBase && id < qualityBase + 9) { next.quality = static_cast<ChordType>(id - qualityBase); updateChord(expected, next, scope); }
                 else if (id >= trackBase && id - trackBase < static_cast<int>(tracks.size())) {
-                    std::uint32_t regionId = 0;
-                    const auto error = controller.placeChordMidi(expected, tracks[id - trackBase], scope, regionId);
-                    if (error.isNotEmpty()) { say(error); return; }
-                    afterEdit();
-                    setSelection({regionId});
+                    createHarmonicMidi({scope, tracks[id - trackBase], expected});
                 }
             });
         } else if (hit.zone == Zone::sectionStrip) {
@@ -1956,11 +1966,7 @@ private:
                 else if (id == remove) removeSection(expected, scope);
                 else if (id == moveHere) moveSectionTo(expected, target, scope);
                 else if (id >= trackBase && id - trackBase < static_cast<int>(tracks.size())) {
-                    std::uint32_t regionId = 0;
-                    const auto error = controller.placeSectionMidi(expected, chords, tracks[id - trackBase], scope, regionId);
-                    if (error.isNotEmpty()) { say(error); return; }
-                    afterEdit();
-                    setSelection({regionId});
+                    createHarmonicMidi({scope, tracks[id - trackBase], song_placement::SectionProgression{expected, chords}});
                 }
                 else if (id == resize && committed().loopStart == start && committed().loopEnd == end) { next.start = start; next.end = end; updateSection(expected, next, scope); }
                 else if (id >= cmdColourBase && id < cmdColourBase + 8) { next.colour = static_cast<std::uint8_t>(id - cmdColourBase); updateSection(expected, next, scope); }

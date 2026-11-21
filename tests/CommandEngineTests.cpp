@@ -603,6 +603,7 @@ int main() {
     songAudioImportCommandChecks();
     trackRecordingCommandChecks();
     songPlacementCommandChecks();
+    harmonicMidiCommandChecks();
     projectSettingsCommandChecks();
     drumPadCommandChecks();
     songSectionMoveCommandChecks();

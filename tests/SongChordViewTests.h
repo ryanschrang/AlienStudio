@@ -24,8 +24,8 @@ static void chordViewChecks() {
     require(notes->count == 3 && notes->notes[0].pitch == 62 && notes->notes[1].pitch == 66
         && notes->notes[2].pitch == 69 && notes->notes[0].lengthSteps == 32,
         "placement voices D major for the chord duration");
-    std::uint32_t refused = 0;
-    require(rig.controller.placeChordMidi(original, track, scope, refused).isNotEmpty() && !refused
+    const auto refused = alien::command::CommandEngine(rig.controller).execute(alien::command::PlaceHarmonicMidi{scope, track, original});
+    require(!refused.ok
         && rig.t().regions.size() == 1, "occupied chord destination refuses without replacing the clip");
     rig.controller.undo(); rig.view.refresh();
     require(rig.t().regions.empty() && rig.t().chords[0] == original, "one Undo removes MIDI and keeps its source chord");
