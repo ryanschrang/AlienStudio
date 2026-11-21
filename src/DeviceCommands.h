@@ -1,5 +1,6 @@
 #pragma once
 #include "SidechainCommands.h"
+#include "StockEffects.h"
 
 // Pure document edits for the devices in a plugin rack. The controller and command
 // Preview share them, so what Preview predicts is what the live edit does. They never
@@ -91,4 +92,40 @@ inline juce::String apply(ProjectDocument& d, const Edit& e) {
     }
     return {};
 }
+struct ConvolutionResponseEdit {
+    std::uint32_t scope{};
+    RackStage stage{RackStage::track};
+    int rack{-1}, slot{-1};
+    std::uint64_t instance{};
+    juce::String state;
+};
+
+// Applies an already encoded response without constructing a processor.
+inline juce::String convolutionRefusal(const ProjectDocument& d, const ConvolutionResponseEdit& edit) {
+    if (d.identityScope != edit.scope) return "The project changed while preparing the impulse response.";
+    const auto* rack = sidechain_edit::rackOf(d, edit.stage, edit.rack);
+    if (!rack || edit.slot < 0 || edit.slot >= static_cast<int>(rack->effects.size()))
+        return "The effect is no longer available for this edit.";
+    if (edit.stage == RackStage::track && d.tracks[static_cast<std::size_t>(edit.rack)].settings.frozen())
+        return "Unfreeze the track before changing its impulse response.";
+    auto& effect = rack->effects[static_cast<std::size_t>(edit.slot)];
+    if (!edit.instance || effect.instanceId != edit.instance)
+        return "The effect is no longer available for this edit.";
+    if (edit.state.length() > maxPluginStateChars)
+        return "The impulse response exceeds the saved plugin state limit.";
+    const auto xml = juce::parseXML(effect.descriptionXml);
+    juce::PluginDescription description;
+    if (!xml || !description.loadFromXml(*xml) || !stock::isStock(description)
+        || description.fileOrIdentifier != stock::catalog[16].id)
+        return "The target is not the stock convolution reverb.";
+    return {};
+}
+
+inline juce::String applyConvolutionResponse(ProjectDocument& d, const ConvolutionResponseEdit& edit) {
+    if (const auto why = convolutionRefusal(d, edit); why.isNotEmpty()) return why;
+    auto& effects = sidechain_edit::rackOf(d, edit.stage, edit.rack)->effects;
+    effects[static_cast<std::size_t>(edit.slot)].stateBase64 = edit.state;
+    return {};
+}
+
 } // namespace alien::device_edit

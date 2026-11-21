@@ -500,6 +500,20 @@ TrackCapacityReport), the per-slot mixer, synth and sampler objects, and the voi
 project once used. Not measured: the 32/64 build, peak memory during load/undo/export, and a
 physical device.
 
+### Comparing both profiles after D2
+
+The Windows CI capacity job runs the Release capacity reports for 16/32 and
+32/64 on the same runner at the same commit. The 32/64 full test suite runs
+first. The two reports record engine allocation and offline callback cost
+using the existing workloads. Compare timing within a job and repeat locally
+for release decisions. The hosted runner does not exercise physical audio hardware.
+
+To reproduce locally, configure separate x64 build directories with
+`ALIEN_SESSION_TRACKS` and `ALIEN_SESSION_SCENES` set to 16 and 32, then 32 and
+64. Build the Release `TrackCapacityReport` and `RackIntegrationTests` targets
+in both directories. Run `TrackCapacityReport.exe` and
+`RackIntegrationTests.exe --capacity-report` for each profile on the same machine.
+
 ## Increment D3: note state reserved with the track slot
 
 No project format change; the supported limits stay 16 tracks and 32 scenes.

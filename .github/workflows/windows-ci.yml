@@ -56,7 +56,19 @@ jobs:
         run: cmake --build build-32x64 --config Release --parallel 2
       - name: Test
         run: ctest --test-dir build-32x64 -C Release --output-on-failure --no-tests=error
-      - name: Capacity report
+      - name: Configure 16x32 comparison profile
+        run: cmake -S . -B build-16x32 -G "Visual Studio 17 2022" -A x64 -DALIEN_SESSION_TRACKS=16 -DALIEN_SESSION_SCENES=32
+      - name: Build 16x32 capacity reports
+        run: cmake --build build-16x32 --config Release --target TrackCapacityReport RackIntegrationTests --parallel 2
+      - name: Compare capacity profiles on this runner
+        shell: pwsh
         run: |
-          build-32x64/Release/TrackCapacityReport.exe
-          build-32x64/Release/RackIntegrationTests.exe --capacity-report
+          foreach ($profile in '16x32', '32x64') {
+            Write-Host "::group::$profile Release capacity report"
+            $bin = "build-$profile/Release"
+            & "$bin/TrackCapacityReport.exe"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & "$bin/RackIntegrationTests.exe" --capacity-report
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Host "::endgroup::"
+          }
