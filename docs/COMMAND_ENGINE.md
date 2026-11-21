@@ -807,6 +807,9 @@ The live side queues an edited Session clip that is not playing to launch, so th
 
 The piano roll runs one per change, under a key for the gesture (`roll-notes-<n>`, counted up when the gesture ends),
 so a gesture is one Undo step named "Edit notes"; multi-clip editing runs one SetClipNotes per clip in a single batch.
+Finished Session MIDI takes also submit `SetClipNotes`, under "Record MIDI", after merging overdub or replacement
+notes and releasing recording ownership. Empty takes restore playback without editing. If the command refuses,
+the original notes resume and the recording outcome reports the reason; there is no direct history commit fallback.
 Like SetRackChannelNotes neither has a script form: `arguments` writes the clip and the note count.
 
 Refused: notes that are not valid, a cell that is not there, a cell playing a rack pattern (its notes are the

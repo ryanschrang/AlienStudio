@@ -70,6 +70,7 @@ public:
         addWorkspace("Audio lab", audioTools);
         // The Drums page's edits run as commands (ClearDrumPad, SetDrumPadSlice, LoadDrumSample, SliceDrumPad).
         alien::command::routeDrumPadEdits(controller);
+        alien::command::routeMidiRecordingEdits(controller);
         drumPanel.onLoad = [this](int t, int p, const juce::File& f) { controller.loadDrum(f, t, p); };
         drumPanel.onApplySlice = [this](const alien::DrumSliceTarget& target, alien::DrumSlice range) { return controller.editDrumSlice(target, range); };
         drumPanel.onSlice = [this](int t, int p) { controller.sliceDrum(t, p); };
@@ -973,6 +974,7 @@ private:
         const auto where = "Track " + juce::String(outcome.track + 1) + ", Scene " + juce::String(outcome.scene + 1);
         juce::String message;
         if (outcome.refused) message = "Recording could not start. Open the Piano Roll or Session view and try again.";
+        else if (outcome.error.isNotEmpty()) message = "The take was not kept: " + outcome.error;
         else if (outcome.discarded) message = "The clip changed while recording, so the take was not kept.";
         else if (outcome.notesAdded <= 0) message = outcome.noteLimitReached ? where + " is full (1024 notes), so nothing was added."
                                                                            : juce::String("Nothing was recorded.");

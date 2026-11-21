@@ -124,3 +124,17 @@ Unmatched media keeps its saved reference. A shared decode counts against the
 audio budget once, and recovered references commit together under Relink audio.
 A Rack file rediscovered at its original path refreshes the runtime cache
 without a separate Undo entry. The project format is unchanged.
+
+## Finished Session MIDI takes
+
+The recording completion adapter submits merged overdub or replacement notes through
+`SetClipNotes` under the `Record MIDI` Undo label. The take releases its note ownership
+before submission; the Command Engine owns validation, publication and history.
+Empty takes still restore playback without editing. A missing command route refuses
+capture, and a refused completion restores the original playback and reports why it
+was not kept. There is no direct-commit fallback and no project format change.
+
+`MidiRecordingTests` checks completed-take Preview/live agreement, one-step Undo/Redo,
+no-op redo preservation, invalid-target refusal and failed replacement playback
+restoration. Existing rendered-audio checks cover overdub, replacement, count-in,
+monitoring and note termination. Physical MIDI and Windows listening remain separate.
