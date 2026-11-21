@@ -109,8 +109,9 @@ worker render installed by `installFrozenTrack` (one Undo step, outside the comm
 recording and audio import completion); unfreezing is the `UnfreezeTrack` command.
 
 Still direct, for later slices: the Song chord and section "create MIDI" actions
-(`placeChordMidi`, `placeSectionMidi`, T2-04), freeze installation and
-convolution impulse loading.
+(`placeChordMidi`, `placeSectionMidi`, T2-04), and freeze installation. The Plugins panel now submits prepared convolution responses through
+`SetConvolutionResponse`. Preview checks the target without constructing a plugin, and
+accepted custom WAV or built-in chamber changes each get one Undo step.
 
 ## Missing-audio relinking
 
