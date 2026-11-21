@@ -7,7 +7,8 @@ format 32) and C3 (a build-time capacity setting with a measured, CI-tested
 32-track, 64-scene candidate profile). Resource budgets (D) are in progress:
 D1 sizes the plugin alignment delay lines to the latency actually reported; D2 reserves stream
 voices for the track slots a project uses and sample-preview audio when something is previewed;
-D3 reserves each slot's note mailboxes and scheduler with it.
+D3 reserves each slot's note mailboxes and scheduler with it; D4 measures peak memory during
+save, open, undo/redo and export.
 Higher supported limits (E) are pending.
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
@@ -566,3 +567,56 @@ is a different day from D2's run, so it is not a before/after comparison.
 What still scales with the compiled maximum: the per-slot mixer, synth, sampler and send objects,
 and the resources of slots a project once used. Not measured: the 32/64 build, peak memory during
 load/undo/export, and a physical device.
+
+## Increment D4: peak memory during save, open, undo/redo and export
+
+No product change; this increment measures. The supported limits stay 16 tracks and 32 scenes.
+
+Measurement gate 1 asks for peak allocation during load, undo/redo, freeze, export and snapshot
+handoff, not only the steady engine. `MemoryPeakTests` replaces every C++ `operator new` and
+`operator delete` (plain, array, aligned, nothrow) with versions that record each block's size,
+so the live heap and its high-water mark are known on every thread, including the load and export
+workers. It builds a full project at the compiled limits (every track, 32 scenes, 64 notes in every
+MIDI cell, four ten-second stereo 48 kHz audio clips, an 8-bar Song with two clips per track, no
+plugins). Then it saves it, makes 20 edits and undoes and redoes them, exports the Song the way
+Export WAV does, and opens it into a new engine and over itself. After each open it runs a few
+callbacks, as a device would, so the engine hands back what it replaced. `--report` prints the
+table below; without it the checks run in CTest.
+
+Checks:
+- an export returns its render engine and project copy when it ends;
+- opening the same project into a new engine twice holds the same memory;
+- once settled, opening over an open project keeps nothing but the replaced decoded audio;
+- closing everything returns the memory.
+
+### Measurements
+
+2026-11-21, Release, 16/32, D3 engine (`MemoryPeakTests --report`):
+
+| Step | Live before (MiB) | Peak (MiB) | Peak above before (MiB) | Live after (MiB) |
+| --- | ---: | ---: | ---: | ---: |
+| Build the full project | 10.6 | 61.5 | 50.9 | 59.3 |
+| Save | 59.3 | 67.2 | 7.8 | 59.4 |
+| 20 edits, 20 undo, 20 redo | 59.4 | 64.9 | 5.5 | 62.3 |
+| Export the 8-bar Song (its own render engine) | 62.3 | 85.9 | 23.6 | 62.3 |
+| Open into a new engine and controller | 10.9 | 55.4 | 44.5 | 55.3 |
+| Open over itself | 55.3 | 86.7 | 31.4 | 86.0 |
+| Open over itself, fourth time | 131.3 | 162.7 | 31.4 | 146.0 |
+
+What this shows:
+- **Export roughly doubles a small engine's share for its duration:** a second engine (10.5 MiB)
+  and a copy of the project, all returned when it ends.
+- **An open costs about the project again at its peak,** because the loaded project is built
+  beside the open one before it replaces it.
+- **Opening over an open project grows memory every time.** `ProjectController` keeps every
+  decoded clip it has loaded for as long as it lives (`retained`), because the engine may still
+  point at one; the replaced audio, 14.6 MiB here, is never freed. The growth stops only when
+  the 512 MiB `maxSessionAudioBytes` limit refuses the next open with "Close and restart Alien
+  Studio to release audio from older sessions". The first two opens also keep about one replaced
+  document each (about 16 MiB, mostly 32 KiB note patterns per cell), and then that stops growing.
+  This is consistent with the engine's three-slot Song snapshot mailbox, whose old snapshots share
+  the document's patterns; it was not traced further.
+
+Not measured: freeze, stems, source replacement, plugins and their state, malloc-based storage
+(JUCE `HeapBlock`), the 32/64 build, and anything but this one synthetic project. A next step for
+D is to release retained audio of a replaced project once the engine no longer refers to it.
