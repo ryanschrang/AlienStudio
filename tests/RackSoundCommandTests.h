@@ -96,6 +96,37 @@ static void rackSoundCommandChecks() {
         require(!busy.ok && historyOf(c) == history, "a busy project refuses them");
     }
 
+    // A saved rack instrument's captured state survives a mixed-family batch and its Undo/Redo.
+    // A late refusal must not rebuild the host or lose the redo branch.
+    {
+        const cmd::SetRackChannelPlugin plugin{second, "<PLUGIN name=\"Saved\"/>", "Saved"};
+        require(commands.execute(plugin).changed, "saved plugin fixture");
+        c.setRackPluginStates({{plugin.instance, "c2F2ZWQ="}});
+        c.markAsNewBaseline();
+        const auto before = c.document();
+        int reloads = 0;
+        c.onRackPluginsChanged = [&] { ++reloads; };
+        const std::vector<cmd::Command> edits{cmd::SetRackChannelSound{second, "hat"}, cmd::SetTrackPan{0, 0.25}};
+        const auto preview = commands.preview(edits);
+        require(preview.ok && preview.changed && reloads == 0 && alien::sameContent(before, c.document()),
+            "rack sound and mixer Preview leaves captured state and host alone");
+        require(commands.batch(edits, "Replace rack sound and pan").changed && reloads == 1
+            && alien::sameContent(preview.after, c.document()) && engine->tracks[0].pan.load() == 0.25f,
+            "one accepted batch publishes the mix and rebuilds the rack host once");
+        require(c.undo() && alien::sameContent(before, c.document()) && info(second).pluginInstance() == plugin.instance
+            && info(second).pluginState() == "c2F2ZWQ=" && engine->tracks[0].pan.load() == 0,
+            "one Undo restores the original plugin identity, captured state and mixer");
+        const auto history = historyOf(c);
+        const auto told = reloads;
+        const auto refused = commands.batch({cmd::SetRackChannelSynth{second, 3}, cmd::SetTrackPan{99, 0.5}}, "Refused replacement");
+        require(!refused.ok && refused.failedCommand == 1 && reloads == told
+            && alien::sameContent(before, c.document()) && historyOf(c) == history && engine->tracks[0].pan.load() == 0,
+            "a late mixer refusal preserves the saved rack instrument, host, engine and redo");
+        require(c.redo() && alien::sameContent(preview.after, c.document()) && !info(second).hasPlugin(),
+            "Redo still restores the accepted sound replacement");
+        c.onRackPluginsChanged = nullptr;
+    }
+
     // The script form.
     juce::String error;
     for (const cmd::Command edit : std::vector<cmd::Command>{cmd::SetRackChannelSound{0, "hat"}, cmd::SilenceRackChannel{0}, cmd::SetRackChannelSynth{0, 1}, cmd::SetRackChannelPlugin{0, "<PLUGIN/>", "Name"}}) {

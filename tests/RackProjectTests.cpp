@@ -663,7 +663,8 @@ static void synthPersistence() {
     for (auto& value : *legacy.getDynamicObject()->getProperty("channels").getArray()) value.getDynamicObject()->removeProperty("instrumentPreset");
     require(rackFromVar(legacy, output, error) && !output.channels[0].isSynth(), "older channels default to sample mode");
     ToneEngine engine; engine.prepare(48000); alien::ProjectController controller(engine); controller.pushDocumentToEngine();
-    require(controller.setRackSynth(0, 9) && !controller.rackChannelOffline(0), "controller publishes a synth without reporting missing media");
+    require(alien::command::CommandEngine(controller).execute(alien::command::SetRackChannelSynth{0, 9}).changed && !controller.rackChannelOffline(0),
+        "the synth command publishes without reporting missing media");
     require(controller.undo() && !controller.channelRack().channels[0].isSynth() && controller.redo()
             && controller.channelRack().channels[0].instrumentPreset == 9, "instrument selection is one undoable edit");
 }

@@ -2243,17 +2243,6 @@ public:
     // The owner hosts the rack's plugin instruments: told when which channel holds which one has changed
     // (a plugin chosen or replaced, a channel added, removed, moved or duplicated, undo and redo).
     std::function<void()> onRackPluginsChanged;
-    // Gives a channel a VST3 instrument (descriptionXml from the plugin list), named after it. One undo step.
-    bool setRackPlugin(int channel, const juce::String& descriptionXml, const juce::String& name) {
-        if (descriptionXml.isEmpty() || !doc.channelRack.validChannel(channel)) return false;
-        const auto description = descriptionXml.toStdString();
-        const auto instance = freshInstanceId();
-        return editRack("Change channel instrument", [&](rack::Project& p) {
-            const bool changed = p.setPlugin(channel, description, instance);
-            if (changed && name.isNotEmpty()) p.renameChannel(channel, name.toStdString());
-            return changed;
-        });
-    }
     // Keeps each rack plugin instrument's current state (from the host, by instance). Like capturing a track's
     // plugins before a save, it is not an undo step of its own.
     void setRackPluginStates(const std::vector<std::pair<std::uint64_t, juce::String>>& states) {
@@ -2302,24 +2291,6 @@ public:
         const auto existing = rack::channelNotes(doc.channelRack.pattern(pattern), channel);
         if (rack::Pattern::sameNotes(existing, notes)) return false;
         return editRack("Edit channel notes", [&](rack::Project& p) { return p.setChannelNotes(pattern, channel, notes); }, coalesceKey);
-    }
-    bool setRackSynth(int channel, int preset) {
-        if (preset < 0 || preset >= alien::presetCount) return false;
-        return editRack("Change channel instrument", [&](rack::Project& p) {
-            const bool changed = p.setInstrumentPreset(channel, preset);
-            if (changed) p.renameChannel(channel, alien::presetNames[static_cast<std::size_t>(preset)]);
-            return changed;
-        });
-    }
-    // Gives a channel one of the built-in drum sounds and names it after the sound.
-    bool setRackBuiltin(int channel, const juce::String& soundId) {
-        const auto* name = rack::builtinDisplayName(soundId.toStdString());
-        if (name == nullptr) return false;
-        const auto id = soundId.toStdString();
-        return editRack("Change channel sound", [&](rack::Project& p) {
-            bool changed = p.setSample(channel, "builtin:" + id);
-            return p.renameChannel(channel, name) || changed;
-        });
     }
     // Rack samples arrive through command::loadRackSample: decode off the message
     // thread, then run LoadRackSample on the result. The project is busy until then.

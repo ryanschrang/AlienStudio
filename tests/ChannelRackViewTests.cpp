@@ -1478,7 +1478,8 @@ static void pluginInstrumentMenu() {
     grid.runChannelCommand(1, ChannelRackGrid::pluginBase + 1);
     require(chosenRow == 1 && chosen == 1, "choosing one asks the owner to load it on that channel");
     juce::PluginDescription d; d.name = "Bass"; d.pluginFormatName = "VST3"; d.fileOrIdentifier = "bass"; d.isInstrument = true;
-    require(rig.controller.setRackPlugin(1, d.createXml()->toString(), d.name), "the owner gives the channel the instrument");
+    require(alien::command::CommandEngine(rig.controller).execute(alien::command::SetRackChannelPlugin{1, d.createXml()->toString(), d.name}).changed,
+        "the owner gives the channel the instrument through a command");
     menu = entries(grid.channelMenu(1));
     require(entry(menu, ChannelRackGrid::pluginBase + 1)->ticked && !entry(menu, ChannelRackGrid::cmdSilent)->ticked
             && entry(menu, ChannelRackGrid::cmdPluginEditor) != nullptr, "its instrument is ticked, and its editor is offered");

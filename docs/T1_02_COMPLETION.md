@@ -102,6 +102,17 @@ imports placed on the Song timeline run their own command, `ImportSongAudio`, th
 
 ## Direct route cleanup
 
+Rack sound changes now have only the named command entry points:
+`SetRackChannelPlugin`, `SetRackChannelSynth` and `SetRackChannelSound`.
+The obsolete direct controller setters `setRackPlugin`, `setRackSynth` and
+`setRackBuiltin` are removed. The Channel Rack menu, project roundtrip and
+instrument-host tests now use the same commands as the app. Runtime plugin
+state capture remains a separate lifecycle operation, without its own Undo step.
+CommandEngineTests covers a saved rack instrument's captured state across a
+mixed rack-sound/mixer batch, one-step Undo/Redo, and late refusal without host
+rebuild or redo loss. This completes this sound-route cleanup slice only;
+the other controller routes and native acceptance remain pending.
+
 The Session view no longer has an `onEdited` callback or a `needsCommit` path: every edit it
 makes is a command with its own Undo step, so the host only refreshes. The app's handler, which
 committed a second history entry under a label, was unreachable and is removed. The offline freeze
