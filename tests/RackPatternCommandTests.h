@@ -172,7 +172,7 @@ static void rackPatternCommandChecks() {
         alien::PianoRollPattern notes;
         notes.loopSteps = 32;
         notes.add(60, 20.0, 4.0);
-        require(c.setRackChannelNotes(pattern, synth, notes), "a note past step 16");
+        require(commands.execute(cmd::SetRackChannelNotes{pattern, synth, std::make_shared<const alien::PianoRollPattern>(notes)}).changed, "a note past step 16");
         const auto cut = commands.execute(cmd::SetRackPatternLength{pattern, 16});
         require(!cut.ok && cut.error.contains("shorten notes") && rack.pattern(pattern).length == 32, "a shortening that would cut a note is refused");
     }

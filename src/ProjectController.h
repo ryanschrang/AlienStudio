@@ -2272,17 +2272,6 @@ public:
         if (doc.channelRack.validChannel(channel))
             engine.rackAuditions.push(ToneEngine::rackAuditionEvent(channel, std::clamp(pitch, -rack::channelRootPitch, 127 - rack::channelRootPitch), held), velocity);
     }
-    // Full piano-roll notes for this channel, without conversion to steps. Edits with the same
-    // coalesceKey made in quick succession are one undo step, so a whole drag in the piano roll is one.
-    bool setRackChannelNotes(int pattern, int channel, const PianoRollPattern& notes, const juce::String& coalesceKey = {},
-                             rack::ChannelNotesFit* fit = nullptr) {
-        if (!doc.channelRack.validPattern(pattern) || !doc.channelRack.validChannel(channel)) return false;
-        if (fit) *fit = {};
-        if (!notes.valid() || notes.loopSteps != doc.channelRack.pattern(pattern).length) return false;
-        const auto existing = rack::channelNotes(doc.channelRack.pattern(pattern), channel);
-        if (rack::Pattern::sameNotes(existing, notes)) return false;
-        return editRack("Edit channel notes", [&](rack::Project& p) { return p.setChannelNotes(pattern, channel, notes); }, coalesceKey);
-    }
     // Rack samples arrive through command::loadRackSample: decode off the message
     // thread, then run LoadRackSample on the result. The project is busy until then.
     void decodeRackSample(const juce::File& file, std::function<void(const AudioClipImportResult&)> done) {

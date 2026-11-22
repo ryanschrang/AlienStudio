@@ -1,4 +1,62 @@
 #pragma once
+static void rackNotesTransactionChecks() {
+    auto engine = std::make_unique<ToneEngine>();
+    auto controller = std::make_unique<alien::ProjectController>(*engine);
+    auto& c = *controller;
+    cmd::CommandEngine commands(c);
+    c.pushDocumentToEngine();
+    const auto& d = c.document();
+    const auto source = d.channelRack.clips[0];
+    require(commands.execute(cmd::SetRackStep{0, 1, 4, true}).changed
+        && commands.execute(cmd::AssignRackClip{0, 0, source}).changed
+        && commands.execute(cmd::PlaceSongClip{alien::timeline::rackRowBase, 0, 0, 2 * alien::timeline::ticksPerBar}).changed,
+        "a rack source shared by Session and Song with dormant steps");
+    const auto region = d.timeline.regions.front().id;
+    c.markAsNewBaseline();
+    const auto before = d;
+    const auto history = historyOf(c);
+    require(engine->rackMailbox.consume() != nullptr, "consume the fixture's engine bank");
+    auto notes = std::make_shared<alien::PianoRollPattern>();
+    notes->loopSteps = 32;
+    notes->add(48, 20, 8, .4f); notes->add(60, 20, 4, .9f); notes->add(67, 20, 6, .6f);
+    const std::vector<cmd::Command> edits{cmd::SetRackPatternLength{0, 32}, cmd::SetRackChannelNotes{0, 1, notes}};
+    const auto prediction = commands.preview(edits);
+    require(prediction.ok && prediction.changed && alien::sameContent(before, d) && historyOf(c) == history
+        && engine->rackMailbox.consume() == nullptr, "length-plus-notes Preview leaves the live source and engine untouched");
+    require(commands.batch(edits, "Extend pattern and write notes").changed && alien::sameContent(prediction.after, d)
+        && d.channelRack.pattern(0).length == 32 && d.channelRack.pattern(0).steps[1][4].on
+        && d.channelRack.clips[0] == source && d.clip(0, 0).rackClip == source
+        && d.timeline.find(region)->rackClip == source && d.rackMatchesLibrary(),
+        "one batch updates the shared source and keeps dormant steps and all bindings");
+    const auto* published = engine->rackMailbox.consume();
+    const auto* publishedPattern = published ? published->pattern(0) : nullptr;
+    require(publishedPattern && published->clips[0] == source && publishedPattern->notes[1]
+        && alien::rack::Pattern::sameNotes(*publishedPattern->notes[1], *notes),
+        "engine receives the full overlapping chord, lengths and velocities");
+    require(c.undo() && alien::sameContent(before, d) && !d.channelRack.isNoteChannel(0, 1),
+        "one Undo restores length and step mode together");
+    const auto* restored = engine->rackMailbox.consume();
+    const auto* restoredPattern = restored ? restored->pattern(0) : nullptr;
+    require(restoredPattern && restoredPattern->length == 16 && !restoredPattern->notes[1], "Undo restores the engine's step source");
+    const auto redo = historyOf(c);
+    const auto unchanged = commands.execute(cmd::SetRackChannelNotes{0, 1,
+        std::make_shared<const alien::PianoRollPattern>(alien::rack::channelNotes(d.channelRack.pattern(0), 1))});
+    require(unchanged.ok && !unchanged.changed && historyOf(c) == redo && engine->rackMailbox.consume() == nullptr,
+        "opening unchanged step notes preserves redo without engine publication");
+    const auto refused = commands.batch({cmd::SetRackPatternLength{0, 32}, cmd::SetRackChannelNotes{0, 99, notes}}, "Refused notes");
+    require(!refused.ok && refused.failedCommand == 1 && alien::sameContent(before, d)
+        && historyOf(c) == redo && engine->rackMailbox.consume() == nullptr,
+        "a late note refusal keeps the old length, source, engine and redo");
+    c.setExternalBusy(true);
+    const auto busy = commands.execute(cmd::SetRackChannelNotes{0, 1, notes});
+    c.setExternalBusy(false);
+    require(!busy.ok && busy.error.contains("busy") && alien::sameContent(before, d) && historyOf(c) == redo
+        && engine->rackMailbox.consume() == nullptr, "busy note edits refuse before document or engine changes");
+    require(c.redo() && alien::sameContent(prediction.after, d)
+        && alien::rack::Pattern::sameNotes(alien::rack::channelNotes(d.channelRack.pattern(0), 1), *notes),
+        "Redo still restores the complete accepted length-plus-notes batch");
+}
+
 // Channel notes, drum grooves and sample loading. ChannelRackViewTests drives the real pattern menu, drops and async decode.
 static void rackContentCommandChecks() {
     auto engine = std::make_unique<ToneEngine>();
