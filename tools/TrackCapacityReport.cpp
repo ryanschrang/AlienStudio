@@ -51,7 +51,8 @@ int main() {
     object("ArrangementClip (source references)", clipReference);
     object("ArrangementPlayback (shallow object; not its pointees)", sizeof(alien::ArrangementPlayback));
     object("rack::RackPlayer (shallow)", sizeof(alien::rack::RackPlayer));
-    object("rack::RackPlayer fixed heap pools", alien::rack::RackPlayer::fixedStorageBytes());
+    object("rack::RackPlayer fixed heap pools (voices, their synths, plugin notes)", alien::rack::RackPlayer::fixedStorageBytes());
+    object("rack::RackPlayer pending-hit queue per reserved rack channel", alien::rack::RackPlayer::pendingBytesPerChannel());
     object("rack::Pattern (shallow object; not pointed-to note rows)", sizeof(alien::rack::Pattern));
     object("rack::Snapshot (shallow object; not its pattern/note pointees)", sizeof(alien::rack::Snapshot));
     std::cout << "\n| Profile | Tracks | Scenes | Selected preallocated note state (bytes) | Three Song reference tables (bytes) | Note state (MiB) |\n"
@@ -69,7 +70,7 @@ int main() {
         << "Excluded from the track projections: plugin instances/state, delay-line sample allocations, decoded audio, stream buffers, synth/drum voices,\n"
         << "rack note pointees, document/history metadata, UI, allocator overhead and live/export performance.\n"
         << "The engine preallocates these note objects by configured capacity, even for inactive tracks.\n"
-        << "The separately listed RackPlayer pool is fixed at construction; it includes rack voices, pending hits and per-voice synths.\n"
+        << "The separately listed RackPlayer pool is fixed at construction; it includes rack voices, per-voice synths and plugin notes. The pending-hit queue is reserved per rack channel in use (T1-04 D8).\n"
         << "Do not add its shallow object twice or multiply its shared pools by the occurrence count.\n"
         << "No engine or hypothetical large project was constructed by this report.\n";
 }

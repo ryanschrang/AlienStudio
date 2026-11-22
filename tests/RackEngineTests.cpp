@@ -57,6 +57,7 @@ struct Rig {
     RackPlayer::SampleTable clips{};
     RackPlayer player;
     double rate{48000.0};
+    explicit Rig(int reservedChannels, double sampleRate = 48000.0) : player(reservedChannels), rate(sampleRate) { player.prepare(rate); }
     std::vector<std::shared_ptr<SessionAudioClip>> keep;
     std::array<std::vector<float>, RackPlayer::busCount> left, right;
 
@@ -690,8 +691,9 @@ static void stepTimingTests() {
         int most = 0;
         rig.publish();
         for (int block = 0; block < 60; ++block) { rig.run(256, true, 1000.0); most = std::max(most, rig.player.pendingHits()); }
-        check(most > 0 && most <= RackPlayer::maxPending && rig.player.activeVoices() <= RackPlayer::voiceCount,
-              "the hit queue is bounded (" + std::to_string(most) + " waiting at most)");
+        check(most > 0 && most <= RackPlayer::maxPending && rig.player.activeVoices() <= RackPlayer::voiceCount
+                  && rig.player.droppedHits() == 0,
+              "the hit queue is bounded (" + std::to_string(most) + " waiting at most) and keeps every hit");
     }
 }
 
@@ -868,7 +870,72 @@ static void synthChannels() {
     check(before == after, "synth start, render, note-off and transport stop allocate no memory on the audio thread");
 }
 
+// T1-04 D8: the pending-hit queue is reserved a channel at a time. Two plugin channels with 700 notes
+// each inside one step (on the piano roll's 240-tick grid, 25 samples a tick here) put 1,400 hits in the
+// queue at once, more than one channel's room, so the heap spans two chunks; every note must still
+// start on its own sample, in order.
+static void pendingQueueTests() {
+    constexpr int perChannel = 700;
+    PianoRollPattern notes; notes.loopSteps = 16;
+    const auto tickOf = [](int n) { return 1 + n % 239; };   // ticks 1-239 of step 0, up to three pitches on each
+    for (int n = 0; n < perChannel; ++n)
+        notes.add(40 + n / 239, PianoRollPattern::fromTicks(tickOf(n)), PianoRollPattern::minLength, 1.0f);
+    const auto setup = [&](Rig& rig) {
+        for (int c = 0; c < 2; ++c) {
+            check(rig.project.setPlugin(c, "test instrument", static_cast<std::uint64_t>(c + 1)), "plugin channel");
+            check(rig.project.setChannelNotes(0, c, notes), "channel notes");
+        }
+        rig.publish();
+    };
+    // Note-on samples in the order the player emitted them, and the most hits waiting at once.
+    const auto play = [](Rig& rig, int blocks) {
+        std::array<std::vector<float>, RackPlayer::busCount> bl, br;
+        std::array<float*, RackPlayer::busCount> pl{}, pr{};
+        for (std::size_t b = 0; b < bl.size(); ++b) { bl[b].assign(512, 0.0f); br[b].assign(512, 0.0f); pl[b] = bl[b].data(); pr[b] = br[b].data(); }
+        std::vector<long long> ons; int most = 0;
+        long long at = 0;
+        for (int block = 0; block < blocks; ++block) {
+            const int n = block == 0 ? 1 : 512;   // the step starts at sample 0; its first hit is due at 25
+            rig.player.process(*rig.snap, rig.clips, true, 120.0, 4, n, pl.data(), pr.data());
+            most = std::max(most, rig.player.pendingHits());
+            for (int i = 0; i < rig.player.midiNoteCount(); ++i)
+                if (rig.player.midiNotes()[i].velocity > 0.0f) ons.push_back(at + rig.player.midiNotes()[i].sample);
+            rig.player.clearMidiNotes();
+            at += n;
+        }
+        return std::pair{ons, most};
+    };
+    std::vector<long long> expected;   // 120 BPM at 48 kHz: 6,000 samples a step
+    for (int c = 0; c < 2; ++c)
+        for (int n = 0; n < perChannel; ++n) expected.push_back(25LL * tickOf(n));
+    std::sort(expected.begin(), expected.end());
+    {
+        Rig rig; setup(rig);
+        const auto [ons, most] = play(rig, 14);
+        check(most == 2 * perChannel && most > RackPlayer::pendingPerChannel, "the queue holds 1,400 hits, past one channel's room");
+        check(ons == expected, 
+"every queued note starts on its own sample, in order, across the chunks");
+        check(rig.player.droppedHits() == 0 && rig.player.reservedChannels() == maxChannels, "a player made without a count reserves every channel");
+    }
+    {
+        Rig rig(1); setup(rig);
+        check(rig.player.reservedChannels() == 1, "a player reserves only the channels asked for");
+        const auto [ons, most] = play(rig, 14);
+        check(most == RackPlayer::pendingPerChannel && ons.size() == static_cast<std::size_t>(RackPlayer::pendingPerChannel)
+                  && rig.player.droppedHits() == static_cast<std::uint64_t>(2 * perChannel - RackPlayer::pendingPerChannel),
+              "hits past the reserved room are counted, not kept (" + std::to_string(rig.player.droppedHits()) + ")");
+        check(rig.player.reserveChannels(2) && rig.player.reservedChannels() == 2, "reserving more channels later");
+        rig.player.stop();
+        const auto [again, all] = play(rig, 14);
+        check(all == 2 * perChannel && again == expected
+                  && rig.player.droppedHits() == static_cast<std::uint64_t>(2 * perChannel - RackPlayer::pendingPerChannel),
+              "after reserving, the next block has room for every hit");
+        check(rig.player.reserveChannels(1) && rig.player.reservedChannels() == 2, "reserving fewer keeps what exists");
+    }
+}
+
 int main() {
+    pendingQueueTests();
     synthChannels();
     clockTests();
     melodicPlayback();

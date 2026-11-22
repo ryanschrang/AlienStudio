@@ -2530,6 +2530,12 @@ private:
             clips[static_cast<std::size_t>(c)] = rackClip(doc.channelRack.info[static_cast<std::size_t>(c)]);
         if (rackPublished.known && rackPublished.clips == clips && rackPublished.project == doc.channelRack) return;
         for (std::size_t c = 0; c < clips.size(); ++c) engine.rackSamples[c].store(clips[c]);
+        // The edit has happened; if its channels' hit queue cannot be reserved, say so. The rack still
+        // plays, and hits beyond the room it has are counted rather than kept (T1-04 D8).
+        if (!engine.prepareRackChannels(doc.channelRack.channelCount))
+            status("Not enough memory for " + juce::String(doc.channelRack.channelCount) + " Channel Rack channels",
+                   "Hits that wait for their time (nudges, ratchets) on channels past " + juce::String(engine.preparedRackChannels())
+                   + " may not play. Close other programs, save, and reopen the project.");
         engine.rackMailbox.publish(doc.channelRack.snapshot());
         rackPublished.known = true; rackPublished.clips = clips; rackPublished.project = doc.channelRack;
     }
@@ -2856,6 +2862,8 @@ private:
         // T1-04 D7: the engine's track slots are prepared before anything is replaced, so an open that cannot
         // have them leaves the open project as it was.
         if (!prepareEngineTracks(result.project.trackCount(), "Open failed")) return;
+        // T1-04 D8: and so is the Channel Rack's pending-hit queue for its channels.
+        if (!prepareRackChannels(result.project.channelRack.channelCount, "Open failed")) return;
         abandonRecording();
         engine.playing.store(false);
         engine.requestedRackClip.store(rack::RackPlayer::noLaunchRequest);
@@ -3067,6 +3075,14 @@ private:
         status(action + ": not enough memory for " + juce::String(tracks) + " tracks",
                "Alien Studio could prepare " + juce::String(engine.preparedTracks())
                + " tracks. Close other programs or open a project with fewer tracks, then try again.");
+        return false;
+    }
+
+    bool prepareRackChannels(int channels, const juce::String& action) {
+        if (engine.prepareRackChannels(channels)) return true;
+        status(action + ": not enough memory for " + juce::String(channels) + " Channel Rack channels",
+               "Alien Studio could prepare " + juce::String(engine.preparedRackChannels())
+               + " channels. Close other programs or remove Channel Rack channels, then try again.");
         return false;
     }
 

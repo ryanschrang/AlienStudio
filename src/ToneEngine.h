@@ -88,6 +88,26 @@ public:
     T& ready(std::size_t i) noexcept { return SlotStore<T, N>::operator[](i); }
 };
 
+// The Channel Rack's snapshot mailbox, which first reserves the rack player's pending-hit queue
+// for the snapshot's channels (T1-04 D8), so a published channel always has room for its hits.
+class RackSnapshotMailbox {
+public:
+    explicit RackSnapshotMailbox(alien::rack::RackPlayer& p) noexcept : player(p) {}
+    // Control thread. If the queue cannot be reserved the snapshot is still published (the edit has
+    // happened); the player keeps the room it has and counts hits it cannot keep. Callers that can
+    // refuse first check ToneEngine::prepareRackChannels.
+    bool publish(std::shared_ptr<const alien::rack::Snapshot> value) {
+        if (value) player.reserveChannels(value->channelCount);
+        return box.publish(std::move(value));
+    }
+    const alien::rack::Snapshot* consume() noexcept { return box.consume(); }
+    const alien::rack::Snapshot* current() const noexcept { return box.current(); }
+    std::size_t collect() { return box.collect(); }
+private:
+    alien::rack::RackPlayer& player;
+    alien::rack::SnapshotMailbox box;
+};
+
 class ToneEngine : public juce::AudioIODeviceCallback {
 public:
     // Pre-allocated capacity; activeTracks says how many the session uses.
@@ -169,6 +189,12 @@ public:
     }
     // Track slots whose stream voices and note state all exist.
     int preparedTracks() const noexcept { return static_cast<int>(reservedSlots.load(std::memory_order_acquire)); }
+    // Control thread (T1-04 D8): room in the rack's pending-hit queue for `channels` Channel Rack
+    // channels. False if memory ran out; preparedRackChannels() then says how many have room.
+    bool prepareRackChannels(int channels) noexcept { return rackPlayer.reserveChannels(channels); }
+    int preparedRackChannels() const noexcept { return rackPlayer.reservedChannels(); }
+    // Hits the rack's pending queue had no room for (audio thread writes; diagnostics and tests).
+    std::uint64_t droppedRackHits() const noexcept { return rackPlayer.droppedHits(); }
     // Control thread. Prepares the slots, then publishes the count. If they cannot all be prepared, the
     // count published is the slots that exist, and the answer is false: the controller checks with
     // prepareTracks() before it commits a larger project, so this happens only to a caller that did not.
@@ -198,7 +224,7 @@ public:
     // channel's decoded sample is an immutable clip retained by the session
     // owner; previews from the GUI arrive as (channel, velocity) events.
     // Rack mode seeds playback from selection once; explicit launches use library identities.
-    alien::rack::SnapshotMailbox rackMailbox;
+    RackSnapshotMailbox rackMailbox{rackPlayer};   // only keeps the reference; rackPlayer is made later
     std::atomic<std::uint64_t> requestedRackClip{alien::rack::RackPlayer::noLaunchRequest};
     static_assert(std::atomic<std::uint64_t>::is_always_lock_free, "Rack launch requests must be lock-free");
     std::atomic<std::uint64_t> activeRackClip{0}, queuedRackClip{alien::rack::RackPlayer::noLaunchRequest};
@@ -1818,7 +1844,7 @@ private:
         std::array<std::array<float, alien::PluginRuntime::blockSize>, alien::rack::RackPlayer::busCount> left{}, right{};
     };
     std::unique_ptr<RackBuses> rackBuses = std::make_unique<RackBuses>();
-    alien::rack::RackPlayer rackPlayer;
+    alien::rack::RackPlayer rackPlayer{rackMailbox.current()->channelCount};   // the default project's channels
     const alien::rack::Snapshot* rackSnapshot = rackMailbox.current();
     alien::DiskAudioStreamService diskStreams;
     SlotStore<alien::PianoRollScheduler, sessionTracks> rolls;   // reserved with a slot; the callback reads slots below boundSlots
