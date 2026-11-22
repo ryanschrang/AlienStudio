@@ -823,6 +823,7 @@ struct ControllerRig {
     long long total = 0;
     ControllerRig() {
         engine.prepare(48000);
+        alien::command::routeMidiRecordingEdits(controller);
         controller.onRecordingFinished = [this](const alien::ProjectController::RecordingOutcome& o) { outcomes.push_back(o); };
         controller.pushDocumentToEngine();
         engine.patternMode.store(1);
@@ -877,6 +878,21 @@ void overdubTests() {
     c.setClipPattern(0, 0, twoNotes(), false);
     c.commit("Add notes");
     const auto labelBefore = c.undoLabel();
+    const auto submit = c.recordMidiNotes;
+    bool submitted = false;
+    c.recordMidiNotes = [&](int track, int scene, const PianoRollPattern& notes) {
+        submitted = true;
+        require(!c.isRecording(), "the take releases note ownership before submitting the command");
+        const auto before = c.document();
+        const auto prediction = alien::command::CommandEngine(c).preview(alien::command::SetClipNotes{
+            track, scene, std::make_shared<const PianoRollPattern>(notes)});
+        require(prediction.ok && prediction.changed && alien::sameContent(before, c.document()),
+            "completed take Preview is pure");
+        const auto error = submit(track, scene, notes);
+        require(error.isEmpty(), "take command accepts the finished take");
+        require(alien::serializeSessionProject(alien::toProjectData(prediction.after)) == alien::serializeSessionProject(alien::toProjectData(c.document())), "take command values match Preview");
+        return error;
+    };
     rig.playClip();
     const auto start = c.startRecording();
     require(start.started && start.reason.isEmpty() && c.isRecording() && c.recordingTrack() == 0 && c.recordingScene() == 0, "recording starts on the selected clip");
@@ -888,7 +904,7 @@ void overdubTests() {
     require(c.isRecording() && rig.render(2000) > 0.0005, "the loop plays back what has been recorded so far while the take continues");
     c.stopRecording();
     rig.render(512);
-    require(!c.isRecording() && rig.outcomes.size() == 1, "the take finishes and reports once");
+    require(!c.isRecording() && rig.outcomes.size() == 1 && submitted, "the take finishes through the command adapter and reports once");
     const auto& outcome = rig.outcomes[0];
     require(outcome.notesAdded == 1 && !outcome.replaced && !outcome.refused && !outcome.discarded && !outcome.noteLimitReached
             && outcome.droppedEvents == 0 && outcome.track == 0 && outcome.scene == 0, "the outcome says one note was added");
@@ -904,6 +920,43 @@ void overdubTests() {
     rig.render(2 * 384000 + 25000 - rig.total);
     require(rig.render(2000) > 0.0005, "the recorded note keeps playing on later passes");
     std::cout << "PASS: overdub\n";
+}
+
+void recordingCommandBoundaryTests() {
+    ControllerRig rig;
+    auto& c = rig.controller;
+    c.setClipPattern(0, 0, twoNotes(), false);
+    c.commit("Add notes");
+    const auto submit = c.recordMidiNotes;
+    require(c.undo() && c.canRedo(), "fixture: redo exists before a no-op");
+    require(submit(0, 0, c.document().clip(0, 0).notes()).isEmpty() && c.canRedo(),
+        "unchanged recorded notes preserve redo");
+    require(c.redo(), "restore the clip");
+    const auto before = c.document();
+    const auto label = c.undoLabel();
+    require(submit(-1, 0, twoNotes()).isNotEmpty() && alien::sameContent(before, c.document())
+        && c.undoLabel() == label, "the recording adapter returns command refusal without edits");
+    c.recordMidiNotes = {};
+    require(!c.startRecording().started && !c.isRecording() && !rig.engine.recording.startRequested.load(),
+        "a missing command route refuses before starting capture");
+    c.recordMidiNotes = submit;
+    auto settings = c.document().recording;
+    settings.replace = true;
+    c.setRecordSettings(settings);
+    rig.playClip();
+    const auto historyLabel = c.undoLabel();
+    require(c.startRecording().started, "start a replace take through the command route");
+    rig.render(12000);
+    rig.tap(72, 6000);
+    c.setExternalBusy(true); // completion must obey the same command guard as editor changes
+    c.stopRecording();
+    rig.render(512);
+    c.setExternalBusy(false);
+    require(rig.outcomes.size() == 1 && rig.outcomes[0].discarded && rig.outcomes[0].notesAdded == 0
+        && rig.outcomes[0].error.contains("busy") && rig.count() == 2 && c.undoLabel() == historyLabel,
+        "failed take submission reports refusal and preserves notes and history");
+    rig.render(384000 + 100 - rig.total);
+    require(rig.render(2000) > 0.01, "failed replace submission restores original playback");
 }
 
 void replaceTests() {
@@ -1186,6 +1239,7 @@ int main() {
     monitoringTests();
     realTimeSafetyTests();
     overdubTests();
+    recordingCommandBoundaryTests();
     replaceTests();
     countInIntegrationTests();
     refusalAndGuardTests();

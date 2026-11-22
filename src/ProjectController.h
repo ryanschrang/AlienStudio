@@ -831,9 +831,12 @@ public:
         bool discarded{};                 // the clip changed underneath the take, so nothing was kept
         bool noteLimitReached{};          // the clip is full (1024 notes)
         std::uint64_t droppedEvents{};    // played notes the engine had no room to report
+        juce::String error;               // a finished take could not be committed
     };
     struct RecordStart { bool started{}; juce::String reason; };
     std::function<void(const RecordingOutcome&)> onRecordingFinished;
+    // Installed by the command adapter. A completed take is one SetClipNotes transaction.
+    std::function<juce::String(int, int, const PianoRollPattern&)> recordMidiNotes;
 
     // Message thread only. Records into the selected clip, which must be empty
     // or hold MIDI. The count-in, metronome and monitoring are done by the
@@ -841,6 +844,7 @@ public:
     RecordStart startRecording() {
         if (take.active || songTake.active) return {false, "Already recording."};
         if (busy) return {false, "Wait for the current operation to finish."};
+        if (!recordMidiNotes) return {false, "MIDI recording commands are not connected."};
         if (engine.recording.active()) return {false, "The previous take is still finishing. Try again in a moment."};
         if (engine.patternMode.load() != 1)
             return {false, "Open the Piano Roll or Session view to record."};
@@ -3040,9 +3044,13 @@ private:
         outcome.noteLimitReached = outcome.noteLimitReached || truncated;
         outcome.notesAdded = static_cast<int>(merged.count) - (take.replace ? 0 : static_cast<int>(base.count));
         const bool changes = !samePianoRollPattern(base, merged);
-        setClipPattern(track, scene, merged, true);
-        if (!changes) syncLiveClip(track, scene);
-        commit("Record MIDI", track, scene);
+        outcome.error = recordMidiNotes ? recordMidiNotes(track, scene, merged)
+                                        : juce::String("MIDI recording commands are not connected.");
+        if (outcome.error.isNotEmpty()) {
+            outcome.discarded = true;
+            outcome.notesAdded = 0;
+        }
+        if (!changes || outcome.discarded) syncLiveClip(track, scene);
         announce();
     }
 

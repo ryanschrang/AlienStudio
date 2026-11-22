@@ -2065,6 +2065,14 @@ inline Result setProjectTempo(ProjectController& controller, int bpm) {
     return result;
 }
 
+// Finished MIDI takes use the same note reducer as piano-roll edits, with their own Undo label.
+inline void routeMidiRecordingEdits(ProjectController& controller) {
+    controller.recordMidiNotes = [&controller](int track, int scene, const PianoRollPattern& notes) {
+        return CommandEngine(controller).batch(
+            {SetClipNotes{track, scene, std::make_shared<const PianoRollPattern>(notes)}}, "Record MIDI").error;
+    };
+}
+
 // Sends the controller's drum pad edits (the Drums page's load, clear, slice range and slice-to-pads actions, which
 // decode and detect off the message thread before they edit) through the command engine. Returns why not, or nothing.
 inline void routeDrumPadEdits(ProjectController& controller) {
