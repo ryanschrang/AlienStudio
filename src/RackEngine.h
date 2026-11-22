@@ -72,8 +72,11 @@ public:
     // A channel played by a plugin instrument (T1-09) makes no sound here: its hits become notes for the plugin,
     // with the same timing, gates, ratchets, choke groups, mute and solo as any other channel. The owner reads
     // them after each block (midiNotes), plays them into the plugins, and clears them. velocity 0 is a note-off.
+    // T1-04 D9: a block's list keeps room for the note-off of every plugin note playing, so a note-off is never
+    // lost: a plugin hit that would leave no room for its own note-off is not played, and is counted (droppedHits).
     struct MidiNote { int channel{}, sample{}, note{}; float velocity{}; };
     static constexpr int maxMidiNotes = 1024;
+    static_assert(voiceCount * 2 <= maxMidiNotes, "every plugin voice's note-off, and as many new notes, fit in a block");
     const MidiNote* midiNotes() const noexcept { return midiStorage->data(); }
     int midiNoteCount() const noexcept { return midiCount; }
     void clearMidiNotes() noexcept { midiCount = 0; midiSample = 0; }
@@ -102,7 +105,8 @@ public:
         return complete;
     }
     int reservedChannels() const noexcept { return reservedPending.load(std::memory_order_acquire); }
-    // Audio thread: hits a full pending queue could not keep since the player was made.
+    // Audio thread: hits the player had no room for since it was made: a full pending queue, or a plugin note
+    // that would have left a block's note list without room for a note-off (D9).
     std::uint64_t droppedHits() const noexcept { return dropped.load(std::memory_order_relaxed); }
     // Bytes the pending queue takes for each channel reserved (diagnostics).
     static constexpr std::size_t pendingBytesPerChannel() noexcept { return sizeof(PendingChunk); }
@@ -117,6 +121,7 @@ public:
         clock.reset(); wasRunning = false; lastStep = -1; controlCountdown = 0; pendingCount = 0; now = 0;
         launchRunning = false; launches = {}; instanceRandom.fill(seed);
         performSwingPending = false;
+        pluginHeld = 0;
         clearMidiNotes();
     }
     // Fades every sound out over a few milliseconds, drops hits not yet played and rewinds the clock.
@@ -205,9 +210,9 @@ public:
         if (clip == nullptr && !settings.isInstrument()) return;
         int semitones = note - stepPitchBaseNote;
         if (clip != nullptr && clip->keyZones) { clip = zoneFor(*clip, semitones); if (clip == nullptr) return; }
-        auto& voice = start(settings, channel, clip, std::clamp(velocity, 0.0f, 1.0f), 0.0f, semitones, true);
+        auto* voice = start(settings, channel, clip, std::clamp(velocity, 0.0f, 1.0f), 0.0f, semitones, true);
         // Clicking a channel name must not leave a sustaining instrument held.
-        if ((voice.synthPreset >= 0 || voice.plugin) && !held) voice.gateLeft = static_cast<std::int64_t>(sampleRate * 0.5) + 1;
+        if (voice != nullptr && (voice->synthPreset >= 0 || voice->plugin) && !held) voice->gateLeft = static_cast<std::int64_t>(sampleRate * 0.5) + 1;
     }
 
     // Renders `samples` samples and ADDS them to the per-bus output pointers.
@@ -340,7 +345,7 @@ private:
     void releaseVoice(Voice& v) noexcept {
         if (!v.active) return;
         // A plugin plays its own release: the note ends now and the voice is free.
-        if (v.plugin) { emitNote(v.channel, v.note, 0.0f); v.active = false; return; }
+        if (v.plugin) { emitNote(v.channel, v.note, 0.0f); v.active = false; --pluginHeld; return; }
         v.releasing = true;
         if (v.synthPreset >= 0) synthFor(v).noteOff(v.note);
     }
@@ -512,7 +517,9 @@ private:
         const SessionAudioClip* clip = clips[static_cast<std::size_t>(c)].load(std::memory_order_relaxed);
         if (clip == nullptr && !snap.channels[static_cast<std::size_t>(c)].isInstrument()) return;
         if (clip != nullptr && clip->keyZones) { clip = zoneFor(*clip, pitch); if (clip == nullptr) return; }
-        Voice& v = start(snap.channels[static_cast<std::size_t>(c)], c, clip, velocity, stepPan, pitch, false, instance);
+        Voice* started = start(snap.channels[static_cast<std::size_t>(c)], c, clip, velocity, stepPan, pitch, false, instance);
+        if (started == nullptr) return;
+        Voice& v = *started;
         v.gateLeft = (v.synthPreset >= 0 || v.plugin) && gate < 0 ? static_cast<std::int64_t>(stepSamples) + 1 : gate; v.pattern = pattern; v.sequence = sequence; v.instance = instance;
         v.patternClip = pattern >= 0 && pattern < maxPatterns ? snap.clips[static_cast<std::size_t>(pattern)] : 0;
     }
@@ -526,8 +533,14 @@ private:
         return nullptr;
     }
 
-    Voice& start(const Channel& channel, int index, const SessionAudioClip* clip, float velocity, float stepPan, int semitones,
+    // Null when a plugin note has no room in this block's list (see maxMidiNotes); nothing changes then.
+    Voice* start(const Channel& channel, int index, const SessionAudioClip* clip, float velocity, float stepPan, int semitones,
                  bool preview = false, int instance = -1) noexcept {
+        // Room for this note-on and its note-off, beside the note-off already owed to every plugin voice playing.
+        if (channel.plugin && midiCount + pluginHeld + 2 > maxMidiNotes) {
+            dropped.store(dropped.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+            return nullptr;
+        }
         if (channel.chokeGroup != 0)
             for (auto& v : voices) if (v.active && v.choke == channel.chokeGroup && v.instance == instance && v.preview == preview) releaseVoice(v);
         Voice* chosen = nullptr;
@@ -537,7 +550,7 @@ private:
             for (auto& v : voices) if (v.age < chosen->age) chosen = &v;
         }
         const auto c = static_cast<std::size_t>(index);
-        if (chosen->active && chosen->plugin) emitNote(chosen->channel, chosen->note, 0.0f);   // a stolen plugin note ends
+        if (chosen->active && chosen->plugin) { emitNote(chosen->channel, chosen->note, 0.0f); --pluginHeld; }   // a stolen plugin note ends
         *chosen = Voice{};
         chosen->clip = clip;
         chosen->synthPreset = channel.instrumentPreset;
@@ -546,6 +559,7 @@ private:
         if (chosen->plugin) {
             // Velocity goes to the plugin with the note; the channel's fader and pan are applied to its output.
             emitNote(index, chosen->note, std::clamp(velocity, 1.0f / 127.0f, 1.0f));
+            ++pluginHeld;
         } else if (chosen->synthPreset >= 0) {
             auto& synth = synthFor(*chosen);
             synth.prepare(sampleRate);
@@ -561,7 +575,7 @@ private:
         const float angle = (position + 1.0f) * 0.78539816339744830962f;
         chosen->gl = std::cos(angle) * velocity * gain[c];
         chosen->gr = std::sin(angle) * velocity * gain[c];
-        return *chosen;
+        return chosen;
     }
 
     static float hermite(const float* x, std::size_t frames, std::size_t i, float f) noexcept {
@@ -642,6 +656,7 @@ private:
     std::unique_ptr<std::array<SynthEngine, voiceCount>> synthStorage = std::make_unique<std::array<SynthEngine, voiceCount>>();
     std::unique_ptr<std::array<MidiNote, maxMidiNotes>> midiStorage = std::make_unique<std::array<MidiNote, maxMidiNotes>>();
     int midiCount{}, midiSample{};
+    int pluginHeld{};   // plugin voices playing: each still owes a note-off (D9)
     std::array<Voice, voiceCount>& voices = *voiceStorage;
     int pendingCount{};
     std::uint64_t pendingOrder{};

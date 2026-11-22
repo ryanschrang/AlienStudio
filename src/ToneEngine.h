@@ -912,6 +912,8 @@ private:
     // The Channel Rack's plugin instruments (T1-09): each plays this block's notes for its channel, and its output
     // joins the channel's bus (its track, or `live` for the master) with the channel's fader and pan (silent while
     // muted or soloed out), gliding across the block so a fader move never steps.
+    static_assert(alien::rack::RackPlayer::maxMidiNotes <= alien::PluginRuntime::rackNotesPerBlock,
+                  "a rack channel's instrument takes every note the rack player can give it in one block (T1-04 D9)");
     void renderRackPlugins(int samples) noexcept {
         const auto* notes = rackPlayer.midiNotes();
         const int noteCount = rackPlayer.midiNoteCount();
