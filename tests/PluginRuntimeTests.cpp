@@ -156,4 +156,28 @@ int main(){
     require(host.restore(states,project.masterPlugins,48000).isNotEmpty(),"missing plugin did not report an error");host.snapshot(states,project.masterPlugins);
     require(states==saved && hostRuntime->hasInstrument(0),"missing plugin state lost or replaced by built-in synth");
     std::cout<<"PASS: MIDI offsets, FX/master, transport stop, PDC, bypass, allocation, state and missing plugins\n";
+    // T1-04 D11: a track instrument is given at most trackEventsPerBlock MIDI events a block. The rest (notes,
+    // controllers and pitch bend alike) are counted, the next block ends every note, and nothing reallocates.
+    {
+        using R=alien::PluginRuntime;
+        auto flood=std::make_unique<R>();
+        auto& track=flood->racks[0];track.instrumentAssigned=true;
+        auto synth=std::make_unique<TestProcessor>(true);auto* heard=synth.get();track.instrument.processor=std::move(synth);
+        flood->prepare(48000);
+        flood->begin(512,120,true,0);flood->instruments(512);   // the panic every prepare sends
+        const auto before=allocations;
+        flood->begin(512,120,true,0);
+        for(int i=0;i<R::trackEventsPerBlock;++i)flood->note(0,60,1.0f,true);
+        require(flood->droppedTrackEvents()==0 && flood->midi[0].getNumEvents()==R::trackEventsPerBlock,"a full block of track MIDI is kept");
+        flood->note(0,60,0.0f,false);flood->controller(0,1,64,0);flood->pitchWheel(0,1,8192);
+        require(flood->droppedTrackEvents()==3 && flood->midi[0].getNumEvents()==R::trackEventsPerBlock,"events past the limit are counted, not kept");
+        flood->instruments(512);
+        require(heard->active,"the note plays, though its note-off was dropped");
+        flood->begin(512,120,true,0);flood->instruments(512);
+        require(!heard->active,"the next block ends it");
+        flood->begin(512,120,true,0);flood->note(0,62,1.0f,true);
+        require(flood->droppedTrackEvents()==3 && flood->midi[0].getNumEvents()==1,"each block starts with room again");
+        require(allocations==before,"a flood of track MIDI does not allocate");
+    }
+    std::cout<<"PASS: track instrument MIDI is bounded per block, counted when dropped and never left held\n";
 }
