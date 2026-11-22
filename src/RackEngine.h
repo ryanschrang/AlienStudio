@@ -54,7 +54,7 @@ public:
     static constexpr int voiceCount = 64;
     static constexpr std::uint64_t noLaunchRequest = std::numeric_limits<std::uint64_t>::max();
     // One transport slot for the Rack menu, one per Session track, and four Song lanes.
-    // Voices (64) and pending hits remain a single, fixed-capacity shared pool.
+    // Voices (64) and pending hits remain a single shared pool (pending room is reserved per channel).
     static constexpr int launchSlots = maxSessionTracks + 1;
     static constexpr int timelineSlots = 4;
     using LaunchSources = std::array<std::uint64_t, launchSlots>;
@@ -62,7 +62,10 @@ public:
     struct LaunchTick { int sample{}; std::int64_t grid{}; };
     // Hits waiting for their nudge or ratchet time: at most every channel's ratchets of two
     // overlapping steps (a step nudged a whole step late meets the next one's hits).
-    static constexpr int maxPending = maxChannels * (maxRatchet * 2 + static_cast<int>(PianoRollPattern::maxNotes));
+    // T1-04 D8: the queue is reserved a channel at a time (reserveChannels), so it holds
+    // pendingPerChannel hits for each channel reserved, up to maxPending.
+    static constexpr int pendingPerChannel = maxRatchet * 2 + static_cast<int>(PianoRollPattern::maxNotes);
+    static constexpr int maxPending = maxChannels * pendingPerChannel;
     static constexpr int masterBus = maxSessionTracks;  // buses 0..maxSessionTracks-1 are Session tracks
     static constexpr int busCount = maxSessionTracks + 1;
     using SampleTable = std::array<std::atomic<const SessionAudioClip*>, maxChannels>;
@@ -77,6 +80,32 @@ public:
     // A plugin channel's fader and pan as they glide (the same values the rack's own voices follow).
     float channelGain(int channel) const noexcept { return channel >= 0 && channel < maxChannels ? gain[static_cast<std::size_t>(channel)] : 0.0f; }
     float channelPan(int channel) const noexcept { return channel >= 0 && channel < maxChannels ? pan[static_cast<std::size_t>(channel)] : 0.0f; }
+
+    // `channels`: how many channels' worth of the pending-hit queue to reserve now (T1-04 D8).
+    explicit RackPlayer(int channels = maxChannels) { reserveChannels(channels); adoptPending(); }
+    RackPlayer(const RackPlayer&) = delete;
+    RackPlayer& operator=(const RackPlayer&) = delete;
+    ~RackPlayer() { for (auto& chunk : pendingChunks) delete chunk.load(std::memory_order_relaxed); }
+
+    // Control thread (one at a time): makes the pending-hit queue room for the first `channels`
+    // channels, before a snapshot with that many channels is published. Keeps what it has made and
+    // never frees it while the player lives. False if memory ran out; the queue then has room for
+    // reservedChannels() channels, and the callback counts any hit it has no room for (droppedHits).
+    bool reserveChannels(int channels) noexcept {
+        const int want = std::clamp(channels, 0, maxChannels);
+        int made = reservedPending.load(std::memory_order_relaxed);
+        bool complete = true;
+        try {
+            for (; made < want; ++made) pendingChunks[static_cast<std::size_t>(made)].store(new PendingChunk{}, std::memory_order_relaxed);
+        } catch (const std::exception&) { complete = false; }
+        if (made > reservedPending.load(std::memory_order_relaxed)) reservedPending.store(made, std::memory_order_release);
+        return complete;
+    }
+    int reservedChannels() const noexcept { return reservedPending.load(std::memory_order_acquire); }
+    // Audio thread: hits a full pending queue could not keep since the player was made.
+    std::uint64_t droppedHits() const noexcept { return dropped.load(std::memory_order_relaxed); }
+    // Bytes the pending queue takes for each channel reserved (diagnostics).
+    static constexpr std::size_t pendingBytesPerChannel() noexcept { return sizeof(PendingChunk); }
 
     void prepare(double rate) noexcept {
         sampleRate = std::isfinite(rate) && rate > 0.0 ? rate : 44100.0;
@@ -214,10 +243,11 @@ public:
         });
     }
 
-    // Diagnostics only: fixed heap pools allocated at construction, excluding
-    // the shallow RackPlayer object and externally owned content/samples.
+    // Diagnostics only: fixed heap pools allocated at construction, excluding the shallow
+    // RackPlayer object, the pending queue (pendingBytesPerChannel per reserved channel) and
+    // externally owned content/samples.
     static constexpr std::size_t fixedStorageBytes() noexcept {
-        return sizeof(std::array<Voice, voiceCount>) + sizeof(std::array<Pending, maxPending>)
+        return sizeof(std::array<Voice, voiceCount>)
             + sizeof(std::array<SynthEngine, voiceCount>) + sizeof(std::array<MidiNote, maxMidiNotes>);
     }
 
@@ -245,10 +275,10 @@ private:
         for (auto& v : voices) if (!v.preview && v.instance == instance) releaseVoice(v);
         int kept = 0;
         for (int i = 0; i < pendingCount; ++i)
-            if (pending[static_cast<std::size_t>(i)].instance != instance) pending[static_cast<std::size_t>(kept++)] = pending[static_cast<std::size_t>(i)];
+            if (pendingAt(i).instance != instance) pendingAt(kept++) = pendingAt(i);
         pendingCount = kept;
-        std::make_heap(pending.begin(), pending.begin() + pendingCount, later);
-        nextDue = pendingCount > 0 ? pending[0].due : std::numeric_limits<std::int64_t>::max();
+        for (int i = pendingCount / 2 - 1; i >= 0; --i) siftDown(i);
+        nextDue = pendingCount > 0 ? pendingAt(0).due : std::numeric_limits<std::int64_t>::max();
     }
     // Shared block loop. `onSample(i)` runs before sample i while `running` and
     // starts whatever is due then.
@@ -256,6 +286,7 @@ private:
     void render(const Snapshot& snap, const SampleTable& clips, bool running, int activeTracks, int samples,
                 float* const* left, float* const* right, OnSample&& onSample) noexcept {
         tracksInUse = std::clamp(activeTracks, 1, maxSessionTracks);
+        adoptPending();
         if (running && !wasRunning) { clock.reset(); random = seed; instanceRandom.fill(seed); lastStep = -1; pendingCount = 0; }
         if (!running && wasRunning) { releaseAll(); lastStep = -1; pendingCount = 0; }
         wasRunning = running;
@@ -425,18 +456,20 @@ private:
         }
     }
 
-    // A fixed-capacity min heap bounds both memory and scheduling work. No allocation.
+    // A min heap over the reserved chunks bounds both memory and scheduling work. No allocation.
+    // `order` is unique, so the heap order is total and hits come out exactly as they went in.
     void schedule(const Pending& hit) noexcept {
-        if (pendingCount >= maxPending) return;
-        auto& entry = pending[static_cast<std::size_t>(pendingCount++)];
+        if (pendingCount >= pendingCapacity) { dropped.store(dropped.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed); return; }
+        auto& entry = pendingAt(pendingCount);
         entry = hit; entry.order = ++pendingOrder;
-        std::push_heap(pending.begin(), pending.begin() + pendingCount, later);
-        nextDue = pending[0].due;
+        siftUp(pendingCount++);
+        nextDue = pendingAt(0).due;
     }
     void firePending(const Snapshot& snap, const SampleTable& clips) noexcept {
-        while (pendingCount > 0 && pending[0].due <= now) {
-            std::pop_heap(pending.begin(), pending.begin() + pendingCount, later);
-            const auto due = pending[static_cast<std::size_t>(--pendingCount)];
+        while (pendingCount > 0 && pendingAt(0).due <= now) {
+            const auto due = pendingAt(0);
+            pendingAt(0) = pendingAt(--pendingCount);
+            siftDown(0);
             bool current = due.patternClip == 0 || snap.indexOfClip(due.patternClip) >= 0;
             if (due.sequence != 0) {
                 const auto* p = snap.pattern(due.patternClip != 0 ? snap.indexOfClip(due.patternClip) : due.pattern);
@@ -446,7 +479,34 @@ private:
                 play(snap, clips, due.channel, due.velocity, due.pan, due.pitch, due.gate,
                      due.patternClip != 0 ? snap.indexOfClip(due.patternClip) : due.pattern, due.sequence, due.instance);
         }
-        nextDue = pendingCount > 0 ? pending[0].due : std::numeric_limits<std::int64_t>::max();
+        nextDue = pendingCount > 0 ? pendingAt(0).due : std::numeric_limits<std::int64_t>::max();
+    }
+    using PendingChunk = std::array<Pending, pendingPerChannel>;
+    Pending& pendingAt(int i) noexcept {
+        return (*adoptedChunks[static_cast<std::size_t>(i / pendingPerChannel)])[static_cast<std::size_t>(i % pendingPerChannel)];
+    }
+    void siftUp(int i) noexcept {
+        while (i > 0) {
+            const int parent = (i - 1) / 2;
+            if (!later(pendingAt(parent), pendingAt(i))) break;
+            std::swap(pendingAt(parent), pendingAt(i)); i = parent;
+        }
+    }
+    void siftDown(int i) noexcept {
+        for (;;) {
+            int child = 2 * i + 1;
+            if (child >= pendingCount) break;
+            if (child + 1 < pendingCount && later(pendingAt(child), pendingAt(child + 1))) ++child;
+            if (!later(pendingAt(i), pendingAt(child))) break;
+            std::swap(pendingAt(i), pendingAt(child)); i = child;
+        }
+    }
+    // Audio thread: takes the chunks reserved since the last block. No allocation.
+    void adoptPending() noexcept {
+        const int reserved = reservedPending.load(std::memory_order_acquire);
+        for (; adoptedCount < reserved; ++adoptedCount)
+            adoptedChunks[static_cast<std::size_t>(adoptedCount)] = pendingChunks[static_cast<std::size_t>(adoptedCount)].load(std::memory_order_relaxed);
+        pendingCapacity = adoptedCount * pendingPerChannel;
     }
     void play(const Snapshot& snap, const SampleTable& clips, int c, float velocity, float stepPan, int pitch, std::int64_t gate, int pattern = -1, std::uint64_t sequence = 0, int instance = -1) noexcept {
         const SessionAudioClip* clip = clips[static_cast<std::size_t>(c)].load(std::memory_order_relaxed);
@@ -567,17 +627,22 @@ private:
     }
 
     RackClock clock;
-    // The voice pool and fixed-capacity hit queue live on the heap, allocated once here, so the
-    // engine that holds this player stays small enough for the tests that keep one on the stack.
+    // The voice pool lives on the heap, allocated once here, so the engine that holds this player
+    // stays small enough for the tests that keep one on the stack.
     std::unique_ptr<std::array<Voice, voiceCount>> voiceStorage = std::make_unique<std::array<Voice, voiceCount>>();
-    std::unique_ptr<std::array<Pending, maxPending>> pendingStorage = std::make_unique<std::array<Pending, maxPending>>();
+    // The pending-hit queue, a chunk per reserved channel (control thread makes them, never frees
+    // them while the player lives); the audio thread reads the chunks it has adopted.
+    std::array<std::atomic<PendingChunk*>, maxChannels> pendingChunks{};
+    std::atomic<int> reservedPending{};
+    std::array<PendingChunk*, maxChannels> adoptedChunks{};
+    int adoptedCount{}, pendingCapacity{};
+    std::atomic<std::uint64_t> dropped{};
     // Independent one-note engines keep same-pitch overlaps and releases separate.
     // The shared rack voice pool still limits the total to 64 voices, not 64x16.
     std::unique_ptr<std::array<SynthEngine, voiceCount>> synthStorage = std::make_unique<std::array<SynthEngine, voiceCount>>();
     std::unique_ptr<std::array<MidiNote, maxMidiNotes>> midiStorage = std::make_unique<std::array<MidiNote, maxMidiNotes>>();
     int midiCount{}, midiSample{};
     std::array<Voice, voiceCount>& voices = *voiceStorage;
-    std::array<Pending, maxPending>& pending = *pendingStorage;
     int pendingCount{};
     std::uint64_t pendingOrder{};
     std::int64_t now{}, nextDue{};   // samples rendered so far, and when the soonest pending hit is due

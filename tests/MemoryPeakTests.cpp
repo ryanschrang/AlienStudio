@@ -395,12 +395,80 @@ static void resourceRefusalTests() {
     root.deleteRecursively();
 }
 
+// T1-04 D8: the Channel Rack's pending-hit queue is reserved a channel at a time, before a snapshot with
+// those channels is published, and an open whose channels cannot have it is refused.
+static void rackQueueTests() {
+    const auto chunk = alien::rack::RackPlayer::pendingBytesPerChannel();
+    const int defaultChannels = alien::rack::Project::createDefault().channelCount;
+    std::array<float, 512> left{}, right{};
+    float* outputs[]{left.data(), right.data()};
+    {
+        const auto before = liveBytes.load();
+        auto engine = std::make_unique<ToneEngine>();
+        const auto made = liveBytes.load() - before;
+        require(engine->preparedRackChannels() == defaultChannels, "a new engine reserves the default rack's channels");
+        std::cout << "Engine heap after construction: " << std::fixed << std::setprecision(1)
+                  << static_cast<double>(made) / (1024.0 * 1024.0) << " MiB (rack hit queue "
+                  << static_cast<double>(chunk * static_cast<std::size_t>(defaultChannels)) / (1024.0 * 1024.0) << " MiB of it)\n";
+        require(made < 8 * 1024 * 1024, "the engine no longer holds every rack channel's hit queue");
+        engine->prepare(48000);
+        auto rack = alien::rack::Project::createDefault();
+        while (rack.channelCount < 12) rack.addChannel("x", "");
+        engine->rackMailbox.publish(rack.snapshot());
+        require(engine->preparedRackChannels() == 12, "publishing a larger rack reserves its channels first");
+        const auto settled = liveBytes.load();
+        engine->audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
+        require(liveBytes.load() == settled, "the callback adopts the new room without allocating");
+    }
+    const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("alien-rack-refusal", "");
+    require(root.createDirectory().wasOk(), "scratch folder");
+    const auto big = root.getChildFile("BigRack.alienstudio");
+    {
+        auto engine = std::make_unique<ToneEngine>(); engine->prepare(48000);
+        auto c = std::make_unique<alien::ProjectController>(*engine);
+        while (c->document().channelRack.channelCount < 10)
+            require(c->editRack("Add", [](alien::rack::Project& p) { return p.addChannel("x", ""); }), "add a rack channel");
+        require(writeProject(*c, big), "save a ten-channel project");
+    }
+    auto engine = std::make_unique<ToneEngine>(); engine->prepare(48000);
+    auto c = std::make_unique<alien::ProjectController>(*engine);
+    juce::String said, why;
+    c->onProjectStatus = [&](const juce::String& text, const juce::String& tip) { said = text; why = tip; };
+    const auto before = c->document().tracks.front().id;
+
+    failSize.store(chunk);
+    c->openProject(big); waitIdle(*c);
+    failSize.store(0);
+    require(said.startsWith("Open failed: not enough memory for 10 Channel Rack channels") && why.contains("could prepare " + juce::String(defaultChannels)),
+            "an open whose rack channels cannot be prepared says why");
+    require(c->document().channelRack.channelCount == defaultChannels && c->document().tracks.front().id == before,
+            "and leaves the open project as it was");
+
+    c->openProject(big); waitIdle(*c); settle(*engine, *c);
+    require(c->document().channelRack.channelCount == 10 && engine->preparedRackChannels() == 10, "with memory available, the same open succeeds");
+
+    said.clear();
+    failSize.store(chunk);
+    const bool added = c->editRack("Add", [](alien::rack::Project& p) { return p.addChannel("x", ""); });
+    failSize.store(0);
+    require(added && c->document().channelRack.channelCount == 11 && engine->preparedRackChannels() == 10
+                && said.startsWith("Not enough memory for 11 Channel Rack channels"),
+            "a rack edit whose channel cannot be reserved still happens, and says so");
+    engine->audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
+    require(c->editRack("Add", [](alien::rack::Project& p) { return p.addChannel("x", ""); }) && engine->preparedRackChannels() == 12,
+            "the next edit reserves what was missing");
+    c->onProjectStatus = nullptr;
+    c.reset(); engine.reset();
+    root.deleteRecursively();
+}
+
 int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI juce;
     const bool report = argc == 2 && std::string_view(argv[1]) == "--report";
     trackerTests();
     replacedAudioSafetyTests();
     resourceRefusalTests();
+    rackQueueTests();
     projectPeakTests(report);
     std::cout << "PASS: peak heap tracking and memory returned after save, open, undo/redo and export\n";
     return 0;

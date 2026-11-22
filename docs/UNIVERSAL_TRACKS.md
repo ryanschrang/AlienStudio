@@ -10,7 +10,8 @@ voices for the track slots a project uses and sample-preview audio when somethin
 D3 reserves each slot's note mailboxes and scheduler with it; D4 measures peak memory during
 save, open, undo/redo and export; D5 frees the audio of a replaced project once the engine lets go of it; D6 frees old Song and Channel
 Rack snapshots one audio block after the engine leaves them; D7 refuses an open or added track whose
-engine slots cannot be prepared, with a reason, and changes nothing.
+engine slots cannot be prepared, with a reason, and changes nothing; D8 reserves the Channel Rack's
+pending-hit queue for the rack channels a project has, instead of all 64.
 Higher supported limits (E) are pending.
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
@@ -792,3 +793,65 @@ Not tested: the export refusal (its render engine prepares four slots when it is
 failure injection stops it earlier, in construction); running out of memory anywhere other than a
 track slot, such as decoding audio or building the loaded document, which the loader already reports
 as a failed open; plugins.
+
+## Increment D8: the Channel Rack's hit queue reserved per channel
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+Measuring what a new engine (10.9 MiB) still held after D7: the
+per-slot mixer, synth, sampler and send objects that D3 listed as "still scaling with the compiled
+maximum" are small (about 7 KiB a slot). The largest single object was the Channel Rack player's
+pending-hit queue, the nudged, ratcheted and between-step hits waiting for their sample: room for
+every one of the 64 rack channels' worst case (1,032 hits each, 72 bytes a hit), 4.5 MiB in every
+engine, including each export's render engine, whatever the project used. When it was full, a hit
+was silently dropped.
+
+What D8 changes:
+
+- **The queue is reserved a channel at a time.** `RackPlayer` keeps it as one 72.6 KiB chunk per
+  reserved channel. `reserveChannels(n)` (control thread) makes the chunks below `n` and then
+  publishes the count; it keeps what it made if memory runs out and never frees a chunk while the
+  player lives. The callback adopts newly reserved chunks at the start of a block, without
+  allocating, and the heap now indexes across chunks (same ordering: earliest first, ties in the
+  order they were queued). A player made without a count reserves all 64, as before.
+- **Reserved before a snapshot is published.** The engine's rack mailbox reserves the snapshot's
+  channels before publishing it, so every caller (the controller, export, tests) gets room first.
+  A new engine reserves the default rack's four channels.
+- **An open is refused** if its rack channels cannot be reserved, like D7's track slots: "Open
+  failed: not enough memory for N Channel Rack channels", with how many could be prepared; nothing
+  changes. **An export** reports it instead of rendering. A **rack edit** that adds a channel has
+  already happened when the snapshot is published, so it is not undone; the status bar says
+  hits on channels past the reserved ones may not play.
+- **Dropped hits are counted.** A hit the queue has no room for increments `droppedHits()`
+  (`ToneEngine::droppedRackHits()`) rather than vanishing. With the queue reserved for every
+  channel the bound is the same as before, so this only happens after a failed reservation. The
+  count is not shown in the UI yet.
+
+Tests:
+- `RackEngineTests`: two plugin channels with 700 notes each inside one step queue 1,400 hits at
+  once, past one channel's room, and every note-on comes out on its exact sample in order (checked to
+  fail with a broken heap); with one channel reserved, 1,032 play and the other 368 are counted; after
+  reserving a second channel all 1,400 play; the full-rack ratchet stress test drops nothing.
+- `MemoryPeakTests`: a new engine reserves the default four channels and holds under 8 MiB;
+  publishing a 12-channel rack reserves 12 and the next callback allocates nothing; an open of a
+  10-channel project whose queue cannot be reserved is refused with the reason and leaves the open
+  project as it was, then succeeds; a rack edit whose channel cannot be reserved still happens, says
+  so, and the next edit reserves what was missing.
+
+### Measurements
+
+2026-11-22, Release, 16/32, offline:
+
+| Engine heap (C++ `new`) | D7 | D8 |
+| --- | ---: | ---: |
+| After construction and `prepare(48 kHz)` (four tracks, four rack channels) | 10.9 MiB | 6.2 MiB |
+| With every track slot reserved (`setActiveTracks(16)`) | 23.5 MiB (D3) | 19.2 MiB |
+
+`MemoryPeakTests --report`: live memory with one engine, controller and the full project 59.3 ->
+55.1 MiB; the export's peak above its starting point 23.6 -> 19.3 MiB (its render engine is smaller
+by the same amount); open and reopen peaks 86.8 -> 82.5 MiB, and reopening still keeps nothing. A
+project with all 64 rack channels holds the same queue as before. Callback p95 stayed in the same
+range as D3 (16 Session rack occurrences 13.3 % at 64 frames), with zero callback allocations.
+
+Not tested: the export refusal message, a real low-memory condition, the running app, and the 32/64 build locally (CI builds
+it). The dropped-hit count is not surfaced in the UI.

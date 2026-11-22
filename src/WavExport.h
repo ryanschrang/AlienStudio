@@ -189,6 +189,10 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         error = "Not enough memory to prepare " + juce::String(project.trackCount()) + " tracks for the export.";
         return false;
     }
+    if (!engine->prepareRackChannels(project.channelRack.channelCount)) {
+        error = "Not enough memory to prepare the Channel Rack's " + juce::String(project.channelRack.channelCount) + " channels for the export.";
+        return false;
+    }
     engine->bpm.store(project.bpm);
     engine->patternMode.store(2);
     for (std::size_t t=0;t<static_cast<std::size_t>(project.trackCount());++t) {
