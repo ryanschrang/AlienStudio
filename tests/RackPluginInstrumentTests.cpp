@@ -493,8 +493,38 @@ static void controller() {
     std::puts("PASS: choosing, duplicating, saving and undoing rack instruments");
 }
 
+// T1-04 D9: a block with more plugin notes than its list holds reaches the instrument with every note-off: the
+// rack player keeps room for them, and the channel's MIDI storage takes the whole list without allocating.
+static void denseNotes() {
+    Rig rig;
+    auto& instrument = rig.load("synth");
+    PianoRollPattern notes; notes.loopSteps = 16;
+    for (int n = 0; n < 1000; ++n) notes.add(n % 128, 0.0, 1.0 / PianoRollPattern::ticksPerStep, 1.0f);
+    require(rig.project.setChannelNotes(0, 0, notes), "1,000 notes on one tick");
+    rig.engine.rackMailbox.publish(rig.project.snapshot());
+    rig.engine.patternMode.store(3);
+    rig.render(2);
+    rig.engine.playing.store(true);
+    const auto before = allocations;
+    rig.render(6);
+    require(allocations == before, "a full block of plugin notes does not allocate");
+    std::array<int, 128> sounding{};
+    int ons = 0, offs = 0;
+    for (const auto& e : instrument.events) {
+        auto& s = sounding[static_cast<std::size_t>(e.note)];
+        if (e.velocity > 0.0f) { ++ons; ++s; } else { ++offs; s = std::max(0, s - 1); }
+    }
+    require(ons == RackPlayer::maxMidiNotes / 2 && ons == offs && rig.engine.droppedRackHits() == 1000u - static_cast<unsigned>(ons),
+            "the instrument gets every note played, each with its note-off, and the rest are counted");
+    require(std::all_of(sounding.begin(), sounding.end(), [](int s) { return s == 0; }) && instrument.held == 0, "no note is left held");
+    rig.engine.playing.store(false);
+    rig.render(2);
+    std::puts("PASS: a dense block of rack plugin notes loses no note-off");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    denseNotes();
     model();
     player();
     engine();

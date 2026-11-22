@@ -934,7 +934,49 @@ static void pendingQueueTests() {
     }
 }
 
+// T1-04 D9: a block's plugin-note list never loses a note-off. A thousand plugin notes on one tick need a
+// note-on each and, past the 64 voices, a note-off for each stolen voice: more than the list holds. Hits that
+// would leave no room for a note-off are not played and are counted; every note that starts ends.
+static void pluginNoteRoomTests() {
+    constexpr int hits = 1000;
+    Rig rig;
+    PianoRollPattern notes; notes.loopSteps = 16;
+    for (int n = 0; n < hits; ++n) notes.add(n % 128, 0.0, 1.0 / PianoRollPattern::ticksPerStep, 1.0f);
+    check(rig.project.setPlugin(0, "test instrument", 1) && rig.project.setChannelNotes(0, 0, notes), "a plugin channel with 1,000 notes on one tick");
+    rig.publish();
+    std::array<std::vector<float>, RackPlayer::busCount> bl, br;
+    std::array<float*, RackPlayer::busCount> pl{}, pr{};
+    for (std::size_t b = 0; b < bl.size(); ++b) { bl[b].assign(512, 0.0f); br[b].assign(512, 0.0f); pl[b] = bl[b].data(); pr[b] = br[b].data(); }
+    std::array<int, 128> sounding{};   // per pitch, as an instrument would count it: a note-off for a silent pitch does nothing
+    int ons = 0, offs = 0, most = 0;
+    const auto block = [&](bool running) {
+        rig.player.process(*rig.snap, rig.clips, running, 120.0, 4, 512, pl.data(), pr.data());
+        most = std::max(most, rig.player.midiNoteCount());
+        for (int i = 0; i < rig.player.midiNoteCount(); ++i) {
+            const auto& e = rig.player.midiNotes()[i];
+            auto& s = sounding[static_cast<std::size_t>(e.note)];
+            if (e.velocity > 0.0f) { ++ons; ++s; } else { ++offs; s = std::max(0, s - 1); }
+        }
+        rig.player.clearMidiNotes();
+    };
+    block(true);
+    constexpr int played = RackPlayer::maxMidiNotes / 2;   // each played hit takes a note-on and keeps room for a note-off
+    check(ons == played && rig.player.droppedHits() == static_cast<std::uint64_t>(hits - played) && most <= RackPlayer::maxMidiNotes,
+          "the block plays " + std::to_string(ons) + " notes and counts " + std::to_string(rig.player.droppedHits()) + " it had no room for");
+    for (int b = 0; b < 4; ++b) block(true);   // past the one-tick gates
+    check(ons == offs && std::all_of(sounding.begin(), sounding.end(), [](int s) { return s == 0; }) && rig.player.activeVoices() == 0,
+          "every note that started has ended (" + std::to_string(ons) + " on, " + std::to_string(offs) + " off)");
+    // Stopping while the voices play: every one's note-off fits, even in a block whose list is nearly full.
+    rig.player.stop(); rig.player.prepare(48000.0); ons = offs = 0; sounding = {};
+    block(true);
+    rig.player.stop();
+    block(false);
+    check(ons == offs && ons == played && std::all_of(sounding.begin(), sounding.end(), [](int s) { return s == 0; }),
+          "stopping ends every plugin note that was playing");
+}
+
 int main() {
+    pluginNoteRoomTests();
     pendingQueueTests();
     synthChannels();
     clockTests();
