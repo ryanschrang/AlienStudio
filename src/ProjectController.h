@@ -48,6 +48,14 @@
 // results come back on the message thread. Message thread only.
 namespace alien {
 
+// T1-04 D10: what the status bar and an export say about Channel Rack hits that could not be played (D8, D9).
+inline juce::String rackDropText(std::uint64_t hits) {
+    return juce::String(static_cast<juce::int64>(hits)) + (hits == 1 ? " Channel Rack hit was" : " Channel Rack hits were") + " not played";
+}
+inline const char* const rackDropTip =
+    "The Channel Rack had no room for them: too many notes, ratchets or nudged hits at the same moment for its "
+    "plugin instruments, or not enough memory for every channel. Thin out the densest steps or chords and play again.";
+
 class ProjectController {
 public:
     static constexpr std::size_t maxSessionAudioBytes = 512u * 1024u * 1024u;
@@ -2530,6 +2538,17 @@ private:
         engine.audioReleaseRequest.store(replacedFence, std::memory_order_release);
     }
 public:
+    // Message thread (the app's timer calls it): says in the status bar how many Channel Rack hits the engine
+    // has not been able to play since the last report (T1-04 D10), at most once a second so a long run of them
+    // does not flood it. Returns whether it reported.
+    bool reportDroppedRackHits(std::uint32_t nowMs = juce::Time::getMillisecondCounter()) {
+        const auto count = engine.droppedRackHits();
+        if (count <= reportedRackDrops) return false;
+        if (rackDropReported && nowMs - rackDropReportedAt < 1000) return false;
+        status(rackDropText(count - reportedRackDrops), rackDropTip);
+        reportedRackDrops = count; rackDropReportedAt = nowMs; rackDropReported = true;
+        return true;
+    }
     // Message thread (the app's timer calls it). Frees the audio of replaced projects once the engine has
     // answered the request made after the last of them; until then (or with no device running) it waits.
     // Returns the bytes freed.
@@ -3225,6 +3244,9 @@ private:
     std::optional<SessionClip> copiedContent;      // and its content, for Paste (kept if the cell changes)
 
     ToneEngine& engine;
+    std::uint64_t reportedRackDrops{engine.droppedRackHits()};   // D10: hits already reported
+    std::uint32_t rackDropReportedAt{};
+    bool rackDropReported{};
     ProjectDocument doc;
     juce::File projectFile;
     bool busy{};
