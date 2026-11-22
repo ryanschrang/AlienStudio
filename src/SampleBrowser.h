@@ -3,6 +3,7 @@
 #include "AudioClipImport.h"
 #include "StarterPack.h"
 #include "SamplePreviewRender.h"
+#include "SamplePreviewTempo.h"
 #include "SampleTempoDetect.h"
 #include "SampleKeyDetect.h"
 #include "SampleDrag.h"
@@ -20,7 +21,8 @@ public:
         dragDestination.setName("Sample drag destination"); dragDestination.addItem("Drag into Session", 1); dragDestination.addItem("Drag into Song", 2); dragDestination.setSelectedId(1);
         dragDestination.setTooltip("Dragging a sample reveals this editor. Drop it onto an empty Session cell or a free Song lane position.");
         list.setTooltip("Drag a sample to import it. Choose Session or Song above; the editor opens when dragging starts. Drag a MIDI clip into the piano roll, or a drum groove onto the Channel Rack.");
-        matchTempo.setButtonText("Match project tempo"); matchTempo.setName("Match sample preview tempo");
+        matchTempo.setButtonText("Match tempo"); matchTempo.setName("Match sample preview tempo");
+        matchTempo.setTooltip("Match the project tempo, or the tempo at the Song playhead (cursor while stopped). A tempo change stops preview; press Preview again to match it. Preview is not beat-aligned.");
         matchTempo.onClick = [this] { stop(); updateButtons(); };
         sourceTempo.setName("Sample source BPM"); sourceTempo.setRange(30, 300, .1); sourceTempo.setValue(120);
         sourceTempo.setSliderStyle(juce::Slider::IncDecButtons); sourceTempo.setTextBoxStyle(juce::Slider::TextBoxLeft, false, 65, 24);
@@ -68,11 +70,19 @@ public:
     std::function<void(const SessionAudioClip&)> onPreview;
     std::function<void()> onStop;
     std::function<void(const juce::File&, bool)> onImport;
+    // Refresh at the click/Enter event as well as on the owner's regular UI tick.
+    std::function<sample_preview::TempoTarget()> tempoForPreview;
     void setProjectTempo(double bpm) {
-        if (bpm == projectTempo) return;
-        projectTempo = bpm;
-        tempoLabel.setText("Source BPM   |   Project: " + juce::String(bpm, 1) + " BPM", juce::dontSendNotification);
-        if (matchTempo.getToggleState()) { stop(); setStatus("Project tempo changed. Press Preview to hear the new tempo."); }
+        setTransportTempo({bpm, false});
+    }
+    void setTransportTempo(sample_preview::TempoTarget target) {
+        const bool tempoChanged = target.bpm != projectTempo;
+        if (!tempoChanged && target.song == songTempo) return;
+        projectTempo = target.bpm;
+        songTempo = target.song;
+        const juce::String context = songTempo ? "Song" : "Project";
+        tempoLabel.setText("Source BPM   |   " + context + ": " + juce::String(projectTempo, 1) + " BPM", juce::dontSendNotification);
+        if (tempoChanged && matchTempo.getToggleState()) { stop(); setStatus(context + " tempo changed. Press Preview to hear the new tempo."); }
         updateButtons();
     }
     void setProjectScale(const ProjectMusicalScale& scale) {
@@ -206,6 +216,7 @@ private:
             });
     }
     void audition() {
+        if (tempoForPreview) setTransportTempo(tempoForPreview());
         const auto file = selectedFile(); stop(); if (file == juce::File{}) return;
         if (mididrag::supported(file)) { setStatus(midiHint); return; }
         if (const auto problem = previewProblem(); problem.isNotEmpty()) { setStatus(problem); return; }
@@ -262,6 +273,7 @@ private:
     int keyShift() const { return matchKey.getToggleState() ? previewKeyShift(sourceKey.getSelectedId() - 1, targetPitchClass()) : 0; }
     std::optional<int> projectRoot;
     double projectTempo{120};
+    bool songTempo{};
     juce::ComboBox dragDestination;
     static constexpr const char* midiHint = "MIDI clip: drag it into the piano roll to add its notes at the drop point, or a drum groove onto the Channel Rack.";
     juce::TextEditor search; juce::ListBox list; juce::Label status, empty;

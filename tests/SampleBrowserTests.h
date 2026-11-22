@@ -3,6 +3,20 @@
 #include "AudioFileWrite.h"
 
 static void sampleBrowserChecks() {
+    alien::timeline::Timeline tempoSong;
+    tempoSong.tempo = 80; // The live project BPM, not this cached base, is authoritative.
+    require(tempoSong.setTempoChange(960, 180) && tempoSong.setTempoChange(1920, 90), "preview tempo-map fixture");
+    const auto target = [&](bool song, bool playing, std::int64_t position, std::int64_t cursor) {
+        return alien::sample_preview::tempoTarget(tempoSong, 120, song, playing, position, cursor);
+    };
+    require(!target(false, true, 960, 1920).song && target(false, true, 960, 1920).bpm == 120,
+        "Session, Steps and Rack previews keep the project BPM");
+    require(target(true, true, 959, 1920).bpm == 120 && target(true, true, 960, 0).bpm == 180
+        && target(true, true, 1920, 0).bpm == 90, "Song preview tempo changes at the exact map boundaries");
+    require(target(true, false, 1920, 960).bpm == 180 && target(true, true, -1, 1920).bpm == 90,
+        "stopped Song and an unpublished playhead use the insertion cursor");
+    require(target(true, true, 0, 1920).bpm == 120 && target(true, false, 1920, -1).bpm == 120,
+        "loop wraps and negative cursor fallback return to the base tempo");
     const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("AlienSampleBrowser", "", false);
     require(root.createDirectory().wasOk(), "sample browser fixture directory");
     alien::SessionAudioClip clip; clip.sampleRate = 8000; clip.channels = 1; clip.frames = 8000 * 6; clip.left.assign(clip.frames, .2f); clip.buildWaveform();
@@ -259,6 +273,54 @@ static void sampleBrowserChecks() {
         list->selectRow(1); detect->onClick(); source->setSelectedId(8, juce::sendNotificationSync);
         for (int i = 0; i < 100; ++i) pump();
         require(source->getSelectedId() == 8, "a chosen key wins over a pending result");
+    }
+    {
+        alien::SampleBrowser browser; browser.setSize(360, 400); browser.addToDesktop(0); browser.setVisible(true);
+        browser.scan(wav.getParentDirectory());
+        auto pump = [] { juce::MessageManager::getInstance()->runDispatchLoopUntil(10); };
+        for (int i = 0; i < 400 && browser.resultCount() == 0; ++i) pump();
+        juce::Button* preview = nullptr; juce::ToggleButton* match = nullptr; juce::Slider* source = nullptr;
+        const auto hasLabel = [&](const juce::String& text) {
+            for (auto* child : browser.getChildren()) if (auto* label = dynamic_cast<juce::Label*>(child); label && label->getText().contains(text)) return true;
+            return false;
+        };
+        for (auto* child : browser.getChildren()) {
+            if (child->getName() == "Match sample preview tempo") match = dynamic_cast<juce::ToggleButton*>(child);
+            if (child->getName() == "Sample source BPM") source = dynamic_cast<juce::Slider*>(child);
+            if (auto* b = dynamic_cast<juce::Button*>(child); b && b->getButtonText() == "Preview 5s") preview = b;
+        }
+        require(browser.selectedFile() == wav && preview && match && source, "Song preview browser fixture");
+        source->setValue(90, juce::sendNotificationSync);
+        match->setToggleState(true, juce::dontSendNotification); match->onClick();
+        browser.setTransportTempo(target(true, true, 0, 0));
+        require(hasLabel("Song: 120.0 BPM"), "browser names the Song tempo target");
+        int previews = 0, stops = 0, imports = 0; std::size_t frames = 0;
+        browser.onStop = [&] { ++stops; };
+        browser.onImport = [&](const juce::File&, bool) { ++imports; };
+        browser.onPreview = [&](const alien::SessionAudioClip& audio) { ++previews; frames = audio.frames; };
+        browser.tempoForPreview = [&] { return target(true, true, 960, 0); };
+        preview->onClick();
+        browser.tempoForPreview = nullptr;
+        for (int i = 0; i < 400 && previews == 0; ++i) pump();
+        require(previews == 1 && frames == 20000 && imports == 0 && hasLabel("Song: 180.0 BPM"),
+            "preview refreshes its target at the click and renders at the map's 180 BPM without importing");
+        auto previousStops = stops;
+        browser.setTransportTempo(target(true, true, 1200, 0));
+        require(stops == previousStops, "movement inside a tempo segment does not stop the preview");
+        browser.setTransportTempo(target(true, true, 1920, 0));
+        require(stops == previousStops + 1 && hasLabel("Song tempo changed"), "a map boundary stops an active matched preview");
+        preview->onClick(); browser.setTransportTempo(target(true, true, 0, 0));
+        for (int i = 0; i < 30; ++i) pump();
+        require(previews == 1 && hasLabel("Song: 120.0 BPM"), "a loop wrap cancels a pending preview for the previous segment");
+        browser.setTransportTempo(target(true, false, 0, 1920));
+        preview->onClick();
+        for (int i = 0; i < 400 && previews == 1; ++i) pump();
+        require(previews == 2 && frames == 40000 && imports == 0, "stopped Song preview renders at the cursor's 90 BPM");
+        match->setToggleState(false, juce::dontSendNotification); match->onClick();
+        previousStops = stops;
+        browser.setTransportTempo(target(false, true, 1920, 0));
+        require(stops == previousStops && hasLabel("Project: 120.0 BPM"), "original-tempo previews ignore tempo changes and label the new context");
+        browser.onStop = nullptr;
     }
     require(root.deleteRecursively(), "remove sample fixtures");
 }

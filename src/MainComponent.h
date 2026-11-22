@@ -785,6 +785,7 @@ private:
                 devicesView.samples().setStatus("Preview is busy. Try again.");
         };
         devicesView.samples().onStop = [this] { engine.samplePreview.stop(); };
+        devicesView.samples().tempoForPreview = [this] { return samplePreviewTempoTarget(); };
         devicesView.samples().onImport = [this](const juce::File& file, bool song) {
             const auto& d = controller.document();
             if (projectBusy || controller.isBusy() || controller.isRecording() || activeCapture || (!song && d.cellClip(d.selectedTrack, d.selectedScene)) || controller.isTrackFrozen(d.selectedTrack)) return;
@@ -1206,9 +1207,15 @@ private:
         syncViewButtons();
     }
 
+    alien::sample_preview::TempoTarget samplePreviewTempoTarget() {
+        const auto& d = controller.document();
+        return alien::sample_preview::tempoTarget(d.timeline, d.bpm, engine.patternMode.load() == alien::songMode,
+            engine.playing.load(), engine.timelinePosition.load(), timelineView.timelineCanvas().cursorTick());
+    }
+
     void timerCallback() override {
         const auto& sampleDestination = controller.document();
-        devicesView.samples().setProjectTempo(sampleDestination.bpm);
+        devicesView.samples().setTransportTempo(samplePreviewTempoTarget());
         devicesView.samples().setImportEnabled(!projectBusy && !controller.isBusy() && !controller.isRecording() && !activeCapture
             && !sampleDestination.cellClip(sampleDestination.selectedTrack, sampleDestination.selectedScene) && !controller.isTrackFrozen(sampleDestination.selectedTrack),
             !projectBusy && !controller.isBusy() && !controller.isRecording() && !activeCapture && !controller.isTrackFrozen(sampleDestination.selectedTrack));
