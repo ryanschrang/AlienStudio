@@ -894,7 +894,8 @@ static void rackLibraryTests() {
     require(clipOf(0) == first && revisionOf(0) == revision + 1 && d.rackMatchesLibrary(), "a step edit is a new revision of the pattern's clip");
     // Notes on a channel are kept as notes, with the dormant steps.
     alien::PianoRollPattern notes; notes.loopSteps = 16; notes.add(62, 1, 3, 0.7f); notes.add(65, 1, 3, 0.6f);
-    require(c.setRackChannelNotes(0, 1, notes), "notes on channel 2");
+    require(alien::command::CommandEngine(c).execute(alien::command::SetRackChannelNotes{0, 1, std::make_shared<const alien::PianoRollPattern>(notes)}).changed,
+        "notes on channel 2 through the command");
     const auto content = d.library.content(first);
     require(content->lanes.size() == 2 && std::get<alien::library::StepLane>(content->lanes[1].content).notes != nullptr && d.rackMatchesLibrary(),
             "the note row is in the clip as notes");

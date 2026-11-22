@@ -618,6 +618,7 @@ int main() {
     rackPatternDeletionChecks();
     rackSoundCommandChecks();
     rackContentCommandChecks();
+    rackNotesTransactionChecks();
     songMarkerCommandChecks();
     songLengthCommandChecks();
     songTakeCommandChecks();

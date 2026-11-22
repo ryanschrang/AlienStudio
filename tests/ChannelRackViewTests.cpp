@@ -1038,7 +1038,8 @@ static void snapshots() {
             const double start = static_cast<double>(notes.count / 3) * 4;
             notes.add(root, start, 3.75); notes.add(root + 4, start, 3.75); notes.add(root + 7, start, 3.75);
         }
-        rig.controller.setRackChannelNotes(0, 4, notes);
+        require(alien::command::CommandEngine(rig.controller).execute(alien::command::SetRackChannelNotes{0, 4, std::make_shared<const PianoRollPattern>(notes)}).changed,
+            "synth screenshot notes use the command");
         rig.view.refresh(); rig.grid.selectChannel(4);
         writePng(rig.view.createComponentSnapshot(rig.view.getLocalBounds(), true, 1.0f), directory, "rack-synth-channel.png");
     }
@@ -1049,7 +1050,8 @@ static void snapshots() {
             const double start = static_cast<double>(notes.count / 3) * 4;
             notes.add(root, start, 3.75); notes.add(root + 4, start, 3.75); notes.add(root + 7, start, 3.75);
         }
-        rig.controller.setRackChannelNotes(0, 1, notes);
+        require(alien::command::CommandEngine(rig.controller).execute(alien::command::SetRackChannelNotes{0, 1, std::make_shared<const PianoRollPattern>(notes)}).changed,
+            "melodic screenshot notes use the command");
         rig.controller.editRack("Fixture drums", [](Project& p) { for (int n : {0, 4, 8, 12}) p.setStepOn(0, 0, n, true); return true; });
         rig.view.refresh(); rig.grid.selectChannel(1);
         const auto image = rig.view.createComponentSnapshot(rig.view.getLocalBounds(), true, 1.0f);
@@ -1234,21 +1236,25 @@ static void channelPianoRollChecks() {
     row = rack::stepsFromNotes(empty, rig.rack().pattern(rig.rack().selectedPattern), 1);
     require(!row[0].on && !row[4].on && !row[15].on && row[40].on, "removing every note clears the pattern's steps but not hidden ones");
 
-    // Through the controller: one undo step per gesture key.
+    // Through the same command path as the piano roll: one undo step per gesture key.
+    alien::command::CommandEngine commands(c);
+    const auto setNotes = [&](int patternIndex, int channel, const PianoRollPattern& sequence, const juce::String& key = {}) {
+        return commands.execute(alien::command::SetRackChannelNotes{patternIndex, channel, std::make_shared<const PianoRollPattern>(sequence)}, key, true);
+    };
     auto edited = rack::channelNotes(rig.rack().pattern(rig.rack().selectedPattern), 1);
     edited.add(channelRootPitch + 5, 2.0, 1.0);
-    require(c.setRackChannelNotes(rig.rack().selectedPattern, 1, edited, "gesture-1") && rig.rack().isNoteChannel(0, 1) && rack::channelNotes(rig.rack().pattern(0), 1).count == edited.count,
-            "the controller stores the channel note sequence");
+    require(setNotes(rig.rack().selectedPattern, 1, edited, "gesture-1").changed && rig.rack().isNoteChannel(0, 1) && rack::channelNotes(rig.rack().pattern(0), 1).count == edited.count,
+            "the command stores the channel note sequence");
     edited.add(channelRootPitch + 1, 3.0, 1.0);
-    require(c.setRackChannelNotes(rig.rack().selectedPattern, 1, edited, "gesture-1") && rack::channelNotes(rig.rack().pattern(0), 1).count == edited.count, "a second change in the same gesture");
+    require(setNotes(rig.rack().selectedPattern, 1, edited, "gesture-1").changed && rack::channelNotes(rig.rack().pattern(0), 1).count == edited.count, "a second change in the same gesture");
     require(c.undoLabel() == "Edit channel notes" && c.undo() && !rig.rack().isNoteChannel(0, 1) && !rig.step(1, 2).on && !rig.step(1, 3).on, "one gesture is one undo step");
-    require(!c.setRackChannelNotes(rig.rack().selectedPattern, 1, rack::channelNotes(rig.rack().pattern(rig.rack().selectedPattern), 1)),
-            "notes that change nothing make no undo step");
-    require(!c.setRackChannelNotes(rig.rack().selectedPattern, 99, edited) && !c.setRackChannelNotes(99, 1, edited), "invalid targets are refused");
+    const auto unchanged = setNotes(rig.rack().selectedPattern, 1, rack::channelNotes(rig.rack().pattern(rig.rack().selectedPattern), 1));
+    require(unchanged.ok && !unchanged.changed && c.canRedo(), "unchanged notes are accepted without losing redo");
+    require(!setNotes(rig.rack().selectedPattern, 99, edited).ok && !setNotes(99, 1, edited).ok, "invalid targets are refused");
 
     auto melodic = rack::channelNotes(rig.rack().pattern(0), 1);
     melodic.add(36, 0.25, 8); melodic.add(60, 0.25, 4); melodic.add(67, 0.25, 6);
-    require(c.setRackChannelNotes(0, 1, melodic, "chord") && rack::Pattern::sameNotes(rack::channelNotes(rig.rack().pattern(0), 1), melodic), "controller preserves long overlapping chords");
+    require(setNotes(0, 1, melodic, "chord").changed && rack::Pattern::sameNotes(rack::channelNotes(rig.rack().pattern(0), 1), melodic), "command preserves long overlapping chords");
     int openedMelody = -1;
     rig.grid.onOpenPianoRoll = [&](int channel) { openedMelody = channel; };
     const auto saved = rig.rack();
