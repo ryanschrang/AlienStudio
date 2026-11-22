@@ -773,8 +773,8 @@ static void placementUniqueTests() {
             && d.timeline.find(first)->playsCell(), "a MIDI placement gets a clip of its own, with no Session cell or new scene");
     require(d.placementContent(*own).notes().notes[0].pitch == 60 && d.placementName(own->clip) == d.scenes[0].name,
             "an independent copy of the same notes, named after the scene it came from");
-    require(c.setPlacementPattern(own->clip, patternWith(70)), "the piano roll edits a placement clip");
-    c.commit("Edit notes");
+    require(alien::command::CommandEngine(c).execute(alien::command::SetPlacementClipNotes{own->clip, std::make_shared<const alien::PianoRollPattern>(patternWith(70))}).changed,
+        "the piano roll edits a placement clip through the command");
     require(d.clip(0, 0).notes().notes[0].pitch == 60 && d.placementContent(*d.timeline.find(second)).notes().notes[0].pitch == 70,
             "editing it leaves the cell and the other placement alone");
     require(!c.makePlacementUnique(second) && !c.placementShared(first) && !c.placementShared(second), "neither placement shares anything now");
@@ -795,15 +795,16 @@ static void placementClipTests() {
     require(c.placeRegion(1, 0, 0, &a) && c.placeRegion(1, 0, 2 * ticksPerBar, &b) && c.makePlacementUnique(a), "a placement clip");
     const auto clip = d.timeline.find(a)->clip;
     const auto cell = d.cellClip(1, 0);
-    require(!c.setPlacementPattern(0, patternWith(70)) && !c.setPlacementPattern(cell.value, patternWith(70))
+    require(!alien::command::CommandEngine(c).execute(alien::command::SetPlacementClipNotes{0, std::make_shared<const alien::PianoRollPattern>(patternWith(70))}).ok
+            && !alien::command::CommandEngine(c).execute(alien::command::SetPlacementClipNotes{cell.value, std::make_shared<const alien::PianoRollPattern>(patternWith(70))}).ok
             && d.clip(1, 0).notes().notes[0].pitch == 48, "placement edits refuse zero and Session clip ids without changing cells");
     // Copies of a placement share its clip, as copies of a cell's placement share the cell.
     require(c.editTimeline("Duplicate", [&](alien::timeline::Timeline& t) { return t.duplicate({a}); }), "duplicate the placement");
     std::uint32_t copy = 0;
     for (const auto& r : d.timeline.regions) if (r.id != a && r.clip == clip) copy = r.id;
     require(copy != 0 && c.placementShared(a) && c.placementShared(copy), "the duplicate shares the placement clip");
-    require(c.setPlacementPattern(clip, patternWith(55)), "edit the shared clip");
-    c.commit("Edit notes");
+    require(alien::command::CommandEngine(c).execute(alien::command::SetPlacementClipNotes{clip, std::make_shared<const alien::PianoRollPattern>(patternWith(55))}).changed,
+        "edit the shared clip through the command");
     require(d.placementContent(*d.timeline.find(copy)).notes().notes[0].pitch == 55 && d.clip(1, 0).notes().notes[0].pitch == 48,
             "both placements hear the edit; the cell does not");
     // The engine gets the placement clip with the song.
@@ -840,7 +841,8 @@ static void placementClipFileTests() {
     std::uint32_t a = 0, b = 0;
     require(c.placeRegion(0, 0, 0, &a) && c.placeRegion(0, 0, ticksPerBar, &b) && c.makePlacementUnique(a), "a placement clip");
     require(c.editTimeline("Duplicate", [&](alien::timeline::Timeline& t) { return t.duplicate({a}); }), "and a copy of it");
-    require(c.setPlacementPattern(d.timeline.find(a)->clip, patternWith(66)), "with notes of its own"); c.commit("Edit notes");
+    require(alien::command::CommandEngine(c).execute(alien::command::SetPlacementClipNotes{d.timeline.find(a)->clip, std::make_shared<const alien::PianoRollPattern>(patternWith(66))}).changed,
+        "with notes of its own through the command");
     require(c.deleteReturn(1) && c.addReturn("Song echo") == 1 && c.addReturn("Extra return") == 4,
             "placement project supports renamed and extra returns");
     require(c.deleteReturn(2), "placement project supports a removed return");

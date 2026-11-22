@@ -1340,16 +1340,6 @@ public:
         else publishClip(e.track, e.scene);
         return true;
     }
-    // Called by the piano roll as a placement clip's notes change: every region that plays it follows.
-    bool setPlacementPattern(std::uint64_t clip, const PianoRollPattern& pattern) {
-        const auto id = alien::library::ClipId{clip};
-        if (busy || placementTrack(clip) < 0 || doc.library.clip(id) == nullptr) return false;
-        for (const auto& r : doc.timeline.regions) if (r.clip == clip && isTrackFrozen(r.row)) return false;
-        if (samePianoRollPattern(*doc.contentOf(id).pattern, pattern)) return false;
-        if (!doc.setPlacementNotes(id, std::make_shared<const PianoRollPattern>(pattern))) return false;
-        publishArrangement();
-        return true;
-    }
     // The track whose Song regions play placement clip `clip` (-1 when none does).
     int placementTrack(std::uint64_t clip) const {
         for (const auto& r : doc.timeline.regions) if (clip != 0 && r.clip == clip) return r.row;

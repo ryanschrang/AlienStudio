@@ -73,7 +73,7 @@ static void songPasteCommandChecks() {
 
     // Edited since it was copied: the paste brings back the copied notes as a clip of its own, and leaves the edit.
     const auto edited = copyOf({back[0]});
-    require(c.setPlacementPattern(restored, patternWith(70)), "edit the clip"); c.commit("Edit notes");
+    require(commands.execute(cmd::SetPlacementClipNotes{restored, std::make_shared<const alien::PianoRollPattern>(patternWith(70))}).changed, "edit the clip through the command");
     const auto fresh = step({edited, 24 * bar, 0}, "a paste after an edit");
     require(clipOf(fresh[0]) != restored && d.placementContent(*song.find(fresh[0])).notes().notes[0].pitch == 60
             && d.placementContent(*song.find(back[0])).notes().notes[0].pitch == 70, "the paste plays the copied notes and the edited clip keeps its edit");

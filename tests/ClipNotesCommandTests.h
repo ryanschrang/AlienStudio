@@ -77,14 +77,46 @@ static void clipNotesCommandChecks() {
         for (const auto& r : d.timeline.regions) if (r.clip == placement) playing.push_back(r.id);
         require(playing.size() == 2, "two Song clips play the placement clip");
         const auto before = c.document();
+        const auto history = historyOf(c);
+        const auto pan = engine->tracks[2].pan.load();
+        require(engine->arrangementMailbox.consume() != nullptr, "consume the initial Song snapshot without running audio");
         const cmd::SetPlacementClipNotes edit{placement, notes(70)};
-        const auto preview = commands.preview(cmd::Command{edit});
-        require(preview.ok && preview.changed && alien::sameContent(before, c.document()), "SetPlacementClipNotes Preview changes no live state");
-        require(commands.batch({edit}, "Edit notes", "roll-notes-10").changed && alien::sameContent(preview.after, c.document()) && c.undoLabel() == "Edit notes",
-                "SetPlacementClipNotes does what Preview said");
+        const std::vector<cmd::Command> edits{edit, cmd::SetTrackPan{2, .25}};
+        const auto preview = commands.preview(edits);
+        require(preview.ok && preview.changed && alien::sameContent(before, c.document()) && historyOf(c) == history
+            && engine->arrangementMailbox.consume() == nullptr && engine->tracks[2].pan.load() == pan,
+            "placement notes and mixer Preview changes no live state");
+        require(commands.batch(edits, "Edit notes and pan").changed && alien::sameContent(preview.after, c.document())
+            && c.undoLabel() == "Edit notes and pan" && engine->tracks[2].pan.load() == .25f,
+            "placement notes and mixer batch does what Preview said");
         for (const auto id : playing) require(d.placementContent(*d.timeline.find(id)).notes().notes[0].pitch == 70, "every Song clip playing it hears the notes");
         require(pitchAt(2, 1) == 55, "the Session cell it came from keeps its notes");
-        require(c.undo() && alien::sameContent(before, c.document()), "Undo puts the placement clip's notes back");
+        const auto* published = engine->arrangementMailbox.consume();
+        require(published && alien::ArrangementMailbox::validSnapshot(*published)
+            && published->clipFor(*d.timeline.find(playing[0]), 2).pattern->notes[0].pitch == 70
+            && published->clipFor(*d.timeline.find(playing[1]), 2).pattern->notes[0].pitch == 70,
+            "the engine Song snapshot resolves both placements to the edited source");
+        require(c.undo() && alien::sameContent(before, c.document()) && engine->tracks[2].pan.load() == pan,
+            "one Undo restores shared notes and mixer pan together");
+        const auto* restored = engine->arrangementMailbox.consume();
+        require(restored && restored->clipFor(*d.timeline.find(playing[0]), 2).pattern->notes[0].pitch == 55,
+            "Undo publishes the original placement source");
+        const auto redo = historyOf(c);
+        const auto unchanged = commands.execute(cmd::SetPlacementClipNotes{placement, notes(55)});
+        require(unchanged.ok && !unchanged.changed && historyOf(c) == redo && engine->arrangementMailbox.consume() == nullptr,
+            "unchanged shared notes preserve redo without publication");
+        const auto refused = commands.batch({cmd::SetPlacementClipNotes{placement, notes(72)}, cmd::SetTrackPan{99, .5}}, "Refused notes");
+        require(!refused.ok && refused.failedCommand == 1 && alien::sameContent(before, c.document()) && historyOf(c) == redo
+            && engine->tracks[2].pan.load() == pan && engine->arrangementMailbox.consume() == nullptr,
+            "late mixer refusal preserves shared notes, pan, Song publication and redo");
+        c.setExternalBusy(true);
+        const auto busy = commands.execute(edit);
+        c.setExternalBusy(false);
+        require(!busy.ok && busy.error.contains("busy") && alien::sameContent(before, c.document()) && historyOf(c) == redo
+            && engine->arrangementMailbox.consume() == nullptr, "busy placement note edits preserve document, publication and redo");
+        require(c.redo() && alien::sameContent(preview.after, c.document()) && engine->tracks[2].pan.load() == .25f,
+            "Redo still restores the complete accepted note and mixer batch");
+        require(c.undo() && alien::sameContent(before, c.document()), "restore the original placement fixture");
     }
 
     // Refusals change nothing and say why.
