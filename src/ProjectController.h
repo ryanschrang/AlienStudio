@@ -350,6 +350,7 @@ public:
         if (busy) return false;
         if (beforeStructureEdit) beforeStructureEdit();
         if (!doc.canAddTrack() || !doc.trackRegistry.canAllocate()) return false;
+        if (!prepareEngineTracks(doc.trackCount() + 1, "Could not add a track")) return false;
         doc.tracks.push_back({doc.nextTrackName(), {}, doc.nextTrackColour()});
         for (auto& scene : doc.cells) scene.emplace_back();
         publishStop(static_cast<std::size_t>(doc.trackCount() - 1));
@@ -2852,6 +2853,9 @@ private:
                    "Close and restart Alien Studio to release audio from older sessions.");
             return;
         }
+        // T1-04 D7: the engine's track slots are prepared before anything is replaced, so an open that cannot
+        // have them leaves the open project as it was.
+        if (!prepareEngineTracks(result.project.trackCount(), "Open failed")) return;
         abandonRecording();
         engine.playing.store(false);
         engine.requestedRackClip.store(rack::RackPlayer::noLaunchRequest);
@@ -2864,7 +2868,9 @@ private:
         if (copiedContent && copiedContent->rackClip != 0) copiedContent.reset();
         engine.synchronizedSceneLaunch.store(false);
         if (beforeDocumentReplaced) beforeDocumentReplaced();
-        for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track) publishStop(track);
+        // A slot without a launch mailbox never played; stopping it would only create one (T1-04 D3).
+        for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track)
+            if (engine.pianoRollLaunches.reserved(track)) publishStop(track);
 
         auto loaded = fromProjectData(result.project);
         for (int s = 0; s < loaded.sceneCount(); ++s)
@@ -3052,6 +3058,16 @@ private:
         }
         if (!changes || outcome.discarded) syncLiveClip(track, scene);
         announce();
+    }
+
+    // T1-04 D7: prepares the engine's slots for `tracks` tracks before an edit or open commits them. When
+    // memory runs out it says so and answers false; the caller then changes nothing.
+    bool prepareEngineTracks(int tracks, const juce::String& action) {
+        if (engine.prepareTracks(tracks)) return true;
+        status(action + ": not enough memory for " + juce::String(tracks) + " tracks",
+               "Alien Studio could prepare " + juce::String(engine.preparedTracks())
+               + " tracks. Close other programs or open a project with fewer tracks, then try again.");
+        return false;
     }
 
     void publishStop(std::size_t track) {

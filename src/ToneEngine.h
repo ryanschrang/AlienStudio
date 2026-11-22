@@ -150,15 +150,32 @@ public:
     // launch mailboxes and the note scheduler (D3). Then it publishes the count; the callback adopts a
     // reserved slot at its next block. Nothing is freed when a project shrinks (a later, larger one reuses
     // it), so a project pays for the most track slots it has used, not the compiled limit.
-    void setActiveTracks(int tracks) {
+    // Control thread. Reserves the stream voices and note state of every slot below `tracks`. T1-04 D7:
+    // returns false when memory runs out, keeping what it reserved; a slot counts as reserved only when
+    // all of it is, so a later call carries on where this one stopped.
+    bool prepareTracks(int tracks) noexcept {
         const auto count = static_cast<std::size_t>(std::clamp(tracks, 1, static_cast<int>(sessionTracks)));
-        for (auto t = reservedSlots.load(std::memory_order_acquire); t < count; ++t) {
-            diskStreams.reserve(t * 2); diskStreams.reserve(t * 2 + 1);
-            diskStreams.reserve(sessionTracks * 2 + t * 2); diskStreams.reserve(sessionTracks * 2 + t * 2 + 1);
-            pianoRollNotes.reserve(t); pianoRollLaunches.reserve(t); rolls.reserve(t);
-            reservedSlots.store(t + 1, std::memory_order_release);
+        try {
+            for (auto t = reservedSlots.load(std::memory_order_acquire); t < count; ++t) {
+                diskStreams.reserve(t * 2); diskStreams.reserve(t * 2 + 1);
+                diskStreams.reserve(sessionTracks * 2 + t * 2); diskStreams.reserve(sessionTracks * 2 + t * 2 + 1);
+                pianoRollNotes.reserve(t); pianoRollLaunches.reserve(t); rolls.reserve(t);
+                reservedSlots.store(t + 1, std::memory_order_release);
+            }
+        } catch (const std::exception&) {
+            return false;
         }
-        activeTracks.store(tracks);
+        return true;
+    }
+    // Track slots whose stream voices and note state all exist.
+    int preparedTracks() const noexcept { return static_cast<int>(reservedSlots.load(std::memory_order_acquire)); }
+    // Control thread. Prepares the slots, then publishes the count. If they cannot all be prepared, the
+    // count published is the slots that exist, and the answer is false: the controller checks with
+    // prepareTracks() before it commits a larger project, so this happens only to a caller that did not.
+    bool setActiveTracks(int tracks) {
+        const bool ready = prepareTracks(tracks);
+        activeTracks.store(ready ? tracks : preparedTracks());
+        return ready;
     }
     // Stream voices the engine holds, of DiskAudioStreamService::voiceCount (four per reserved slot).
     std::size_t reservedStreamVoices() const noexcept { return diskStreams.reservedVoices(); }

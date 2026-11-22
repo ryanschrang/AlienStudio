@@ -185,7 +185,10 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
             if (slot.processor) slot.processor->setNonRealtime(true);
     }
     for (auto& slot : engine->plugins->rackChannels) if (slot.processor && !slot.faulted.get()) slot.processor->setNonRealtime(true);
-    engine->setActiveTracks(project.trackCount());
+    if (!engine->setActiveTracks(project.trackCount())) {
+        error = "Not enough memory to prepare " + juce::String(project.trackCount()) + " tracks for the export.";
+        return false;
+    }
     engine->bpm.store(project.bpm);
     engine->patternMode.store(2);
     for (std::size_t t=0;t<static_cast<std::size_t>(project.trackCount());++t) {
