@@ -495,6 +495,10 @@ static void controller() {
 // rack player keeps room for them, and the channel's MIDI storage takes the whole list without allocating.
 static void denseNotes() {
     Rig rig;
+    ProjectController reporter(rig.engine);   // only reads the engine's count of hits it could not play (D10)
+    juce::String said, why;
+    reporter.onProjectStatus = [&](const juce::String& text, const juce::String& tip) { said = text; why = tip; };
+    require(!reporter.reportDroppedRackHits(1000) && said.isEmpty(), "nothing to report before anything is dropped");
     auto& instrument = rig.load("synth");
     PianoRollPattern notes; notes.loopSteps = 16;
     for (int n = 0; n < 1000; ++n) notes.add(n % 128, 0.0, 1.0 / PianoRollPattern::ticksPerStep, 1.0f);
@@ -517,6 +521,18 @@ static void denseNotes() {
     require(std::all_of(sounding.begin(), sounding.end(), [](int s) { return s == 0; }) && instrument.held == 0, "no note is left held");
     rig.engine.playing.store(false);
     rig.render(2);
+    // T1-04 D10: the status bar says so, once, and again only for new ones, at most once a second.
+    require(reporter.reportDroppedRackHits(5000) && said == "488 Channel Rack hits were not played" && why.contains("Thin out"),
+            "the status bar says how many hits were not played, and why");
+    said.clear();
+    require(!reporter.reportDroppedRackHits(5100) && said.isEmpty(), "and does not repeat it");
+    rig.engine.playing.store(true);
+    rig.render(6);   // the same step again: 488 more
+    rig.engine.playing.store(false);
+    rig.render(2);
+    require(!reporter.reportDroppedRackHits(5500) && said.isEmpty(), "new ones wait until a second has passed");
+    require(reporter.reportDroppedRackHits(6100) && said == "488 Channel Rack hits were not played", "then only the new ones are reported");
+    require(rackDropText(1) == "1 Channel Rack hit was not played", "one hit reads as one");
     std::puts("PASS: a dense block of rack plugin notes loses no note-off");
 }
 

@@ -12,7 +12,8 @@ save, open, undo/redo and export; D5 frees the audio of a replaced project once 
 Rack snapshots one audio block after the engine leaves them; D7 refuses an open or added track whose
 engine slots cannot be prepared, with a reason, and changes nothing; D8 reserves the Channel Rack's
 pending-hit queue for the rack channels a project has, instead of all 64; D9 keeps a block's Channel
-Rack plugin notes from losing a note-off when there are more notes than the block's list holds.
+Rack plugin notes from losing a note-off when there are more notes than the block's list holds; D10
+tells the user, in the status bar and after an export or freeze, when Channel Rack hits were not played.
 Higher supported limits (E) are pending.
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
@@ -897,3 +898,27 @@ Tests:
 Not tested: real VST3 instruments, the running app, and the 32/64 build locally (CI builds it).
 Hits left unplayed are still not shown in the UI. The Session tracks' plugin MIDI (64 KiB per track,
 not cut off by count) was not part of this increment.
+
+## Increment D10: unplayed Channel Rack hits are reported
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+D8 and D9 count the Channel Rack hits the engine has no room for, but the count was only readable in
+code, so to the user they were still silently dropped (gate 4). D10 shows them:
+
+- **The status bar.** The app's timer calls `ProjectController::reportDroppedRackHits()`. When the
+  engine's count has grown it says "N Channel Rack hits were not played", and the tooltip explains
+  why and what to do. It reports only hits new since the last report, at most once a second, so a
+  long run of them does not flood the status bar.
+- **Export and freeze.** Each render has its own engine. If it could not play some hits, the export
+  summary ends with "WARNING: N Channel Rack hits were not played; the file is missing them". A
+  freeze's status says the frozen audio is missing them.
+
+Tests: `RackPluginInstrumentTests` (the dense block from D9):
+- nothing is reported before any hit is dropped;
+- the block's 488 unplayed hits are reported once, with the reason, and not repeated;
+- 488 more from playing the step again wait until a second has passed and are then reported alone.
+
+Not tested: the status bar in the running app, and the export and freeze warnings (they run on a
+worker and are not covered by an automated test). The export warning is not shown when plugins also
+failed during the render; that message takes its place.
