@@ -3,6 +3,7 @@
 // mute, previews, stop); the plugin's output joins the channel's bus with its fader and pan; the plugin is
 // loaded, saved and contained like any other; and the project keeps it (format 31).
 #include "ProjectController.h"
+#include "CommandEngine.h"
 #include "PluginHost.h"
 #include "RackProject.h"
 #include "ToneEngine.h"
@@ -470,12 +471,13 @@ static void controller() {
     c.pushDocumentToEngine();
     int reloads = 0;
     c.onRackPluginsChanged = [&] { ++reloads; };
-    require(c.setRackPlugin(0, description("synth"), "Synth"), "a channel gets a plugin instrument");
+    command::CommandEngine commands(c);
+    require(commands.execute(command::SetRackChannelPlugin{0, description("synth"), "Synth"}).changed, "a channel gets a plugin instrument through a command");
     const auto& rack = c.document().channelRack;
     require(reloads == 1 && rack.channels[0].plugin && rack.info[0].name == "Synth" && rack.info[0].pluginInstance() != 0, "named after it, and the owner reloads");
     require(c.rackPlugins().size() == static_cast<std::size_t>(rack.channelCount) && c.rackPlugins()[0].instanceId == rack.info[0].pluginInstance()
             && c.rackPlugins()[1].descriptionXml.isEmpty(), "the host is given the instruments by channel");
-    require(c.editRack("Duplicate channel", [](Project& p) { return p.duplicateChannel(0); }), "duplicate it");
+    require(commands.execute(command::DuplicateRackChannel{0}).changed, "duplicate it through a command");
     require(reloads == 2 && c.document().channelRack.info[1].hasPlugin()
             && c.document().channelRack.info[1].pluginInstance() != c.document().channelRack.info[0].pluginInstance(),
             "the copy is a second instance with an identity of its own");

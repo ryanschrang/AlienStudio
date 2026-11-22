@@ -74,7 +74,7 @@ static void rackChannelCommandChecks() {
     // A plugin channel's copy gets the identity the command carries, so Preview and execute agree.
     {
         c.markAsNewBaseline();
-        require(c.setRackPlugin(synth, "<PLUGIN name=\"Test\"/>", "Test") && rack.info[static_cast<std::size_t>(synth)].hasPlugin(), "plugin channel fixture");
+        require(commands.execute(cmd::SetRackChannelPlugin{synth, "<PLUGIN name=\"Test\"/>", "Test"}).changed && rack.info[static_cast<std::size_t>(synth)].hasPlugin(), "plugin channel fixture");
         const auto original = rack.info[static_cast<std::size_t>(synth)].pluginInstance();
         require(!commands.execute(cmd::DuplicateRackChannel{synth, 0}).ok, "a plugin copy needs an identity");
         const cmd::DuplicateRackChannel copy{synth};
