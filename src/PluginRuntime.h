@@ -30,6 +30,13 @@ public:
     // Channel Rack channels played by plugin instruments (T1-09): one slot per channel, reported in faults as
     // "rack" channelBase + channel (outside the mixer's racks).
     static constexpr int maxRackChannels = 64, channelBase = 1000;
+    // T1-04 D9: the most notes one block gives a rack channel's instrument: the rack player's whole list for the
+    // block can belong to one channel, so each channel's MIDI storage holds all of it (no note-off is cut off).
+    static constexpr int rackNotesPerBlock = 1024, rackLiveEvents = 256;
+    // Bytes a JUCE MidiBuffer takes for a three-byte message (time stamp, size, data), and the most a channel's
+    // buffer holds in one block: the all-notes/sound-off panic on 16 channels, the live events and the notes.
+    static constexpr std::size_t midiEventBytes = sizeof(std::int32_t) + sizeof(std::uint16_t) + 3;
+    static constexpr std::size_t rackChannelMidiBytes = (32 + rackLiveEvents + rackNotesPerBlock) * midiEventBytes;
     static constexpr bool isRackChannel(int rack) noexcept { return rack >= channelBase && rack < channelBase + maxRackChannels; }
     static constexpr bool isReturn(int rack) noexcept { return rack >= returnBase && rack < busBase; }
     static constexpr int busIndex(int b) noexcept { return busBase + b; }
@@ -137,7 +144,7 @@ public:
         for (auto& b : returns) b.setSize(2, blockSize);
         for (auto& b : buses) b.setSize(2, blockSize);
         for (auto& m : midi) m.ensureSize(65536);
-        for (auto& m : channelMidi) m.ensureSize(16384);
+        for (auto& m : channelMidi) m.ensureSize(rackChannelMidiBytes);
         channelScratch.setSize(2, blockSize);
         emptyMidi.ensureSize(65536);
         for (int r=0;r<rackCount;++r) {
@@ -331,7 +338,7 @@ public:
             if (const auto& live = liveEvents[static_cast<std::size_t>(e)]; live.channel == channel) messages.addEvent(live.message, 0);
         int count = 0;
         notes([&](int sample, int note, float velocity) {
-            if (++count > 512) return;   // bounded by the preallocated MIDI storage
+            if (++count > rackNotesPerBlock) return;   // never reached: the rack player gives at most that many (D9)
             const int at = std::clamp(sample, 0, samples - 1);
             messages.addEvent(velocity > 0.0f ? juce::MidiMessage::noteOn(1, note, velocity) : juce::MidiMessage::noteOff(1, note), at);
         });
@@ -656,7 +663,7 @@ private:
     juce::AudioBuffer<float> channelScratch;
     bool channelPanic{true};   // the rack's instruments are told all notes off on their first block after a prepare
     struct LiveEvent { int channel{-1}; juce::MidiMessage message; };
-    std::array<LiveEvent, 256> liveEvents{};   // this block's live MIDI for the rack's instruments (liveRack)
+    std::array<LiveEvent, rackLiveEvents> liveEvents{};   // this block's live MIDI for the rack's instruments (liveRack)
     int liveCount{};
     double rate{44100};
     juce::int64 renderedSamples{};

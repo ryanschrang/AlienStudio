@@ -11,7 +11,8 @@ D3 reserves each slot's note mailboxes and scheduler with it; D4 measures peak m
 save, open, undo/redo and export; D5 frees the audio of a replaced project once the engine lets go of it; D6 frees old Song and Channel
 Rack snapshots one audio block after the engine leaves them; D7 refuses an open or added track whose
 engine slots cannot be prepared, with a reason, and changes nothing; D8 reserves the Channel Rack's
-pending-hit queue for the rack channels a project has, instead of all 64.
+pending-hit queue for the rack channels a project has, instead of all 64; D9 keeps a block's Channel
+Rack plugin notes from losing a note-off when there are more notes than the block's list holds.
 Higher supported limits (E) are pending.
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
@@ -855,3 +856,44 @@ range as D3 (16 Session rack occurrences 13.3 % at 64 frames), with zero callbac
 
 Not tested: the export refusal message, a real low-memory condition, the running app, and the 32/64 build locally (CI builds
 it). The dropped-hit count is not surfaced in the UI.
+
+## Increment D9: no lost note-offs for the Channel Rack's plugin instruments
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+Gate 4 asks that notes are never silently dropped. Looking for what was still dropped after D8: the
+notes the rack player gives its plugin instruments each block went through two fixed lists, and
+both cut off whatever came last when full, note-offs included:
+
+- the rack player's list for the block (1,024 notes, every channel together), and
+- each channel's MIDI for its instrument in `PluginRuntime::processRackChannel` (the first 512).
+
+One step can hold far more than that: a piano-roll pattern has up to 1,024 notes, and once the 64 rack
+voices are busy every new plugin note steals one, which costs a note-off as well as a note-on. A
+dense step therefore cut off note-offs, and the instrument kept those notes held: a stuck note.
+
+What D9 changes:
+
+- **The rack player keeps room for every note-off it owes.** It counts the plugin voices playing.
+  Each one still needs a note-off. A plugin hit is played only if the block's list keeps room for its
+  note-on, its own note-off and every note-off already owed. Otherwise it is not played and changes
+  nothing, not even a choke. It is counted in `droppedHits()` with the hits a full pending queue
+  could not keep (D8). With 64 voices the list can always hold all of their note-offs and as many
+  new notes (checked at compile time), so stopping or muting always fits.
+- **A channel's instrument takes the whole list.** The per-channel cap is now the rack player's list
+  size (a compile-time check ties the two together), and each channel's MIDI storage is sized for it,
+  plus the 16-channel panic and the 256 live events: 11.5 KiB a channel, down from 16 KiB.
+
+Tests:
+- `RackEngineTests`: 1,000 plugin notes on one tick play 512 notes and count 488 they had no room
+  for. Every note that starts ends. Stopping in the middle of that block ends every note that was
+  playing.
+- `RackPluginInstrumentTests`: the same step through the engine reaches a test instrument with every
+  note-off. No pitch is left held, the 488 are counted in `droppedRackHits()`, and nothing
+  allocates.
+- Both tests fail if the player stops keeping room, and the engine test fails if the old 512-note
+  channel cap comes back.
+
+Not tested: real VST3 instruments, the running app, and the 32/64 build locally (CI builds it).
+Hits left unplayed are still not shown in the UI. The Session tracks' plugin MIDI (64 KiB per track,
+not cut off by count) was not part of this increment.
