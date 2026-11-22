@@ -1,4 +1,53 @@
 #pragma once
+// Delete an unused earlier bank slot without changing what a surviving Song placement plays.
+static void rackPatternDeletionChecks() {
+    auto engine = std::make_unique<ToneEngine>();
+    auto controller = std::make_unique<alien::ProjectController>(*engine);
+    auto& c = *controller;
+    cmd::CommandEngine commands(c);
+    c.pushDocumentToEngine();
+    require(commands.execute(cmd::CloneRackPattern{0}).changed && commands.execute(cmd::CloneRackPattern{0}).changed,
+        "three bank sources for deletion");
+    require(commands.execute(cmd::SetRackStep{2, 0, 1, true}).changed
+        && commands.execute(cmd::PlaceSongClip{alien::timeline::rackRowBase, 2, 0, alien::timeline::ticksPerBar}).changed,
+        "a distinct final source plays in Song");
+    const auto& d = c.document();
+    const auto source = d.channelRack.clips[2];
+    const auto removed = alien::library::ClipId{d.channelRack.clips[0]};
+    const auto region = d.timeline.regions.front().id;
+    c.markAsNewBaseline();
+    const auto before = d;
+    const auto history = historyOf(c);
+    const auto* initial = engine->rackMailbox.consume(); // simulate the consumer; no audio callback is running
+    require(initial && initial->indexOfClip(source) == 2, "engine has the original source bank");
+    const std::vector<cmd::Command> edits{cmd::DeleteRackPattern{0}, cmd::RenameRackPattern{1, "Song source"}};
+    const auto prediction = commands.preview(edits);
+    require(prediction.ok && prediction.changed && alien::sameContent(before, d) && historyOf(c) == history
+        && engine->rackMailbox.consume() == nullptr, "deletion Preview changes no document, history or engine publication");
+    require(commands.batch(edits, "Delete unused pattern").changed && alien::sameContent(prediction.after, d)
+        && d.library.clip(removed) == nullptr && d.timeline.find(region)->source == 1
+        && d.timeline.find(region)->rackClip == source && d.channelRack.pattern(1).steps[0][1].on,
+        "batch remaps the Song cache by identity and preserves the surviving notes");
+    const auto* published = engine->rackMailbox.consume();
+    require(published && published->indexOfClip(source) == 1, "engine receives the remapped bank");
+    require(c.undo() && alien::sameContent(before, d) && d.library.clip(removed) != nullptr,
+        "one Undo restores the deleted source and original Song indices");
+    const auto* restored = engine->rackMailbox.consume();
+    require(restored && restored->indexOfClip(source) == 2, "Undo restores the engine bank too");
+    const auto redo = historyOf(c);
+    const auto refused = commands.batch({cmd::DeleteRackPattern{0}, cmd::DeleteRackPattern{1}}, "Refused deletion");
+    require(!refused.ok && refused.failedCommand == 1 && !refused.changed && alien::sameContent(before, d)
+        && historyOf(c) == redo && engine->rackMailbox.consume() == nullptr,
+        "a late in-use deletion refuses the whole batch without publication or redo loss");
+    c.setExternalBusy(true);
+    const auto busy = commands.execute(cmd::DeleteRackPattern{0});
+    c.setExternalBusy(false);
+    require(!busy.ok && alien::sameContent(before, d) && historyOf(c) == redo && engine->rackMailbox.consume() == nullptr,
+        "busy deletion refuses before touching sources, engine or redo");
+    require(c.redo() && alien::sameContent(prediction.after, d) && d.timeline.find(region)->rackClip == source,
+        "Redo still restores the accepted deletion and surviving Song identity");
+}
+
 // The Channel Rack's step, pattern and swing commands. ChannelRackViewTests drives the real grid, graph and pattern menu.
 static void rackPatternCommandChecks() {
     auto engine = std::make_unique<ToneEngine>();

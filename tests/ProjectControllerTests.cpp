@@ -542,9 +542,9 @@ static void timelineIntegrationTests() {
         require(c.deleteScene(2) && c.timeline().find(b) == nullptr && sourceOf(a) == 2, "deleting a scene removes its clips and renumbers the rest");
         require(c.deleteTrack(0) && rowOf(a) == 2, "deleting a track renumbers the tracks after it");
         require(c.deleteTrack(2) && c.timeline().find(a) == nullptr, "and removes the clips of the track that went");
-        require(!c.deleteRackPattern(1) && c.timeline().find(p1) != nullptr,
+        require(!alien::command::CommandEngine(c).execute(alien::command::DeleteRackPattern{1}).ok && c.timeline().find(p1) != nullptr,
                 "a bank source with explicit Song uses is protected");
-        require(c.editTimeline("Remove placement", [&](Timeline& t) { return t.remove({p1}); }) && c.deleteRackPattern(1)
+        require(c.editTimeline("Remove placement", [&](Timeline& t) { return t.remove({p1}); }) && alien::command::CommandEngine(c).execute(alien::command::DeleteRackPattern{1}).changed
                 && sourceOf(p2) == 1 && sourceOf(p0) == 0, "after clearing its uses, deletion remaps other sources by identity");
         require(c.timeline().valid(c.document().trackCount(), c.document().sceneCount(), c.channelRack().patternCount), "the timeline is still valid for the project");
         require(!c.editRack("Remove a pattern", [](alien::rack::Project& p) { return p.deletePattern(1); }), "generic rack edits also protect used sources");
@@ -918,7 +918,7 @@ static void rackLibraryTests() {
     // Deleting a pattern drops its clip; undo brings it back.
     const auto copy = clipOf(1);
     const auto copied = d.channelRack.patterns[1];
-    require(c.deleteRackPattern(1) && d.library.clip(copy) == nullptr && d.channelRack.patternCount == 1, "deleting a pattern drops its clip");
+    require(alien::command::CommandEngine(c).execute(alien::command::DeleteRackPattern{1}).changed && d.library.clip(copy) == nullptr && d.channelRack.patternCount == 1, "deleting a pattern drops its clip");
     require(c.undo() && d.library.clip(copy) != nullptr && d.channelRack.pattern(1) == *copied && d.rackMatchesLibrary(), "undo restores it");
 
     // Save and reopen: the content comes from the library, and every pattern is its own clip again.
@@ -994,9 +994,9 @@ static void savedRackBindingTests() {
         require(!malformed.setRack(malformed.channelRack) && alien::sameContent(before, malformed),
             "document rack edits cannot recover missing ownership from an index cache");
     }
-    require(c.deleteRackPattern(0) && d.timeline.find(region)->source == 0 && d.timeline.find(region)->rackClip == source,
+    require(alien::command::CommandEngine(c).execute(alien::command::DeleteRackPattern{0}).changed && d.timeline.find(region)->source == 0 && d.timeline.find(region)->rackClip == source,
             "deleting an unused preceding slot remaps the Song cache by identity");
-    require(!c.deleteRackPattern(0), "a source with Session/Song uses cannot be deleted");
+    require(!alien::command::CommandEngine(c).execute(alien::command::DeleteRackPattern{0}).ok, "a source with Session/Song uses cannot be deleted");
     require(c.editRack("Shared edit", [](alien::rack::Project& p) { return p.setStepOn(0, 0, 1, true); }), "edit shared rack source");
     require(d.clip(0, 0).rackClip == d.clip(0, 1).rackClip && d.timeline.find(region)->rackClip == source && d.rackMatchesLibrary(),
             "Create, Session and Song retain one content owner");

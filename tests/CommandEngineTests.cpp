@@ -615,6 +615,7 @@ int main() {
     tempoCommandChecks();
     rackChannelCommandChecks();
     rackPatternCommandChecks();
+    rackPatternDeletionChecks();
     rackSoundCommandChecks();
     rackContentCommandChecks();
     songMarkerCommandChecks();

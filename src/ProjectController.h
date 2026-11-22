@@ -1931,15 +1931,6 @@ public:
         return true;
     }
 
-    // Deleting a pattern renumbers the ones after it, and the timeline must follow.
-    bool deleteRackPattern(int index) {
-        auto next = doc.channelRack;
-        if (!next.deletePattern(index) || !doc.setRack(std::move(next))) return false;
-        // setRack remaps each remaining Song reference by clip identity; in-use sources are refused.
-        pushRackToEngine();
-        commit("Delete pattern");
-        return true;
-    }
     DrumSliceTarget drumSliceTarget(int track, int pad) const {
         if (track < 0 || track >= doc.trackCount() || pad < 0 || pad >= drumPadCount) return {};
         const auto& owner = doc.tracks[track];

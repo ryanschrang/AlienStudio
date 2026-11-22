@@ -1086,7 +1086,7 @@ static void rackLaunchMenu() {
     rig.view.showRackClipMenu(); choose(2000);
     require(rig.engine.requestedRackClip.load() == 0, "menu offers quantized rack stop");
     rig.view.showRackClipMenu();
-    require(c.deleteRackPattern(1), "remove a source while popup is open"); choose(2);
+    require(alien::command::CommandEngine(c).execute(alien::command::DeleteRackPattern{1}).changed, "remove a source while popup is open"); choose(2);
     require(rig.engine.requestedRackClip.load() == 0, "a stale menu cannot launch whichever slot replaced its source");
     c.setExternalBusy(true); require(!c.launchRackClip(c.channelRack().clips[0]), "busy launches refused"); c.setExternalBusy(false);
     rig.engine.patternMode.store(2); require(!c.launchRackClip(c.channelRack().clips[0]), "Song playback is not silently replaced");
