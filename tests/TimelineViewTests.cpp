@@ -410,6 +410,21 @@ static void placingChecks() {
 
 
 // ---- a new clip from an empty lane --------------------------------------------------------------
+// Test-only metadata adapter: all edits and history still belong to NewSongClip.
+static bool executeNewSongClip(alien::ProjectController& controller, int row, std::int64_t start,
+    std::uint32_t* idOut = nullptr, int* sceneOut = nullptr, bool* sceneAddedOut = nullptr) {
+    const auto scenesBefore = controller.document().sceneCount();
+    const auto result = alien::command::CommandEngine(controller).execute(alien::command::NewSongClip{row, start});
+    if (!result.ok || !result.changed) return false;
+    const auto* region = controller.timeline().regionAt(row, start);
+    require(region && region->start == start && region->source == controller.document().selectedScene,
+        "NewSongClip selects the Session cell its new Song region plays");
+    if (idOut) *idOut = region->id;
+    if (sceneOut) *sceneOut = region->source;
+    if (sceneAddedOut) *sceneAddedOut = controller.document().sceneCount() != scenesBefore;
+    return true;
+}
+
 static void newClipChecks() {
     Rig rig;
     rig.sources();   // clips on tracks 1 to 3; track 4 (row 3) has nothing
@@ -461,7 +476,7 @@ static void newClipChecks() {
     const auto beforeScene = rig.t();
     const int scenesBefore = d.document().sceneCount();
     while (!added && guard++ < maxSessionScenes) {
-        require(d.placeNewClip(3, (20 + guard * 4) * bar, &id, &scene, &added), "another new clip fits");
+        require(executeNewSongClip(d, 3, (20 + guard * 4) * bar, &id, &scene, &added), "another new clip fits");
         if (!added) require(scene < scenesBefore, "while there are free cells the Session does not grow");
     }
     require(added && d.document().sceneCount() == scenesBefore + 1 && scene == scenesBefore, "when no cell is free a scene is added for it");
@@ -473,18 +488,18 @@ static void newClipChecks() {
     {
         const auto stateBefore = rig.t();
         const int scenesNow = d.document().sceneCount();
-        require(!d.placeNewClip(3, tl::maxLength) && rig.t() == stateBefore && d.document().sceneCount() == scenesNow,
+        require(!executeNewSongClip(d, 3, tl::maxLength) && rig.t() == stateBefore && d.document().sceneCount() == scenesNow,
                 "a clip that cannot be placed leaves no new scene behind");
         require(d.document().selectedTrack == 3 && d.document().selectedScene == scene, "and does not change the selection");
     }
 
     // When the Session is full nothing is created, and the person is told why.
     int n = 0;
-    while (n++ < 4 * maxSessionScenes && d.placeNewClip(3, (200 + n * 4) * bar)) {}
+    while (n++ < 4 * maxSessionScenes && executeNewSongClip(d, 3, (200 + n * 4) * bar)) {}
     require(d.document().sceneCount() == maxSessionScenes && n <= 4 * maxSessionScenes, "the Session stops at its scene limit");
     const auto full = rig.t();
     const auto fullDoc = d.document().sceneCount();
-    require(!d.placeNewClip(3, 0) && rig.t() == full && d.document().sceneCount() == fullDoc, "a refused clip changes nothing, not even the scenes");
+    require(!executeNewSongClip(d, 3, 0) && rig.t() == full && d.document().sceneCount() == fullDoc, "a refused clip changes nothing, not even the scenes");
     rig.view.refresh();
     rig.messages.clear();
     rig.doubleClick(rig.at(bar, 3));
@@ -494,10 +509,10 @@ static void newClipChecks() {
     Rig plain;
     plain.sources();
     const auto base = plain.t();
-    require(!plain.controller.placeNewClip(tl::rackRowBase, 0) && !plain.controller.placeNewClip(-1, 0) && !plain.controller.placeNewClip(99, 0)
-            && !plain.controller.placeNewClip(0, -1) && plain.t() == base, "a pattern lane, a missing track and a negative position make no clip");
+    require(!executeNewSongClip(plain.controller, tl::rackRowBase, 0) && !executeNewSongClip(plain.controller, -1, 0) && !executeNewSongClip(plain.controller, 99, 0)
+            && !executeNewSongClip(plain.controller, 0, -1) && plain.t() == base, "a pattern lane, a missing track and a negative position make no clip");
     plain.controller.setExternalBusy(true);
-    require(!plain.controller.placeNewClip(3, 0) && plain.t() == base, "nothing is made while a save or import runs");
+    require(!executeNewSongClip(plain.controller, 3, 0) && plain.t() == base, "nothing is made while a save or import runs");
     plain.messages.clear();
     plain.doubleClick(plain.at(0, 3));
     require(plain.t() == base && !plain.messages.empty() && plain.messages.back().contains("Wait"), "double-click says to wait");

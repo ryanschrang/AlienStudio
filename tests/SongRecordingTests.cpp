@@ -1,4 +1,5 @@
 #include "ProjectController.h"
+#include "CommandEngine.h"
 #include "SongRecording.h"
 #include "ViewModes.h"
 #include <algorithm>
@@ -434,7 +435,7 @@ void controllerTests(const juce::File& root) {
         require(count == 2, "redo brings both takes back");
         require(c.timeline().takes.size() == 2, "redo restores preserved recording passes");
         const auto originals = c.timeline().takes;
-        require(c.compRecordedTake(originals[0].id, 48, 96) && c.undoLabel() == "Comp recording take",
+        require(alien::command::CommandEngine(c).execute(alien::command::CompSongTake{originals[0].id, 48, 96}).changed && c.undoLabel() == "Comp recording take",
             "recorded audio can be comped in one undo step");
         require(c.timeline().takes == originals && file.existsAsFile(), "comp preserves every original pass and WAV");
         require(c.undo() && c.timeline().regions.size() == 2, "undo restores pre-comp arrangement");
@@ -476,7 +477,7 @@ void controllerTests(const juce::File& root) {
         auto settings = c.document().recording;
         settings.countInBars = 0;
         c.setRecordSettings(settings);
-        require(c.placeNewClip(0, 0), "fixture: a MIDI clip on track 0");
+        require(alien::command::CommandEngine(c).execute(alien::command::NewSongClip{0, 0}).changed, "fixture: a MIDI clip on track 0 through the command");
         rig.render(256);
         rig.arm(0);
         require(c.startSongTake(root.getChildFile("over"), rate, 2).started, "start");
@@ -543,7 +544,8 @@ void controllerTests(const juce::File& root) {
         for (const auto& r : c.timeline().regions) if (r.row == 0) playing.push_back(r);
         require(playing.size() == 1 && playing[0].start == 0 && playing[0].length == 3840 && closeTo(playing[0].audioOffset, 2.01, 1.0e-6),
                 "the last full pass is the one on the song");
-        require(c.compRecordedTake(takes[0].id, 0, 1920) && c.timeline().takes.size() == takesBefore + 3, "an earlier pass can be comped in");
+        require(alien::command::CommandEngine(c).execute(alien::command::CompSongTake{takes[0].id, 0, 1920}).changed && c.timeline().takes.size() == takesBefore + 3,
+            "an earlier pass can be comped in through the command");
         require(c.undo() && c.undo() && c.timeline().takes.size() == takesBefore, "undo removes every pass");
     }
     std::cout << "PASS: controller takes\n";

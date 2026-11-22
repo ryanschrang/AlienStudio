@@ -1799,15 +1799,6 @@ public:
         doc = std::move(candidate);
         return true;
     }
-    // The same edit as its own undo step, for callers that are not a view (the views run the command).
-    bool placeNewClip(int row, std::int64_t start, std::uint32_t* idOut = nullptr, int* sceneOut = nullptr, bool* sceneAddedOut = nullptr) {
-        const int scenesBefore = doc.sceneCount();
-        if (!applyNewSongClip(row, start, idOut)) return false;
-        commit("New clip", row, doc.selectedScene);
-        if (sceneOut != nullptr) *sceneOut = doc.selectedScene;
-        if (sceneAddedOut != nullptr) *sceneAddedOut = doc.sceneCount() != scenesBefore;
-        return true;
-    }
     bool applyHarmonicMidiCommand(const song_placement::HarmonicMidi& edit) {
         return canEditMidiClips() && song_placement::applyHarmonicMidi(doc, edit).isEmpty();
     }
@@ -1888,14 +1879,6 @@ public:
         if (!cells.empty()) selectClip(cells.front().first, cells.front().second);
         commit(label, cells.size() == 1 ? cells.front().first : -1, cells.size() == 1 ? cells.front().second : -1);
         return static_cast<int>(cells.size());
-    }
-    bool compRecordedTake(std::uint32_t id, std::int64_t from, std::int64_t to) {
-        if (isRecording() || busy) return false;
-        const auto found = std::find_if(doc.timeline.takes.begin(), doc.timeline.takes.end(),
-            [=](const timeline::Region& r) { return r.id == id; });
-        if (found == doc.timeline.takes.end() || !doc.isValidCell(found->row, found->source)
-            || !doc.clip(found->row, found->source).isAudioClip()) return false;
-        return editTimeline("Comp recording take", [=](timeline::Timeline& t) { return t.compTake(id, from, to); });
     }
     bool isTrackFrozen(int track) const noexcept {
         return track>=0 && track<doc.trackCount() && doc.tracks[static_cast<std::size_t>(track)].settings.frozen();
