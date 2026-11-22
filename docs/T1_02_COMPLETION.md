@@ -102,6 +102,14 @@ imports placed on the Song timeline run their own command, `ImportSongAudio`, th
 
 ## Direct route cleanup
 
+Song placement note edits now have only the `SetPlacementClipNotes` command
+entry point. The obsolete `setPlacementPattern` controller mutation is removed;
+controller and Song-paste tests submit the command without a paired manual
+history commit. CommandEngineTests covers shared placements in a note/mixer
+batch, pure Preview, Song snapshot publication, one-step Undo/Redo, and no-op,
+late and busy refusal preserving redo. Other direct routes and native acceptance
+remain pending.
+
 Rack-channel piano-roll notes now have only the `SetRackChannelNotes` command
 entry point. The obsolete `setRackChannelNotes` controller setter is removed;
 controller, pattern-length guard, piano-roll gesture and screenshot fixtures
