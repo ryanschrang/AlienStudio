@@ -1904,7 +1904,7 @@ static void robustnessChecks() {
         "a copied rack placement keeps its source identity after the bank changes");
     c.setSelection({rig.id.p});
     require(c.copySelection() && c.paste() && rig.t().regions.size() == regionsNow + 1 && rig.valid(), "copied again, it overwrites the same destination");
-    require(!rig.controller.deleteRackPattern(0), "used rack source cannot be deleted out from under placements");
+    require(!alien::command::CommandEngine(rig.controller).execute(alien::command::DeleteRackPattern{0}).ok, "used rack source cannot be deleted out from under placements");
     rig.controller.addScene();
     rig.view.refresh();
     require(rig.valid(), "after deleting a pattern the view is consistent");

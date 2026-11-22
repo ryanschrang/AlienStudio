@@ -102,6 +102,14 @@ imports placed on the Song timeline run their own command, `ImportSongAudio`, th
 
 ## Direct route cleanup
 
+Rack pattern deletion now has only the `DeleteRackPattern` command entry point.
+The obsolete direct `deleteRackPattern` controller route is removed; controller,
+Session stale-menu and Song source-protection tests submit the command too.
+CommandEngineTests covers deletion of an unused preceding bank slot with a
+surviving Song source, Preview/live agreement, engine snapshot publication,
+one-step Undo/Redo, and late in-use/busy refusal preserving redo. Other direct
+controller routes and native acceptance remain pending.
+
 Rack sound changes now have only the named command entry points:
 `SetRackChannelPlugin`, `SetRackChannelSynth` and `SetRackChannelSound`.
 The obsolete direct controller setters `setRackPlugin`, `setRackSynth` and
