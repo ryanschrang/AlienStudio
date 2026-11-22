@@ -13,7 +13,9 @@ Rack snapshots one audio block after the engine leaves them; D7 refuses an open 
 engine slots cannot be prepared, with a reason, and changes nothing; D8 reserves the Channel Rack's
 pending-hit queue for the rack channels a project has, instead of all 64; D9 keeps a block's Channel
 Rack plugin notes from losing a note-off when there are more notes than the block's list holds; D10
-tells the user, in the status bar and after an export or freeze, when Channel Rack hits were not played.
+tells the user, in the status bar and after an export or freeze, when Channel Rack hits were not played;
+D11 bounds the MIDI a Song or Session track's instrument is given each block, counts what is dropped
+and reports it the same way.
 Higher supported limits (E) are pending.
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
@@ -922,3 +924,44 @@ Tests: `RackPluginInstrumentTests` (the dense block from D9):
 Not tested: the status bar in the running app, and the export and freeze warnings (they run on a
 worker and are not covered by an automated test). The export warning is not shown when plugins also
 failed during the render; that message takes its place.
+
+## Increment D11: track-instrument MIDI bounded, counted and reported
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+D9 left the MIDI for Song and Session track instruments out of scope. Each track's MIDI storage is
+64 KiB, reserved once. Notes were capped at 4,095 a block: past that a note was dropped, and the next
+block told every instrument to end its notes, so a dropped note-off could not leave one held. But:
+
+- the dropped notes were not counted, so the user heard notes cut off with no reason given;
+- live controller and pitch-bend messages had no cap, so a flood of them could outgrow the storage
+  and make the audio thread allocate.
+
+What D11 changes:
+
+- **One limit for every event a track instrument is given.** `PluginRuntime::trackEventsPerBlock`
+  (4,096) now covers notes, controllers and pitch bend alike, through one check (`roomFor`).
+  - An event past the limit is dropped and counted (`droppedTrackEvents()`, or
+    `ToneEngine::droppedTrackMidi()`), and the next block ends every note, as before.
+  - A compile-time check makes sure the limit, its panics and some silences fit in the storage,
+    so a flood never reallocates.
+- **Reported with the Channel Rack's drops (D10).**
+  - `ProjectController::reportDroppedRackHits()` is now `reportDroppedNotes()`. It says "N MIDI events
+    for track instruments were not sent, and their notes were stopped", with its own tooltip reason,
+    beside or instead of the Channel Rack line, still at most once a second.
+  - An export's summary and a freeze's status name both kinds.
+
+Tests:
+- `PluginRuntimeTests`:
+  - a block keeps exactly 4,096 events for a track's instrument;
+  - a note-off, a controller and a pitch bend past the limit are counted, not kept;
+  - the note whose note-off was dropped ends the next block;
+  - the following block has room again;
+  - nothing allocates.
+- `RackPluginInstrumentTests`: five events past the limit are reported with the track reason and
+  without the Channel Rack's; both kinds read together in one line.
+
+Not tested: a Song arrangement that actually reaches 4,096 notes in one block for one track (it needs
+stacked regions), the status bar in the running app, and the export and freeze warnings. The limit
+is per track and per block, so it is reached only by very dense stacked material or a flood of live
+MIDI.

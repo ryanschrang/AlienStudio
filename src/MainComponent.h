@@ -1216,7 +1216,7 @@ private:
         applicationToolbar.refreshState();
         controller.pollRecording();
         controller.releaseReplacedAudio();   // audio of a replaced project, once the engine has let go of it
-        controller.reportDroppedRackHits();  // Channel Rack hits the engine had no room for (T1-04 D10)
+        controller.reportDroppedNotes();     // Channel Rack hits and track MIDI the engine had no room for (T1-04 D10, D11)
         captureHistory.drain(engine.capturedNotes);   // keeps the engine's ring from filling between captures
         const int recordPhase = engine.recording.phase.load();
         // A take the engine has not picked up yet already shows as recording.
@@ -1517,7 +1517,7 @@ private:
                     safe->refreshExtraViews();
                     juce::String frozen="Track frozen. Fader, pan, sends and automation remain live; right-click the track header to unfreeze.";
                     // Channel Rack hits the render had no room for (T1-04 D10) are missing from the frozen audio.
-                    if(const auto dropped=engine->droppedRackHits();dropped>0)frozen+="  WARNING: "+alien::rackDropText(dropped)+"; the frozen audio is missing them.";
+                    if(const auto dropped=alien::droppedNotesText(engine->droppedRackHits(),engine->droppedTrackMidi());dropped.isNotEmpty())frozen+="  WARNING: "+dropped+"; the frozen audio is missing them.";
                     safe->timelineView.setStatus(frozen);
                 }
             });
@@ -1585,9 +1585,9 @@ private:
                         + " dBFS  |  RMS " + dbfs(levels->rms)
                         + " dBFS  |  " + summary;
                 }
-                // Channel Rack hits the render had no room for (T1-04 D10): the file is missing them.
-                if (const auto dropped = engine->droppedRackHits(); ok && dropped > 0)
-                    summary += "  |  WARNING: " + alien::rackDropText(dropped) + "; the file is missing them";
+                // Channel Rack hits and track MIDI the render had no room for (T1-04 D10, D11): the file is missing them.
+                if (const auto dropped = alien::droppedNotesText(engine->droppedRackHits(), engine->droppedTrackMidi()); ok && dropped.isNotEmpty())
+                    summary += "  |  WARNING: " + dropped + "; the file is missing them";
                 safe->timelineView.setStatus(!ok ? error
                     : pluginFailures.isEmpty() ? summary
                     : "Exported " + file.getFullPathName() + " WITH PLUGIN FAILURES. The file is missing the sound of the plugin(s) that failed, so do not use it as a final mix:\n" + pluginFailures);

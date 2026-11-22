@@ -55,6 +55,21 @@ inline juce::String rackDropText(std::uint64_t hits) {
 inline const char* const rackDropTip =
     "The Channel Rack had no room for them: too many notes, ratchets or nudged hits at the same moment for its "
     "plugin instruments, or not enough memory for every channel. Thin out the densest steps or chords and play again.";
+// T1-04 D11: the same for MIDI that a Song or Session track's instrument could not be given.
+inline juce::String trackMidiDropText(std::uint64_t events) {
+    return juce::String(static_cast<juce::int64>(events)) + (events == 1 ? " MIDI event for a track instrument was" : " MIDI events for track instruments were")
+        + " not sent, and their notes were stopped";
+}
+inline const char* const trackMidiDropTip =
+    "More than 4,096 notes or controller messages reached one track's instrument at the same moment, so the rest were "
+    "dropped and every instrument was told to end its notes. Thin out stacked clips or dense MIDI on that track.";
+// Everything dropped, for a status line or an export summary; empty if nothing was.
+inline juce::String droppedNotesText(std::uint64_t rackHits, std::uint64_t trackEvents) {
+    juce::StringArray parts;
+    if (rackHits > 0) parts.add(rackDropText(rackHits));
+    if (trackEvents > 0) parts.add(trackMidiDropText(trackEvents));
+    return parts.joinIntoString("; ");
+}
 
 class ProjectController {
 public:
@@ -2587,15 +2602,19 @@ private:
         engine.audioReleaseRequest.store(replacedFence, std::memory_order_release);
     }
 public:
-    // Message thread (the app's timer calls it): says in the status bar how many Channel Rack hits the engine
-    // has not been able to play since the last report (T1-04 D10), at most once a second so a long run of them
-    // does not flood it. Returns whether it reported.
-    bool reportDroppedRackHits(std::uint32_t nowMs = juce::Time::getMillisecondCounter()) {
-        const auto count = engine.droppedRackHits();
-        if (count <= reportedRackDrops) return false;
-        if (rackDropReported && nowMs - rackDropReportedAt < 1000) return false;
-        status(rackDropText(count - reportedRackDrops), rackDropTip);
-        reportedRackDrops = count; rackDropReportedAt = nowMs; rackDropReported = true;
+    // Message thread (the app's timer calls it): says in the status bar how many Channel Rack hits (T1-04 D10)
+    // and track-instrument MIDI events (D11) the engine has not been able to play since the last report, at most
+    // once a second so a long run of them does not flood it. Returns whether it reported.
+    bool reportDroppedNotes(std::uint32_t nowMs = juce::Time::getMillisecondCounter()) {
+        const auto rack = engine.droppedRackHits(), track = engine.droppedTrackMidi();
+        if (rack <= reportedRackDrops && track <= reportedTrackDrops) return false;
+        if (dropReported && nowMs - dropReportedAt < 1000) return false;
+        const auto newRack = rack - reportedRackDrops, newTrack = track - reportedTrackDrops;
+        juce::String tip;
+        if (newRack > 0) tip << rackDropTip;
+        if (newTrack > 0) tip << (tip.isEmpty() ? "" : "\n") << trackMidiDropTip;
+        status(droppedNotesText(newRack, newTrack), tip);
+        reportedRackDrops = rack; reportedTrackDrops = track; dropReportedAt = nowMs; dropReported = true;
         return true;
     }
     // Message thread (the app's timer calls it). Frees the audio of replaced projects once the engine has
@@ -3294,8 +3313,9 @@ private:
 
     ToneEngine& engine;
     std::uint64_t reportedRackDrops{engine.droppedRackHits()};   // D10: hits already reported
-    std::uint32_t rackDropReportedAt{};
-    bool rackDropReported{};
+    std::uint64_t reportedTrackDrops{engine.droppedTrackMidi()};  // D11: track MIDI events already reported
+    std::uint32_t dropReportedAt{};
+    bool dropReported{};
     ProjectDocument doc;
     juce::File projectFile;
     bool busy{};
