@@ -12,7 +12,7 @@ static void euclideanEditorTests() {
     const auto context = [&] { roll.setProjectScaleContext(c.document().musicalScale, c.document().identityScope); };
     c.onMusicalScaleChanged = context;
     c.onDocumentRestored = [&] { loading = true; roll.setPattern(*c.document().clip(0, 0).pattern); loading = false; context(); };
-    require(c.setProjectScale(0, ScaleType::major, c.document().identityScope), "generator fixture defines project key");
+    require(alien::command::setProjectScale(c, 0, ScaleType::major, c.document().identityScope), "generator fixture defines project key");
     roll.setScaleSettings({2, ScaleType::naturalMinor, true, true}); // local setting must not override explicit project following
     const auto child = [&](const char* name) -> juce::Component* {
         for (auto* component : roll.getChildren()) if (component->getName() == name) return component;
@@ -37,7 +37,7 @@ static void euclideanEditorTests() {
     steps->setValue(8, juce::sendNotificationSync); hits->setValue(3, juce::sendNotificationSync);
     rotation->setValue(1, juce::sendNotificationSync); pitch->setValue(61, juce::sendNotificationSync);
     mode->setSelectedId(2, juce::sendNotificationSync);
-    require(c.setProjectScale(1, ScaleType::major, c.document().identityScope), "project key can change while generator panel is open");
+    require(alien::command::setProjectScale(c, 1, ScaleType::major, c.document().identityScope), "project key can change while generator panel is open");
     roll.setInsertionStep(4); click(apply);
     require(!roll.isProcessingPanelOpen() && changes == 1 && commits == 1 && roll.getPattern().count == 4, "generator publishes one edit and one owner commit");
     require(samePianoRollPattern(roll.getPattern(), *c.document().clip(0, 0).pattern), "owner receives exact generated notes");
@@ -59,7 +59,7 @@ static void euclideanEditorTests() {
     mode->setSelectedId(3, juce::sendNotificationSync);
     require(degree->isVisible() && octave->isVisible() && !pitch->isVisible(), "degree mode replaces MIDI pitch with degree and octave");
     degree->setSelectedId(7, juce::sendNotificationSync);
-    require(c.setProjectScale(1, ScaleType::minorPentatonic, c.document().identityScope), "project can switch to a shorter scale");
+    require(alien::command::setProjectScale(c, 1, ScaleType::minorPentatonic, c.document().identityScope), "project can switch to a shorter scale");
     require(!degree->isItemEnabled(7), "unavailable degrees are disabled");
     click(apply);
     require(roll.isProcessingPanelOpen() && samePianoRollPattern(before, roll.getPattern()) && commits == 1,

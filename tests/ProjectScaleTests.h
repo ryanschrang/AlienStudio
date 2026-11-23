@@ -10,7 +10,7 @@ static void projectScaleTests() {
     const auto refresh = [&] { roll.setProjectScaleContext(c.document().musicalScale, c.document().identityScope); };
     c.onMusicalScaleChanged = [&] { ++changes; refresh(); };
     c.onDocumentRestored = [&] { ++restored; refresh(); };
-    roll.onProjectScaleRequested = [&](int root, ScaleType type, std::uint32_t scope) { return c.setProjectScale(root, type, scope); };
+    roll.onProjectScaleRequested = [&](int root, ScaleType type, std::uint32_t scope) { return alien::command::setProjectScale(c, root, type, scope); };
     refresh(); roll.setScaleSettings({2, ScaleType::naturalMinor, true, true});
     const auto child = [&](const char* name) -> juce::Component* {
         for (int i = 0; i < roll.getNumChildComponents(); ++i) if (roll.getChildComponent(i)->getName() == name) return roll.getChildComponent(i);
@@ -26,16 +26,16 @@ static void projectScaleTests() {
     require(c.document().musicalScale == alien::ProjectMusicalScale{true, 2, ScaleType::naturalMinor} && roll.followsProjectScale() && !root->isEnabled(), "Scale tool publishes current key and follows shared context");
     require(changes == 1 && restored == 0 && engine.playing.load() && !engine.resetRackPlayback.load(), "metadata execution refreshes context without restoring plugins or changing transport requests");
     const auto scope = c.document().identityScope;
-    require(!c.setProjectScale(-1, ScaleType::major, scope) && !c.setProjectScale(0, static_cast<ScaleType>(10), scope), "invalid root and scale refuse");
-    c.setExternalBusy(true); require(!c.setProjectScale(9, ScaleType::major, scope), "busy context edit refuses"); c.setExternalBusy(false);
-    engine.recording.phase.store(alien::RecordControls::countIn); require(!c.setProjectScale(9, ScaleType::major, scope), "recording count-in context edit refuses"); engine.recording.phase.store(alien::RecordControls::idle);
-    require(c.setProjectScale(9, ScaleType::naturalMinor, scope) && roll.getScaleSettings().rootPitchClass == 9, "following editor tracks project key changes");
+    require(!alien::command::setProjectScale(c, -1, ScaleType::major, scope) && !alien::command::setProjectScale(c, 0, static_cast<ScaleType>(10), scope), "invalid root and scale refuse");
+    c.setExternalBusy(true); require(!alien::command::setProjectScale(c, 9, ScaleType::major, scope), "busy context edit refuses"); c.setExternalBusy(false);
+    engine.recording.phase.store(alien::RecordControls::countIn); require(!alien::command::setProjectScale(c, 9, ScaleType::major, scope), "recording count-in context edit refuses"); engine.recording.phase.store(alien::RecordControls::idle);
+    require(alien::command::setProjectScale(c, 9, ScaleType::naturalMinor, scope) && roll.getScaleSettings().rootPitchClass == 9, "following editor tracks project key changes");
     c.undo(); require(c.document().musicalScale.rootPitchClass == 2 && roll.getScaleSettings().rootPitchClass == 2, "Undo restores model and following editor");
-    const auto redo = c.redoLabel(); require(c.setProjectScale(2, ScaleType::naturalMinor, scope) && c.redoLabel() == redo, "same project context preserves redo");
+    const auto redo = c.redoLabel(); require(alien::command::setProjectScale(c, 2, ScaleType::naturalMinor, scope) && c.redoLabel() == redo, "same project context preserves redo");
     c.redo(); require(c.document().musicalScale.rootPitchClass == 9, "Redo restores key change");
     follow->setToggleState(false, juce::dontSendNotification); follow->onClick();
     require(root->isEnabled() && roll.getScaleSettings().rootPitchClass == 2, "local override restores prior editor key");
-    require(c.setProjectScale(4, ScaleType::major, scope) && roll.getScaleSettings().rootPitchClass == 2, "local override is unaffected by shared key changes");
+    require(alien::command::setProjectScale(c, 4, ScaleType::major, scope) && roll.getScaleSettings().rootPitchClass == 2, "local override is unaffected by shared key changes");
     follow->setToggleState(true, juce::dontSendNotification); follow->onClick();
     require(roll.getScaleSettings().rootPitchClass == 4 && roll.getScaleSettings().snap && roll.keyScale(64) == alien::ScaleRole::root, "following applies project root while preserving local guide/snap preferences");
     roll.setPitchView(alien::PitchView::scale); const auto shown = roll.shownPitches();
@@ -47,7 +47,7 @@ static void projectScaleTests() {
     const auto previousScope = c.document().identityScope; c.openProject(file);
     for (int i = 0; i < 400 && c.isBusy(); ++i) pump(10);
     require(!c.isBusy() && c.document().musicalScale == alien::ProjectMusicalScale{true, 4, ScaleType::major} && roll.getScaleSettings().rootPitchClass == 4, "save/reopen retains shared key and refreshes following editor");
-    require(!c.setProjectScale(9, ScaleType::major, previousScope), "old project scope refuses edits after reopen");
+    require(!alien::command::setProjectScale(c, 9, ScaleType::major, previousScope), "old project scope refuses edits after reopen");
     c.onDocumentRestored = {}; c.newProject(); publish->onClick();
     require(!c.document().musicalScale.defined, "stale Scale tool cannot set the key of a replacement project");
     refresh(); require(roll.getScaleSettings().rootPitchClass == 2, "undefined project context falls back to local scale");

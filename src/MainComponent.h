@@ -617,8 +617,7 @@ private:
     void wireEditors() {
         pianoRoll.onProjectScaleRequested = [this](int root, alien::ScaleType type, std::uint32_t scope) {
             // The piano roll asks for the project it is showing; a project replaced since then is not changed.
-            return scope == controller.document().identityScope
-                && alien::command::CommandEngine(controller).execute(alien::command::SetProjectScale{root, static_cast<int>(type)}).ok;
+            return alien::command::setProjectScale(controller, root, type, scope);
         };
         controller.onMusicalScaleChanged = [this] {
             const auto& d = controller.document();

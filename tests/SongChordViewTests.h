@@ -6,7 +6,7 @@ static void chordViewChecks() {
         int id = 0; for (const auto& item : rig.menu.items()) if (item.text == label && item.enabled) id = item.id;
         require(id && rig.menu.done, "chord menu exposes requested enabled action"); auto done = rig.menu.done; done(id);
     };
-    require(rig.controller.setProjectScale(2, alien::ScaleType::naturalMinor, rig.controller.document().identityScope), "prepare project key for chord root seed");
+    require(alien::command::setProjectScale(rig.controller, 2, alien::ScaleType::naturalMinor, rig.controller.document().identityScope), "prepare project key for chord root seed");
     require(rig.controller.editTimeline("Set loop", [](tl::Timeline& t) { return t.setLoop(bar, 3 * bar); }), "prepare chord loop range");
     rig.rightClick(at(0)); choose("Create D Major chord from loop");
     require(rig.t().chords.size() == 1 && rig.t().chords[0].root == 2 && rig.t().chords[0].quality == alien::ChordType::major
