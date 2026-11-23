@@ -84,5 +84,62 @@ static void restoredDetachedLayoutChecks() {
     require(!host.layoutState().window, "reset clears remembered floating geometry");
     require(!host.isDetached() && editor.getParentComponent() == &host && opened == closed,
         "default-layout reset docks the editor and balances native-window listeners");
+    {
+        class RecoveryWindow final : public juce::DocumentWindow {
+        public:
+            RecoveryWindow() : DocumentWindow("Display recovery test", juce::Colours::black, allButtons) {
+                setUsingNativeTitleBar(true); setResizable(true, true);
+            }
+            void closeButtonPressed() override {}
+        } live;
+        juce::Component content;
+        content.getProperties().set("shared", 91);
+        live.setContentNonOwned(&content, false);
+        layout::Tracker tracker(live, layout::panelLimits);
+        const auto screens = layout::displays();
+        const auto area = screens.front();
+        auto expanded = screens;
+        expanded.push_back({area.getRight() + 100, area.getY(), 1920, 1080});
+        int offscreenX = area.getRight();
+        for (const auto screen : screens) offscreenX = juce::jmax(offscreenX, screen.getRight());
+        offscreenX += 8192;
+        layout::apply(live, {{area.getX() + 30, area.getY() + 40, 1000, 500}, area, false}, layout::panelLimits);
+        live.setVisible(true);
+        const auto initial = live.getBounds();
+        require(!tracker.refreshDisplays(expanded) && live.getBounds() == initial,
+            "adding an unrelated monitor does not move an already reachable window");
+        live.setTopLeftPosition(offscreenX, area.getY() + 50);
+        require(tracker.refreshDisplays(screens), "removing a display recovers an open offscreen native window");
+        const auto recovered = live.getBounds();
+        if (const auto frame = live.getPeer()->getFrameSizeIfPresent())
+            require(layout::areaFor(recovered).contains(frame->addedTo(recovered)), "live recovery includes the native title bar and borders");
+        require(!tracker.refreshDisplays(screens) && live.getBounds() == recovered,
+            "unchanged topology leaves window geometry alone");
+        tracker.refreshDisplays(expanded);
+        live.setMinimised(true);
+        require(!tracker.refreshDisplays(screens) && live.isMinimised(), "display recovery never unminimizes a window");
+        live.setMinimised(false);
+        live.setTopLeftPosition(offscreenX, area.getY() + 50);
+        require(tracker.refreshDisplays(screens), "a deferred topology change is retried after unminimizing");
+        tracker.refreshDisplays(expanded);
+        live.setVisible(false);
+        live.setTopLeftPosition(offscreenX, area.getY() + 50);
+        require(!tracker.refreshDisplays(screens) && !live.isVisible(), "hidden windows are left hidden");
+        live.setVisible(true);
+        require(tracker.refreshDisplays(screens), "hidden recovery is retried after showing the window");
+        live.setFullScreen(true);
+        const auto normal = tracker.capture().bounds;
+        const auto maximizedBounds = live.getBounds();
+        auto reduced = area.withTrimmedBottom(80);
+        require(tracker.refreshDisplays({reduced}) && live.isFullScreen(), "work-area changes preserve maximized state");
+        require(live.getBounds() == maximizedBounds && reduced.contains(live.getPeer()->getNonFullScreenBounds()),
+            "recovery updates only the restore bounds while the OS manages the maximized frame");
+        live.setFullScreen(false);
+        require(reduced.contains(live.getBounds()) && tracker.capture().bounds.getWidth() <= normal.getWidth(),
+            "unmaximizing returns to the recovered normal bounds");
+        require(live.getContentComponent() == &content && static_cast<int>(content.getProperties()["shared"]) == 91,
+            "display recovery preserves the editor and its state");
+        live.clearContentComponent();
+    }
     std::cout << "PASS: restored native geometry, maximize/normal state, cached docking and shared-editor reset\n";
 }

@@ -810,7 +810,12 @@ private:
             // Preview joins the monitor output after project FX/stem buffers.
             // It follows master gain and the output safety limiter, never inserts.
             const float preview = factoryPresetPreview.nextSample() * masterRamp;
-            const auto sampleAudition = samplePreview.nextSample();
+            const double auditionTick = automationTicks[static_cast<std::size_t>(i)];
+            const auto sampleAudition = samplePreview.waitingForBeat()
+                ? samplePreview.nextSample(modeNow == 2 ? auditionTick >= 0.0 : playNow,
+                    modeNow == 2 ? auditionTick / alien::timeline::ticksPerBeat : transportBeat + i * beatsPerSample,
+                    modeNow == 2 && auditionTick >= 0.0 ? songRate(auditionTick) / alien::timeline::ticksPerBeat : beatsPerSample)
+                : samplePreview.nextSample();
             const float left = plugins->master.getSample(0,i) * masterRamp + preview + sampleAudition[0] * masterRamp, right = plugins->master.getSample(1,i) * masterRamp + preview + sampleAudition[1] * masterRamp;
             if (std::isfinite(left) && std::isfinite(right)) masterPeak = std::max(masterPeak, std::max(std::abs(left), std::abs(right)));
             for (int c = 0; c < channels; ++c) if (outputs[c]) {

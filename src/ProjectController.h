@@ -122,15 +122,6 @@ public:
         if (onMusicalScaleChanged) onMusicalScaleChanged();
         return true;
     }
-    // The same edit as its own undo step, for callers that are not a view (the views run the command).
-    bool setProjectScale(int root, ScaleType type, std::uint32_t expectedScope) {
-        const ProjectMusicalScale next{true, root, type};
-        if (!projectScaleOpen() || expectedScope != doc.identityScope || !next.valid()) return false;
-        if (doc.musicalScale == next) return true;
-        if (!applyProjectScale(root, type)) return false;
-        commit("Set project key and scale");
-        return true;
-    }
     const ProjectDocument& document() const noexcept { return doc; }
     void setExternalBusy(bool value) { setBusy(value); }
     bool isBusy() const noexcept { return busy; }
@@ -1064,11 +1055,6 @@ public:
         doc.recording = settings;
         engine.recording.apply(settings);
         return true;
-    }
-    // The same edit as its own undo step, for callers that are not a view (the views run the command).
-    void setRecordSettings(const RecordSettings& settings) {
-        if (settings == doc.recording || !applyRecordSettings(settings)) return;
-        commit("Change recording settings", -1, -1, "recordSettings");
     }
 
     // Republish only when the clip is playing or queued, so content changes
