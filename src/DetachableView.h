@@ -83,7 +83,7 @@ private:
             :DocumentWindow(title,ui::colours::surface,DocumentWindow::allButtons),onClose(std::move(close)),onBlur(std::move(blur)) {
             setUsingNativeTitleBar(true);ui::applyBrandTitleBar(*this);
         }
-        layout::Tracker geometry{*this};
+        layout::Tracker geometry{*this, layout::panelLimits};
         void visibilityChanged() override {DocumentWindow::visibilityChanged();ui::applyBrandTitleBar(*this);}
         void closeButtonPressed() override {if(onClose)onClose();}
         void activeWindowStatusChanged() override {if(!isActiveWindow()&&onBlur)onBlur();}

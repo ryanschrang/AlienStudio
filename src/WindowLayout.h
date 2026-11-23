@@ -54,16 +54,20 @@ inline juce::Rectangle<int> areaFor(juce::Rectangle<int> bounds) {
 }
 // Select a surviving screen by overlap with the saved work area, otherwise the
 // primary screen. Reposition proportionally when its logical work area changes.
-inline juce::Rectangle<int> fit(const WindowState& saved, const std::vector<juce::Rectangle<int>>& screens, Limits limits) {
+inline juce::Rectangle<int> survivingArea(juce::Rectangle<int> previous, const std::vector<juce::Rectangle<int>>& screens) {
     auto area = screens.empty() ? juce::Rectangle<int>{0, 0, 1280, 800} : screens.front();
     std::int64_t best = 0;
     for (const auto screen : screens) {
         if (!validRect(screen)) continue;
-        const auto overlap = screen.getIntersection(saved.workArea);
+        const auto overlap = screen.getIntersection(previous);
         const auto score = static_cast<std::int64_t>(overlap.getWidth()) * overlap.getHeight();
         if (score > best) { best = score; area = screen; }
     }
     if (!validRect(area)) area = {0, 0, 1280, 800};
+    return area;
+}
+inline juce::Rectangle<int> fit(const WindowState& saved, const std::vector<juce::Rectangle<int>>& screens, Limits limits) {
+    const auto area = survivingArea(saved.workArea, screens);
     const auto clampSize = [](int size, int available, int minimum, int maximum) {
         return juce::jlimit(juce::jmin(minimum, available), juce::jmin(maximum, available), size);
     };
@@ -81,29 +85,65 @@ inline juce::Rectangle<int> fit(const WindowState& saved, const std::vector<juce
     return result.withPosition(juce::jlimit(area.getX(), area.getRight() - width, result.getX()),
                                juce::jlimit(area.getY(), area.getBottom() - height, result.getY()));
 }
-inline void apply(juce::DocumentWindow& window, const WindowState& state, Limits limits) {
-    auto bounds = fit(state, displays(), limits);
-    window.setFullScreen(false); window.setMinimised(false);
+inline juce::Rectangle<int> fittedBounds(juce::DocumentWindow& window, const WindowState& state, Limits limits,
+                                         const std::vector<juce::Rectangle<int>>& screens) {
+    auto bounds = fit(state, screens, limits);
     // Component bounds exclude native title bars/borders. Keep the entire
     // native frame reachable too, using logical sizes reported by the peer.
     if (const auto* peer = window.getPeer()) {
         if (const auto frame = peer->getFrameSizeIfPresent()) {
-            const auto clientArea = frame->subtractedFrom(areaFor(bounds));
+            const auto clientArea = frame->subtractedFrom(survivingArea(bounds, screens));
             if (validRect(clientArea)) bounds = fit({bounds, clientArea, false}, {clientArea}, limits);
         }
     }
+    return bounds;
+}
+inline void apply(juce::DocumentWindow& window, const WindowState& state, Limits limits,
+                  const std::vector<juce::Rectangle<int>>& screens) {
+    window.setFullScreen(false); window.setMinimised(false);
+    const auto bounds = fittedBounds(window, state, limits, screens);
     window.setResizeLimits(juce::jmin(limits.minWidth, bounds.getWidth()), juce::jmin(limits.minHeight, bounds.getHeight()), limits.maxWidth, limits.maxHeight);
     window.setBounds(bounds);
     // JUCE records its native unmaximize bounds only while a window is showing.
     // Hidden startup windows apply maximization immediately after being shown.
     if (window.isShowing()) window.setFullScreen(state.maximized);
 }
+inline void apply(juce::DocumentWindow& window, const WindowState& state, Limits limits) {
+    apply(window, state, limits, displays());
+}
 // Track normal geometry while maximized/minimized, so restart never treats a
 // maximized screen rectangle as the user's normal window size.
-class Tracker final : private juce::ComponentListener {
+class Tracker final : private juce::ComponentListener, private juce::Timer {
 public:
-    explicit Tracker(juce::DocumentWindow& w) : window(w) { window.addComponentListener(this); }
-    ~Tracker() override { window.removeComponentListener(this); }
+    explicit Tracker(juce::DocumentWindow& w, Limits sizeLimits = mainLimits)
+        : window(w), limits(sizeLimits), knownDisplays(displays()) {
+        window.addComponentListener(this); startTimerHz(2);
+    }
+    ~Tracker() override { stopTimer(); window.removeComponentListener(this); }
+    // Message thread. Defer hidden/minimized windows without acknowledging the
+    // topology change, so restoring them recovers geometry without stealing focus.
+    bool refreshDisplays(const std::vector<juce::Rectangle<int>>& screens) {
+        if (screens == knownDisplays || !window.isShowing() || window.isMinimised()) return false;
+        auto state = normal;
+        if (!window.isFullScreen()) state.bounds = window.getBounds();
+        state.maximized = window.isFullScreen();
+        const auto area = survivingArea(state.workArea, screens);
+        bool needsFit = state.workArea != area || fit(state, screens, limits) != state.bounds;
+        if (const auto* peer = window.getPeer())
+            if (const auto frame = peer->getFrameSizeIfPresent()) needsFit |= !area.contains(frame->addedTo(state.bounds));
+        knownDisplays = screens;
+        if (!needsFit) return false;
+        if (state.maximized) {
+            // The OS manages the maximized frame on display changes. Repair its
+            // restore rectangle without ShowWindow restore/maximize activating it.
+            if (auto* peer = window.getPeer()) {
+                normal.bounds = fittedBounds(window, state, limits, screens);
+                normal.workArea = area;
+                peer->setNonFullScreenBounds(normal.bounds);
+            }
+        } else apply(window, state, limits, screens);
+        return true;
+    }
     WindowState capture() const {
         auto state = normal;
         if (!window.isFullScreen() && !window.isMinimised() && validRect(window.getBounds())) {
@@ -118,12 +158,15 @@ public:
         state.maximized = window.isFullScreen(); return state;
     }
 private:
+    void timerCallback() override { refreshDisplays(displays()); }
     void componentMovedOrResized(juce::Component&, bool, bool) override {
         if (!window.isFullScreen() && !window.isMinimised() && validRect(window.getBounds())) {
             normal.bounds = window.getBounds(); normal.workArea = areaFor(normal.bounds);
         }
     }
     juce::DocumentWindow& window;
+    Limits limits;
+    std::vector<juce::Rectangle<int>> knownDisplays;
     WindowState normal;
 };
 inline juce::var rectToVar(juce::Rectangle<int> r) {
