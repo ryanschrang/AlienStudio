@@ -195,6 +195,8 @@ public:
     int preparedRackChannels() const noexcept { return rackPlayer.reservedChannels(); }
     // Hits the rack's pending queue had no room for (audio thread writes; diagnostics and tests).
     std::uint64_t droppedRackHits() const noexcept { return rackPlayer.droppedHits(); }
+    // MIDI events for Song and Session track instruments dropped because a block had too many (T1-04 D11).
+    std::uint64_t droppedTrackMidi() const noexcept { return plugins->droppedTrackEvents(); }
     // Control thread. Prepares the slots, then publishes the count. If they cannot all be prepared, the
     // count published is the slots that exist, and the answer is false: the controller checks with
     // prepareTracks() before it commits a larger project, so this happens only to a caller that did not.

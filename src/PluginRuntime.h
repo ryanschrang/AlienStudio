@@ -78,6 +78,14 @@ public:
     std::array<juce::AudioBuffer<float>, maxBuses> buses;       // the tracks routed to each group bus, then its FX
     std::array<juce::MidiBuffer, maxSessionTracks> midi;
     int sampleOffset{};
+    // T1-04 D11: the most MIDI events (notes, controllers, pitch bend) a track's instrument is given in one block.
+    // Past it the event is dropped and counted, and the next block tells every instrument to end its notes, so
+    // a dropped note-off cannot leave one held. The track buffers hold that many, their panics and some silences.
+    static constexpr int trackEventsPerBlock = 4096;
+    static constexpr std::size_t trackMidiBytes = 65536;
+    static_assert((trackEventsPerBlock + 32 * 8) * midiEventBytes <= trackMidiBytes, "a full block of track MIDI never reallocates");
+    // Audio thread writes, any thread reads: events for track instruments dropped since the runtime was made.
+    std::uint64_t droppedTrackEvents() const noexcept { return droppedTrack.load(std::memory_order_relaxed); }
     std::array<int,maxSessionTracks> eventCounts{};
     std::atomic<bool> panic{};
     FaultQueue faults;                          // read by the message thread (PluginHost::poll)
@@ -143,7 +151,7 @@ public:
         live.setSize(2, blockSize); master.setSize(2, blockSize);
         for (auto& b : returns) b.setSize(2, blockSize);
         for (auto& b : buses) b.setSize(2, blockSize);
-        for (auto& m : midi) m.ensureSize(65536);
+        for (auto& m : midi) m.ensureSize(trackMidiBytes);
         for (auto& m : channelMidi) m.ensureSize(rackChannelMidiBytes);
         channelScratch.setSize(2, blockSize);
         emptyMidi.ensureSize(65536);
@@ -271,20 +279,24 @@ public:
              : isReturn(rack) ? RackStage::returnTrack : RackStage::bus;
     }
     void controller(std::size_t track,int channel,int number,int value) noexcept {
-        if(track<tracks.size()&&!racks[track].frozen&&channel>=1&&channel<=16&&number>=0&&number<128&&value>=0&&value<128)
+        if(track<tracks.size()&&!racks[track].frozen&&channel>=1&&channel<=16&&number>=0&&number<128&&value>=0&&value<128&&roomFor(track))
             midi[track].addEvent(juce::MidiMessage::controllerEvent(channel,number,value),sampleOffset);
     }
     void pitchWheel(std::size_t track,int channel,int value) noexcept {
-        if(track<tracks.size()&&!racks[track].frozen&&channel>=1&&channel<=16)
+        if(track<tracks.size()&&!racks[track].frozen&&channel>=1&&channel<=16&&roomFor(track))
             midi[track].addEvent(juce::MidiMessage::pitchWheel(channel,std::clamp(value,0,16383)),sampleOffset);
     }
     void note(std::size_t track, int note, float velocity, bool on, int channel = 1) noexcept {
-        if(racks[track].frozen)return;
-        // Bound events to the preallocated MIDI storage. Reserve the final
-        // portion for a panic instead of reallocating under an event flood.
-        auto& m = midi[track];
-        if (++eventCounts[track] >= 4096) { panic.store(true); return; }
-        m.addEvent(on ? juce::MidiMessage::noteOn(channel,note,velocity) : juce::MidiMessage::noteOff(channel,note), sampleOffset);
+        if(track>=tracks.size()||racks[track].frozen||!roomFor(track))return;
+        midi[track].addEvent(on ? juce::MidiMessage::noteOn(channel,note,velocity) : juce::MidiMessage::noteOff(channel,note), sampleOffset);
+    }
+    // Audio thread: whether the track's MIDI has room for one more event this block (trackEventsPerBlock). If
+    // not, the event is counted as dropped and the next block ends every note, instead of reallocating.
+    bool roomFor(std::size_t track) noexcept {
+        if (eventCounts[track] < trackEventsPerBlock) { ++eventCounts[track]; return true; }
+        droppedTrack.store(droppedTrack.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+        panic.store(true);
+        return false;
     }
     int rackLatency(const Rack& rack) const noexcept {
         if(rack.frozen)return 0;
@@ -657,6 +669,7 @@ private:
     std::array<AlignmentStageState, alignmentStageCount> stages;   // the storage behind the lines above
     std::array<std::vector<float>, maxRackChannels> channelStorage;   // each loaded rack instrument's line
     std::atomic<std::uint32_t> shortfalls{0};
+    std::atomic<std::uint64_t> droppedTrack{0};
     bool shortBlock{};   // audio thread: a shortfall was already counted this block
     juce::MidiBuffer emptyMidi;
     std::array<juce::MidiBuffer, maxRackChannels> channelMidi;
