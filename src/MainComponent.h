@@ -1223,7 +1223,9 @@ private:
         applicationToolbar.refreshState();
         controller.pollRecording();
         controller.releaseReplacedAudio();   // audio of a replaced project, once the engine has let go of it
-        controller.reportDroppedNotes();     // Channel Rack hits and track MIDI the engine had no room for (T1-04 D10, D11)
+        // Channel Rack hits and track MIDI the engine had no room for (T1-04 D10, D11), then streamed audio that
+        // dropped out or could not be read (D12); one message a tick, so neither hides the other.
+        if (!controller.reportDroppedNotes()) controller.reportStreamProblems();
         captureHistory.drain(engine.capturedNotes);   // keeps the engine's ring from filling between captures
         const int recordPhase = engine.recording.phase.load();
         // A take the engine has not picked up yet already shows as recording.

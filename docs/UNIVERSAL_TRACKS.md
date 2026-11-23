@@ -15,7 +15,8 @@ pending-hit queue for the rack channels a project has, instead of all 64; D9 kee
 Rack plugin notes from losing a note-off when there are more notes than the block's list holds; D10
 tells the user, in the status bar and after an export or freeze, when Channel Rack hits were not played;
 D11 bounds the MIDI a Song or Session track's instrument is given each block, counts what is dropped
-and reports it the same way.
+and reports it the same way; D12 reports, by track, streamed audio that dropped out or could not be
+read during playback.
 Higher supported limits (E) are pending.
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
@@ -965,3 +966,44 @@ Not tested: a Song arrangement that actually reaches 4,096 notes in one block fo
 stacked regions), the status bar in the running app, and the export and freeze warnings. The limit
 is per track and per block, so it is reached only by very dense stacked material or a flood of live
 MIDI.
+
+## Increment D12: streamed audio that drops out or cannot be read is reported
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+Long audio clips stream from disk. When a stream was not buffered in time, the player output silence
+and counted an underrun for each silent sample. When a stream could not be read, the clip stopped and
+a flag was set, but the next clip cleared it. Only export checked either one: it refuses a render that
+hit one. During live playback, Session or Song, the user heard a gap or a missing clip with no reason
+given (gate 4).
+
+What D12 changes:
+
+- **Failures are counted.** `SessionAudioPlayer::failureCount()` counts streams that could not be
+  read, whether at launch or while playing. Queueing the next clip does not reset it. A stream that
+  fails while playing now counts once as a failure; before, every silent sample after it counted as an
+  underrun. `ToneEngine::sessionStreamFailures(track)` sums a track's player and crossfade-tail player.
+  The audio thread only adds to an atomic.
+- **Reported by track.** `ProjectController::reportStreamProblems()`, called by the app's timer, says
+  "Streamed audio dropped out on track 1: the disk could not keep up" and/or "Streamed audio on
+  track 3 could not be read, so it stopped". Each comes with its own tooltip (disk too slow; file
+  moved, deleted or disconnected, and Search for missing audio). It lists only what is new since the
+  last report, at most once a second. The timer shows D10/D11's dropped-note message first, then this
+  one on a later tick, so neither hides the other.
+
+Tests:
+- `StreamedSessionPlaybackTests`:
+  - a failed launch is one failure, not an underrun, and the count survives the next queue;
+  - a stream that fails while playing is one failure, and its silence is not an underrun;
+  - a stream whose disk stalls underruns without failing.
+- `RackPluginInstrumentTests`: a real engine plays a Song with a stalled stream on track 1 and an
+  unreadable one on track 3.
+  - The engine counts the underruns and the single failure on the right tracks.
+  - The status bar names both tracks with both reasons; more of the same waits a second, then only
+    what is new is reported.
+
+Not covered:
+- a Song region whose stream arrives late and starts part-way in. That is by design, keeps time, and
+  is not reported; reporting it would be noisy, since playing from the middle of a region always waits
+  briefly.
+- the running app and a real slow disk.

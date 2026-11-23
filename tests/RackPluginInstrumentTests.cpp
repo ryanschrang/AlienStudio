@@ -7,8 +7,11 @@
 #include "PluginHost.h"
 #include "RackProject.h"
 #include "ToneEngine.h"
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
+#include <thread>
 
 using namespace alien;
 using namespace alien::rack;
@@ -547,8 +550,81 @@ static void denseNotes() {
     std::puts("PASS: a dense block of rack plugin notes loses no note-off");
 }
 
+// A streamed source whose reads fail from `failFrom` on, or wait from `stallFrom` on until released.
+struct StreamFile final : DiskAudioFile {
+    struct Reader final : DiskAudioReader {
+        explicit Reader(const StreamFile& owner) : file(owner) {}
+        bool read(std::int64_t start, float* left, float*, int count) override {
+            if (start >= file.failFrom) return false;
+            const auto giveUp = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (start >= file.stallFrom && !file.released.load() && std::chrono::steady_clock::now() < giveUp)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            for (int i = 0; i < count; ++i) left[i] = 0.25f;
+            return true;
+        }
+        const StreamFile& file;
+    };
+    StreamFile(std::int64_t fail, std::int64_t stall) : DiskAudioFile(48000.0, 1, 96000), failFrom(fail), stallFrom(stall) {}
+    std::unique_ptr<DiskAudioReader> open() const override { return std::make_unique<Reader>(*this); }
+    std::int64_t failFrom, stallFrom;
+    std::atomic<bool> released{};
+};
+
+static void streamReports() {
+    auto owned = std::make_unique<ToneEngine>();
+    auto& engine = *owned;
+    engine.prepare(48000); engine.patternMode.store(2); engine.bpm.store(120); engine.setActiveTracks(4);
+    ProjectController reporter(engine);
+    juce::String said, why;
+    reporter.onProjectStatus = [&](const juce::String& text, const juce::String& tip) { said = text; why = tip; };
+    require(!reporter.reportStreamProblems(1000) && said.isEmpty(), "no stream problem, nothing to say");
+
+    constexpr auto never = std::numeric_limits<std::int64_t>::max();
+    auto unreadable = std::make_shared<StreamFile>(0, never);       // track 3: cannot be read at all
+    auto slow = std::make_shared<StreamFile>(never, 12288);         // track 1: the disk stalls after a quarter second
+    SessionAudioClip bad, late;
+    for (auto* c : {&bad, &late}) { c->sampleRate = 48000; c->channels = 1; c->frames = 96000; }
+    bad.streamSource = unreadable; late.streamSource = slow;
+    require(engine.retainDiskAudioSource(unreadable) && engine.retainDiskAudioSource(slow), "the engine keeps both sources");
+    auto song = std::make_shared<ArrangementPlayback>();
+    song->timeline.setLengthBars(4);
+    song->clips[0][0].audio = &late; song->clips[0][2].audio = &bad;   // clips[scene][track]
+    for (int row : {0, 2}) {
+        timeline::Region r; r.row = row; r.source = 0; r.start = 0; r.length = 2 * timeline::ticksPerBar;
+        std::uint32_t id = 0;
+        require(song->timeline.place(r, &id) && id != 0, "place a streamed region");
+    }
+    require(engine.arrangementMailbox.publish(std::shared_ptr<const ArrangementPlayback>(song)), "publish the song");
+    engine.timelineSeek.store(0); engine.playing.store(true);
+    std::vector<float> l(256), r(256);
+    auto render = [&](int blocks) {
+        for (int b = 0; b < blocks; ++b) { float* out[]{l.data(), r.data()}; engine.audioDeviceIOCallbackWithContext(nullptr, 0, out, 2, 256, {}); }
+    };
+    render(1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));   // track 1 prebuffers, track 3 fails
+    render(150);                                                   // 0.8 s: track 1 plays past what the stalled disk gave
+    require(engine.sessionStreamFailures(2) == 1 && engine.sessionStreamUnderruns(2) == 0, "track 3's stream failed once");
+    require(engine.sessionStreamUnderruns(0) > 0 && engine.sessionStreamFailures(0) == 0, "track 1's stream ran dry");
+    require(reporter.reportStreamProblems(2000)
+                && said == "Streamed audio dropped out on track 1: the disk could not keep up; Streamed audio on track 3 could not be read, so it stopped"
+                && why.contains("faster, local drive") && why.contains("Search for missing audio"),
+            "the status bar names each track and why");
+    said.clear();
+    render(20);
+    require(!reporter.reportStreamProblems(2500) && said.isEmpty(), "more of the same waits a second");
+    require(reporter.reportStreamProblems(3100) && said == "Streamed audio dropped out on track 1: the disk could not keep up"
+                && !why.contains("missing audio"),
+            "then only what is new is reported");
+    slow->released.store(true);
+    engine.playing.store(false); render(2);
+    require(trackListText({2, 5, 7}) == "tracks 2, 5 and 7" && trackListText({4, 9}) == "tracks 4 and 9", "track lists read naturally");
+    require(streamProblemText({}, {}).isEmpty(), "nothing reads as nothing");
+    std::puts("PASS: streamed audio that drops out or cannot be read is reported by track");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
+    streamReports();
     denseNotes();
     model();
     player();

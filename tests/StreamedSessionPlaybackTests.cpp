@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <thread>
 
@@ -22,9 +23,14 @@ class Source final : public alien::DiskAudioFile {
 public:
     explicit Source(std::int64_t count) : DiskAudioFile(48000, 2, count) {}
     struct Reader final : alien::DiskAudioReader {
-        explicit Reader(bool fail) : fail(fail) {}
+        Reader(bool fail, const Source& owner) : fail(fail), owner(owner) {}
         bool read(std::int64_t start, float* left, float* right, int count) override {
             if (fail) return false;
+            // Past stallFrom the disk is "slow": the read waits until released (or gives up after 5 s).
+            const auto giveUp = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (start >= owner.stallFrom.load() && !owner.released.load() && std::chrono::steady_clock::now() < giveUp)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            if (start >= owner.failFrom.load()) return false;
             for (int i=0;i<count;++i) {
                 left[i]=static_cast<float>(start+i)*0.001f;
                 right[i]=-left[i];
@@ -32,11 +38,13 @@ public:
             return true;
         }
         bool fail;
+        const Source& owner;
     };
     std::unique_ptr<alien::DiskAudioReader> open() const override {
-        return std::make_unique<Reader>(fail.load());
+        return std::make_unique<Reader>(fail.load(), *this);
     }
-    std::atomic<bool> fail{};
+    std::atomic<bool> fail{}, released{};
+    std::atomic<std::int64_t> failFrom{std::numeric_limits<std::int64_t>::max()}, stallFrom{std::numeric_limits<std::int64_t>::max()};
 };
 
 int main() {
@@ -77,4 +85,36 @@ int main() {
     require(waitFor([&]{return first.pendingFailed();}),"decoder failure becomes visible");
     require(!first.launchPendingNow(48000)&&first.streamFailed(),"failed prebuffer is rejected and reported");
     require(first.isPlaying(),"failed replacement leaves the active clip playing");
+
+    // T1-04 D12: a stream that could not be read is counted once, and the count outlives the next queue.
+    require(first.failureCount()==1 && first.underrunCount()==0,"a failed launch is one failure, not an underrun");
+    require(first.queue(&clip,1) && !first.streamFailed() && first.failureCount()==1,"queueing again clears the flag but keeps the count");
+    first.stop();
+    // A stream that fails while it plays: one failure, and its silence is not counted as underruns.
+    {
+        // The read at 2048 waits until the stream has started, then fails, so the launch always sees it ready.
+        auto dying=std::make_shared<Source>(20000); dying->failFrom.store(2048); dying->stallFrom.store(2048);
+        require(streams.retain(dying)==dying.get(),"dying source retained");
+        alien::SessionAudioClip clipOf; clipOf.sampleRate=48000; clipOf.channels=2; clipOf.frames=20000; clipOf.streamSource=dying;
+        alien::SessionAudioPlayer player; player.bind(streams.reserve(4),streams.reserve(5));
+        require(player.queue(&clipOf,1) && waitFor([&]{return player.pendingReady();}) && player.launchPendingNow(48000),"dying stream starts");
+        dying->released.store(true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));   // the worker reaches the unreadable part
+        for(int i=0;i<12000;++i) player.nextSample();
+        require(player.failureCount()==1 && player.streamFailed(),"a stream that fails while playing is one failure");
+        require(player.underrunCount()==0,"and its silence is not an underrun");
+    }
+    // A stream the disk is too slow for: the silent samples are underruns, not a failure.
+    {
+        auto slow=std::make_shared<Source>(40000); slow->stallFrom.store(12288);
+        require(streams.retain(slow)==slow.get(),"slow source retained");
+        alien::SessionAudioClip clipOf; clipOf.sampleRate=48000; clipOf.channels=2; clipOf.frames=40000; clipOf.streamSource=slow;
+        alien::SessionAudioPlayer player; player.bind(streams.reserve(6),streams.reserve(7));
+        require(player.queue(&clipOf,1) && waitFor([&]{return player.pendingReady();}) && player.launchPendingNow(48000),"slow stream starts");
+        for(int i=0;i<20000;++i) player.nextSample();
+        require(player.underrunCount()>0 && player.failureCount()==0 && !player.streamFailed(),"a stalled stream underruns without failing");
+        slow->released.store(true);
+        player.stop();
+    }
+    std::cout<<"PASS: streamed Session playback\n";
 }
