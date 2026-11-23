@@ -238,7 +238,8 @@ public:
         pushDocumentToEngine();
         runtimeDirty = false;
         history.reset(doc);
-        awaitAudioRelease(setAsideRetainedAudio());   // the replaced project's audio, freed once the engine lets go of it
+        // The replaced project's audio, and the rack samples only it used (D14), freed once the engine lets go of them.
+        awaitAudioRelease(setAsideRetainedAudio(forgetUnusedRackAudio()));
         savedId = history.currentId();
         discardRecovery();
         if (onDocumentReplaced) onDocumentReplaced();
@@ -2409,8 +2410,8 @@ private:
     // The sound a channel plays: a built-in drum sound (generated once and kept
     // for the life of the program), a loaded file, or nothing (silent or offline).
     const SessionAudioClip* rackClip(const rack::ChannelInfo& info) const { return rackAsset(info).get(); }
-    // The same, owned. A sliced channel plays a view of its file's decoded audio (T2-01): the views are kept for the
-    // life of the controller, as the engine may still hold one, and shared by every channel playing that slice. A slice
+    // The same, owned. A sliced channel plays a view of its file's decoded audio (T2-01): the views are kept while the
+    // open project's samples are (an open lets go of the rest once the engine has, D14), and shared by every channel playing that slice. A slice
     // past the end of its file, or of audio that is streamed, plays nothing.
     // A channel with key zones (T2-01) plays a key map: a clip with no audio of its own that names the slice for each
     // key. Maps are kept like the slice views, one for each file, range and set of zones.
@@ -2503,25 +2504,87 @@ private:
     // Called once the new project, its history and its published Song are in place: a clip that only
     // `retained` still owns belongs to nothing that could hand it out again (not the document, history,
     // clipboard, rack caches or a running job), so the engine's raw pointers are the only other way to reach
-    // it. Those clips are set aside until the engine confirms it has let go. A drum slice source goes with
-    // them when its only other owners are slice views being set aside. Anything else stays, as before.
+    // it. Those clips are set aside until the engine confirms it has let go. Anything else stays, as before.
+    //
+    // D14: `dropped` holds what the rack caches let go of (forgetUnusedRackAudio): slice views, key maps and
+    // decoded files the new project does not use. A clip is set aside when every reference to it comes from
+    // `retained`, `dropped` or another clip being set aside (a slice view's source, a key map's zones), so a
+    // chain of views and maps goes together with the file under it. A dropped clip something else still
+    // owns simply loses the cache's reference, once the engine has let go.
     struct ReplacedAudio { std::vector<std::shared_ptr<const SessionAudioClip>> clips; std::size_t bytes{}; };
-    ReplacedAudio setAsideRetainedAudio() {
-        std::map<const SessionAudioClip*, long> viewOwners;   // references held by views that are set aside
-        for (const auto& clip : retained)
-            if (clip.use_count() == 1 && clip->sliceSource) ++viewOwners[clip->sliceSource.get()];
+    ReplacedAudio setAsideRetainedAudio(std::vector<std::shared_ptr<const SessionAudioClip>> dropped = {}) {
+        using Clip = const SessionAudioClip*;
+        std::map<Clip, long> listed;                                       // times in `retained` or `dropped`
+        std::map<Clip, const std::shared_ptr<const SessionAudioClip>*> owner;   // one of those, for use_count
+        for (const auto* list : {&retained, &dropped})
+            for (const auto& clip : *list) { ++listed[clip.get()]; owner.emplace(clip.get(), &clip); }
+        // Start from "all of them go" and take back, until nothing changes, any clip with a reference from outside.
+        std::set<Clip> going;
+        for (const auto& [clip, times] : listed) going.insert(clip);
+        for (bool changed = true; changed;) {
+            changed = false;
+            std::map<Clip, long> inner;   // references held by clips that are going
+            for (const auto* clip : going) {
+                if (clip->sliceSource) ++inner[clip->sliceSource.get()];
+                if (clip->keyZones) for (const auto& zone : *clip->keyZones) if (zone.clip) ++inner[zone.clip.get()];
+            }
+            for (auto it = going.begin(); it != going.end();) {
+                const auto found = inner.find(*it);
+                const long internal = listed[*it] + (found == inner.end() ? 0 : found->second);
+                if (owner[*it]->use_count() != internal) { it = going.erase(it); changed = true; } else ++it;
+            }
+        }
         ReplacedAudio out;
         std::vector<std::shared_ptr<const SessionAudioClip>> kept;
         for (auto& clip : retained) {
-            const auto views = viewOwners.find(clip.get());
-            const long others = views == viewOwners.end() ? 0 : views->second;
-            if (clip.use_count() - others != 1) { kept.push_back(std::move(clip)); continue; }
+            if (!going.contains(clip.get())) { kept.push_back(std::move(clip)); continue; }
             out.bytes += clip->decodedBytes();
             out.clips.push_back(std::move(clip));
         }
+        for (auto& clip : dropped) out.clips.push_back(std::move(clip));
         out.bytes = std::min(out.bytes, retainedBytes);
         retained = std::move(kept);
         return out;
+    }
+    // T1-04 D14. Message thread, when a project replaces the open one (after the new one is published and its
+    // history reset): the Channel Rack caches keep only what the new project's channels use. Decoded rack
+    // files, slice views and key maps used to be kept for the controller's lifetime, so each project opened
+    // with different rack samples left the last one's decoded audio behind, counted against
+    // maxSessionAudioBytes. Answers what the caches let go of, for setAsideRetainedAudio.
+    std::vector<std::shared_ptr<const SessionAudioClip>> forgetUnusedRackAudio() {
+        std::set<std::string> used;
+        for (int c = 0; c < doc.channelRack.channelCount; ++c)
+            if (const auto& info = doc.channelRack.info[static_cast<std::size_t>(c)]; info.isFile()) used.insert(info.sample);
+        std::vector<std::shared_ptr<const SessionAudioClip>> dropped;
+        for (auto it = rackAudio.begin(); it != rackAudio.end();) {
+            if (used.contains(it->first)) { ++it; continue; }
+            dropped.push_back(std::move(it->second)); it = rackAudio.erase(it);
+        }
+        const auto current = [&](const std::string& path, const std::shared_ptr<const SessionAudioClip>& file) {
+            const auto found = rackAudio.find(path);
+            return found != rackAudio.end() && found->second == file;
+        };
+        for (auto it = rackSliceViews.begin(); it != rackSliceViews.end();) {
+            if (current(std::get<0>(it->first), it->second->sliceSource)) { ++it; continue; }
+            dropped.push_back(std::move(it->second)); it = rackSliceViews.erase(it);
+        }
+        std::set<const SessionAudioClip*> files;
+        for (const auto& [path, file] : rackAudio) files.insert(file.get());
+        for (auto it = rackKeyMaps.begin(); it != rackKeyMaps.end();) {
+            if (files.contains(it->file.get())) { ++it; continue; }
+            dropped.push_back(std::move(it->map)); it = rackKeyMaps.erase(it);
+        }
+        // Views handed to the engine that no kept cache entry uses any more go the same way (including the zones
+        // of a key map dropped above, which that map still names).
+        std::set<const SessionAudioClip*> cached;
+        for (const auto& [key, view] : rackSliceViews) cached.insert(view.get());
+        for (const auto& made : rackKeyMaps) {
+            cached.insert(made.base.get());
+            if (made.map->keyZones) for (const auto& zone : *made.map->keyZones) cached.insert(zone.clip.get());
+        }
+        for (auto& view : retainedSliceViews) if (!cached.contains(view.get())) dropped.push_back(std::move(view));
+        std::erase(retainedSliceViews, nullptr);
+        return dropped;
     }
     // Message thread, after the new project has been published to the engine: asks the callback to let go.
     void awaitAudioRelease(ReplacedAudio replaced) {
@@ -2906,7 +2969,8 @@ private:
         pushDocumentToEngine();
         runtimeDirty = false;
         history.reset(doc);
-        awaitAudioRelease(setAsideRetainedAudio());   // the replaced project's audio, freed once the engine lets go of it
+        // The replaced project's audio, and the rack samples only it used (D14), freed once the engine lets go of them.
+        awaitAudioRelease(setAsideRetainedAudio(forgetUnusedRackAudio()));
         // A recovered session has never been saved by the user.
         savedId = recovered ? 0 : history.currentId();
         autosavedId = 0;
@@ -3292,8 +3356,8 @@ private:
     PublishedSong published;
     std::atomic<bool> warpCancelled{};
     bool warpWorkActive{}; // message thread only
-    // Decoded Channel Rack samples by path. Kept (with `retained`) for the life of
-    // the controller so the engine can hold raw pointers to them.
+    // Decoded Channel Rack samples by path, kept (with `retained`) while the open project uses them, so the
+    // engine can hold raw pointers to them. An open or New lets go of the rest (forgetUnusedRackAudio, D14).
     std::map<std::string, std::shared_ptr<const SessionAudioClip>> rackAudio;
     // Views of rack files for sliced channels, by file and frame range, and every one ever handed to the engine.
     mutable std::map<std::tuple<std::string, std::int64_t, std::int64_t>, std::shared_ptr<const SessionAudioClip>> rackSliceViews;
@@ -3303,7 +3367,7 @@ private:
         std::vector<rack::KeyZone> zones;
         std::shared_ptr<const SessionAudioClip> map;
     };
-    mutable std::vector<RackKeyMap> rackKeyMaps;   // every one is kept: the engine may still be playing it
+    mutable std::vector<RackKeyMap> rackKeyMaps;   // kept, as the engine may still be playing one, until an open (D14)
     struct PublishedRack {
         bool known{};
         rack::Project project;
