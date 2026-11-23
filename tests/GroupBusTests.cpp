@@ -479,7 +479,56 @@ static void freezeIgnoresBus() {
     reader.reset(); file.deleteFile();
 }
 
-int main() {
+static void outputRoutingViewChecks(const juce::File& preview) {
+    auto engine = std::make_unique<ToneEngine>();
+    alien::ProjectController c(*engine);
+    c.pushDocumentToEngine();
+    alien::TrackMixerPanel panel(c, engine->tracks, engine->returns, engine->masterControls, engine->buses);
+    panel.setSize(960, 650);
+    require(panel.addBus() == 0, "routing view bus fixture");
+    int notified = 0;
+    panel.onTrackOutputCommandExecuted = [&] { ++notified; };
+    panel.routingControl().onClick();
+    auto& graph = panel.outputRoutingView();
+    require(graph.isVisible() && !panel.trackStrip(0)->isShowing() && panel.routingControl().getButtonText() == "Strips",
+        "Mixer routing button opens the output graph instead of strips");
+    require(graph.getWidth() >= 720 && graph.getHeight() >= graph.busBounds(alien::maxBuses - 1).getBottom(),
+        "routing canvas fits all bus slots and scrolls within the small workspace");
+    auto request = graph.requestFor(0);
+    require(graph.choose(request, 0) && c.document().tracks[0].settings.output == 0 && engine->tracks[0].output.load() == 0
+        && notified == 1 && c.undoLabel() == "Set track output", "node choice uses the existing output command and host notification");
+    if (preview != juce::File{}) {
+        juce::FileOutputStream stream(preview);
+        require(stream.openedOk() && juce::PNGImageFormat().writeImageToStream(panel.createComponentSnapshot(panel.getLocalBounds()), stream),
+            "render the routing view for visual inspection");
+    }
+    require(!graph.choose(request, 0) && notified == 1, "repeated route is a no-op");
+    require(c.undo(), "Undo node routing"); panel.refreshSettings();
+    require(graph.outputFor(0) == -1 && panel.trackStrip(0)->outputBox().getText() == "Master", "graph and strip both follow Undo");
+    require(c.redo(), "Redo node routing"); panel.refreshSettings();
+    require(graph.outputFor(0) == 0 && panel.trackStrip(0)->outputBox().getText() == "Bus 1", "graph and strip both follow Redo");
+    c.setExternalBusy(true);
+    require(!graph.choose(request, -1) && graph.outputFor(0) == 0 && notified == 1, "busy graph edit refuses without a host notification");
+    c.setExternalBusy(false);
+    require(!graph.choose(request, 7) && !graph.choose(request, 8), "missing and out-of-range destinations refuse");
+    require(alien::command::CommandEngine(c).execute(alien::command::MoveTrack{0, 1}).changed, "reorder while a route menu is open");
+    panel.rebuild();
+    require(graph.choose(request, -1) && c.document().tracks[1].settings.output == -1 && notified == 2,
+        "a deferred route follows its track identity across a reorder");
+    request = graph.requestFor(1);
+    require(panel.deleteBus(0) && panel.addBus() == 0, "replace the bus in the same slot");
+    require(!graph.choose(request, 0) && graph.outputFor(1) == -1 && notified == 2, "a menu cannot route to a replacement bus");
+    const auto fresh = graph.requestFor(1);
+    panel.setEnabled(false);
+    require(!graph.choose(fresh, 0), "a disabled routing view refuses stale menu results");
+    panel.setEnabled(true);
+    c.newProject(); panel.rebuild();
+    require(!graph.choose(fresh, -1), "a menu cannot edit a replacement project");
+    panel.showRouting(false);
+    require(!graph.isVisible() && panel.trackStrip(0)->isVisible(), "returning to strips restores the existing mixer controls");
+}
+
+int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI juce;
     busLevels();
     soloAcrossBuses();
@@ -488,6 +537,7 @@ int main() {
     projectFormat();
     controllerAndUndo();
     panels();
+    outputRoutingViewChecks(argc > 1 ? juce::File::getCurrentWorkingDirectory().getChildFile(argv[1]) : juce::File{});
     stemCaptureWithBuses();
     stemExportFiles();
     freezeIgnoresBus();
