@@ -123,6 +123,10 @@ int main(){
         // and the host's poll grows only that stage, which the next block adopts.
         auto grow=std::make_unique<R>();grow->racks[0].effectCount=1;grow->racks[0].effects[0].processor=std::make_unique<TestProcessor>(false,1,4);grow->prepare(48000);
         alien::PluginHost growHost(*grow);
+        juce::String latencyText;int latencyReports=0;
+        growHost.onLatencyProblem=[&](const juce::String& text){latencyText=text;++latencyReports;};
+        growHost.poll();
+        require(latencyReports==0,"a poll with nothing new reported plugin latency");
         const auto before=grow->alignmentShortfalls();
         grow->racks[0].effects[0].processor->setLatencySamples(3000);
         auto block=[&](int impulseAt){grow->begin(512,120,true,0);grow->useTracks(2);if(impulseAt>=0){grow->tracks[1].setSample(0,impulseAt,1);grow->tracks[1].setSample(1,impulseAt,1);}grow->effectsAndAlign(512);};
@@ -130,6 +134,9 @@ int main(){
         require(allocations==quiet,"a too-short alignment line allocated in the callback");
         require(grow->alignmentShortfalls()==before+2,"each short block is counted once");
         growHost.poll();
+        // T1-04 D13: the moment the tracks were out of step is reported, once.
+        require(latencyReports==1 && latencyText.contains("latency grew while playing") && latencyText.contains("out of step"),
+                "a shortfall while playing was not reported");
         require(grow->alignmentCapacity(R::trackAlignment)==R::alignmentGranule,"the callback's storage changed before it adopted the new one");
         const auto adopt=allocations;block(0);
         require(allocations==adopt,"adopting grown alignment storage allocated in the callback");
@@ -139,6 +146,7 @@ int main(){
         require(heardAt==3000,"after growing, the faster track waits exactly as long as the latent one");
         require(grow->alignmentShortfalls()==before+2,"the grown stage is long enough");
         growHost.poll();   // frees the storage the callback gave back; nothing more to grow
+        require(latencyReports==1,"a shortfall was reported twice"); 
         require(grow->reserveAlignment()==0,"a stage that fits is not replaced");
         // Latency falls again: polling never shrinks (so a wobbling plugin does not reallocate); a restore does.
         grow->racks[0].effects[0].processor->setLatencySamples(4);
@@ -147,6 +155,52 @@ int main(){
         require(grow->reserveAlignment(true)==1,"a restore fits the stage to the plugins");
         block(-1);
         require(grow->alignmentCapacity(R::trackAlignment)==R::alignmentGranule,"the stage shrank after a restore");
+    }
+    // T1-04 D13: a chain whose plugins report more latency than maxDelay cannot be lined up; it is named, once,
+    // until it is back within the limit. So is a Channel Rack instrument.
+    {
+        using R=alien::PluginRuntime;
+        require(alien::PluginHost::latencyLimitText("track 2",120000)
+                ==juce::String("The plugins on track 2 report 120,000 samples of latency, more than the 96,000 that can be lined up, "
+                               "so track 2 plays 24,000 samples late. Bypass or remove a high-latency plugin there."),
+                "the latency limit message changed");
+        auto over=std::make_unique<R>();
+        over->racks[1].effectCount=2;
+        for(int i=0;i<2;++i)over->racks[1].effects[static_cast<std::size_t>(i)].processor=std::make_unique<TestProcessor>(false,1,4);
+        over->rackChannels[2].processor=std::make_unique<TestProcessor>(true,1,0);
+        over->prepare(48000);
+        alien::PluginHost overHost(*over);
+        juce::String text;int reports=0;
+        overHost.onLatencyProblem=[&](const juce::String& t){text=t;++reports;};
+        require(over->reportedLatency(1)==8 && over->reportedLatency(R::channelBase+2)==0,"reported latency is not the chain's sum");
+        for(int i=0;i<2;++i)over->racks[1].effects[static_cast<std::size_t>(i)].processor->setLatencySamples(60000);
+        overHost.poll();
+        require(over->reportedLatency(1)==120000,"reported latency was clamped");
+        require(reports==1 && text.contains("The plugins on track 2 report 120,000 samples") && text.contains("plays 24,000 samples late"),
+                "a chain past the latency limit was not reported");
+        require(!text.contains("track 1") && !text.contains("Channel Rack"),"a chain within the limit was named");
+        overHost.poll();
+        require(reports==1,"a chain past the limit was named again while nothing changed");
+        over->rackChannels[2].processor->setLatencySamples(100000);
+        overHost.poll();
+        require(reports==2 && text.contains("Channel Rack channel 3 report 100,000") && !text.contains("track 2"),
+                "only the newly late Channel Rack instrument should be named");
+        over->racks[1].effects[1].bypass=true;   // back within the limit: forgotten, so a later excess is new
+        overHost.poll();
+        require(reports==2,"a chain back within the limit was reported");
+        over->racks[1].effects[1].bypass=false;
+        overHost.poll();
+        require(reports==3 && text.contains("track 2 report 120,000"),"a chain past the limit again was not reported");
+        over->racks[1].frozen=true;   // a frozen track plays its frozen audio, without plugin latency
+        overHost.poll(); over->racks[1].frozen=false;
+        require(reports==3,"a frozen chain was reported");
+        // Without the callback, poll() leaves them for an export to collect.
+        alien::PluginHost quiet(*over);
+        quiet.poll();
+        juce::String collected; quiet.latencyProblems(collected);
+        require(collected.contains("track 2 report 120,000") && collected.contains("Channel Rack channel 3"),
+                "poll() without a latency callback used up the report an export collects");
+        std::cout<<"PASS: plugin latency past the limit and alignment shortfalls are reported\n";
     }
     runtime->racks[0].effects[0].bypass=true;runtime->begin(16,120,true,0);runtime->tracks[0].setSample(0,0,0.25f);runtime->effectsAndAlign(16);require(runtime->tracks[0].getSample(0,0)==0.25f,"FX bypass altered audio");
     alien::SessionProjectData project;juce::PluginDescription desc;desc.name="Missing instrument";desc.pluginFormatName="VST3";desc.fileOrIdentifier="/missing/original.vst3";desc.isInstrument=true;

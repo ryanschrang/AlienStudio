@@ -2065,6 +2065,13 @@ inline Result setProjectTempo(ProjectController& controller, int bpm) {
     return result;
 }
 
+// A deferred scale request belongs to the project the editor was showing. Refuse a stale
+// scope before executing anything; the named command owns validation, notification and history.
+inline bool setProjectScale(ProjectController& controller, int root, ScaleType type, std::uint32_t expectedScope) {
+    return expectedScope == controller.document().identityScope
+        && CommandEngine(controller).execute(SetProjectScale{root, static_cast<int>(type)}).ok;
+}
+
 // Finished MIDI takes use the same note reducer as piano-roll edits, with their own Undo label.
 inline void routeMidiRecordingEdits(ProjectController& controller) {
     controller.recordMidiNotes = [&controller](int track, int scene, const PianoRollPattern& notes) {

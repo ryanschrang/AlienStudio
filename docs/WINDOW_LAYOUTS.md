@@ -40,6 +40,8 @@ to a single usable area so the title bar stays reachable. On a display smaller
 than the usual minimum, the minimum size is lowered to fit. Ordinary maximum
 window sizes remain in force; maximized windows are then maximized on that display.
 
+Open main and detached editor windows also check for changed usable display areas twice a second on the message thread. A monitor removal, taskbar/work-area change or changed logical display size reuses the same fitting policy, including native title bars. A topology change leaves an already reachable window on an unchanged display alone. Recovery preserves maximized state: the OS manages the maximized frame while the tracker repairs its normal restore rectangle without restoring/re-maximizing the window. Hidden or minimized windows defer recovery until shown/restored. It never raises a window, changes editor ownership, writes preferences or touches the audio engine. Reconnecting a display does not move a recovered window back to its old monitor (claim #375).
+
 Version 1 requires valid integer rectangles, booleans and known view bindings.
 Missing, unsupported, oversized (over 64 KiB), or damaged preferences fall back to
 the default layout. Parsing is transactional. Saving validates first and uses a
@@ -54,7 +56,7 @@ coordinates, a removed monitor, changed logical resolution/origin, offscreen
 bounds and displays smaller than the ordinary minimum. It writes/reloads only a
 test-created preference file and verifies failure/fallback paths. Native host
 tests exercise cached bounds, maximize/normal capture, restoration of the same
-editor, default docking and balanced listener lifecycle. Existing detach/dock,
+editor, default docking and balanced listener lifecycle. Live display-recovery tests inject changed work-area snapshots into a real native host, covering an unrelated display addition, offscreen recovery, unchanged topology, hidden/minimized deferral, maximized/normal geometry and editor identity. These simulated snapshots do not establish physical hot-plug or mixed-DPI behavior. Existing detach/dock,
 shared typing piano and menu stale-state tests remain part of the suite.
 
 Build/test results and the tested commit are recorded in the implementation PR.

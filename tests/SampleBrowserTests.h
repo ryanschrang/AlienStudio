@@ -57,7 +57,7 @@ static void sampleBrowserChecks() {
         require(alien::sampledrag::decode(browser.getDragSourceDescription(rows)) == wav, "list model supplies sample drag description");
         pump(); require(dragViews == 1, "drag start asynchronously reveals selected destination");
         int imports = 0, previews = 0; browser.onImport = [&](const juce::File& file, bool song) { require(file == wav && !song, "explicit Session target"); ++imports; };
-        browser.onPreview = [&](const alien::SessionAudioClip& sample) { require(sample.frames == 40000, "preview decoding capped at five seconds"); ++previews; };
+        browser.onPreview = [&](const alien::SessionAudioClip& sample, bool matched) { require(!matched && sample.frames == 40000, "preview decoding capped at five seconds"); ++previews; };
         search->setText("DEEP kick", false); search->onTextChange(); require(browser.resultCount() == 1, "search matches case-insensitive path terms");
         require(!import->isEnabled() && preview->isEnabled(), "busy imports do not block browsing");
         preview->onClick(); for (int i = 0; i < 400 && previews == 0; ++i) pump();
@@ -70,10 +70,10 @@ static void sampleBrowserChecks() {
         }
         require(sourceBpm && sync, "manual source BPM and tempo-match controls available");
         sync->setToggleState(true, juce::dontSendNotification); sync->onClick(); sourceBpm->setValue(60, juce::dontSendNotification); sourceBpm->onValueChange();
-        browser.onPreview = [&](const alien::SessionAudioClip& sample) { require(sample.frames == 20000, "faster preview uses source/project tempo ratio"); ++previews; };
+        browser.onPreview = [&](const alien::SessionAudioClip& sample, bool matched) { require(matched && sample.frames == 20000, "faster preview uses source/project tempo ratio"); ++previews; };
         preview->onClick(); for (int i = 0; i < 400 && previews == 1; ++i) pump(); require(previews == 2 && imports == 0, "synced preview does not import");
         sourceBpm->setValue(240, juce::dontSendNotification); sourceBpm->onValueChange();
-        browser.onPreview = [&](const alien::SessionAudioClip& sample) { require(sample.frames == 40000, "slower preview stays within five-second playback cap"); ++previews; };
+        browser.onPreview = [&](const alien::SessionAudioClip& sample, bool matched) { require(matched && sample.frames == 40000, "slower preview stays within five-second playback cap"); ++previews; };
         preview->onClick(); for (int i = 0; i < 400 && previews == 2; ++i) pump(); require(previews == 3, "slower preview rendered");
         preview->onClick(); browser.setProjectTempo(140); for (int i = 0; i < 10; ++i) pump(); require(previews == 3, "project tempo change cancels pending preview");
         sourceBpm->setValue(30, juce::dontSendNotification); sourceBpm->onValueChange(); require(!preview->isEnabled(), "unsupported BPM ratio disables preview");
@@ -87,7 +87,7 @@ static void sampleBrowserChecks() {
         require(matchKey && sourceKey && targetKey && sourceKey->getNumItems() == 12 && sourceKey->getSelectedId() == 1 && targetKey->getSelectedId() == 1, "source and target key controls available, both starting at C");
         targetKey->setSelectedId(3, juce::sendNotificationSync); require(preview->isEnabled() && !matchKey->getToggleState(), "key controls change nothing until Match key is on");
         matchKey->setToggleState(true, juce::dontSendNotification); matchKey->onClick();
-        browser.onPreview = [&](const alien::SessionAudioClip& sample) { require(sample.frames == 40000, "key-shifted preview keeps its length"); ++previews; };
+        browser.onPreview = [&](const alien::SessionAudioClip& sample, bool matched) { require(!matched && sample.frames == 40000, "key-shifted preview keeps its length"); ++previews; };
         preview->onClick(); for (int i = 0; i < 400 && previews == 3; ++i) pump(); require(previews == 4 && imports == 0, "key-shifted preview rendered without importing");
         bool keyStatus = false;
         for (auto* child : browser.getChildren()) if (auto* l = dynamic_cast<juce::Label*>(child); l && l->getText().contains("key C to D (+2 semitones)")) keyStatus = true;
@@ -191,7 +191,7 @@ static void sampleBrowserChecks() {
         }
         require(browser.resultCount() == 2 && bpm && detect && stop && list && status, "tempo controls available");
         auto waitFor = [&](const juce::String& text) { for (int i = 0; i < 800 && !status->getText().contains(text); ++i) pump(); return status->getText().contains(text); };
-        int previews = 0, imports = 0; browser.onPreview = [&](const alien::SessionAudioClip&) { ++previews; }; browser.onImport = [&](const juce::File&, bool) { ++imports; };
+        int previews = 0, imports = 0; browser.onPreview = [&](const alien::SessionAudioClip&, bool) { ++previews; }; browser.onImport = [&](const juce::File&, bool) { ++imports; };
 
         list->selectRow(1); require(browser.selectedFile().getFileName() == "Loop.wav" && detect->isEnabled(), "a sample can be detected");
         detect->onClick(); require(!detect->isEnabled() && status->getText() == "Detecting tempo...", "the button waits for the result");
@@ -248,7 +248,7 @@ static void sampleBrowserChecks() {
         }
         require(browser.resultCount() == 2 && source && detect && tempo && stop && list && status, "key controls available");
         auto waitFor = [&](const juce::String& text) { for (int i = 0; i < 800 && !status->getText().contains(text); ++i) pump(); return status->getText().contains(text); };
-        int previews = 0, imports = 0; browser.onPreview = [&](const alien::SessionAudioClip&) { ++previews; }; browser.onImport = [&](const juce::File&, bool) { ++imports; };
+        int previews = 0, imports = 0; browser.onPreview = [&](const alien::SessionAudioClip&, bool) { ++previews; }; browser.onImport = [&](const juce::File&, bool) { ++imports; };
 
         list->selectRow(1); require(browser.selectedFile().getFileName() == "Keys.wav" && detect->isEnabled(), "a sample's key can be detected");
         detect->onClick(); require(!detect->isEnabled() && !tempo->isEnabled() && status->getText() == "Detecting key...", "both detect buttons wait for the result");
@@ -297,7 +297,7 @@ static void sampleBrowserChecks() {
         int previews = 0, stops = 0, imports = 0; std::size_t frames = 0;
         browser.onStop = [&] { ++stops; };
         browser.onImport = [&](const juce::File&, bool) { ++imports; };
-        browser.onPreview = [&](const alien::SessionAudioClip& audio) { ++previews; frames = audio.frames; };
+        browser.onPreview = [&](const alien::SessionAudioClip& audio, bool matched) { require(matched, "Song matched preview carries beat-alignment intent"); ++previews; frames = audio.frames; };
         browser.tempoForPreview = [&] { return target(true, true, 960, 0); };
         preview->onClick();
         browser.tempoForPreview = nullptr;

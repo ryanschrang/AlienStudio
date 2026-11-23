@@ -650,13 +650,13 @@ static void graphProjectScale() {
     const auto beforeToggle = c.undoLabel(); clickButton(*follow);
     require(c.undoLabel() == beforeToggle && rig.step(0, 0).pitch == 1, "enabling graph snapping changes no saved pitches or history");
     require(graph.setValue(0, 3, "undefined") && rig.step(0, 0).pitch == 3, "undefined project context falls back to chromatic input"); c.undo();
-    require(c.setProjectScale(0, ScaleType::major, c.document().identityScope), "define C major");
+    require(alien::command::setProjectScale(c, 0, ScaleType::major, c.document().identityScope), "define C major");
     const auto point = [&](int step, int value) { return juce::Point<int>{grid.stepLeft(step) + grid.cellWidth() / 2, graph.yForValue(value)}; };
     graph.mouseDown(mouse(graph, point(0, 1))); graph.mouseDrag(mouse(graph, point(8, 5), leftButton, 1, true)); graph.mouseUp(mouse(graph, point(8, 5)));
     require(rig.step(0, 0).pitch == 0 && rig.step(0, 4).pitch == 2 && rig.step(0, 8).pitch == 5 && !rig.step(0, 1).on, "graph stroke snaps each interpolated active step, preserving off steps");
     c.undo(); require(rig.step(0, 0).pitch == 1 && rig.step(0, 4).pitch == 1 && rig.step(0, 8).pitch == 1, "one Undo restores complete snapped stroke");
     c.redo(); require(rig.step(0, 4).pitch == 2, "Redo restores snapped values");
-    require(c.setProjectScale(1, ScaleType::naturalMinor, c.document().identityScope), "change to C sharp minor");
+    require(alien::command::setProjectScale(c, 1, ScaleType::naturalMinor, c.document().identityScope), "change to C sharp minor");
     require(graph.setValue(0, -24, "low edge") && rig.step(0, 0).pitch == -23, "UI graph lower edge stays within scale");
     require(graph.setValue(4, 24, "high edge") && rig.step(0, 4).pitch == 23, "UI graph upper edge stays within scale");
     graph.mouseDown(mouse(graph, point(4, 10), rightButton)); graph.mouseUp(mouse(graph, point(4, 10)));
@@ -668,7 +668,7 @@ static void graphProjectScale() {
     require(graph.setValue(0, 41, "pan unchanged") && rig.step(0, 0).pan == 41 && rig.step(0, 0).pitch == -23, "other graph values are not quantised or retuned");
     graph.setField(StepField::pitch);
     graph.mouseDown(mouse(graph, point(0, 3)));
-    require(c.setProjectScale(9, ScaleType::naturalMinor, c.document().identityScope), "change shared scale during graph stroke");
+    require(alien::command::setProjectScale(c, 9, ScaleType::naturalMinor, c.document().identityScope), "change shared scale during graph stroke");
     const auto beforeScaleDrag = rig.step(0, 8).pitch; graph.mouseDrag(mouse(graph, point(8, 12), leftButton, 1, true));
     require(rig.step(0, 8).pitch == beforeScaleDrag, "changed scale cancels old pitch gesture"); graph.mouseUp(mouse(graph, point(8, 12)));
     graph.mouseDown(mouse(graph, point(0, 3)));

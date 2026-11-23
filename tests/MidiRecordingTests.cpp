@@ -942,7 +942,7 @@ void recordingCommandBoundaryTests() {
     c.recordMidiNotes = submit;
     auto settings = c.document().recording;
     settings.replace = true;
-    c.setRecordSettings(settings);
+    alien::command::CommandEngine(c).execute(alien::command::SetRecordSettings{settings}, "recordSettings");
     rig.playClip();
     const auto historyLabel = c.undoLabel();
     require(c.startRecording().started, "start a replace take through the command route");
@@ -980,7 +980,7 @@ void replaceTests() {
         c.commit("Add notes");
         RecordSettings s = c.document().recording;
         s.replace = true;
-        c.setRecordSettings(s);
+        alien::command::CommandEngine(c).execute(alien::command::SetRecordSettings{s}, "recordSettings");
         const auto label = c.undoLabel();
         rig.playClip();
         require(c.startRecording().started, "a replace take starts");
@@ -1027,7 +1027,7 @@ void countInIntegrationTests() {
     compensated.engine.deviceLatencySamples.store(960); // 20 ms
     auto s = compensated.controller.document().recording;
     s.countInBars = 0;
-    compensated.controller.setRecordSettings(s);
+    alien::command::CommandEngine(compensated.controller).execute(alien::command::SetRecordSettings{s}, "recordSettings");
     require(compensated.controller.startRecording().started, "record with no count-in");
     compensated.render(24000);
     compensated.tap(65, 6000);
@@ -1199,15 +1199,15 @@ void settingsPersistenceTests() {
     auto& c = rig.controller;
     auto s = c.document().recording;
     s.metronome = true; s.countInBars = 2; s.metronomeVolume = 0.8f; s.latencyOffsetMs = 15; s.replace = true;
-    c.setRecordSettings(s);
+    alien::command::CommandEngine(c).execute(alien::command::SetRecordSettings{s}, "recordSettings");
     require(c.document().recording == s && rig.engine.recording.metronome.load() && rig.engine.recording.countInBars.load() == 2
             && rig.engine.recording.metronomeVolume.load() == 0.8f && rig.engine.recording.latencyOffsetMs.load() == 15, "settings reach the engine");
     require(c.undoLabel() == "Change recording settings" && c.isDirty(), "changing them is an undoable edit that marks the project changed");
     auto invalid = s; invalid.countInBars = 9;
-    c.setRecordSettings(invalid);
+    alien::command::CommandEngine(c).execute(alien::command::SetRecordSettings{invalid}, "recordSettings");
     require(c.document().recording == s, "invalid settings are refused");
     const auto label = c.undoLabel();
-    c.setRecordSettings(s);
+    alien::command::CommandEngine(c).execute(alien::command::SetRecordSettings{s}, "recordSettings");
     require(c.undoLabel() == label, "setting the same values again adds nothing");
     const auto json = alien::serializeSessionProject(alien::toProjectData(c.document()));
     alien::SessionProjectData parsed;

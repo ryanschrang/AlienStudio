@@ -392,7 +392,7 @@ void controllerTests(const juce::File& root) {
         auto& c = rig.controller;
         auto settings = c.document().recording;
         settings.countInBars = 0; settings.audioLatencyOffsetMs = 10;
-        c.setRecordSettings(settings);
+        alien::command::CommandEngine(c).execute(alien::command::SetRecordSettings{settings}, "recordSettings");
         const auto start = c.startSongTake(root.getChildFile("plain"), rate, 2);
         require(!start.started && start.reason.contains("Arm"), "with no armed track there is nothing to record");
         rig.arm(0);
@@ -455,7 +455,7 @@ void controllerTests(const juce::File& root) {
         auto& c = rig.controller;
         auto settings = c.document().recording;
         settings.countInBars = 0; settings.punch = true;
-        c.setRecordSettings(settings);
+        alien::command::CommandEngine(c).execute(alien::command::SetRecordSettings{settings}, "recordSettings");
         require(c.editTimeline("Loop", [](alien::timeline::Timeline& t) { return t.setLoop(3840, 7680); }), "fixture: a loop range");
         rig.render(256);
         rig.arm(1);
@@ -476,7 +476,7 @@ void controllerTests(const juce::File& root) {
         auto& c = rig.controller;
         auto settings = c.document().recording;
         settings.countInBars = 0;
-        c.setRecordSettings(settings);
+        alien::command::CommandEngine(c).execute(alien::command::SetRecordSettings{settings}, "recordSettings");
         require(alien::command::CommandEngine(c).execute(alien::command::NewSongClip{0, 0}).changed, "fixture: a MIDI clip on track 0 through the command");
         rig.render(256);
         rig.arm(0);
@@ -492,7 +492,7 @@ void controllerTests(const juce::File& root) {
         auto& c = rig.controller;
         auto settings = c.document().recording;
         settings.countInBars = 0;
-        c.setRecordSettings(settings);
+        alien::command::CommandEngine(c).execute(alien::command::SetRecordSettings{settings}, "recordSettings");
         rig.arm(0, true, 1);
         auto start = c.startSongTake(root.getChildFile("missing"), rate, 2);
         require(!start.started && start.reason.contains("inputs"), "an armed track whose input pair is not enabled cannot record");
@@ -524,7 +524,7 @@ void controllerTests(const juce::File& root) {
         auto& c = rig.controller;
         auto settings = c.document().recording;
         settings.countInBars = 0; settings.audioLatencyOffsetMs = 10;
-        c.setRecordSettings(settings);
+        alien::command::CommandEngine(c).execute(alien::command::SetRecordSettings{settings}, "recordSettings");
         require(c.editTimeline("Loop", [](alien::timeline::Timeline& t) { return t.setLoop(0, 3840) && t.setLoopEnabled(true); }), "fixture: loop a bar");
         rig.render(256);
         rig.arm(0);
