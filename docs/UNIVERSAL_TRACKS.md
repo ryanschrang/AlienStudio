@@ -17,6 +17,7 @@ tells the user, in the status bar and after an export or freeze, when Channel Ra
 D11 bounds the MIDI a Song or Session track's instrument is given each block, counts what is dropped
 and reports it the same way; D12 reports, by track, streamed audio that dropped out or could not be
 read during playback; D13 reports plugin latency that put tracks out of step while playing.
+D14 frees the Channel Rack samples, slice views and key maps a replaced project used.
 Higher supported limits (E) are pending.
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
@@ -1054,3 +1055,51 @@ Mutation checks: with the "named once" guard removed, or the shortfall report di
 Not covered: the status bar in the running app, the export summary and a real latent third-party
 plugin (the test plugin reports the latency it is told to). Freezing a track does not collect the
 report.
+
+## Increment D14: a replaced project's Channel Rack samples are freed
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+D5 frees the audio of a project that an open or File > New replaces, once the engine has let go of
+it. It left out the Channel Rack's caches, which were kept for the controller's lifetime:
+
+- `rackAudio`, the decoded rack sample files by path;
+- `rackSliceViews` and `retainedSliceViews`, the views sliced channels play;
+- `rackKeyMaps`, the key maps channels with key zones play.
+
+So each project opened with different rack samples left the last one's decoded audio in memory and
+counted against the 512 MiB audio budget, until an open was refused. Reopening the same project freed
+the whole file, but a sliced or key-zoned sample stayed, held by its old views and key map.
+
+What D14 changes:
+
+- **`forgetUnusedRackAudio()`.** After an open or File > New has published the new project and reset
+  its history, the caches keep only what its channels use. A cache entry made from a file that is
+  no longer the current decode goes too. Everything it lets go of is handed to the D5 release
+  rather than freed on the spot, because the engine may still hold raw pointers to it.
+- **The D5 release follows chains.** A clip is set aside when every reference to it comes from:
+  - `retained`;
+  - what the caches let go of;
+  - another clip being set aside: a slice view's source, or a key map's zones.
+
+  So a key map, its slice views and the file under them go together. Before, only a slice view's
+  direct source was followed. Anything something else still owns, such as a copied cell, stays.
+
+Nothing changes on the audio thread; freeing still waits for the engine's answer, as in D5.
+
+Tests (`MemoryPeakTests`):
+- A project whose 10-second rack sample is sliced into channels and put on key zones is reopened over
+  itself three times. The audio budget counts the sample once, and live memory stays within 1 MiB.
+- Opening a different project with a 1-second sample:
+  - before a callback, the old sample waits;
+  - after it, the budget counts only the new sample;
+  - live memory falls by about the old sample's size;
+  - the new sample stays loaded.
+- File > New returns the budget to empty.
+
+Mutation checks: the test fails when an open doesn't clear the caches, and when it clears them but
+keeps the old slice views.
+
+Not covered: the running app, and rack samples loaded or relinked inside one session and then
+replaced by an edit. Undo can bring those back, so they stay until the next open, as Session audio
+does in D5.

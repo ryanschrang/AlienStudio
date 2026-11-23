@@ -334,6 +334,65 @@ static void replacedAudioSafetyTests() {
     root.deleteRecursively();
 }
 
+// T1-04 D14: the Channel Rack's decoded samples, slice views and key maps belong to the open project. Opening
+// another one (or the same one again) frees those the new project does not use, once the engine has let go.
+static void rackCacheTests() {
+    const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("alien-rack-cache", "");
+    require(root.createDirectory().wasOk(), "scratch folder");
+    // A sliced, key-zoned 10-second sample in one project, a short whole sample in the other.
+    const auto make = [&](const juce::String& name, double seconds, bool cut) {
+        const auto wav = root.getChildFile(name + ".wav"), song = root.getChildFile(name + ".alienstudio");
+        std::atomic<bool> cancel{false}; juce::String error;
+        require(alien::writeClipWav(wav, *toneClip(seconds), cancel, error), "write a rack sample");
+        auto engine = std::make_unique<ToneEngine>(); engine->prepare(48000);
+        auto c = std::make_unique<alien::ProjectController>(*engine);
+        c->pushDocumentToEngine();
+        alien::command::loadRackSample(*c, wav, 0); waitIdle(*c);
+        if (cut) {
+            require(c->editRack("Slice", [](alien::rack::Project& p) { return p.sliceChannel(0, {0, 96000, 240000, 480000}); }), "slice the sample");
+            require(c->editRack("Zones", [](alien::rack::Project& p) {
+                return p.setKeyZones(0, {{0, 120000, 60, 60, 60}, {120000, 480000, 61, 61, 61}}); }), "put the sample on keys");
+        }
+        require(writeProject(*c, song), "save a rack project");
+        return song;
+    };
+    const auto sliced = make("Sliced", 10.0, true), plain = make("Plain", 1.0, false);
+    const auto sampleBytes = [](double seconds) { return static_cast<std::size_t>(seconds * 48000) * 2 * sizeof(float); };
+
+    auto engine = std::make_unique<ToneEngine>(); engine->prepare(48000);
+    auto c = std::make_unique<alien::ProjectController>(*engine);
+    const auto empty = c->availableAudioBytes();
+    c->openProject(sliced); waitIdle(*c); settle(*engine, *c);
+    require(c->channelRack().info[0].hasZones() && !c->channelRack().info[1].wholeSample(), "the sliced project opens with its zones and slices");
+    require(c->rackChannelAudio(0) != nullptr && c->rackChannelAudio(0)->keyZones && c->rackChannelAudio(1)->sliceSource,
+            "its channels play a key map and slice views");
+    require(empty - c->availableAudioBytes() == sampleBytes(10.0), "the sliced project's sample is counted once");
+    const auto slicedLive = liveBytes.load();
+
+    // The same project again: the decode it replaces goes, with the views and key map made from it.
+    for (int again = 0; again < 3; ++again) {
+        c->openProject(sliced); waitIdle(*c); settle(*engine, *c);
+        require(empty - c->availableAudioBytes() == sampleBytes(10.0), "reopening a rack project frees the sample it replaced");
+        require(liveBytes.load() - slicedLive < (1 << 20), "reopening a rack project frees its old slice views and key map");
+    }
+
+    // Another project: the first one's sample is not used, so it goes, but only once the engine has let go.
+    c->openProject(plain); waitIdle(*c);
+    require(c->replacedAudioBytes() >= sampleBytes(10.0) && c->releaseReplacedAudio() == 0,
+            "with no callback since the open, the replaced rack sample waits");
+    settle(*engine, *c);
+    require(c->replacedAudioBytes() == 0 && empty - c->availableAudioBytes() == sampleBytes(1.0),
+            "opening another project frees the rack sample it no longer uses");
+    require(slicedLive - liveBytes.load() > static_cast<std::int64_t>(sampleBytes(10.0)) - (1 << 20), "and its memory is returned");
+    require(c->rackChannelAudio(0) != nullptr && !c->rackChannelOffline(0), "the new project's own sample stays");
+
+    // File > New lets go of the last one too.
+    c->newProject(); settle(*engine, *c);
+    require(c->availableAudioBytes() == empty, "File > New frees the rack sample");
+    c.reset(); engine.reset();
+    root.deleteRecursively();
+}
+
 // T1-04 D7: when an engine's track slots cannot be prepared, the edit or open is refused with a reason, and
 // the project, the engine and the track count stay as they were.
 static void resourceRefusalTests() {
@@ -467,6 +526,7 @@ int main(int argc, char** argv) {
     const bool report = argc == 2 && std::string_view(argv[1]) == "--report";
     trackerTests();
     replacedAudioSafetyTests();
+    rackCacheTests();
     resourceRefusalTests();
     rackQueueTests();
     projectPeakTests(report);
