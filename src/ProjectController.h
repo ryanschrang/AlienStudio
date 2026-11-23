@@ -63,6 +63,25 @@ inline juce::String trackMidiDropText(std::uint64_t events) {
 inline const char* const trackMidiDropTip =
     "More than 4,096 notes or controller messages reached one track's instrument at the same moment, so the rest were "
     "dropped and every instrument was told to end its notes. Thin out stacked clips or dense MIDI on that track.";
+// T1-04 D12: streamed audio that played with gaps, or could not be read, during playback. `tracks` are 1-based.
+inline juce::String trackListText(const juce::Array<int>& tracks) {
+    juce::String out = tracks.size() == 1 ? "track " : "tracks ";
+    for (int i = 0; i < tracks.size(); ++i)
+        out << (i == 0 ? "" : i == tracks.size() - 1 ? " and " : ", ") << tracks[i];
+    return out;
+}
+inline juce::String streamProblemText(const juce::Array<int>& droppedOut, const juce::Array<int>& unreadable) {
+    juce::StringArray parts;
+    if (!droppedOut.isEmpty()) parts.add("Streamed audio dropped out on " + trackListText(droppedOut) + ": the disk could not keep up");
+    if (!unreadable.isEmpty()) parts.add("Streamed audio on " + trackListText(unreadable) + " could not be read, so it stopped");
+    return parts.joinIntoString("; ");
+}
+inline const char* const streamDropoutTip =
+    "Long audio clips are read from disk while they play. The disk did not deliver in time, so there were gaps of "
+    "silence. Close programs that use the disk heavily, or keep the project's audio on a faster, local drive.";
+inline const char* const streamUnreadableTip =
+    "The audio file may have been moved, deleted or changed, or its drive disconnected. Check the file, then open the "
+    "project again; Search for missing audio finds a moved file.";
 // Everything dropped, for a status line or an export summary; empty if nothing was.
 inline juce::String droppedNotesText(std::uint64_t rackHits, std::uint64_t trackEvents) {
     juce::StringArray parts;
@@ -80,6 +99,7 @@ public:
         runtimeDirty = false;
         history.reset(doc);
         savedId = history.currentId();
+        markStreamProblemsReported();   // only what happens from here on is reported (T1-04 D12)
     }
 
     ~ProjectController() {
@@ -2558,6 +2578,24 @@ public:
         reportedRackDrops = rack; reportedTrackDrops = track; dropReportedAt = nowMs; dropReported = true;
         return true;
     }
+    // Message thread (the app's timer calls it): says in the status bar which tracks' streamed audio dropped out or
+    // could not be read since the last report (T1-04 D12), at most once a second. Returns whether it reported.
+    bool reportStreamProblems(std::uint32_t nowMs = juce::Time::getMillisecondCounter()) {
+        juce::Array<int> droppedOut, unreadable;
+        for (std::size_t t = 0; t < ToneEngine::sessionTracks; ++t) {
+            if (engine.sessionStreamUnderruns(t) > reportedUnderruns[t]) droppedOut.add(static_cast<int>(t) + 1);
+            if (engine.sessionStreamFailures(t) > reportedStreamFailures[t]) unreadable.add(static_cast<int>(t) + 1);
+        }
+        if (droppedOut.isEmpty() && unreadable.isEmpty()) return false;
+        if (streamReported && nowMs - streamReportedAt < 1000) return false;
+        juce::String tip;
+        if (!droppedOut.isEmpty()) tip << streamDropoutTip;
+        if (!unreadable.isEmpty()) tip << (tip.isEmpty() ? "" : "\n") << streamUnreadableTip;
+        status(streamProblemText(droppedOut, unreadable), tip);
+        markStreamProblemsReported();
+        streamReportedAt = nowMs; streamReported = true;
+        return true;
+    }
     // Message thread (the app's timer calls it). Frees the audio of replaced projects once the engine has
     // answered the request made after the last of them; until then (or with no device running) it waits.
     // Returns the bytes freed.
@@ -3257,6 +3295,16 @@ private:
     std::uint64_t reportedTrackDrops{engine.droppedTrackMidi()};  // D11: track MIDI events already reported
     std::uint32_t dropReportedAt{};
     bool dropReported{};
+    // D12: stream underruns and failures already reported, per engine track slot.
+    void markStreamProblemsReported() noexcept {
+        for (std::size_t t = 0; t < ToneEngine::sessionTracks; ++t) {
+            reportedUnderruns[t] = engine.sessionStreamUnderruns(t);
+            reportedStreamFailures[t] = engine.sessionStreamFailures(t);
+        }
+    }
+    std::array<std::uint64_t, ToneEngine::sessionTracks> reportedUnderruns{}, reportedStreamFailures{};
+    std::uint32_t streamReportedAt{};
+    bool streamReported{};
     ProjectDocument doc;
     juce::File projectFile;
     bool busy{};

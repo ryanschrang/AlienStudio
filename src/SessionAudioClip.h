@@ -184,7 +184,7 @@ public:
     bool launchPendingNow(double outputRate, double startFrame = 0.0, int fadeInSamples = 0,
                           bool reverse = false, bool looping = false, double loopBoundary = 0.0) noexcept {
         if (!pending) return false;
-        if (pendingFailed()) { failure.store(true, std::memory_order_relaxed); cancelPending(); return false; }
+        if (pendingFailed()) { fail(); cancelPending(); return false; }
         if (!pendingReady()) return false;
         activeClip = pendingClip;
         pendingClip = nullptr;
@@ -218,7 +218,13 @@ public:
         float left{}, right{};
         if (activeClip->streamed()) {
             if (!activeVoice || !activeVoice->sample(activeGeneration, first, second, fraction, left, right)) {
-                underruns.fetch_add(1, std::memory_order_relaxed);
+                // A stream that could not be read is a failure, counted once (T1-04 D12); one that is not
+                // buffered yet is an underrun, counted per silent sample.
+                if (activeVoice && activeVoice->failed(activeGeneration)) {
+                    if (failedGeneration != activeGeneration) { failedGeneration = activeGeneration; fail(); }
+                } else {
+                    underruns.fetch_add(1, std::memory_order_relaxed);
+                }
                 return {};
             }
             activeVoice->releaseBefore(activeGeneration, first);
@@ -277,6 +283,9 @@ public:
     bool isPlaying() const noexcept { return activeClip != nullptr; }
     std::uint64_t underrunCount() const noexcept { return underruns.load(std::memory_order_relaxed); }
     bool streamFailed() const noexcept { return failure.load(std::memory_order_relaxed); }
+    // Any thread: streams that could not be read since the player was made, whether before they started or
+    // while they played (T1-04 D12). Unlike streamFailed(), queueing another clip does not clear it.
+    std::uint64_t failureCount() const noexcept { return failures.load(std::memory_order_relaxed); }
 
 private:
     void clearActive() noexcept {
@@ -284,12 +293,16 @@ private:
         fadeInTotal = fadeInDone = releaseTotal = releaseLeft = 0;
     }
     static float interpolate(float a, float b, float amount) noexcept { return a + (b - a) * amount; }
+    void fail() noexcept {
+        failure.store(true, std::memory_order_relaxed);
+        failures.store(failures.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);   // one writer: the audio thread
+    }
     const SessionAudioClip* activeClip{};
     const SessionAudioClip* pendingClip{};
     DiskAudioStreamService::Voice* activeVoice{};
     DiskAudioStreamService::Voice* pendingVoice{};
-    std::uint64_t activeGeneration{}, pendingGeneration{};
-    std::atomic<std::uint64_t> underruns{};
+    std::uint64_t activeGeneration{}, pendingGeneration{}, failedGeneration{};
+    std::atomic<std::uint64_t> underruns{}, failures{};
     std::atomic<bool> failure{};
     double cursor{}, outputSampleRate{44100.0}, pendingStart{}, loopFrame{};
     int pendingQuantization{16};

@@ -275,6 +275,10 @@ public:
     bool sessionStreamFailed(std::size_t track) const noexcept {
         return track < sessionTracks && (audioPlayers[track].streamFailed() || tailPlayers[track].streamFailed());
     }
+    // Streams on a track that could not be read, before or while they played, since the engine was made (T1-04 D12).
+    std::uint64_t sessionStreamFailures(std::size_t track) const noexcept {
+        return track < sessionTracks ? audioPlayers[track].failureCount() + tailPlayers[track].failureCount() : 0;
+    }
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
         prepare(device->getCurrentSampleRate());
