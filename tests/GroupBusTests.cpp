@@ -499,7 +499,8 @@ static void outputRoutingViewChecks(const juce::File& preview) {
         && notified == 1 && c.undoLabel() == "Set track output", "node choice uses the existing output command and host notification");
     if (preview != juce::File{}) {
         juce::FileOutputStream stream(preview);
-        require(stream.openedOk() && juce::PNGImageFormat().writeImageToStream(panel.createComponentSnapshot(panel.getLocalBounds()), stream),
+        require(stream.openedOk() && stream.setPosition(0) && stream.truncate().wasOk()
+            && juce::PNGImageFormat().writeImageToStream(panel.createComponentSnapshot(panel.getLocalBounds()), stream),
             "render the routing view for visual inspection");
     }
     require(!graph.choose(request, 0) && notified == 1, "repeated route is a no-op");
