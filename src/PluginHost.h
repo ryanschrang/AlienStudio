@@ -101,6 +101,9 @@ public:
     ~PluginHost() { closeEditors(); clearListeners(); }
     // Message thread: called with a readable description whenever a plugin is found to have failed.
     std::function<void(const juce::String&)> onProblem;
+    // Message thread: called from poll() with what latencyProblems() found (T1-04 D13). Unset, poll() leaves
+    // them for whoever calls latencyProblems() (an export does, after its render).
+    std::function<void(const juce::String&)> onLatencyProblem;
     // Message thread: asked before a VST3 plugin is loaded into the session. An empty answer means go ahead;
     // anything else is the reason it must not be (the slot stays in the project with its saved settings).
     std::function<juce::String(const juce::PluginDescription&)> preflight;
@@ -342,6 +345,42 @@ public:
         runtime.reserveAlignment();
         juce::String text; drain(text);
         if (text.isNotEmpty() && onProblem) onProblem(text.trim());
+        if (onLatencyProblem) {
+            juce::String latency; latencyProblems(latency);
+            if (latency.isNotEmpty()) onLatencyProblem(latency.trim());
+        }
+    }
+    // Message thread, from poll() (T1-04 D13). Appends what the user should hear about plugin latency since the
+    // last poll: blocks in which the tracks were out of step because a plugin's latency grew while playing (the
+    // alignment lines caught up at this poll), and each chain whose plugins now report more latency than
+    // maxDelay, which cannot be lined up at all. A chain is named once, until it is back within the limit.
+    void latencyProblems(juce::String& text) {
+        if (const auto shortfalls = runtime.alignmentShortfalls(); shortfalls != reportedShortfalls) {
+            reportedShortfalls = shortfalls;
+            text += report("warning", "A plugin's latency grew while playing, so the tracks were out of step for a moment "
+                                      "until they were lined up again.") + "\n";
+        }
+        const auto check = [&](int rack, bool& named) {
+            const auto latency = runtime.reportedLatency(rack);
+            if (latency <= PluginRuntime::maxDelay) { named = false; return; }
+            if (named) return;
+            named = true;
+            text += report("warning", latencyLimitText(place(rack), latency)) + "\n";
+        };
+        for (int r = 0; r < PluginRuntime::rackCount; ++r) check(r, overLimit[static_cast<std::size_t>(r)]);
+        for (int c = 0; c < PluginRuntime::maxRackChannels; ++c)
+            check(PluginRuntime::channelBase + c, overLimitChannels[static_cast<std::size_t>(c)]);
+    }
+    // "The plugins on track 2 report 120,000 samples of latency, ..." (place as where() names it).
+    static juce::String latencyLimitText(const juce::String& place, std::int64_t latency) {
+        const auto count = [](std::int64_t n) {
+            juce::String digits(n), out;
+            for (int i = 0; i < digits.length(); ++i) { if (i > 0 && (digits.length() - i) % 3 == 0) out << ","; out << digits[i]; }
+            return out;
+        };
+        return "The plugins on " + place + " report " + count(latency) + " samples of latency, more than the "
+             + count(PluginRuntime::maxDelay) + " that can be lined up, so " + place + " plays " + count(latency - PluginRuntime::maxDelay)
+             + " samples late. Bypass or remove a high-latency plugin there.";
     }
     // Empty when the slot is fine, otherwise a short description for the plugin panel.
     juce::String health(int track,int slot) const {
@@ -438,13 +477,17 @@ private:
         return std::nullopt;
     }
     static juce::String where(int rack,int index) {
+        if (PluginRuntime::isRackChannel(rack)) return place(rack);
+        return place(rack)+(index<0?(rack<0?"":" instrument"):" FX "+juce::String(index+1));
+    }
+    // The chain itself: "track 2", "master", "return A", "bus 1" or "Channel Rack channel 3".
+    static juce::String place(int rack) {
         if (PluginRuntime::isRackChannel(rack)) return "Channel Rack channel "+juce::String(rack-PluginRuntime::channelBase+1);
-        const juce::String place = rack<0 ? juce::String("unknown location") : rack==PluginRuntime::masterIndex ? juce::String("master")
+        return rack<0 ? juce::String("unknown location") : rack==PluginRuntime::masterIndex ? juce::String("master")
             : PluginRuntime::isReturn(rack) ? "return "+juce::String::charToString(static_cast<juce::juce_wchar>('A'+rack-PluginRuntime::returnBase))
             : PluginRuntime::isBus(rack) ? "bus "+juce::String(rack-PluginRuntime::busBase+1)
 
             : "track "+juce::String(rack+1);
-        return place+(index<0?(rack<0?"":" instrument"):" FX "+juce::String(index+1));
     }
     static juce::String slotLabel(const PluginRuntime::Slot& slot,int rack,int index) {
         const auto name=slot.name.isNotEmpty()?slot.name:slot.processor?slot.processor->getName():juce::String("A plugin");
@@ -523,6 +566,9 @@ private:
         if (details.parameterInfoChanged || details.programChanged || details.nonParameterStateChanged) changed.store(true);
     }
     PluginRuntime& runtime;
+    std::uint32_t reportedShortfalls{runtime.alignmentShortfalls()};   // D13: alignment shortfalls already reported
+    std::array<bool, PluginRuntime::rackCount> overLimit{};               // D13: chains already named as past maxDelay
+    std::array<bool, PluginRuntime::maxRackChannels> overLimitChannels{};
     DiagnosticLog log;
     PluginFactory factory;
     std::vector<std::pair<juce::AudioProcessor*,std::unique_ptr<EditorWindow>>> editors;

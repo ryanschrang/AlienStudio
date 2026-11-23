@@ -102,6 +102,15 @@ imports placed on the Song timeline run their own command, `ImportSongAudio`, th
 
 ## Direct route cleanup
 
+Project key/scale and recording options now use only `SetProjectScale` and
+`SetRecordSettings`. Their direct controller commit wrappers are removed.
+The shared command adapter for deferred scale requests checks the editor's
+project scope before dispatch; the app and scale-following editor tests use it.
+Recording fixtures use the command with the existing history grouping key.
+CommandEngineTests covers key/options batch Preview, notifications, engine
+settings, one-step Undo/Redo, no-op/late/busy/count-in refusal and stale scope.
+Other direct routes and native acceptance remain pending.
+
 Song creation and take comping now use only `NewSongClip` and `CompSongTake`.
 The obsolete `placeNewClip` and `compRecordedTake` controller wrappers are removed.
 Recording tests submit the commands; timeline tests read creation metadata from

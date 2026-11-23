@@ -22,7 +22,7 @@ public:
         dragDestination.setTooltip("Dragging a sample reveals this editor. Drop it onto an empty Session cell or a free Song lane position.");
         list.setTooltip("Drag a sample to import it. Choose Session or Song above; the editor opens when dragging starts. Drag a MIDI clip into the piano roll, or a drum groove onto the Channel Rack.");
         matchTempo.setButtonText("Match tempo"); matchTempo.setName("Match sample preview tempo");
-        matchTempo.setTooltip("Match the project tempo, or the tempo at the Song playhead (cursor while stopped). A tempo change stops preview; press Preview again to match it. Preview is not beat-aligned.");
+        matchTempo.setTooltip("Match the project tempo, or the tempo at the Song playhead (cursor while stopped). While playing, start on the next quarter-note beat. A tempo change stops preview; press Preview again to match it.");
         matchTempo.onClick = [this] { stop(); updateButtons(); };
         sourceTempo.setName("Sample source BPM"); sourceTempo.setRange(30, 300, .1); sourceTempo.setValue(120);
         sourceTempo.setSliderStyle(juce::Slider::IncDecButtons); sourceTempo.setTextBoxStyle(juce::Slider::TextBoxLeft, false, 65, 24);
@@ -67,7 +67,7 @@ public:
     std::function<void(bool)> onDragStarted;
     // A MIDI clip started dragging: the owner shows where it can be dropped (the piano roll, or the Channel Rack for a groove).
     std::function<void(const juce::File&)> onMidiDragStarted;
-    std::function<void(const SessionAudioClip&)> onPreview;
+    std::function<void(const SessionAudioClip&, bool matchTempo)> onPreview;
     std::function<void()> onStop;
     std::function<void(const juce::File&, bool)> onImport;
     // Refresh at the click/Enter event as well as on the owner's regular UI tick.
@@ -237,7 +237,7 @@ private:
                 const auto tempoText = sync ? juce::String(sourceBpm, 1) + " to " + juce::String(targetBpm, 1) + " BPM" : juce::String("original tempo");
                 safe->setStatus(keyText.isNotEmpty() ? "Preview: " + tempoText + "; key " + keyText + " (up to 5s)."
                     : sync ? "Preview: " + tempoText + "; pitch preserved (up to 5s)." : "Preview: first five seconds at original pitch and tempo.");
-                if (safe->onPreview) safe->onPreview(*result->clip);
+                if (safe->onPreview) safe->onPreview(*result->clip, sync);
             });
         });
     }

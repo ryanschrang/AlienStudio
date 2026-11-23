@@ -117,6 +117,10 @@ public:
             statusBar.setProjectStatus("Plugin problem: " + problem.upToFirstOccurrenceOf("\n", false, false), problem);
             refreshPlugins();
         };
+        // Plugin latency that put tracks out of step (T1-04 D13): a warning, not a failure; the plugins keep running.
+        pluginHost.onLatencyProblem = [this](const juce::String& problem) {
+            statusBar.setProjectStatus(problem.upToFirstOccurrenceOf("\n", false, false), problem);
+        };
         // The first time a plugin file is seen it is tried out in a separate process, so a plugin that
         // crashes or hangs while loading cannot take the session (and unsaved work) with it.
         preflight = std::make_unique<alien::Preflight>(alien::scan::ScanDatabase::defaultFile().getSiblingFile("PluginPreflight.xml"),
@@ -617,8 +621,7 @@ private:
     void wireEditors() {
         pianoRoll.onProjectScaleRequested = [this](int root, alien::ScaleType type, std::uint32_t scope) {
             // The piano roll asks for the project it is showing; a project replaced since then is not changed.
-            return scope == controller.document().identityScope
-                && alien::command::CommandEngine(controller).execute(alien::command::SetProjectScale{root, static_cast<int>(type)}).ok;
+            return alien::command::setProjectScale(controller, root, type, scope);
         };
         controller.onMusicalScaleChanged = [this] {
             const auto& d = controller.document();
@@ -779,9 +782,9 @@ private:
             const auto clip = alien::midi_import::read(file);
             showView(clip.ok() && clip.drums() ? 8 : 1);
         };
-        devicesView.samples().onPreview = [this](const alien::SessionAudioClip& clip) {
+        devicesView.samples().onPreview = [this](const alien::SessionAudioClip& clip, bool matchTempo) {
             engine.factoryPresetPreview.stop();
-            if (!engine.samplePreview.request(clip.left.data(), clip.channels == 2 ? clip.right.data() : nullptr, static_cast<int>(clip.frames), clip.sampleRate))
+            if (!engine.samplePreview.request(clip.left.data(), clip.channels == 2 ? clip.right.data() : nullptr, static_cast<int>(clip.frames), clip.sampleRate, matchTempo && engine.playing.load()))
                 devicesView.samples().setStatus("Preview is busy. Try again.");
         };
         devicesView.samples().onStop = [this] { engine.samplePreview.stop(); };
@@ -1597,6 +1600,9 @@ private:
                 // Channel Rack hits and track MIDI the render had no room for (T1-04 D10, D11): the file is missing them.
                 if (const auto dropped = alien::droppedNotesText(engine->droppedRackHits(), engine->droppedTrackMidi()); ok && dropped.isNotEmpty())
                     summary += "  |  WARNING: " + dropped + "; the file is missing them";
+                // A chain past the latency limit plays late in the file too (D13). (A shortfall already failed the export.)
+                if (juce::String late; ok && (host->latencyProblems(late), late.isNotEmpty()))
+                    summary += "  |  WARNING: " + late.trim().replace("\n", " ");
                 safe->timelineView.setStatus(!ok ? error
                     : pluginFailures.isEmpty() ? summary
                     : "Exported " + file.getFullPathName() + " WITH PLUGIN FAILURES. The file is missing the sound of the plugin(s) that failed, so do not use it as a final mix:\n" + pluginFailures);

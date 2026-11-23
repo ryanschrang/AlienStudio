@@ -63,4 +63,52 @@ static void projectSettingsCommandChecks() {
     require(parsedRecord && std::get<cmd::SetRecordSettings>(*parsedRecord).settings == options, "and the parsed recording options are the same options");
     require(cmd::describe(c.document(), key).contains("D Dorian") && cmd::describe(c.document(), record).contains("2 bars") && cmd::describe(c.document(), record).contains("replacing"),
             "the descriptions name the key and the options");
+
+    // Project key and recording options form one transaction. A deferred editor request
+    // must refuse a stale project before it can notify views or change history.
+    {
+        const auto baseline = d;
+        const auto history = historyOf(c);
+        const auto told = notified;
+        require(!cmd::setProjectScale(c, 5, alien::ScaleType::major, d.identityScope ^ 1u)
+            && alien::sameContent(baseline, d) && historyOf(c) == history && notified == told,
+            "a stale deferred key request refuses without notification or history changes");
+        const std::vector<cmd::Command> edits{key, record};
+        const auto prediction = commands.preview(edits);
+        require(prediction.ok && prediction.changed && alien::sameContent(baseline, d) && historyOf(c) == history
+            && notified == told && engine->recording.metronome.load() == baseline.recording.metronome,
+            "key and recording Preview touches neither views nor engine settings");
+        require(commands.batch(edits, "Set project context").changed && alien::sameContent(prediction.after, d)
+            && notified == told + 1 && engine->recording.metronome.load() == options.metronome
+            && engine->recording.countInBars.load() == options.countInBars,
+            "accepted settings batch matches Preview and notifies the key once");
+        require(c.undo() && alien::sameContent(baseline, d)
+            && engine->recording.metronome.load() == baseline.recording.metronome
+            && engine->recording.countInBars.load() == baseline.recording.countInBars,
+            "one Undo restores key and recording settings together");
+        const auto redo = historyOf(c);
+        const auto afterUndo = notified;
+        const auto unchanged = commands.execute(cmd::SetRecordSettings{baseline.recording});
+        require(unchanged.ok && !unchanged.changed && historyOf(c) == redo, "unchanged recording settings preserve redo");
+        auto invalid = options; invalid.countInBars = alien::RecordSettings::maxCountInBars + 1;
+        const auto refused = commands.batch({key, cmd::SetRecordSettings{invalid}}, "Refused context");
+        require(!refused.ok && refused.failedCommand == 1 && alien::sameContent(baseline, d)
+            && historyOf(c) == redo && notified == afterUndo
+            && engine->recording.metronome.load() == baseline.recording.metronome,
+            "late recording refusal leaves key, engine, view notifications and redo unchanged");
+        c.setExternalBusy(true);
+        const bool busyKey = cmd::setProjectScale(c, 5, alien::ScaleType::major, d.identityScope);
+        const auto busyOptions = commands.execute(record);
+        c.setExternalBusy(false);
+        require(!busyKey && !busyOptions.ok && alien::sameContent(baseline, d) && historyOf(c) == redo && notified == afterUndo,
+            "busy settings refuse without notifications or redo loss");
+        engine->recording.phase.store(alien::RecordControls::countIn);
+        const auto counting = commands.batch({record, key}, "Context during count-in");
+        engine->recording.phase.store(alien::RecordControls::idle);
+        require(!counting.ok && alien::sameContent(baseline, d) && historyOf(c) == redo && notified == afterUndo
+            && engine->recording.metronome.load() == baseline.recording.metronome,
+            "count-in refuses the whole batch before even its first recording-settings command");
+        require(c.redo() && alien::sameContent(prediction.after, d)
+            && engine->recording.metronome.load() == options.metronome, "Redo restores the accepted settings batch");
+    }
 }
