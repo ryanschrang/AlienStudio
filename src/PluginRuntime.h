@@ -226,6 +226,21 @@ public:
     // Blocks in which some line had to delay less than it should, because a plugin reported more latency
     // than its stage held (until reserveAlignment grows it). An export compares before and after.
     std::uint32_t alignmentShortfalls() const noexcept { return shortfalls.load(std::memory_order_acquire); }
+    // The latency a chain's plugins report now, before it is clamped to maxDelay (T1-04 D13): mixer rack `rack`
+    // (a track, the master, a bus or a return) or Channel Rack instrument channelBase + channel. Anything above
+    // maxDelay cannot be lined up, so that chain plays late by the difference. Message thread.
+    std::int64_t reportedLatency(int rack) const noexcept {
+        const auto raw = [](const Slot& slot) -> std::int64_t {
+            return slot.processor && !slot.bypass && !slot.faulted.get() ? std::max(0, slot.processor->getLatencySamples()) : 0;
+        };
+        if (isRackChannel(rack)) return raw(rackChannels[static_cast<std::size_t>(rack - channelBase)]);
+        if (rack < 0 || rack >= rackCount) return 0;
+        const auto& chain = racks[static_cast<std::size_t>(rack)];
+        if (chain.frozen) return 0;
+        std::int64_t latency = raw(chain.instrument);
+        for (int i = 0; i < chain.effectCount; ++i) latency += raw(chain.effects[static_cast<std::size_t>(i)]);
+        return latency;
+    }
     void silence(std::size_t track, int onlyChannel = 0) noexcept {
         for (int channel=1;channel<=16;++channel) {
             if (onlyChannel != 0 && channel != onlyChannel) continue;
