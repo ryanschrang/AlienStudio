@@ -23,18 +23,41 @@ static void songTakeCommandChecks() {
     const auto first = takeIds[0], second = takeIds[1];
     const auto regionsOn = [&](int row) { int n = 0; for (const auto& r : song.regions) n += r.row == row ? 1 : 0; return n; };
 
-    // CompSongTake: Preview agrees with execute (the new clip's id included), one named step, and the takes are kept.
+    // A comp and mixer edit share Preview and one Undo step, preserving every original take.
     {
         const auto before = c.document();
         const auto history = historyOf(c);
-        const auto preview = commands.preview(cmd::CompSongTake{first, bar / 2, bar});
-        require(preview.ok && preview.changed && historyOf(c) == history && alien::sameContent(before, c.document()), "CompSongTake Preview changes no live state");
-        const auto result = commands.execute(cmd::CompSongTake{first, bar / 2, bar});
-        require(result.ok && result.changed && alien::sameContent(preview.after, c.document()) && c.undoLabel() == "Comp recording take", "CompSongTake does what Preview said");
-        require(song.takes.size() == 2 && regionsOn(2) == 3, "the comp carves the placed pass and keeps both takes");
+        const auto gain = engine->tracks[2].gain.load();
+        require(engine->arrangementMailbox.consume() != nullptr, "consume the take fixture's Song snapshot");
+        const std::vector<cmd::Command> edits{cmd::CompSongTake{first, bar / 2, bar}, cmd::SetTrackVolume{2, .6}};
+        const auto preview = commands.preview(edits);
+        require(preview.ok && preview.changed && historyOf(c) == history && alien::sameContent(before, c.document())
+            && engine->arrangementMailbox.consume() == nullptr && engine->tracks[2].gain.load() == gain,
+            "comp and mixer Preview changes no document, history or engine state");
+        require(commands.batch(edits, "Comp take and volume").changed && alien::sameContent(preview.after, c.document())
+            && c.undoLabel() == "Comp take and volume" && engine->tracks[2].gain.load() == .6f, "comp and mixer batch matches Preview");
+        require(song.takes == before.timeline.takes && regionsOn(2) == 3, "the comp carves the placed pass and preserves both original takes");
         const auto plays = song.takePlays(first, c.songTempo());
         require(plays.size() == 1 && plays[0].first == bar / 2 && plays[0].second == bar, "the arrangement plays the first take where it was comped");
-        require(c.undo() && alien::sameContent(before, c.document()) && c.redo() && regionsOn(2) == 3, "it undoes and redoes");
+        const auto* published = engine->arrangementMailbox.consume();
+        require(published && alien::ArrangementMailbox::validSnapshot(*published) && published->timeline == song,
+            "the engine receives the comp and its original take references");
+        require(c.undo() && alien::sameContent(before, c.document()) && engine->tracks[2].gain.load() == gain,
+            "one Undo restores comp and mixer together");
+        const auto* restored = engine->arrangementMailbox.consume();
+        require(restored && restored->timeline == before.timeline, "Undo publishes the original arrangement");
+        const auto redo = historyOf(c);
+        const auto refused = commands.batch({cmd::CompSongTake{first, bar / 2, bar}, cmd::SetTrackVolume{99, .5}}, "Refused comp");
+        require(!refused.ok && refused.failedCommand == 1 && alien::sameContent(before, c.document()) && historyOf(c) == redo
+            && engine->tracks[2].gain.load() == gain && engine->arrangementMailbox.consume() == nullptr,
+            "late mixer refusal preserves takes, comp, live gain, publication and redo");
+        c.setExternalBusy(true);
+        const auto busy = commands.execute(cmd::CompSongTake{first, bar / 2, bar});
+        c.setExternalBusy(false);
+        require(!busy.ok && busy.error.contains("busy") && alien::sameContent(before, c.document()) && historyOf(c) == redo
+            && engine->arrangementMailbox.consume() == nullptr, "busy comping preserves the arrangement and redo");
+        require(c.redo() && alien::sameContent(preview.after, c.document()) && regionsOn(2) == 3
+            && engine->tracks[2].gain.load() == .6f, "Redo still restores the complete accepted comp batch");
     }
 
     // ForgetSongTake: the take leaves the list; the comp stays.

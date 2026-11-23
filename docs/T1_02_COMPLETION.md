@@ -102,6 +102,14 @@ imports placed on the Song timeline run their own command, `ImportSongAudio`, th
 
 ## Direct route cleanup
 
+Song creation and take comping now use only `NewSongClip` and `CompSongTake`.
+The obsolete `placeNewClip` and `compRecordedTake` controller wrappers are removed.
+Recording tests submit the commands; timeline tests read creation metadata from
+the accepted command's document state, retaining scene allocation/capacity and
+selection checks without a second mutation/history path. CommandEngineTests
+covers comp/mixer Preview, original-take preservation, Song publication, one-step
+Undo/Redo and late/busy refusal preserving redo. Native acceptance remains pending.
+
 Song placement note edits now have only the `SetPlacementClipNotes` command
 entry point. The obsolete `setPlacementPattern` controller mutation is removed;
 controller and Song-paste tests submit the command without a paired manual
