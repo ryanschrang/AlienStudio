@@ -867,6 +867,29 @@ static void samplePreviewTests() {
     require(rig->render(1024) > .00001 && allocationCount == before, "sample audition is audible and allocation-free in real callback");
     require(rig->engine.plugins->master.getMagnitude(0, 0, 128) == 0 && !rig->engine.playing.load(), "sample audition stays outside project buffers and transport");
     rig->engine.samplePreview.stop(); require(rig->render(1024) == 0, "sample stop silences monitor preview");
+    rig->engine.patternMode.store(1); rig->engine.bpm.store(120); rig->engine.playing.store(true);
+    require(rig->render(12000) == 0, "advance the silent Session transport by half a beat");
+    require(rig->engine.samplePreview.request(left.data(), nullptr, 4800, 48000, true), "queue a beat-aligned monitor preview");
+    const auto alignedAllocations = allocationCount;
+    require(rig->render(12000) == 0 && rig->engine.samplePreview.waitingForBeat(), "real callback stays silent up to the next beat");
+    require(rig->render(1024) > .00001 && allocationCount == alignedAllocations, "real callback starts on the beat without allocating");
+    require(rig->engine.plugins->master.getMagnitude(0, 0, 128) == 0, "aligned preview is still monitor-only");
+    require(rig->engine.samplePreview.request(left.data(), nullptr, 4800, 48000, true), "queue another aligned preview");
+    rig->render(17); rig->engine.playing.store(false);
+    require(rig->render(1024) == 0, "transport stop cancels the pending matched preview");
+    auto song = std::make_shared<alien::ArrangementPlayback>();
+    require(song->timeline.setTempoChange(960, 60) && song->timeline.setLoop(1200, 2160)
+        && song->timeline.setLoopEnabled(true), "Song preview tempo and fractional-beat loop fixture");
+    require(rig->engine.arrangementMailbox.publish(std::shared_ptr<const alien::ArrangementPlayback>(song)), "publish silent Song fixture");
+    rig->engine.patternMode.store(2); rig->engine.timelineSeek.store(2040); rig->engine.playing.store(true);
+    rig->render(1);
+    require(rig->engine.samplePreview.request(left.data(), nullptr, 4800, 48000, true), "queue a Song-aligned preview");
+    const auto songAllocations = allocationCount;
+    require(rig->render(41999) == 0 && rig->engine.samplePreview.waitingForBeat(),
+        "Song wait follows the 60 BPM map and fractional loop wrap, not the 120 BPM project clock");
+    require(rig->render(1024) > .00001 && allocationCount == songAllocations,
+        "Song preview starts at the next Song quarter-note beat without callback allocation");
+    rig->engine.playing.store(false); rig->render(1);
     rig->engine.masterControls.gain.store(0); rig->render(48000);
     rig->engine.samplePreview.request(left.data(), nullptr, 4800, 48000);
     require(rig->render(1024) == 0, "sample preview follows master gain");

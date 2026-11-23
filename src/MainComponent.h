@@ -779,9 +779,9 @@ private:
             const auto clip = alien::midi_import::read(file);
             showView(clip.ok() && clip.drums() ? 8 : 1);
         };
-        devicesView.samples().onPreview = [this](const alien::SessionAudioClip& clip) {
+        devicesView.samples().onPreview = [this](const alien::SessionAudioClip& clip, bool matchTempo) {
             engine.factoryPresetPreview.stop();
-            if (!engine.samplePreview.request(clip.left.data(), clip.channels == 2 ? clip.right.data() : nullptr, static_cast<int>(clip.frames), clip.sampleRate))
+            if (!engine.samplePreview.request(clip.left.data(), clip.channels == 2 ? clip.right.data() : nullptr, static_cast<int>(clip.frames), clip.sampleRate, matchTempo && engine.playing.load()))
                 devicesView.samples().setStatus("Preview is busy. Try again.");
         };
         devicesView.samples().onStop = [this] { engine.samplePreview.stop(); };
