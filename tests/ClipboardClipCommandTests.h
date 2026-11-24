@@ -43,7 +43,7 @@ static void clipboardClipCommandChecks() {
     require(audioPreview.ok && commands.batch({cmd::PasteClip{1, 1}, cmd::PasteLinkedClip{2, 1}, cmd::MakeClipUnique{2, 1}}, "Audio paste").changed
         && alien::sameContent(audioPreview.after, c.document()) && c.document().clip(1, 1).audio == audio
         && c.document().clip(2, 1).audio == audio && c.document().linkOf(0, 1) != c.document().linkOf(2, 1), "audio paste/independence shares immutable media but owns independent content");
-    const auto source = c.channelRack().clips[0]; require(c.assignRackClip(0, 2, source) && c.copyCell(0, 2), "rack clipboard fixture");
+    const auto source = c.channelRack().clips[0]; require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{0, 2, source}).changed && c.copyCell(0, 2), "rack clipboard fixture");
     const auto rackBefore = c.document(); const auto rackHistory = historyOf(c);
     const std::vector<cmd::Command> rackEdits{cmd::PasteLinkedClip{1, 2}, cmd::PasteClip{2, 2}, cmd::MakeClipUnique{1, 2}};
     const auto rackPreview = commands.preview(rackEdits);

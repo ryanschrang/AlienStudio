@@ -15,7 +15,7 @@ static void songPlaceCommandChecks() {
     audio->left.assign(32000, .2f); audio->buildWaveform();
     require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("place-command-fixture.wav"), 2, 0, audio), "audio place fixture");
     const auto source = c.channelRack().clips[0];
-    require(c.assignRackClip(1, 1, source), "a Session cell holding a rack clip");
+    require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{1, 1, source}).changed, "a Session cell holding a rack clip");
     c.markAsNewBaseline();
     const auto found = [&](std::uint32_t id) { return song.find(id); };
 

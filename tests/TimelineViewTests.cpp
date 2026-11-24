@@ -2380,7 +2380,7 @@ static void rackPlacementUniqueMenuChecks() {
     const auto originalClip = rig->reg(rig->id.p).rackClip;
     const auto originalPattern = controller.channelRack().pattern(0);
     const int patternsBefore = controller.channelRack().patternCount;
-    require(controller.assignRackClip(3, 0, originalClip), "share the Song rack source with a Session cell");
+    require(alien::command::CommandEngine(controller).execute(alien::command::AssignRackClip{3, 0, originalClip}).changed, "share the Song rack source with a Session cell");
     controller.markAsNewBaseline();
     const auto before = controller.document();
     const auto point = rig->at(2 * bar + 100, tl::rackRowBase);

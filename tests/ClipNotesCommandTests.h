@@ -145,7 +145,7 @@ static void clipNotesCommandChecks() {
         c.setExternalBusy(false);
         require(!busy.ok && busy.error.contains("busy") && pitchAt(0, 0) == 60, "a busy project refuses a note edit");
 
-        require(c.assignRackClip(1, 1, c.channelRack().clips[0]), "a cell holding a rack clip");
+        require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{1, 1, c.channelRack().clips[0]}).changed, "a cell holding a rack clip");
         const auto rackBefore = c.document();
         says(cmd::SetClipNotes{1, 1, notes(60)}, "Channel Rack");
         require(alien::sameContent(rackBefore, c.document()), "the rack cell is left alone");

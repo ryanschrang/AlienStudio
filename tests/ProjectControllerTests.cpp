@@ -960,9 +960,9 @@ static void savedRackBindingTests() {
         return p.addPattern(0);
     }), "two independent rack sources");
     auto source = c.channelRack().clips[1];
-    require(c.assignRackClip(0, 0, source) && c.assignRackClip(0, 1, source), "two saved assignments share one rack source");
+    require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{0, 0, source}).changed && alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{0, 1, source}).changed, "two saved assignments share one rack source");
     const auto unchanged = d;
-    require(c.assignRackClip(1, 0, c.channelRack().clips[0]) && c.undo() && alien::sameContent(unchanged, d),
+    require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{1, 0, c.channelRack().clips[0]}).changed && c.undo() && alien::sameContent(unchanged, d),
             "a scene can bind different sources on independent rows, with one-step undo");
     engine.patternMode.store(1); c.launchClip(3, 2);
     require(engine.requestedTrackRackClip[3].load() == alien::rack::RackPlayer::noLaunchRequest,
