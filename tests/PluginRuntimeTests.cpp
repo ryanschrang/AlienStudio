@@ -202,6 +202,62 @@ int main(){
                 "poll() without a latency callback used up the report an export collects");
         std::cout<<"PASS: plugin latency past the limit and alignment shortfalls are reported\n";
     }
+    // T1-04 D15: a Channel Rack plugin instrument's line is as long as the slowest rack instrument makes it wait,
+    // not 96,000 samples; it is new and empty for each instrument loaded, and one too short is counted.
+    {
+        using R=alien::PluginRuntime;
+        auto rack=std::make_unique<R>();
+        rack->rackChannels[0].processor=std::make_unique<TestProcessor>(true,1,0);
+        rack->rackChannels[1].processor=std::make_unique<TestProcessor>(true,1,0);
+        rack->prepare(48000);
+        require(rack->channelAlignmentCapacity(0)==0 && rack->channelAlignmentCapacity(1)==0,"rack instruments without latency hold a line");
+        require(rack->channelAlignmentCapacity(2)==-1,"a channel without an instrument holds a line");
+        require(rack->alignmentBytes()<4096,"two rack instruments without latency reserve alignment audio (was 1.5 MiB)");
+        alien::PluginHost rackHost(*rack);
+        // Channel 0 plays a note from sample `noteAt` of the block (or none); answers where its sound starts, or -1.
+        auto block=[&](int noteAt,bool off=false){
+            rack->begin(512,120,true,0);rack->alignToRackChannels(512);
+            // The rack's instruments share one output buffer: read channel 0's before channel 1 plays.
+            const auto* out=rack->processRackChannel(0,512,[&](auto&& add){if(noteAt>=0)add(noteAt,60,off?0.0f:0.8f);});
+            int at=-1;
+            if(out!=nullptr)for(int i=0;i<512&&at<0;++i)if(out->getSample(0,i)!=0)at=i;
+            rack->processRackChannel(1,512,[](auto&&){});
+            rack->rackChannelsDone();
+            return at;
+        };
+        require(block(0)==0,"a rack instrument with nothing to wait for plays at once");
+        require(block(0,true)<0,"the note ends at once");
+        // Channel 1 now reports 3,000 samples: channel 0 must wait that long. Until the poll grows its line it cannot.
+        rack->rackChannels[1].processor->setLatencySamples(3000);
+        const auto before=rack->alignmentShortfalls();
+        const auto quiet=allocations;block(-1);block(-1);
+        require(allocations==quiet,"a too-short rack instrument line allocated in the callback");
+        require(rack->alignmentShortfalls()==before+2,"blocks with too-short lines are not counted");
+        rackHost.poll();
+        const auto adopt=allocations;block(-1);
+        require(allocations==adopt,"adopting a rack instrument line allocated in the callback");
+        require(rack->channelAlignmentCapacity(0)==3072 && rack->channelAlignmentCapacity(1)==3072,"loaded rack instruments' lines grew to whole granules");
+        require(rack->channelAlignmentCapacity(2)==-1,"an empty channel was given a line");
+        // Fresh lines: the note played into the short line is gone; a new note comes out exactly 3,000 samples late.
+        int heard=-1;
+        for(int b=0;b<8&&heard<0;++b){const int at=block(b==0?0:-1);if(at>=0)heard=b*512+at;}
+        require(heard==3000,"a rack instrument does not wait exactly as long as the slowest one");
+        require(rack->alignmentShortfalls()==before+2,"the grown rack instrument line is long enough");
+        // A new instrument on channel 0 gets a new, empty line: nothing the old one left in it plays.
+        block(0);   // the old instrument's sound is in the line now
+        rack->rackChannels[0].processor=std::make_unique<TestProcessor>(true,1,0);
+        rack->prepareSlot(rack->rackChannels[0],R::channelBase,-1);
+        bool silent=true;for(int b=0;b<8;++b)silent=silent&&block(-1)<0;
+        require(silent,"a newly loaded rack instrument's line played what the old one left");
+        // Latency gone and channel 1 emptied: a restore (shrink) fits the lines again.
+        rack->rackChannels[1].processor->setLatencySamples(0);
+        rack->destroy(rack->rackChannels[1],R::channelBase+1,-1);rack->rackChannels[1]={};
+        require(rack->reserveAlignment(true)>=2,"a restore did not refit the rack instruments' lines");
+        block(-1);rack->reclaimAlignment();
+        require(rack->channelAlignmentCapacity(0)==0 && rack->channelAlignmentCapacity(1)==0,"the rack instruments' lines did not shrink");
+        require(rack->alignmentBytes()<4096,"shrunk rack instrument lines still hold audio");
+        std::cout<<"PASS: Channel Rack instrument lines sized to latency and fresh per instrument\n";
+    }
     runtime->racks[0].effects[0].bypass=true;runtime->begin(16,120,true,0);runtime->tracks[0].setSample(0,0,0.25f);runtime->effectsAndAlign(16);require(runtime->tracks[0].getSample(0,0)==0.25f,"FX bypass altered audio");
     alien::SessionProjectData project;juce::PluginDescription desc;desc.name="Missing instrument";desc.pluginFormatName="VST3";desc.fileOrIdentifier="/missing/original.vst3";desc.isInstrument=true;
     project.plugins[0].instrument={desc.createXml()->toString(),"YWJj",true};project.plugins[1].effects.push_back({desc.createXml()->toString(),{},false});

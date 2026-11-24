@@ -18,6 +18,7 @@ D11 bounds the MIDI a Song or Session track's instrument is given each block, co
 and reports it the same way; D12 reports, by track, streamed audio that dropped out or could not be
 read during playback; D13 reports plugin latency that put tracks out of step while playing.
 D14 frees the Channel Rack samples, slice views and key maps a replaced project used.
+D15 sizes each Channel Rack plugin instrument's delay line to the latency it must wait for.
 Higher supported limits (E) are pending.
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
@@ -416,7 +417,7 @@ maximum delay, whether or not any plugin had latency. D1 sizes them to what the 
   delaying, at a moment the latency changed anyway; the other stages are untouched. An export
   that sees a shortfall fails with a message instead of writing tracks that are out of step.
 - **Not changed.** The Channel Rack's per-instrument lines keep their full length while an
-  instrument is loaded (they were already allocated only then). `maxDelay` is still the most any
+  instrument is loaded (they were already allocated only then). D15 sizes them too. `maxDelay` is still the most any
   chain can be compensated for.
 
 `PluginRuntimeTests` covers it: an idle runtime reserves no alignment audio; a 4-sample plugin's
@@ -1103,3 +1104,47 @@ keeps the old slice views.
 Not covered: the running app, and rack samples loaded or relinked inside one session and then
 replaced by an edit. Undo can bring those back, so they stay until the next open, as Session audio
 does in D5.
+
+## Increment D15: Channel Rack instrument delay lines sized to latency
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+Each Channel Rack plugin instrument waits for the slowest one, so all of them come out together. D1
+left these per-instrument lines at full length: every loaded instrument held 96,001 stereo samples
+(0.73 MiB), whatever latency it reported. That is up to 47 MiB with 64 instruments.
+
+What D15 changes (`PluginRuntime`):
+
+- **Sized like D1's stages.** Each loaded instrument's line is as long as the slowest rack
+  instrument's latency, rounded up to whole 1,024-sample granules. With no latent instrument it holds
+  one sample. A channel that never had an instrument holds no line.
+- **Allocated off the callback.** `reserveAlignment` allocates a channel's storage and publishes it;
+  the callback takes it at its next `begin()` and hands back the old one. That's the same handoff as
+  D1, with no allocation, lock or free in the callback. It grows when an instrument is prepared and
+  on the host's poll, and fits exactly on a restore, which frees the line of a channel whose
+  instrument went.
+- **New and empty for each instrument.** Preparing an instrument on a channel always publishes a new
+  line, so nothing the previous instrument left in it plays.
+- **Shortfalls.** A line too short for the delay asked of it (a latency that grew since the last
+  poll) goes through the same `align()` as the other stages. The source stage is sized from the same
+  latency and taken up in the same block, so it is short in exactly those blocks and already counts
+  them in `alignmentShortfalls()`: an export still fails, as before.
+
+`alignmentBytes()` includes these lines; `channelAlignmentCapacity(c)` reports one.
+
+Tests (`PluginRuntimeTests`):
+- two rack instruments without latency hold one-sample lines: under 4 KiB, where it was 1.5 MiB;
+- the latency grows to 3,000 samples while playing:
+  - the too-short line is counted once per block, with no callback allocation;
+  - the poll grows both loaded lines to 3,072 and the empty channel gets none;
+  - the next block takes them up without allocating;
+  - a note on the faster instrument then comes out exactly 3,000 samples late;
+- a newly loaded instrument's line plays nothing the old one left in it;
+- a restore shrinks the lines back, including the line of a channel whose instrument was removed.
+
+Mutation checks: the test fails when a new instrument keeps the old line, and when the lines are
+full length again. Counting the channel line itself changes no count the test can see, as the
+source stage counts the same blocks.
+
+Not covered: the running app, a real latent third-party instrument, and an engine-wide heap figure
+with rack instruments loaded (the capacity report loads none).
