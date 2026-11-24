@@ -334,6 +334,101 @@ static void replacedAudioSafetyTests() {
     root.deleteRecursively();
 }
 
+// T1-04 D16: within a session, audio no undo or redo step, clipboard or cache can bring back is freed while the
+// transport is stopped, once the engine has let go of it. Audio something can still reach stays.
+static void unreachableAudioTests() {
+    const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("alien-unreachable-audio", "");
+    require(root.createDirectory().wasOk(), "scratch folder");
+    auto engine = std::make_unique<ToneEngine>(); engine->prepare(48000);
+    auto c = std::make_unique<alien::ProjectController>(*engine);
+    std::array<float, 512> left{}, right{};
+    float* outputs[]{left.data(), right.data()};
+    auto callback = [&] { engine->audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {}); };
+    auto install = [&](int track, int scene) {
+        const auto file = root.getChildFile("clip" + juce::String(track) + "-" + juce::String(scene) + ".wav");
+        auto clip = toneClip(2.0);
+        std::atomic<bool> cancel{false}; juce::String error;
+        require(alien::writeClipWav(file, *clip, cancel, error) && c->installAudio(file, track, scene, clip), "install audio");
+        return std::weak_ptr<const alien::SessionAudioClip>(c->document().clip(track, scene).audio);
+    };
+    while (c->document().trackCount() < 6) require(c->addTrack(), "add a track");
+    c->commit("Tracks");
+    std::uint32_t now = 1000000;
+    // A sweep a second later, then callbacks, then the timer again: what the app does while stopped.
+    auto sweep = [&] { now += 1500; c->releaseUnreachableAudio(now); callback(); return c->releaseUnreachableAudio(now); };
+    settle(*engine, *c);
+    const auto emptyBudget = c->availableAudioBytes();
+
+    auto imported = install(0, 0);
+    const auto clipBytes = imported.lock()->decodedBytes();
+    require(sweep() == 0 && !imported.expired(), "audio in the document was freed");
+    require(c->undo() && c->document().clip(0, 0).audio == nullptr, "undo the import");
+    require(sweep() == 0 && !imported.expired(), "audio a redo can bring back was freed");
+    require(c->redo() && c->document().clip(0, 0).audio.get() == imported.lock().get(), "redo brings the import back");
+    require(c->undo(), "undo the import again");
+    c->setClipPattern(1, 0, clipNotes(1, 0), true); c->commit("Edit");   // the redo step is gone
+    // Not while playing: no sweep starts, and a sweep in progress waits for the stop.
+    engine->playing.store(true);
+    now += 1500;
+    require(c->releaseUnreachableAudio(now) == 0 && c->unreachableAudioBytes() == 0, "a sweep ran while playing");
+    engine->playing.store(false);
+    now += 1500;
+    require(c->releaseUnreachableAudio(now) == 0 && c->unreachableAudioBytes() == clipBytes && !imported.expired(),
+            "audio no step can reach was not set aside, or was freed before the engine let go");
+    engine->playing.store(true);
+    callback(); callback();
+    require(engine->editedAudioDone.load() < engine->editedAudioRequest.load(), "the engine let go of audio while playing");
+    require(c->releaseUnreachableAudio(now) == 0 && !imported.expired(), "audio was freed while the engine was playing");
+    engine->playing.store(false);
+    callback();
+    require(engine->editedAudioDone.load() == engine->editedAudioRequest.load(), "a stopped callback answers the request");
+    const auto before = liveBytes.load();
+    require(c->releaseUnreachableAudio(now) == clipBytes && imported.expired() && c->unreachableAudioBytes() == 0,
+            "after the engine answers, audio no step can reach is freed");
+    require(before - liveBytes.load() >= static_cast<std::int64_t>(clipBytes) - 4096, "freeing it did not return its memory");
+    require(c->availableAudioBytes() == emptyBudget, "the audio budget did not get the freed audio back");
+
+    // On the clipboard: kept, and it still pastes.
+    auto copied = install(2, 0);
+    require(c->copyCell(2, 0) && c->undo(), "copy, then undo the import");
+    c->setClipPattern(1, 0, clipNotes(1, 1), true); c->commit("Edit");
+    require(sweep() == 0 && !copied.expired() && c->unreachableAudioBytes() == 0, "a clip on the clipboard was freed");
+    require(c->pasteCell(3, 0, false) && c->document().clip(3, 0).audio.get() == copied.lock().get(), "the copied clip still pastes");
+
+    // An undo step that falls off the history: once the deleted clip's last step goes, so does its audio.
+    auto deleted = install(4, 0);
+    require(c->clearCell(4, 0), "delete the clip"); c->commit("Delete clip", 4, 0);
+    require(c->document().clip(4, 0).audio == nullptr, "the clip is deleted");
+    require(sweep() == 0 && !deleted.expired(), "audio an undo can bring back was freed");
+    for (int i = 0; i <= static_cast<int>(alien::DocumentHistory::limit); ++i) {
+        c->setClipPattern(5, 0, clipNotes(5, i), true); c->commit("Edit");
+    }
+    sweep();
+    require(deleted.expired() && !copied.expired(), "audio whose last undo step fell off the history was not freed");
+    require(c->availableAudioBytes() == emptyBudget - clipBytes, "the budget counts only the audio still reachable");
+
+    // A Channel Rack sample decoded again in place (no undo step): the old decode goes, the new one plays.
+    const auto wav = root.getChildFile("rack.wav");
+    { std::atomic<bool> cancel{false}; juce::String error; require(alien::writeClipWav(wav, *toneClip(1.0), cancel, error), "write a rack sample"); }
+    alien::command::loadRackSample(*c, wav, 0); waitIdle(*c); settle(*engine, *c);
+    const auto* oldDecode = c->rackChannelAudio(0);
+    require(oldDecode != nullptr, "the rack sample loaded");
+    const auto withRack = c->availableAudioBytes();
+    require(sweep() == 0 && c->availableAudioBytes() == withRack, "a rack sample in use was freed");
+    auto redecoded = toneClip(1.0);
+    require(c->replaceRackSampleAudio(c->channelRack().info[0].sample, redecoded), "decode the rack sample again");
+    settle(*engine, *c);
+    require(c->availableAudioBytes() == withRack - redecoded->decodedBytes(), "the new decode is counted");
+    const auto rackBefore = liveBytes.load();
+    require(sweep() == redecoded->decodedBytes() && c->availableAudioBytes() == withRack, "a rack sample's replaced decode was not freed");
+    require(rackBefore - liveBytes.load() >= static_cast<std::int64_t>(redecoded->decodedBytes()) - 4096, "the old decode's memory was not returned");
+    require(c->rackChannelAudio(0) == redecoded.get() && !copied.expired(),
+            "the new decode or other audio went too");
+    c.reset(); engine.reset();
+    root.deleteRecursively();
+    std::cout << "PASS: audio no edit can bring back is freed while stopped\n";
+}
+
 // T1-04 D14: the Channel Rack's decoded samples, slice views and key maps belong to the open project. Opening
 // another one (or the same one again) frees those the new project does not use, once the engine has let go.
 static void rackCacheTests() {
@@ -527,6 +622,7 @@ int main(int argc, char** argv) {
     trackerTests();
     replacedAudioSafetyTests();
     rackCacheTests();
+    unreachableAudioTests();
     resourceRefusalTests();
     rackQueueTests();
     projectPeakTests(report);
