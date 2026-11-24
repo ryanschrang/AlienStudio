@@ -5,7 +5,7 @@ static void allClipDuplicateChecks() {
     auto audio = std::make_shared<alien::SessionAudioClip>(); audio->sampleRate = 8000; audio->channels = 1;
     audio->frames = 80; audio->left.assign(80,.2f); audio->buildWaveform();
     require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("duplicate-audio.wav"),1,0,audio), "audio duplicate fixture");
-    require(c.assignRackClip(2,0,c.channelRack().clips[0]), "rack duplicate fixture");
+    require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{2,0,c.channelRack().clips[0]}).changed, "rack duplicate fixture");
     c.selectClip(3,3); c.markAsNewBaseline(); const auto before = c.document(); const auto history = historyOf(c);
     const std::vector<cmd::Command> edits{cmd::DuplicateClip{1,0,1,1},cmd::DuplicateClip{1,1,1,2},cmd::DuplicateClip{2,0,2,1},cmd::DuplicateClip{2,1,2,2}};
     const auto preview = commands.preview(edits);

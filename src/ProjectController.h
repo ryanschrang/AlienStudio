@@ -1077,27 +1077,6 @@ public:
         else publishStop(static_cast<std::size_t>(edit.track)); // preserve existing assignment playback semantics
         return true;
     }
-    bool assignRackClip(int track, int scene, std::uint64_t clip) {
-        const auto before = doc;
-        if (!applyRackCommand({rack_command::Kind::assign, track, scene, clip}) || sameContent(before, doc)) return false;
-        commit("Assign rack clip", track, scene); return true;
-    }
-    bool copyRackToCell(int track, int scene, std::uint64_t clip) {
-        if (busy || isRecording() || !doc.isValidCell(track, scene) || isTrackFrozen(track)) return false;
-        const int source = rackPatternForClip(clip);
-        if (source < 0) return false;
-        const auto saved = doc;
-        auto next = doc.channelRack;
-        const int slot = next.patternCount;
-        if (!next.addPattern(source)) return false;
-        next.selectedPattern = doc.channelRack.selectedPattern;
-        if (!doc.setRack(std::move(next)) || !doc.bindRackClip(track, scene, doc.channelRack.clips[static_cast<std::size_t>(slot)])) {
-            doc = saved; return false;
-        }
-        pushRackToEngine(); publishStop(static_cast<std::size_t>(track));
-        commit("Copy rack clip", track, scene);
-        return true;
-    }
     // Copy remembers a cell's clip. Paste puts an independent copy of it in a cell; Paste linked puts a
     // clip that shares its content (an edit of either is an edit of both). Make unique gives a linked
     // cell its own copy again. Each is one undo step; a pasted cell's old content is replaced, not edited.

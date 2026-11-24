@@ -159,7 +159,7 @@ static void importEntryPointChecks() {
     const auto take = importFixtureClip();
     const auto installed = cmd::installDecodedAudio(c, wav, 0, 0, take);
     require(installed.ok && installed.changed && c.document().clip(0, 0).audio == take && c.undoLabel() == "Import audio", "a decoded take installs as one step");
-    require(c.assignRackClip(0, 1, c.channelRack().clips[0]), "rack fixture");
+    require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{0, 1, c.channelRack().clips[0]}).changed, "rack fixture");
     const auto rackBefore = c.document();
     require(!cmd::installDecodedAudio(c, wav, 0, 1, take).ok && alien::sameContent(rackBefore, c.document()), "a rack cell refuses rather than losing the take silently");
     engine->recording.phase.store(alien::RecordControls::recording);

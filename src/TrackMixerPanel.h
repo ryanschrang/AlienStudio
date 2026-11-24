@@ -4,6 +4,7 @@
 #include "ProjectController.h"
 #include "CommandEngine.h"
 #include "StudioWidgets.h"
+#include "OutputRoutingView.h"
 #include "SynthEngine.h"
 #include <array>
 #include <cmath>
@@ -683,7 +684,7 @@ public:
                     std::array<BusControls, maxBuses>& engineBusControls)
         : controller(projectController), controls(engineControls), returnControls(engineReturnControls), busControls(engineBusControls),
 
-          masterStrip(projectController, masterControls, [this] { if (onMasterCommandExecuted) onMasterCommandExecuted(); }) {
+          masterStrip(projectController, masterControls, [this] { if (onMasterCommandExecuted) onMasterCommandExecuted(); }), routingGraph(projectController) {
         addAndMakeVisible(masterStrip);
         addAndMakeVisible(help);
         help.setText("Independent instrument, level, balance and sends for each Session track. Output sends a track to the master "
@@ -699,6 +700,14 @@ public:
         addReturnButton.setButtonText("Add return");
         addReturnButton.setTooltip("Add a return track: every track gets a send knob for it, and it has its own FX in Plugins");
         addReturnButton.onClick = [this] { addReturn(); };
+        addAndMakeVisible(routingButton);
+        routingButton.setButtonText("Routing");
+        routingButton.setTooltip("Switch between mixer strips and the track output routing graph");
+        routingButton.onClick = [this] { showRouting(!routingShown); };
+        addChildComponent(routingViewport);
+        routingViewport.setViewedComponent(&routingGraph, false);
+        routingViewport.setScrollBarsShown(true, true);
+        routingGraph.onOutputRequested = [this](int track, int bus) { return chooseOutput(track, bus); };
 
         addAndMakeVisible(viewport);
         viewport.setViewedComponent(&content, false);
@@ -774,6 +783,7 @@ public:
         }
         addBusButton.setEnabled(busStrips.size() < static_cast<std::size_t>(maxBuses));
         addReturnButton.setEnabled(returnStrips.size() < static_cast<std::size_t>(maxReturns));
+        if (routingShown) routingGraph.refresh();
     }
 
     void tick() {
@@ -817,17 +827,42 @@ public:
         if (onTrackOutputCommandExecuted) onTrackOutputCommandExecuted();
         return true;
     }
+    void showRouting(bool shown) {
+        routingShown = shown;
+        routingButton.setButtonText(shown ? "Strips" : "Routing");
+        help.setText(shown ? "Output graph: click a track to route it. Sends and sidechains stay in Strips / Plugins."
+                           : "Mixer strips: instruments, levels, sends and outputs. Bus and return FX are set in Plugins.", juce::dontSendNotification);
+        help.setTooltip(help.getText());
+        routingGraph.refresh(); resized();
+    }
+    OutputRoutingView& outputRoutingView() { return routingGraph; }
+    juce::TextButton& routingControl() { return routingButton; }
 
 
     void resized() override {
         auto area = getLocalBounds().reduced(16, 12);
         auto header = area.removeFromTop(22);
+        routingButton.setBounds(header.removeFromRight(80));
+        header.removeFromRight(gap);
         addBusButton.setBounds(header.removeFromRight(90));
         header.removeFromRight(gap);
-        addReturnButton.setBounds(header.removeFromRight(100));
-        header.removeFromRight(gap);
+        addReturnButton.setVisible(!routingShown);
+        if (!routingShown) {
+            addReturnButton.setBounds(header.removeFromRight(100));
+            header.removeFromRight(gap);
+        }
         help.setBounds(header);
         area.removeFromTop(10);
+        viewport.setVisible(!routingShown); masterStrip.setVisible(!routingShown);
+        for (auto& [slot, strip] : busStrips) strip->setVisible(!routingShown);
+        for (auto& [slot, strip] : returnStrips) strip->setVisible(!routingShown);
+        routingViewport.setVisible(routingShown);
+        routingGraph.setVisible(routingShown);
+        if (routingShown) {
+            routingViewport.setBounds(area);
+            routingGraph.setSize(juce::jmax(720, area.getWidth() - 16), juce::jmax(area.getHeight() - 16, routingGraph.contentHeight()));
+            return;
+        }
 
         masterStrip.setBounds(area.removeFromRight(minStripWidth));
         area.removeFromRight(gap);
@@ -969,6 +1004,10 @@ private:
     std::array<BusControls, maxBuses>& busControls;
 
     MasterChannelStrip masterStrip;
+    OutputRoutingView routingGraph;
+    juce::Viewport routingViewport;
+    juce::TextButton routingButton;
+    bool routingShown{};
     std::vector<std::pair<int, std::unique_ptr<ReturnChannelStrip>>> returnStrips;   // (slot, strip), in slot order
     juce::Label help;
     juce::TextButton addBusButton, addReturnButton;

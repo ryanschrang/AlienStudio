@@ -1122,7 +1122,7 @@ static void savedRackAssignmentMenu() {
             "Paste a copy creates an independent composite source");
     require(c.undo() && c.document().clip(1, 1).isEmpty() && c.redo(), "assignment copies have one-step undo and redo");
     const auto other = c.document().clip(1, 1).rackClip;
-    require(c.assignRackClip(1, 0, other), "a scene accepts a different source on another row");
+    require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{1, 0, other}).changed, "a scene accepts a different source on another row");
     rig.engine.activeTrackRackClip[0].store(source); rig.engine.activeTrackRackClip[1].store(other);
     rig.view.refreshClips();
     require(rig.view.clipSlot(0, 0)->getButtonText().contains("Playing") && rig.view.clipSlot(1, 0)->getButtonText().contains("Playing"),
@@ -1295,7 +1295,7 @@ static void allTypeDuplicateMenu() {
     require(c.document().clip(0,1).audio == audio && c.document().selectedScene == 1 && c.undoLabel() == "Duplicate clip" && notifications == 1,
         "audio duplicate menu uses one command and selects independent destination");
     require(c.undo() && !c.canUndo() && !c.document().cellClip(0,1), "audio menu Undo has no legacy second commit");
-    require(c.assignRackClip(1,0,c.channelRack().clips[0]), "rack menu fixture"); c.selectClip(1,0); c.markAsNewBaseline();
+    require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{1,0,c.channelRack().clips[0]}).changed, "rack menu fixture"); c.selectClip(1,0); c.markAsNewBaseline();
     rig.view.showLinkMenu(); choose(7);
     require(c.document().clip(1,1).rackClip && c.document().clip(1,1).rackClip != c.document().clip(1,0).rackClip && notifications == 2,
         "rack duplicate menu allocates independent pattern");
@@ -1370,7 +1370,7 @@ static void clearClipCommandButton() {
     require(command::CommandEngine(c).execute(command::CreateClip{0, 0}).changed, "empty MIDI cell fixture");
     rig.view.refreshSelectedClip(); require(clear->isEnabled(), "explicit empty MIDI identity can be cleared");
     clickButton(*clear); require(!c.document().cellClip(0, 0) && refreshed == 2, "empty MIDI clear removes its cell identity");
-    require(c.assignRackClip(0, 0, c.channelRack().clips[0]), "rack button fixture");
+    require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{0, 0, c.channelRack().clips[0]}).changed, "rack button fixture");
     rig.view.refreshSelectedClip(); clickButton(*clear);
     require(!c.document().cellClip(0, 0) && c.channelRack().patternCount > 0 && refreshed == 3,
         "button clears rack assignment without deleting rack pattern");

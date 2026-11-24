@@ -726,7 +726,7 @@ static void savedBindingPlayback() {
             p.setStepOn(0, 0, 0, true); p.setStepOn(0, 0, 1, true);
             return p.addPattern(0) && p.setStepField(1, 0, 0, StepField::velocity, 40);
         }), "two audible independent rack sources");
-        require(c.assignRackClip(0, 0, c.channelRack().clips[0]) && c.assignRackClip(1, 0, c.channelRack().clips[1])
+        require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{0, 0, c.channelRack().clips[0]}).changed && alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{1, 0, c.channelRack().clips[1]}).changed
             && c.placeRegion(0, 0, 0) && c.placeRegion(alien::timeline::rackRowBase + 1, 1, 0),
             "save overlapping distinct Session and Song references");
         const auto json = alien::serializeSessionProject(alien::toProjectData(c.document()));

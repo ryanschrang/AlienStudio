@@ -32,7 +32,7 @@ static void audioImportPlanChecks() {
         && alien::sameContent(rejected,c.document()) && c.availableAudioBytes()==rejectedBytes,"invalid/decode-failed results refuse before retention/document changes");
     auto frozen=c.document();frozen.tracks[0].settings.freezeScene=0;
     require(!alien::session_audio_import::prepare(frozen,file,0,0),"frozen destination refuses before decoding");
-    require(c.assignRackClip(0,0,c.channelRack().clips[0]) && !c.prepareAudioImport(file,0,0),"rack assignments refuse rather than reporting a lost audio import as successful");
+    require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{0,0,c.channelRack().clips[0]}).changed && !c.prepareAudioImport(file,0,0),"rack assignments refuse rather than reporting a lost audio import as successful");
     c.setClipPattern(1,0,patternWith(65),false);require(c.copyCell(1,0) && c.pasteCell(2,0,true),"frozen alias fixture");frozen=c.document();frozen.tracks[2].settings.freezeScene=0;
     require(!alien::session_audio_import::prepare(frozen,file,1,0),"frozen linked content refuses planning");
     // Real worker completion: selection changes while decode runs do not redirect it.

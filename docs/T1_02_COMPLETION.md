@@ -102,6 +102,15 @@ imports placed on the Song timeline run their own command, `ImportSongAudio`, th
 
 ## Direct route cleanup
 
+Rack Session-cell assignments now use only `AssignRackClip`. The obsolete
+`assignRackClip` commit wrapper and unused `copyRackToCell` mutation route are
+removed. Controller, rack-project, Session/Song and command fixtures use the same
+named assignment command as the UI. CommandEngineTests covers shared assignments
+and a mixer edit in one transaction: pure Preview, source preservation, live
+publication, one-step Undo/Redo, no-op redo preservation and late/busy/count-in
+refusal before launch-queue or mixer side effects (claim #381). Other direct
+routes and native acceptance remain pending.
+
 Project key/scale and recording options now use only `SetProjectScale` and
 `SetRecordSettings`. Their direct controller commit wrappers are removed.
 The shared command adapter for deferred scale requests checks the editor's
