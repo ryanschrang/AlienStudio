@@ -715,7 +715,7 @@ static void linkedClipTests() {
     require(pitch(0, 0) == 64 && pitch(2, 0) == 48, "editing the copy leaves the original alone");
     // A third link, then Make unique forks just one cell.
     require(alien::command::CommandEngine(c).execute(alien::command::PasteLinkedClip{3, 3}).changed && d.linkedCells(0, 0) == 3, "three cells linked");
-    require(alien::command::CommandEngine(c).execute(alien::command::MakeClipUnique{1, 1}).changed && c.undoLabel() == "Make clip unique" && d.linkedCells(1, 1) == 1 && d.linkedCells(0, 0) == 2 && pitch(1, 1) == 64,
+    require(alien::command::CommandEngine(c).execute(alien::command::MakeClipUnique{1, 1}).changed && c.undoLabel() == "Make clip independent" && d.linkedCells(1, 1) == 1 && d.linkedCells(0, 0) == 2 && pitch(1, 1) == 64,
             "Make unique gives one cell its own copy; the others stay linked");
     require(!alien::command::CommandEngine(c).execute(alien::command::MakeClipUnique{1, 1}).changed, "a cell that shares nothing is already unique");
     c.setClipPattern(1, 1, patternWith(72), false); c.commit("Notes", 1, 1);
