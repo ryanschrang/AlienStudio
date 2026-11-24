@@ -50,5 +50,44 @@ static void rackCommandChecks() {
     for (const char* json : {"{}", "{\"track\":0,\"scene\":0,\"clip\":1}", "{\"track\":0,\"scene\":0,\"clip\":\"01\"}", "{\"track\":0,\"scene\":0,\"clip\":\"-1\"}", "{\"track\":0,\"scene\":0,\"clip\":\"18446744073709551616\"}"})
         require(!cmd::parse("AssignRackClip",juce::JSON::parse(json),error), "rack parser rejects missing, numeric, noncanonical and overflowing source IDs");
     require(!cmd::parse("CreateRackPattern",juce::JSON::parse("{\"extra\":1}"),error), "create pattern refuses unexpected arguments");
+    {
+        c.markAsNewBaseline();
+        const auto baseline = c.document();
+        const auto history = historyOf(c);
+        engine->requestedPianoRollClip[2].store(3); engine->requestedPianoRollClip[3].store(2);
+        const std::vector<cmd::Command> edits{cmd::AssignRackClip{2,2,source}, cmd::SetTrackVolume{2,.41}, cmd::AssignRackClip{3,2,source}};
+        const auto prediction = commands.preview(edits);
+        require(prediction.ok && prediction.changed && alien::sameContent(baseline,c.document()) && historyOf(c) == history
+            && engine->requestedPianoRollClip[2].load() == 3 && engine->requestedPianoRollClip[3].load() == 2,
+            "assignment/mixer Preview leaves document, history and live queues untouched");
+        require(commands.batch(edits,"Assign shared rack and mix").changed && alien::sameContent(prediction.after,c.document())
+            && c.document().clip(2,2).rackClip == source && c.document().clip(3,2).rackClip == source
+            && c.document().channelRack == baseline.channelRack && engine->tracks[2].gain.load() == .41f
+            && engine->requestedPianoRollClip[2].load() == -1 && engine->requestedPianoRollClip[3].load() == -1,
+            "assignment batch preserves the shared source and publishes stops only after acceptance");
+        require(c.undo() && !c.canUndo() && alien::sameContent(baseline,c.document())
+            && engine->tracks[2].gain.load() == static_cast<float>(baseline.tracks[2].settings.gain),
+            "one Undo restores both assignments and the live mix");
+        const auto redo = historyOf(c);
+        engine->requestedPianoRollClip[2].store(3); engine->requestedPianoRollClip[3].store(2);
+        const auto noop = commands.execute(cmd::AssignRackClip{1,1,source});
+        require(noop.ok && !noop.changed && historyOf(c) == redo && engine->requestedPianoRollClip[2].load() == 3,
+            "unchanged assignment preserves redo and unrelated launch requests");
+        const auto late = commands.batch({edits[0],edits[1],cmd::AssignRackClip{3,2,0}},"Refused assignment");
+        require(!late.ok && late.failedCommand == 2 && alien::sameContent(baseline,c.document()) && historyOf(c) == redo
+            && engine->requestedPianoRollClip[2].load() == 3 && engine->requestedPianoRollClip[3].load() == 2
+            && engine->tracks[2].gain.load() == static_cast<float>(baseline.tracks[2].settings.gain),
+            "late assignment refusal leaves live queues, mix, shared content and redo unchanged");
+        c.setExternalBusy(true);
+        const auto busy = commands.batch(edits,"Busy assignment"); c.setExternalBusy(false);
+        engine->recording.phase.store(alien::RecordControls::countIn);
+        const auto counting = commands.batch(edits,"Count-in assignment");
+        engine->recording.phase.store(alien::RecordControls::idle);
+        require(!busy.ok && !counting.ok && alien::sameContent(baseline,c.document()) && historyOf(c) == redo
+            && engine->requestedPianoRollClip[2].load() == 3 && engine->requestedPianoRollClip[3].load() == 2,
+            "busy and count-in assignment batches refuse before live effects or redo loss");
+        require(c.redo() && alien::sameContent(prediction.after,c.document()) && engine->tracks[2].gain.load() == .41f,
+            "Redo restores the accepted shared assignments and live mix");
+    }
     std::cout << "PASS: rack creation/assignment, stable source IDs, Preview/Batch/Undo, no-ops and lifecycle guards\n";
 }

@@ -38,7 +38,7 @@ static void sceneCommandChecks() {
     require(commands.execute(cmd::CreateTrack{}).ok && alien::sameContent(createTrack.after, c.document()), "track creation preview also preserves and predicts runtime identities");
 
     ToneEngine rackEngine; alien::ProjectController rackController(rackEngine); cmd::CommandEngine rackCommands(rackController);
-    require(rackController.assignRackClip(0, 0, rackController.document().channelRack.clips[0]), "rack scene fixture");
+    require(alien::command::CommandEngine(rackController).execute(alien::command::AssignRackClip{0, 0, rackController.document().channelRack.clips[0]}).changed, "rack scene fixture");
     const auto rackPreview = rackCommands.preview(cmd::DuplicateScene{0});
     require(rackPreview.ok && rackCommands.execute(cmd::DuplicateScene{0}).ok && alien::sameContent(rackPreview.after, rackController.document()), "rack scene copy preview matches live independent content");
     require(rackController.document().cellClip(0,0) != rackController.document().cellClip(0,1), "scene duplication forks rack content");

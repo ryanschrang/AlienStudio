@@ -10,7 +10,7 @@ static void deleteClipCommandChecks() {
     audio->left.assign(80, .2f); audio->buildWaveform();
     require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("delete-fixture.wav"), 2, 0, audio), "audio delete fixture");
     const auto rackId = c.document().channelRack.clips[0];
-    require(c.assignRackClip(3, 0, rackId), "rack delete fixture");
+    require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{3, 0, rackId}).changed, "rack delete fixture");
     require(commands.execute(cmd::CreateClip{0, 1}).changed, "explicit empty MIDI fixture");
     require(c.placeRegion(0, 0, 0), "Song cell placement fixture");
     c.selectClip(2, 2); c.markAsNewBaseline();
