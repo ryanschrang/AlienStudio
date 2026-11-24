@@ -162,6 +162,12 @@ clamped, previewed as a draft, and an accepted proposal is one Undo step through
 Engine. Increments J1 to J9 start with offline rule-based chord and drum generators that work
 without AI. See [AI_ASSISTANT_PLAN.md](AI_ASSISTANT_PLAN.md).
 
+**Splice connection (BROWSE-01, not scheduled):** an optional Splice tab in the Sample
+Browser for Splice subscribers, through Splice's hosted MCP server and the user's own Splice
+sign-in. It needs no AI and can ship before the assistant; the assistant can later search Splice
+too. Downloads use the user's credits and always need a click; instruments are not covered.
+Increments S1 to S5 are in [AI_ASSISTANT_PLAN.md](AI_ASSISTANT_PLAN.md).
+
 ## Earlier roadmap notes
 
 The integration branch combines the redesigned project/controller UI with drum kits,

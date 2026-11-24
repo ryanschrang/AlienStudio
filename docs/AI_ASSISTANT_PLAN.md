@@ -73,6 +73,53 @@ Assistant panel (UI)
    description ("warmer", "pluckier").
 9. **J9: Arrangement help.** Section structure and variation suggestions (hardest; last).
 
+## Splice connection (optional, can ship before the assistant)
+
+Splice runs a hosted MCP server (beta at the time of writing) at `https://mcp.splice.com/mcp`,
+using Streamable HTTP and OAuth sign-in. It offers sample search (`describe_a_sound`), stacks
+(`create_stack`, `prompt_to_stack`, `share_stack`) and downloads (`download_asset`).
+Searching and building stacks is free. Downloads need a paid Splice subscription and use
+credits; Splice's own limits apply.
+
+**What it does not cover:** Splice's playable instruments are not offered through MCP. If
+Splice publishes a VST3 version of its instrument plugin, it loads through the existing plugin
+hosting (T1-10), separately from this connection.
+
+Two ways to use it:
+
+1. **Splice tab in the Sample Browser, with no AI needed.** Alien Studio acts as a small MCP
+   client. The user signs in once in their web browser (OAuth with a loopback redirect); the
+   login token is stored with Windows Credential Manager, never in projects or logs. Search
+   results appear in the browser, and Download saves the file to a local Splice folder, then
+   uses the existing preview, tempo/key matching, drag/drop and import paths (BROWSE-01).
+2. **Through the assistant.** The Claude and OpenAI APIs can both call remote MCP servers, so
+   the assistant can search Splice for a sound that fits the song ("a dusty 90 BPM snare in
+   this key"), then offer it for preview and import.
+
+Rules:
+
+- **Downloads spend the user's credits, so they are always a deliberate user click** that
+  shows the credit cost. The assistant may search and suggest, but never downloads without
+  confirmation.
+- Shared stack links are public; the app says so before sharing.
+- Disconnect removes the stored login. Splice is never required for any feature.
+- Before building, check Splice's terms for a DAW connecting directly (it may need a partner
+  agreement) and whether the server is still beta.
+
+Increments:
+
+- **S1: MCP client.** JSON-RPC over Streamable HTTP, tool listing and calls, timeouts,
+  cancellation, background thread.
+- **S2: Splice sign-in.** OAuth in the system browser, Credential Manager storage, sign-out.
+- **S3: Splice tab in the Sample Browser.** Search, results, preview where offered.
+- **S4: Download and import.** Credit-cost confirmation, local Splice folder, then the existing
+  import path with one Undo step.
+- **S5: Assistant access (after J5).** The assistant's provider request includes the Splice
+  server, so it can search and suggest; downloads still need the user's click.
+
+Tests use recorded MCP responses (fixtures), so CI needs no Splice account. A real sign-in and
+download are manual checks.
+
 ## Testing
 
 - Unit tests for the validator (out-of-range pitches, oversized patterns, unknown tracks,
