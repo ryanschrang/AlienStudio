@@ -19,6 +19,7 @@ and reports it the same way; D12 reports, by track, streamed audio that dropped 
 read during playback; D13 reports plugin latency that put tracks out of step while playing.
 D14 frees the Channel Rack samples, slice views and key maps a replaced project used.
 D15 sizes each Channel Rack plugin instrument's delay line to the latency it must wait for.
+D16 frees, during a session, Session and Song audio that no undo step or the clipboard can bring back.
 Higher supported limits (E) are pending.
 Baseline: main `1587c17`, project format 17. Workstream TRACK-01 / LIVE-04 from
 [the roadmap in PR #100](https://github.com/ryanschrang/AlienStudio/pull/100).
@@ -1148,3 +1149,69 @@ source stage counts the same blocks.
 
 Not covered: the running app, a real latent third-party instrument, and an engine-wide heap figure
 with rack instruments loaded (the capacity report loads none).
+
+## Increment D16: audio no edit can bring back is freed during a session
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+D5 frees audio only when an open or File > New replaces the project. Within a session, every clip
+the controller had loaded stayed in `retained` and counted against the 512 MiB audio budget for as
+long as the project was open, even once nothing could hand it out again. For example:
+
+- an imported clip whose import was undone and whose redo step was then replaced by another edit;
+- a deleted clip whose last undo step fell off the 200-step history;
+- a freeze render after Unfreeze, once no undo step holds the frozen state;
+- a recording take that was undone and recorded over;
+- a Channel Rack sample's previous decode, after the file it names was decoded again in place (no
+  undo step).
+
+A long session could reach the budget and be refused more audio, though the project used far less.
+
+What D16 changes:
+
+- **`ProjectController::releaseUnreachableAudio()`**, called by the app's timer. At most once a
+  second, and only while the transport is stopped and nothing is loading, recording or warping, it
+  runs D5/D14's `setAsideRetainedAudio()` on its own. A clip is set aside when nothing but
+  `retained` reaches it:
+  - not the document;
+  - not an undo or redo step;
+  - not the clipboard or the Channel Rack caches;
+  - not a Song snapshot or a running job.
+- **A lighter engine release.** D5's release stops everything, so the callback answers it right
+  after an open. That would cut off a performance if it ran after an ordinary edit. D16 adds
+  `editedAudioRequest`/`editedAudioDone`:
+  - The callback answers only in a block where the transport is stopped. While playing, the request
+    waits.
+  - It stops what could still point into audio: clip players and crossfade tails (already silent
+    once stopped), Song lanes, drum-pad voices and Channel Rack sample voices.
+  - It leaves synth notes played live alone.
+  - The timer call after the answer frees the clips and gives their bytes back to the budget.
+
+Nothing on the audio thread allocates, locks or frees. The callback only stops voices and stores a
+number, as in D5.
+
+Tests (`MemoryPeakTests`, a 2-second stereo clip at 48 kHz):
+- audio in the document, or reachable by undo or redo, is not set aside;
+- after an undone import's redo step is replaced, the clip is set aside:
+  - not while playing;
+  - not freed until the engine answers;
+  - the engine doesn't answer while playing;
+  - once a stopped callback answers, it is freed, live heap falls by its size and the budget is
+    back where it started;
+- a clip on the clipboard stays and still pastes;
+- a deleted clip stays while its undo step exists, and is freed after 201 more edits push it off
+  the history;
+- a rack sample in use stays; once it is decoded again in place, the old decode is freed and the
+  new one is what the channel plays.
+
+Mutation checks: the test fails when the callback answers while playing, when no sweep runs, and
+when clips are freed without waiting for the engine's answer. Stopping the Channel Rack player in
+the lighter release isn't checked by a test, since nothing rings in it.
+
+Not covered:
+- **Freeze renders and recording takes** use the same `retained` list and the same sweep, but
+  aren't exercised by this test.
+- **A Channel Rack channel given a different file** keeps the old file's decode as before (D14).
+  The cache is keyed by path, and undo can bring the old file back.
+- **The running app.** Freeing happens on the app's timer while stopped. A drum pad still ringing at
+  that moment, or a Channel Rack sample auditioned from the keyboard, is cut off.

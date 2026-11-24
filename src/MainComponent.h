@@ -1226,6 +1226,7 @@ private:
         applicationToolbar.refreshState();
         controller.pollRecording();
         controller.releaseReplacedAudio();   // audio of a replaced project, once the engine has let go of it
+        controller.releaseUnreachableAudio();   // audio no edit can bring back, while stopped (T1-04 D16)
         // Channel Rack hits and track MIDI the engine had no room for (T1-04 D10, D11), then streamed audio that
         // dropped out or could not be read (D12); one message a tick, so neither hides the other.
         if (!controller.reportDroppedNotes()) controller.reportStreamProblems();

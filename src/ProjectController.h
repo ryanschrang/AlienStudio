@@ -2645,6 +2645,38 @@ public:
     }
     // Audio of replaced projects still waiting for the engine (T1-04 D5).
     std::size_t replacedAudioBytes() const noexcept { return replacedBytes; }
+    // T1-04 D16. Message thread (the app's timer calls it). D5 frees audio only when a project replaces the open
+    // one, so within a session every clip ever loaded stayed counted against maxSessionAudioBytes: a replaced
+    // sample after its redo step was overwritten, a freeze render after Unfreeze and a new edit, a recording
+    // take that was undone and replaced, audio whose undo step fell off the 200-step history. At most once a
+    // second, while the transport is stopped and nothing is loading, recording or warping, the clips nothing
+    // but `retained` can reach (not the document, history, clipboard, rack caches, a Song snapshot or a running
+    // job) are set aside; the engine is asked to let go (editedAudioRequest), and the next call after it
+    // answers frees them. Returns the bytes freed.
+    std::size_t releaseUnreachableAudio(std::uint32_t nowMs = juce::Time::getMillisecondCounter()) {
+        engine.arrangementMailbox.collect();   // old snapshots give up their references first (D6)
+        engine.rackMailbox.collect();
+        if (!unreachableAudio.empty()) {
+            if (engine.editedAudioDone.load(std::memory_order_acquire) < unreachableFence) return 0;
+            const auto freed = unreachableBytes;
+            unreachableAudio.clear();
+            retainedBytes -= std::min(retainedBytes, unreachableBytes);
+            unreachableBytes = 0;
+            return freed;
+        }
+        if (busy || warpWorkActive || isRecording() || engine.playing.load()) return 0;
+        if (unreachableSwept && nowMs - unreachableSweptAt < 1000) return 0;
+        unreachableSwept = true; unreachableSweptAt = nowMs;
+        auto found = setAsideRetainedAudio();
+        if (found.clips.empty()) return 0;
+        unreachableAudio = std::move(found.clips);
+        unreachableBytes = found.bytes;
+        unreachableFence = engine.editedAudioRequest.load() + 1;
+        engine.editedAudioRequest.store(unreachableFence, std::memory_order_release);
+        return 0;
+    }
+    // Audio an edit left unreachable, waiting for the engine (T1-04 D16).
+    std::size_t unreachableAudioBytes() const noexcept { return unreachableBytes; }
 private:
     void registerStream(const std::shared_ptr<SessionAudioClip>& clip) {
         if (clip && clip->streamed()) engine.retainDiskAudioSource(clip->streamSource);
@@ -3347,6 +3379,11 @@ private:
     std::vector<std::shared_ptr<const SessionAudioClip>> replacedAudio;   // T1-04 D5: waits for audioReleaseDone
     std::size_t replacedBytes{};
     std::uint64_t replacedFence{};
+    std::vector<std::shared_ptr<const SessionAudioClip>> unreachableAudio;   // T1-04 D16: waits for editedAudioDone
+    std::size_t unreachableBytes{};
+    std::uint64_t unreachableFence{};
+    std::uint32_t unreachableSweptAt{};
+    bool unreachableSwept{};
     juce::ThreadPool pool{1};
     std::unique_ptr<juce::FileChooser> audioFileChooser, projectFileChooser;
     DocumentHistory history;
