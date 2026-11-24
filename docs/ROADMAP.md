@@ -154,6 +154,20 @@ then needs no special-purpose hacks: Interpret -> Plan -> Preview -> Execute -> 
 through the same commands everything else uses. Add an Explain mode that analyses and suggests
 without changing anything: Analyze -> Explain -> Suggest -> Preview -> Apply -> Undo.
 
+**AI composition assistant plan (AI-01, added 2026-11-24, not scheduled):** an optional,
+off-by-default assistant for chords, drum patterns, melodies, synth sounds and arrangement,
+using the user's own Claude (Anthropic) or OpenAI API key, stored with Windows Credential
+Manager and never in projects or the repository. Model output is untrusted: it is checked and
+clamped, previewed as a draft, and an accepted proposal is one Undo step through the Command
+Engine. Increments J1 to J9 start with offline rule-based chord and drum generators that work
+without AI. See [AI_ASSISTANT_PLAN.md](AI_ASSISTANT_PLAN.md).
+
+**Splice connection (BROWSE-01, not scheduled):** an optional Splice tab in the Sample
+Browser for Splice subscribers, through Splice's hosted MCP server and the user's own Splice
+sign-in. It needs no AI and can ship before the assistant; the assistant can later search Splice
+too. Downloads use the user's credits and always need a click; instruments are not covered.
+Increments S1 to S5 are in [AI_ASSISTANT_PLAN.md](AI_ASSISTANT_PLAN.md).
+
 ## Earlier roadmap notes
 
 The integration branch combines the redesigned project/controller UI with drum kits,
