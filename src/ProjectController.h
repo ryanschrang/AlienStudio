@@ -1099,12 +1099,6 @@ public:
         else if (edit.kind != clipboard_clip::Kind::unique) republishIfLive(edit.track, edit.scene);
         return true;
     }
-    bool pasteCell(int track, int scene, bool linked) {
-        const auto before = doc;
-        if (!applyClipboardClipCommand({linked ? clipboard_clip::Kind::link : clipboard_clip::Kind::paste, track, scene}, clipClipboard())
-            || sameContent(before, doc)) return false;
-        commit(linked ? "Paste linked clip" : "Paste clip", track, scene); return true;
-    }
     // Non-committing command boundary. Only the addressed live cell is
     // republished; queued launches, transport and unrelated voices keep running.
     bool canEditMidiClips() const { return !busy && !isRecording() && engine.recording.phase.load()==RecordControls::idle; }
@@ -1114,11 +1108,6 @@ public:
         if (!midi_clip::apply(doc,edit)) return false;
         if (edit.kind!=midi_clip::Kind::makeUnique && (id!=doc.cellClip(edit.track,edit.scene) || link!=doc.linkOf(edit.track,edit.scene))) republishIfLive(edit.track,edit.scene);
         return true;
-    }
-    bool makeCellUnique(int track, int scene) {
-        const auto before = doc;
-        if (!applyClipboardClipCommand({clipboard_clip::Kind::unique, track, scene}, clipClipboard()) || sameContent(before, doc)) return false;
-        commit("Make clip unique", track, scene); return true;
     }
     bool applyDuplicateClipCommand(const session_clip::Duplicate& edit) {
         if (!canEditMidiClips()) return false;
