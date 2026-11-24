@@ -99,6 +99,7 @@ public:
     PluginRuntime& operator=(const PluginRuntime&) = delete;
     ~PluginRuntime() {
         for (auto& stage : stages) { delete stage.pending.exchange(nullptr); delete stage.retired.exchange(nullptr); }
+        for (auto& stage : channelStages) { delete stage.pending.exchange(nullptr); delete stage.retired.exchange(nullptr); }
         for (int r=0;r<rackCount;++r) {
             destroy(racks[static_cast<std::size_t>(r)].instrument,r,-1);
             for (int i=0;i<static_cast<int>(racks[static_cast<std::size_t>(r)].effects.size());++i) destroy(racks[static_cast<std::size_t>(r)].effects[static_cast<std::size_t>(i)],r,i);
@@ -206,21 +207,47 @@ public:
             stage.published = target;
             ++replaced;
         }
+        // T1-04 D15: each loaded Channel Rack instrument's line, as long as the slowest instrument's latency (the
+        // most it waits). A channel that never had an instrument holds nothing; one whose instrument went keeps
+        // its line until a shrink. A freshly loaded instrument always gets a new, empty line (see prepareSlot).
+        const int channelTarget = roundedAlignment(needed[sourceAlignment]);
+        for (int c = 0; c < maxRackChannels; ++c) {
+            auto& stage = channelStages[static_cast<std::size_t>(c)];
+            const bool loaded = rackChannels[static_cast<std::size_t>(c)].processor != nullptr;
+            const int target = loaded ? channelTarget : 0;
+            if (!loaded && (stage.published < 0 || !shrink)) continue;
+            if (stage.published >= 0 && (target == stage.published || (!shrink && target < stage.published))) continue;
+            auto storage = std::make_unique<AlignmentStorage>();
+            storage->capacity = target;
+            storage->samples.assign(2u * static_cast<std::size_t>(target + 1), 0.0f);
+            delete stage.pending.exchange(storage.release(), std::memory_order_acq_rel);
+            stage.published = target;
+            ++replaced;
+        }
         return replaced;
     }
     // Message thread: frees the storage the audio thread has stopped using.
     void reclaimAlignment() noexcept {
         for (auto& stage : stages) delete stage.retired.exchange(nullptr, std::memory_order_acq_rel);
+        for (auto& stage : channelStages) delete stage.retired.exchange(nullptr, std::memory_order_acq_rel);
     }
     // The samples a stage's lines can hold now (what the callback uses), or -1 before any was adopted.
     int alignmentCapacity(AlignmentStage stage) const noexcept {
         const auto& s = stages[static_cast<std::size_t>(stage)];
         return s.active ? s.active->capacity : -1;
     }
-    // Bytes of alignment audio in use by the callback, across the four stages.
+    // The samples Channel Rack channel `c`'s instrument line holds now (what the callback uses), or -1 if it has
+    // none (D15).
+    int channelAlignmentCapacity(int c) const noexcept {
+        if (c < 0 || c >= maxRackChannels) return -1;
+        const auto& s = channelStages[static_cast<std::size_t>(c)];
+        return s.active ? s.active->capacity : -1;
+    }
+    // Bytes of alignment audio in use by the callback, across the four stages and the rack instruments' lines.
     std::size_t alignmentBytes() const noexcept {
         std::size_t bytes = 0;
         for (const auto& stage : stages) if (stage.active) bytes += stage.active->samples.size() * sizeof(float);
+        for (const auto& stage : channelStages) if (stage.active) bytes += stage.active->samples.size() * sizeof(float);
         return bytes;
     }
     // Blocks in which some line had to delay less than it should, because a plugin reported more latency
@@ -372,8 +399,10 @@ public:
         channelScratch.clear(0, samples);
         process(slot, channelBase + channel, -1, channelScratch, messages, samples);
         if (slot.faulted.get()) return nullptr;
-        // Each instrument waits for the slowest one, so all of them come out channelStage samples late.
-        if (delay.bound()) delay.process(channelScratch, samples, std::max(0, channelStage - slotLatency(slot)));
+        // Each instrument waits for the slowest one, so all of them come out channelStage samples late. A line too
+        // short for that (a latency that grew since the last poll) goes through align() like the other stages (D15);
+        // the source stage, sized from the same latency, is short in the same blocks.
+        align(delay, channelScratch, samples, std::max(0, channelStage - slotLatency(slot)));
         return &channelScratch;
     }
     // The delay the Channel Rack's plugin instruments add (the slowest one): everything else that reaches the
@@ -504,13 +533,10 @@ public:
         },fault);
         if (!ready) { markFaulted(slot,rack,index,PluginPhase::prepare,fault); return; }
         slot.prepared=true;
-        // A rack instrument's delay line is only needed while one is loaded (64 of them would be large), and
-        // starts empty, so nothing an earlier instrument played comes out of it.
-        if (isRackChannel(rack)) {
-            const auto c = static_cast<std::size_t>(rack-channelBase);
-            channelStorage[c].assign(2u * static_cast<std::size_t>(maxDelay + 1), 0.0f);
-            channelDelays[c].bind(channelStorage[c].data(), channelStorage[c].data() + maxDelay + 1, maxDelay + 1);
-        }
+        // A rack instrument's delay line is only needed while one is loaded, as long as the slowest rack instrument
+        // makes it wait (D15), and starts empty, so nothing an earlier instrument played comes out of it: forget
+        // what was published, so the reserve below makes a new line, which the next block takes up.
+        if (isRackChannel(rack)) channelStages[static_cast<std::size_t>(rack-channelBase)].published = -1;
         // The alignment stages grow to what this plugin reports. They never shrink here: prepare() and the
         // host, once a whole set of plugins is restored, call reserveAlignment(true) for that.
         reserveAlignment();
@@ -613,6 +639,17 @@ private:
             float* at = next->samples.data();
             forEachLine(static_cast<AlignmentStage>(s), [&](Delay& d) { d.bind(at, at + length, length); at += 2 * length; });
         }
+        for (int c = 0; c < maxRackChannels; ++c) {
+            auto& stage = channelStages[static_cast<std::size_t>(c)];
+            if (stage.retired.load(std::memory_order_acquire) != nullptr) continue;
+            auto* next = stage.pending.exchange(nullptr, std::memory_order_acq_rel);
+            if (next == nullptr) continue;
+            stage.retired.store(stage.active.release(), std::memory_order_release);
+            stage.active.reset(next);
+            const int length = next->capacity + 1;
+            float* at = next->samples.data();
+            channelDelays[static_cast<std::size_t>(c)].bind(at, at + length, length);
+        }
     }
     // Delays one budgeted line, counting a block in which some line was too short (once per block).
     void align(Delay& delay, juce::AudioBuffer<float>& buffer, int samples, int count) noexcept {
@@ -682,7 +719,7 @@ private:
     std::array<bool,maxReturns> returnLive = [] { std::array<bool,maxReturns> live{}; live.fill(true); return live; }();   // audio thread: setReturnActive
     Delay dryDelay, directDelay;
     std::array<AlignmentStageState, alignmentStageCount> stages;   // the storage behind the lines above
-    std::array<std::vector<float>, maxRackChannels> channelStorage;   // each loaded rack instrument's line
+    std::array<AlignmentStageState, maxRackChannels> channelStages;  // the storage behind channelDelays (D15)
     std::atomic<std::uint32_t> shortfalls{0};
     std::atomic<std::uint64_t> droppedTrack{0};
     bool shortBlock{};   // audio thread: a shortfall was already counted this block
