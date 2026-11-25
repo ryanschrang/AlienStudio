@@ -6,6 +6,7 @@
 #include "CommandEngine.h"
 #include "PluginHost.h"
 #include "PluginPanel.h"
+#include "TrackMixerPanel.h"
 #include "ProjectController.h"
 #include "StockEffects.h"
 #include <cmath>
@@ -512,7 +513,74 @@ static void deviceHostTests() {
     std::cout << "PASS: device commands keep live plugin settings through the host\n";
 }
 
-int main() {
+static void trackSidechainViewTests(const juce::File& preview) {
+    namespace cmd = alien::command;
+    auto engine = std::make_unique<ToneEngine>();
+    alien::PluginHost host(*engine->plugins); alien::ProjectController c(*engine); c.pushDocumentToEngine();
+    cmd::CommandEngine commands(c); int captures = 0, rebuilds = 0;
+    const auto rebuild = [&] {
+        ++rebuilds; std::vector<alien::PluginRackState> states;
+        for (const auto& track : c.document().tracks) states.push_back(track.plugins);
+        require(host.restore(states,c.document().masterPlugins,c.returnRacks(),c.busRacks(),48000).isEmpty(),"sidechain graph stock FX load");
+    };
+    const auto capture = [&] {
+        ++captures; std::vector<alien::PluginRackState> states;
+        for (const auto& track : c.document().tracks) states.push_back(track.plugins);
+        auto master=c.document().masterPlugins; auto returns=c.returnRacks(); auto buses=c.busRacks();
+        host.snapshot(states,master,returns,buses); c.setPluginRacks(states,master,returns,buses);
+    };
+    const auto run = [&](const cmd::Command& edit) { return commands.executeWithPlugins(edit,capture,rebuild); };
+    const alien::PluginState eq(alien::stock::describe(alien::stock::catalog[0]).createXml()->toString(),{});
+    require(run(cmd::InsertDevice{alien::RackStage::track,0,0,compressorState()}).changed
+        && run(cmd::InsertDevice{alien::RackStage::track,0,1,eq}).changed,"graph FX fixture");
+    c.markAsNewBaseline(); captures=0; rebuilds=0;
+    alien::TrackMixerPanel panel(c,engine->tracks,engine->returns,engine->masterControls,engine->buses); panel.setSize(960,650);
+    auto& graph = panel.trackSidechainView();
+    graph.hasInput = [&](int track,int fx) { return host.hasSidechainInput(track,fx); };
+    graph.onKeyRequested = [&](int track,int fx,int source) {
+        const auto result=run(cmd::SetSidechain{alien::RackStage::track,track,fx,alien::KeySource::track,source});
+        panel.refreshSettings(); return result.ok && result.changed;
+    };
+    panel.showSidechains(true);
+    require(graph.isVisible() && !panel.outputRoutingView().isVisible(),"Mixer sidechains mode replaces output graph");
+    const auto request=graph.requestFor(0,0);
+    engine->plugins->racks[0].effects[0].processor->getParameters()[0]->setValueNotifyingHost(.78f);
+    require(graph.choose(request,1) && captures==1 && rebuilds==1 && c.undoLabel()=="Set sidechain"
+        && engine->plugins->racks[0].effects[0].keyIndex==1,"graph uses the command capture/rebuild path and keys the actual effect");
+    require(std::abs(engine->plugins->racks[0].effects[0].processor->getParameters()[0]->getValue()-.78f)<.01f,"key change preserves live plugin settings");
+    require(!graph.choose(request,1) && captures==1 && rebuilds==1,"same key is a no-op without plugin callbacks");
+    require(c.undo(),"undo graph key"); rebuild(); panel.refreshSettings();
+    require(engine->plugins->racks[0].effects[0].keyIndex==-1
+        && std::abs(engine->plugins->racks[0].effects[0].processor->getParameters()[0]->getValue()-.78f)<.01f,"Undo removes the key but keeps the captured live setting");
+    require(c.redo(),"redo graph key"); rebuild(); panel.refreshSettings();
+    if (preview != juce::File{}) {
+        juce::FileOutputStream out(preview);
+        require(out.openedOk() && out.setPosition(0) && out.truncate().wasOk()
+            && juce::PNGImageFormat().writeImageToStream(panel.createComponentSnapshot(panel.getLocalBounds()),out),"render sidechain graph");
+    }
+    const int captured=captures, rebuilt=rebuilds;
+    c.setExternalBusy(true); require(!graph.choose(request,2),"busy sidechain graph refuses"); c.setExternalBusy(false);
+    engine->recording.phase.store(alien::RecordControls::countIn);
+    const bool counting=graph.choose(request,2); engine->recording.phase.store(alien::RecordControls::idle);
+    require(!counting && !graph.choose(request,0) && !graph.choose(request,99) && !graph.choose(graph.requestFor(0,1),1)
+        && captures==captured && rebuilds==rebuilt,"count-in, self/missing source and unsupported FX refuse before capture");
+    panel.setEnabled(false); require(!graph.choose(request,2),"disabled graph refuses"); panel.setEnabled(true);
+    require(run(cmd::MoveDevice{alien::RackStage::track,0,0,1}).changed && graph.choose(request,2)
+        && engine->plugins->racks[0].effects[1].keyIndex==2,"deferred key follows its effect instance across FX moves");
+    require(commands.execute(cmd::MoveTrack{2,3}).changed,"move key source"); rebuild(); panel.rebuild();
+    require(graph.choose(request,-1) && graph.choose(request,2) && engine->plugins->racks[0].effects[1].keyIndex==3,"deferred source follows track identity");
+    require(commands.execute(cmd::MoveTrack{0,1}).changed,"move key destination"); rebuild(); panel.rebuild();
+    require(graph.choose(request,1) && engine->plugins->racks[1].effects[1].keyIndex==0,"deferred destination follows track identity");
+    require(run(cmd::RemoveDevice{alien::RackStage::track,1,1}).changed
+        && run(cmd::InsertDevice{alien::RackStage::track,1,1,compressorState()}).changed && !graph.choose(request,-1),"replaced FX instance refuses stale choice");
+    const auto fresh=graph.requestFor(1,1);
+    require(commands.execute(cmd::DeleteTrack{3}).changed,"delete source"); rebuild(); panel.rebuild();
+    require(!graph.choose(fresh,3),"deleted source refuses stale choice");
+    c.newProject(); rebuild(); panel.rebuild(); require(!graph.choose(fresh,-1),"replacement project refuses stale choice");
+    panel.showRouting(false); require(!graph.isVisible(),"Strips hides the sidechain view");
+}
+
+int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI juce;
     detectorTests();
     effectTests();
@@ -524,6 +592,7 @@ int main() {
     partTwoProjectTests();
     commandKeyTests();
     deviceHostTests();
+    trackSidechainViewTests(argc>1?juce::File::getCurrentWorkingDirectory().getChildFile(argv[1]):juce::File{});
     std::cout << "Sidechain tests passed\n";
     return 0;
 }

@@ -102,6 +102,14 @@ imports placed on the Song timeline run their own command, `ImportSongAudio`, th
 
 ## Direct route cleanup
 
+Song placement independence now uses only `MakeSongClipUnique`; the obsolete
+`makePlacementUnique` controller commit wrapper is removed. Controller, note-edit,
+Song-paste and timeline fixtures use the same command as the Song menu.
+CommandEngineTests covers MIDI/rack independence and a mixer edit in one batch:
+pure Preview, original source preservation, Song/rack publication, one-step
+Undo/Redo and no-op/late/busy/count-in refusal preserving ownership and redo
+(claim #397). Other direct routes and native acceptance remain pending.
+
 Session clipboard edits now use only `PasteClip`, `PasteLinkedClip` and
 `MakeClipUnique`; the direct `pasteCell` and `makeCellUnique` commit wrappers
 are removed. Clipboard capture stays a separate lifecycle action. Controller,
