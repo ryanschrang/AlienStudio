@@ -1,6 +1,7 @@
 // The Channel Rack inside the real ToneEngine audio callback, rendered offline:
 // pattern mode, the other modes staying silent, stopping, track routing through
 // the Session mixer strip, previews, live snapshot swaps, and no heap use.
+#include "StockEffects.h"
 #include "ToneEngine.h"
 #include "RackSounds.h"
 #include "ViewModes.h"
@@ -645,21 +646,34 @@ static void capacityReport() {
             << "Sample preview audio is reserved by the first preview, not counted here.\n\n";
     }
     std::cout << "# Shared playback callback baseline\n\n"
-        << "48 kHz, 120 BPM; stock synth preset 9; no plugins, device or disk I/O.\n"
+        << "48 kHz, 120 BPM; stock synth preset 9; no device or disk I/O; no plugins except where a row names them.\n"
         << "Tracks in use are stated per row; default four returns; warm-up 32 blocks, measured 256 blocks.\n"
         << "Session rack cases use three held notes per occurrence (loop 16 steps).\n"
         << "Song case uses four overlapping lanes of that same source.\n"
+        << "T1-04 D22 rows: loaded versus playing (one playing track among all in use), sends at 0.5 to returns A-D,\n"
+        << "in-memory Session audio clips (one shared 8 s mono clip, no streaming), and the stock EQ and compressor\n"
+        << "on every playing track's FX rack (prepared before timing).\n"
         << "Times include the whole callback; p95/max are observations, not real-time guarantees.\n\n"
         << "| Workload | Tracks in use | Block frames | p50 us | p95 us | max us | p95 / block budget % | Callback allocations |\n"
         << "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n" << std::fixed << std::setprecision(2);
     struct Case { const char* name; int kind, tracks, occurrences; };
     std::vector<Case> cases{{"Transport, no clips", 0, 1, 0}, {"Transport, no clips", 0, 16, 0}, {"1 Session rack occurrence", 1, 16, 1},
-        {"16 Session rack occurrences", 1, 16, 16}, {"4 Song rack occurrences", 3, 16, 0}, {"16 Session MIDI tracks", 4, 16, 16}};
+        {"16 Session rack occurrences", 1, 16, 16}, {"4 Song rack occurrences", 3, 16, 0}, {"16 Session MIDI tracks", 4, 16, 16},
+        // T1-04 D22: loaded versus playing tracks, sends and returns, audio clips and plugins (measurement gates 2 and 3).
+        {"1 Session MIDI track playing", 4, 16, 1}, {"16 Session MIDI tracks, sends to 4 returns", 5, 16, 16},
+        {"16 Session audio clips", 6, 16, 16}, {"16 Session MIDI tracks, stock EQ + compressor", 7, 16, 16}};
     if (full > 16) {
         cases.push_back({"Transport, no clips", 0, full, 0});
         cases.push_back({"All Session rack occurrences", 1, full, full});
         cases.push_back({"All Session MIDI tracks", 4, full, full});
+        cases.push_back({"1 Session MIDI track playing", 4, full, 1});
+        cases.push_back({"All Session audio clips", 6, full, full});
+        cases.push_back({"All Session MIDI tracks, stock EQ + compressor", 7, full, full});
     }
+    // One decoded clip shared by every audio row, long enough to play through warm-up and measurement at 1,024 frames.
+    alien::SessionAudioClip audio; audio.sampleRate = 48000; audio.channels = 1; audio.frames = 8 * 48000;
+    audio.left.assign(audio.frames, 0.1f); audio.buildWaveform();
+    require(audio.valid(), "capacity audio clip");
     for (const auto& c : cases) for (int frames : {64, 256, 1024}) {
         auto rig = std::make_unique<Rig>();
         rig->engine.setActiveTracks(c.tracks);
@@ -681,9 +695,28 @@ static void capacityReport() {
             require(rig->engine.arrangementMailbox.publish(song), "capacity Song publication");
             rig->engine.patternMode.store(alien::songMode);
         }
-        if (c.kind == 4) for (int t = 0; t < c.occurrences; ++t) {
-            alien::SessionClipLaunch launch; launch.pattern = chord; launch.clipIndex = 0;
+        const bool midi = c.kind == 4 || c.kind == 5 || c.kind == 7;
+        if (midi || c.kind == 6) for (int t = 0; t < c.occurrences; ++t) {
+            alien::SessionClipLaunch launch; launch.clipIndex = 0;
+            if (midi) launch.pattern = chord; else launch.audio = &audio;
             require(rig->engine.pianoRollLaunches[static_cast<std::size_t>(t)].publish(launch), "capacity Session launch");
+        }
+        if (c.kind == 5) for (int t = 0; t < c.occurrences; ++t)
+            for (int r = 0; r < 4; ++r) rig->engine.tracks[static_cast<std::size_t>(t)].send[static_cast<std::size_t>(r)].store(0.5f);
+        if (c.kind == 7) {
+            auto& plugins = *rig->engine.plugins;
+            for (int t = 0; t < c.occurrences; ++t) {
+                auto& rack = plugins.racks[static_cast<std::size_t>(t)];
+                for (std::size_t i = 0; i < 2; ++i) {
+                    auto& slot = rack.effects[i];
+                    slot.processor = alien::stock::create(alien::stock::catalog[i].id);
+                    slot.name = alien::stock::catalog[i].name;
+                    plugins.prepareSlot(slot, t, static_cast<int>(i));
+                    require(slot.prepared, "capacity stock effect prepared");
+                }
+                rack.effectCount = 2;
+            }
+            plugins.reserveAlignment();
         }
         rig->engine.playing.store(true);
         std::array<float, 1024> left{}, right{}; float* outputs[]{left.data(), right.data()};
@@ -704,6 +737,10 @@ static void capacityReport() {
         require(c.kind == 0 || energy > 0, "capacity workload is audible");
         for (int t = 0; t < instances; ++t)
             require(rig->engine.activeTrackRackClip[static_cast<std::size_t>(t)].load() == 101, "capacity occurrences remain active");
+        // D22: every launched Session clip is still playing at the end, and no plugin failed, so each row measures what it names.
+        if (midi || c.kind == 6) for (int t = 0; t < c.occurrences; ++t)
+            require(rig->engine.activePianoRollClip[static_cast<std::size_t>(t)].load() == 0, "capacity Session clips remain active");
+        require(rig->engine.plugins->faultCount.load() == 0, "capacity plugins run without faults");
         std::sort(times.begin(), times.end());
         std::cout << "| " << c.name << " | " << c.tracks << " | " << frames << " | " << times[128] << " | " << times[243]
             << " | " << times.back() << " | " << times[243] / (frames * 1.0e6 / 48000.0) * 100.0 << " | " << allocations << " |\n";
