@@ -55,6 +55,23 @@ inline std::int64_t endTick(const ProjectDocument& doc, int track) noexcept {
     return end;
 }
 
+// The scene whose cell on `track` takes the frozen audio: the first empty cell that no Song clip, take or
+// frozen original uses, or sceneCount() when there is none and a scene has to be added.
+inline int freeCell(const ProjectDocument& doc, int track) {
+    int scene = 0;
+    for (; scene < doc.sceneCount(); ++scene) {
+        if (!doc.clip(track, scene).isEmpty()) continue;
+        const auto usesCell = [=](const timeline::Region& region) {
+            return region.row == track && region.source == scene;
+        };
+        if (std::none_of(doc.timeline.regions.begin(), doc.timeline.regions.end(), usesCell)
+            && std::none_of(doc.timeline.takes.begin(), doc.timeline.takes.end(), usesCell)
+            && std::none_of(doc.timeline.frozenOriginals.begin(), doc.timeline.frozenOriginals.end(), usesCell))
+            break;
+    }
+    return scene;
+}
+
 inline juce::String freezeRefusal(const ProjectDocument& doc, int track) {
     for (int s = 0; s < doc.sceneCount(); ++s)
         if (doc.isValidCell(track, s) && doc.clip(track, s).rackClip != 0)
@@ -69,6 +86,10 @@ inline juce::String freezeRefusal(const ProjectDocument& doc, int track) {
         if(region.group!=0)for(const auto& other:doc.timeline.regions)if(other.group==region.group && other.row!=track)
             return "Ungroup clips shared with other tracks before freezing.";
     }
+    // T1-04 D19: refused before the render, rather than after it, when the frozen audio has nowhere to go.
+    if (freeCell(doc, track) == doc.sceneCount() && !doc.canAddScene())
+        return "The Session is at its scene limit and this track has no empty cell for the frozen audio. "
+               "Clear an unused cell on this track or delete a scene, then freeze.";
     return {};
 }
 
@@ -88,17 +109,7 @@ inline juce::String install(ProjectDocument& doc, const Install& edit, float pla
         return "The freeze render is outside the supported Song length.";
 
     auto candidate = doc;
-    int scene = 0;
-    for (; scene < candidate.sceneCount(); ++scene) {
-        if (!candidate.clip(track, scene).isEmpty()) continue;
-        const auto usesCell = [=](const timeline::Region& region) {
-            return region.row == track && region.source == scene;
-        };
-        if (std::none_of(candidate.timeline.regions.begin(), candidate.timeline.regions.end(), usesCell)
-            && std::none_of(candidate.timeline.takes.begin(), candidate.timeline.takes.end(), usesCell)
-            && std::none_of(candidate.timeline.frozenOriginals.begin(), candidate.timeline.frozenOriginals.end(), usesCell))
-            break;
-    }
+    const int scene = freeCell(candidate, track);
     if (scene == candidate.sceneCount())
         if (const auto why = scene_edit::apply(candidate, {scene_edit::Kind::create}); why.isNotEmpty()) return why;
 

@@ -5,6 +5,7 @@
 #include "CommandEngine.h"
 #include "StudioWidgets.h"
 #include "OutputRoutingView.h"
+#include "TrackSidechainView.h"
 #include "SynthEngine.h"
 #include <array>
 #include <cmath>
@@ -684,7 +685,7 @@ public:
                     std::array<BusControls, maxBuses>& engineBusControls)
         : controller(projectController), controls(engineControls), returnControls(engineReturnControls), busControls(engineBusControls),
 
-          masterStrip(projectController, masterControls, [this] { if (onMasterCommandExecuted) onMasterCommandExecuted(); }), routingGraph(projectController) {
+          masterStrip(projectController, masterControls, [this] { if (onMasterCommandExecuted) onMasterCommandExecuted(); }), routingGraph(projectController), sidechainGraph(projectController) {
         addAndMakeVisible(masterStrip);
         addAndMakeVisible(help);
         help.setText("Independent instrument, level, balance and sends for each Session track. Output sends a track to the master "
@@ -707,6 +708,12 @@ public:
         addChildComponent(routingModeButton);
         routingModeButton.setButtonText("Show sends");
         routingModeButton.onClick = [this] { showSendRouting(!routingGraph.showsSends()); };
+        addChildComponent(sidechainButton);
+        sidechainButton.setButtonText("Sidechains");
+        sidechainButton.onClick = [this] { showSidechains(!sidechainsShown); };
+        addChildComponent(sidechainViewport);
+        sidechainViewport.setViewedComponent(&sidechainGraph,false);
+        sidechainViewport.setScrollBarsShown(true,true);
         addChildComponent(routingViewport);
         routingViewport.setViewedComponent(&routingGraph, false);
         routingViewport.setScrollBarsShown(true, true);
@@ -788,11 +795,16 @@ public:
         }
         addBusButton.setEnabled(busStrips.size() < static_cast<std::size_t>(maxBuses));
         addReturnButton.setEnabled(returnStrips.size() < static_cast<std::size_t>(maxReturns));
-        if (routingShown) routingGraph.refresh();
+        if (routingShown && !sidechainsShown) routingGraph.refresh();
+        if (routingShown && sidechainsShown) { sidechainGraph.refresh(); resized(); }
     }
 
     void tick() {
         if (!isShowing()) return;
+        if (routingShown && sidechainsShown) {
+            const int height = sidechainGraph.contentHeight(); sidechainGraph.refresh();
+            if (height != sidechainGraph.contentHeight()) resized();
+        }
         for (auto& strip : strips) strip->tick();
         for (auto& [slot, strip] : busStrips) strip->tick();
         for (auto& [slot, strip] : returnStrips) strip->tick();
@@ -835,12 +847,17 @@ public:
     void showRouting(bool shown) {
         routingShown = shown;
         routingButton.setButtonText(shown ? "Strips" : "Routing");
-        help.setText(shown ? (routingGraph.showsSends() ? "Sends: click a track for level and pre/post-fader choices. Sidechains stay in Plugins."
+        sidechainButton.setButtonText(sidechainsShown ? "Show routing" : "Sidechains");
+        help.setText(shown ? (sidechainsShown ? "Track FX sidechains: click an effect to choose a pre-FX track key. Other racks stay in Plugins."
+                          : routingGraph.showsSends() ? "Sends: click a track for level and pre/post-fader choices."
                                                                      : "Outputs: click a track to route it. Show sends for return connections.")
                            : "Mixer strips: instruments, levels, sends and outputs. Bus and return FX are set in Plugins.", juce::dontSendNotification);
         help.setTooltip(help.getText());
-        routingGraph.refresh(); resized();
+        if (sidechainsShown) sidechainGraph.refresh(); else routingGraph.refresh();
+        resized();
     }
+    void showSidechains(bool shown) { sidechainsShown = shown; showRouting(true); }
+    TrackSidechainView& trackSidechainView() { return sidechainGraph; }
     bool chooseSend(int track, int r, double level) {
         const auto result = command::CommandEngine(controller).execute(command::SetTrackSend{track, r, level});
         refreshSettings();
@@ -856,6 +873,7 @@ public:
         return true;
     }
     void showSendRouting(bool shown) {
+        sidechainsShown = false;
         routingGraph.showSends(shown);
         routingModeButton.setButtonText(shown ? "Show outputs" : "Show sends");
         showRouting(true);
@@ -870,11 +888,13 @@ public:
         auto header = area.removeFromTop(22);
         routingButton.setBounds(header.removeFromRight(80));
         header.removeFromRight(gap);
-        routingModeButton.setVisible(routingShown);
-        if (routingShown) { routingModeButton.setBounds(header.removeFromRight(100)); header.removeFromRight(gap); }
-        addBusButton.setVisible(!routingShown || !routingGraph.showsSends());
+        sidechainButton.setVisible(routingShown);
+        if (routingShown) { sidechainButton.setBounds(header.removeFromRight(100)); header.removeFromRight(gap); }
+        routingModeButton.setVisible(routingShown && !sidechainsShown);
+        if (routingModeButton.isVisible()) { routingModeButton.setBounds(header.removeFromRight(100)); header.removeFromRight(gap); }
+        addBusButton.setVisible(!routingShown || (!sidechainsShown && !routingGraph.showsSends()));
         if (addBusButton.isVisible()) { addBusButton.setBounds(header.removeFromRight(90)); header.removeFromRight(gap); }
-        addReturnButton.setVisible(!routingShown || routingGraph.showsSends());
+        addReturnButton.setVisible(!routingShown || (!sidechainsShown && routingGraph.showsSends()));
         if (addReturnButton.isVisible()) {
             addReturnButton.setBounds(header.removeFromRight(100));
             header.removeFromRight(gap);
@@ -884,9 +904,16 @@ public:
         viewport.setVisible(!routingShown); masterStrip.setVisible(!routingShown);
         for (auto& [slot, strip] : busStrips) strip->setVisible(!routingShown);
         for (auto& [slot, strip] : returnStrips) strip->setVisible(!routingShown);
-        routingViewport.setVisible(routingShown);
-        routingGraph.setVisible(routingShown);
+        routingViewport.setVisible(routingShown && !sidechainsShown);
+        routingGraph.setVisible(routingShown && !sidechainsShown);
+        sidechainViewport.setVisible(routingShown && sidechainsShown);
+        sidechainGraph.setVisible(routingShown && sidechainsShown);
         if (routingShown) {
+            if (sidechainsShown) {
+                sidechainViewport.setBounds(area);
+                sidechainGraph.setSize(juce::jmax(720,area.getWidth()-16),juce::jmax(area.getHeight()-16,sidechainGraph.contentHeight()));
+                return;
+            }
             routingViewport.setBounds(area);
             routingGraph.setSize(juce::jmax(720, area.getWidth() - 16), juce::jmax(area.getHeight() - 16, routingGraph.contentHeight()));
             return;
@@ -1033,9 +1060,11 @@ private:
 
     MasterChannelStrip masterStrip;
     OutputRoutingView routingGraph;
+    TrackSidechainView sidechainGraph;
     juce::Viewport routingViewport;
-    juce::TextButton routingButton, routingModeButton;
-    bool routingShown{};
+    juce::Viewport sidechainViewport;
+    juce::TextButton routingButton, routingModeButton, sidechainButton;
+    bool routingShown{}, sidechainsShown{};
     std::vector<std::pair<int, std::unique_ptr<ReturnChannelStrip>>> returnStrips;   // (slot, strip), in slot order
     juce::Label help;
     juce::TextButton addBusButton, addReturnButton;
