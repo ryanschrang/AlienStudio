@@ -1099,12 +1099,6 @@ public:
         else if (edit.kind != clipboard_clip::Kind::unique) republishIfLive(edit.track, edit.scene);
         return true;
     }
-    bool pasteCell(int track, int scene, bool linked) {
-        const auto before = doc;
-        if (!applyClipboardClipCommand({linked ? clipboard_clip::Kind::link : clipboard_clip::Kind::paste, track, scene}, clipClipboard())
-            || sameContent(before, doc)) return false;
-        commit(linked ? "Paste linked clip" : "Paste clip", track, scene); return true;
-    }
     // Non-committing command boundary. Only the addressed live cell is
     // republished; queued launches, transport and unrelated voices keep running.
     bool canEditMidiClips() const { return !busy && !isRecording() && engine.recording.phase.load()==RecordControls::idle; }
@@ -1114,11 +1108,6 @@ public:
         if (!midi_clip::apply(doc,edit)) return false;
         if (edit.kind!=midi_clip::Kind::makeUnique && (id!=doc.cellClip(edit.track,edit.scene) || link!=doc.linkOf(edit.track,edit.scene))) republishIfLive(edit.track,edit.scene);
         return true;
-    }
-    bool makeCellUnique(int track, int scene) {
-        const auto before = doc;
-        if (!applyClipboardClipCommand({clipboard_clip::Kind::unique, track, scene}, clipClipboard()) || sameContent(before, doc)) return false;
-        commit("Make clip unique", track, scene); return true;
     }
     bool applyDuplicateClipCommand(const session_clip::Duplicate& edit) {
         if (!canEditMidiClips()) return false;
@@ -2530,10 +2519,16 @@ private:
     // files, slice views and key maps used to be kept for the controller's lifetime, so each project opened
     // with different rack samples left the last one's decoded audio behind, counted against
     // maxSessionAudioBytes. Answers what the caches let go of, for setAsideRetainedAudio.
-    std::vector<std::shared_ptr<const SessionAudioClip>> forgetUnusedRackAudio() {
-        std::set<std::string> used;
-        for (int c = 0; c < doc.channelRack.channelCount; ++c)
-            if (const auto& info = doc.channelRack.info[static_cast<std::size_t>(c)]; info.isFile()) used.insert(info.sample);
+    //
+    // D17: also run by the stopped-transport sweep (releaseUnreachableAudio), with `used` holding every file a
+    // channel names in an undo or redo step, so a file the channel was switched away from stays while undo can
+    // bring it back and goes once that step is gone.
+    static void addRackFiles(const rack::Project& rackProject, std::set<std::string>& files) {
+        for (int c = 0; c < rackProject.channelCount; ++c)
+            if (const auto& info = rackProject.info[static_cast<std::size_t>(c)]; info.isFile()) files.insert(info.sample);
+    }
+    std::vector<std::shared_ptr<const SessionAudioClip>> forgetUnusedRackAudio(std::set<std::string> used = {}) {
+        addRackFiles(doc.channelRack, used);
         std::vector<std::shared_ptr<const SessionAudioClip>> dropped;
         for (auto it = rackAudio.begin(); it != rackAudio.end();) {
             if (used.contains(it->first)) { ++it; continue; }
@@ -2646,7 +2641,10 @@ public:
         if (busy || warpWorkActive || isRecording() || engine.playing.load()) return 0;
         if (unreachableSwept && nowMs - unreachableSweptAt < 1000) return 0;
         unreachableSwept = true; unreachableSweptAt = nowMs;
-        auto found = setAsideRetainedAudio();
+        // D17: rack files no channel names, now or in any undo/redo step, leave the caches first.
+        std::set<std::string> reachableRackFiles;
+        history.forEachDocument([&](const ProjectDocument& state) { addRackFiles(state.channelRack, reachableRackFiles); });
+        auto found = setAsideRetainedAudio(forgetUnusedRackAudio(std::move(reachableRackFiles)));
         if (found.clips.empty()) return 0;
         unreachableAudio = std::move(found.clips);
         unreachableBytes = found.bytes;

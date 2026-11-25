@@ -2,7 +2,7 @@
 static void moveClipCommandChecks() {
     auto engine = std::make_unique<ToneEngine>(); alien::ProjectController c(*engine); cmd::CommandEngine commands(c);
     c.pushDocumentToEngine(); c.setClipPattern(0, 0, patternWith(64), false);
-    require(c.copyCell(0, 0) && c.pasteCell(1, 0, true), "move link fixture");
+    require(c.copyCell(0, 0) && alien::command::CommandEngine(c).execute(alien::command::PasteLinkedClip{1, 0}).changed, "move link fixture");
     auto audio = std::make_shared<alien::SessionAudioClip>(); audio->sampleRate = 8000; audio->channels = 1;
     audio->frames = 80; audio->left.assign(80, .2f); audio->buildWaveform();
     require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("move-audio.wav"), 2, 0, audio), "move audio fixture");

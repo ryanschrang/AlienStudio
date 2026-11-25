@@ -323,7 +323,7 @@ static void replacedAudioSafetyTests() {
             "after the engine answers, the replaced audio is freed");
     require(!copied.expired(), "a clip on the clipboard is not freed");
     require(c->availableAudioBytes() <= available, "only freed audio is taken off the budget");
-    require(c->pasteCell(2, 0, false) && c->document().clip(2, 0).audio.get() == copied.lock().get(), "the copied clip still pastes");
+    require(alien::command::CommandEngine(*c).execute(alien::command::PasteClip{2, 0}).changed && c->document().clip(2, 0).audio.get() == copied.lock().get(), "the copied clip still pastes");
     for (int b = 0; b < 8; ++b) engine->audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
 
     std::weak_ptr<const alien::SessionAudioClip> opened = c->document().clip(0, 0).audio;
@@ -393,7 +393,7 @@ static void unreachableAudioTests() {
     require(c->copyCell(2, 0) && c->undo(), "copy, then undo the import");
     c->setClipPattern(1, 0, clipNotes(1, 1), true); c->commit("Edit");
     require(sweep() == 0 && !copied.expired() && c->unreachableAudioBytes() == 0, "a clip on the clipboard was freed");
-    require(c->pasteCell(3, 0, false) && c->document().clip(3, 0).audio.get() == copied.lock().get(), "the copied clip still pastes");
+    require(alien::command::CommandEngine(*c).execute(alien::command::PasteClip{3, 0}).changed && c->document().clip(3, 0).audio.get() == copied.lock().get(), "the copied clip still pastes");
 
     // An undo step that falls off the history: once the deleted clip's last step goes, so does its audio.
     auto deleted = install(4, 0);
@@ -424,9 +424,36 @@ static void unreachableAudioTests() {
     require(rackBefore - liveBytes.load() >= static_cast<std::int64_t>(redecoded->decodedBytes()) - 4096, "the old decode's memory was not returned");
     require(c->rackChannelAudio(0) == redecoded.get() && !copied.expired(),
             "the new decode or other audio went too");
+
+    // D17: the channel is given a different file. The old file stays while undo can bring it back, then goes.
+    const std::weak_ptr<const alien::SessionAudioClip> firstFile = redecoded;
+    const auto firstBytes = redecoded->decodedBytes();
+    redecoded.reset();
+    const auto other = root.getChildFile("rack-other.wav");
+    { std::atomic<bool> cancel{false}; juce::String error; require(alien::writeClipWav(other, *toneClip(2.0), cancel, error), "write another rack sample"); }
+    alien::command::loadRackSample(*c, other, 0); waitIdle(*c); settle(*engine, *c);
+    const auto* otherDecode = c->rackChannelAudio(0);
+    require(otherDecode != nullptr && otherDecode != firstFile.lock().get(), "the channel plays the other file");
+    const auto withBoth = c->availableAudioBytes();
+    require(withBoth == withRack - otherDecode->decodedBytes(), "both files are counted");
+    require(sweep() == 0 && !firstFile.expired(), "a rack file an undo can bring back was freed");
+    require(c->undo() && c->rackChannelAudio(0) == firstFile.lock().get() && !c->rackChannelOffline(0),
+            "undo brings the first file back, still loaded");
+    require(sweep() == 0 && !firstFile.expired() && c->rackChannelAudio(0) == firstFile.lock().get(), "the file in use was freed");
+    require(c->redo() && c->rackChannelAudio(0) == otherDecode, "redo plays the other file again");
+    for (int i = 0; i <= static_cast<int>(alien::DocumentHistory::limit); ++i) {
+        c->setClipPattern(5, 0, clipNotes(5, i + 1000), true); c->commit("Edit");
+    }
+    const auto switchedBefore = liveBytes.load();
+    require(sweep() == firstBytes && firstFile.expired(), "a rack file no undo step names was not freed");
+    require(switchedBefore - liveBytes.load() >= static_cast<std::int64_t>(firstBytes) - 4096, "the old file's memory was not returned");
+    require(c->availableAudioBytes() == withBoth + firstBytes, "the budget did not get the old file back");
+    require(c->rackChannelAudio(0) == otherDecode && !c->rackChannelOffline(0) && !copied.expired(),
+            "the file in use or other audio went too");
+    require(sweep() == 0, "a second sweep freed something more");
     c.reset(); engine.reset();
     root.deleteRecursively();
-    std::cout << "PASS: audio no edit can bring back is freed while stopped\n";
+    std::cout << "PASS: audio no edit can bring back (including a rack file switched away from) is freed while stopped\n";
 }
 
 // T1-04 D14: the Channel Rack's decoded samples, slice views and key maps belong to the open project. Opening
