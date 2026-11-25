@@ -299,7 +299,7 @@ public:
         sampleRate = std::isfinite(rate) && rate > 0 ? rate : 44100.0;
         plugins->prepare(sampleRate);
         for (auto& buffer : clipBuffers) buffer.setSize(2, alien::PluginRuntime::blockSize);
-        if (stemCapture) stemCapture->prepare();
+        if (stemCapture) stemCapture->prepare(*plugins);
         for (std::size_t track = 0; track < boundSlots; ++track)   // only adopted slots have note state
             rolls[track].stop([this, track](int n, float v, bool on) { sendPattern(track, n, v, on); });
         stopClipPlayers();

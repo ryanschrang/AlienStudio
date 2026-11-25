@@ -309,7 +309,7 @@ static void stemCaptureTiming() {
     Rig rig; rig.returnEffect(0,1.0f,4);
     rig.track().send[0].store(0.5f); rig.track().send[1].store(0.5f);
     rig.engine->stemCapture=std::make_unique<alien::StemCapture>();
-    rig.engine->stemCapture->prepare();
+    rig.engine->stemCapture->prepare(*rig.engine->plugins);
     float* outputs[]{rig.left.data(),rig.right.data()};
     const auto before=allocations;
     rig.engine->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,512,{});
