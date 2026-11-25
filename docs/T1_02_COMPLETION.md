@@ -102,6 +102,15 @@ imports placed on the Song timeline run their own command, `ImportSongAudio`, th
 
 ## Direct route cleanup
 
+Session clipboard edits now use only `PasteClip`, `PasteLinkedClip` and
+`MakeClipUnique`; the direct `pasteCell` and `makeCellUnique` commit wrappers
+are removed. Clipboard capture stays a separate lifecycle action. Controller,
+command and audio-lifetime fixtures use the named commands with their original
+no-op expectations. CommandEngineTests covers paste/link/independence with a
+mixer edit in one transaction: Preview agreement, addressed live publication,
+clipboard preservation, one-step Undo/Redo and no-op/late/busy/count-in refusal
+(claim #385). Other direct routes and native acceptance remain pending.
+
 Rack Session-cell assignments now use only `AssignRackClip`. The obsolete
 `assignRackClip` commit wrapper and unused `copyRackToCell` mutation route are
 removed. Controller, rack-project, Session/Song and command fixtures use the same

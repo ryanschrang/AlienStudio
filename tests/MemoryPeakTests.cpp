@@ -323,7 +323,7 @@ static void replacedAudioSafetyTests() {
             "after the engine answers, the replaced audio is freed");
     require(!copied.expired(), "a clip on the clipboard is not freed");
     require(c->availableAudioBytes() <= available, "only freed audio is taken off the budget");
-    require(c->pasteCell(2, 0, false) && c->document().clip(2, 0).audio.get() == copied.lock().get(), "the copied clip still pastes");
+    require(alien::command::CommandEngine(*c).execute(alien::command::PasteClip{2, 0}).changed && c->document().clip(2, 0).audio.get() == copied.lock().get(), "the copied clip still pastes");
     for (int b = 0; b < 8; ++b) engine->audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
 
     std::weak_ptr<const alien::SessionAudioClip> opened = c->document().clip(0, 0).audio;
@@ -393,7 +393,7 @@ static void unreachableAudioTests() {
     require(c->copyCell(2, 0) && c->undo(), "copy, then undo the import");
     c->setClipPattern(1, 0, clipNotes(1, 1), true); c->commit("Edit");
     require(sweep() == 0 && !copied.expired() && c->unreachableAudioBytes() == 0, "a clip on the clipboard was freed");
-    require(c->pasteCell(3, 0, false) && c->document().clip(3, 0).audio.get() == copied.lock().get(), "the copied clip still pastes");
+    require(alien::command::CommandEngine(*c).execute(alien::command::PasteClip{3, 0}).changed && c->document().clip(3, 0).audio.get() == copied.lock().get(), "the copied clip still pastes");
 
     // An undo step that falls off the history: once the deleted clip's last step goes, so does its audio.
     auto deleted = install(4, 0);

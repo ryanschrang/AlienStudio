@@ -11,7 +11,7 @@ static void clipNotesCommandChecks() {
     const auto notes = [](int pitch) { return std::make_shared<const alien::PianoRollPattern>(patternWith(pitch)); };
     const auto pitchAt = [&](int track, int scene) { return d.clip(track, scene).notes().count > 0 ? d.clip(track, scene).notes().notes[0].pitch : -1; };
     c.setClipPattern(0, 0, patternWith(60), false); c.commit("Notes", 0, 0);
-    require(c.copyCell(0, 0) && c.pasteCell(1, 0, true), "a linked copy of the clip");
+    require(c.copyCell(0, 0) && alien::command::CommandEngine(c).execute(alien::command::PasteLinkedClip{1, 0}).changed, "a linked copy of the clip");
     c.markAsNewBaseline();
 
     // One edit: Preview changes nothing live, execute does what Preview said under "Edit notes", and Undo and Redo work.

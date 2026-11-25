@@ -17,14 +17,14 @@ static void midiClipCommandChecks() {
     require(alien::parseSessionProject(alien::serializeSessionProject(data),loaded,error),"explicit empty MIDI clips serialize");
     const auto reopened=alien::fromProjectData(loaded);
     require(reopened.cellClip(0,0) && reopened.cellClip(1,1) && reopened.linkOf(0,0)!=reopened.linkOf(1,1),"empty clip identity and independent copies survive save/reopen");
-    require(c.copyCell(0,0) && c.pasteCell(3,3,false) && c.document().cellClip(3,3)
+    require(c.copyCell(0,0) && alien::command::CommandEngine(c).execute(alien::command::PasteClip{3, 3}).changed && c.document().cellClip(3,3)
         && c.document().linkOf(3,3)!=c.document().linkOf(0,0),"existing clipboard paste preserves explicitly empty MIDI clips as independent copies");
     require(c.undo() && !c.document().cellClip(3,3),"empty clipboard paste remains one undo step");
     c.setClipPattern(0,0,patternWith(60),false);c.commit("Source notes");
     require(commands.execute(cmd::DuplicateClip{0,0,2,1}).changed,"duplicate populated MIDI clip");
     c.setClipPattern(2,1,patternWith(77),false);c.commit("Copy notes");
     require(c.document().clip(0,0).notes().notes[0].pitch==60 && c.document().clip(2,1).notes().notes[0].pitch==77,"editing duplicate leaves source unchanged");
-    require(c.copyCell(0,0) && c.pasteCell(1,2,true),"linked fixture");c.markAsNewBaseline();
+    require(c.copyCell(0,0) && alien::command::CommandEngine(c).execute(alien::command::PasteLinkedClip{1, 2}).changed,"linked fixture");c.markAsNewBaseline();
     const auto linked=c.document();engine->activePianoRollClip[1].store(2);engine->requestedPianoRollClip[1].store(2);engine->playing.store(true);
     require(commands.execute(cmd::MakeClipUnique{1,2}).changed && c.document().linkOf(1,2)!=c.document().linkOf(0,0)
         && c.undoLabel()=="Make clip independent","make independent uses its named command");

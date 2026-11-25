@@ -700,24 +700,24 @@ static void linkedClipTests() {
     const auto& d = c.document();
     const auto pitch = [&](int t, int s) { return d.clip(t, s).notes().count != 0 ? d.clip(t, s).notes().notes[0].pitch : -1; };
     c.setClipPattern(0, 0, patternWith(60), false); c.commit("Notes", 0, 0);
-    require(!c.canPasteLinked() && !c.pasteCell(1, 1, true) && c.copyCell(0, 0) && c.canPasteLinked(), "Copy enables the pastes");
+    require(!c.canPasteLinked() && !alien::command::CommandEngine(c).execute(alien::command::PasteLinkedClip{1, 1}).changed && c.copyCell(0, 0) && c.canPasteLinked(), "Copy enables the pastes");
     // Paste linked: a new clip sharing the content.
-    require(c.pasteCell(1, 1, true) && c.undoLabel() == "Paste linked clip", "Paste linked is one undo step");
+    require(alien::command::CommandEngine(c).execute(alien::command::PasteLinkedClip{1, 1}).changed && c.undoLabel() == "Paste linked clip", "Paste linked is one undo step");
     require(d.cellClip(1, 1) && d.cellClip(1, 1) != d.cellClip(0, 0) && d.linkOf(1, 1) == d.linkOf(0, 0) && d.linkedCells(0, 0) == 2 && pitch(1, 1) == 60,
             "the pasted cell has a clip of its own that shares the content");
-    require(!c.pasteCell(1, 1, true), "pasting the same link again changes nothing");
+    require(!alien::command::CommandEngine(c).execute(alien::command::PasteLinkedClip{1, 1}).changed, "pasting the same link again changes nothing");
     c.setClipPattern(1, 1, patternWith(64), false); c.commit("Notes", 1, 1);
     require(pitch(0, 0) == 64 && pitch(1, 1) == 64 && d.linkedCells(0, 0) == 2, "editing either cell edits both");
     // Paste a copy: independent.
-    require(c.pasteCell(2, 0, false) && c.undoLabel() == "Paste clip" && pitch(2, 0) == 60 && d.linkOf(2, 0) != d.linkOf(0, 0),
+    require(alien::command::CommandEngine(c).execute(alien::command::PasteClip{2, 0}).changed && c.undoLabel() == "Paste clip" && pitch(2, 0) == 60 && d.linkOf(2, 0) != d.linkOf(0, 0),
             "Paste is an independent copy of what was copied (as it was when copied)");
     c.setClipPattern(2, 0, patternWith(48), false); c.commit("Notes", 2, 0);
     require(pitch(0, 0) == 64 && pitch(2, 0) == 48, "editing the copy leaves the original alone");
     // A third link, then Make unique forks just one cell.
-    require(c.pasteCell(3, 3, true) && d.linkedCells(0, 0) == 3, "three cells linked");
-    require(c.makeCellUnique(1, 1) && c.undoLabel() == "Make clip unique" && d.linkedCells(1, 1) == 1 && d.linkedCells(0, 0) == 2 && pitch(1, 1) == 64,
+    require(alien::command::CommandEngine(c).execute(alien::command::PasteLinkedClip{3, 3}).changed && d.linkedCells(0, 0) == 3, "three cells linked");
+    require(alien::command::CommandEngine(c).execute(alien::command::MakeClipUnique{1, 1}).changed && c.undoLabel() == "Make clip independent" && d.linkedCells(1, 1) == 1 && d.linkedCells(0, 0) == 2 && pitch(1, 1) == 64,
             "Make unique gives one cell its own copy; the others stay linked");
-    require(!c.makeCellUnique(1, 1), "a cell that shares nothing is already unique");
+    require(!alien::command::CommandEngine(c).execute(alien::command::MakeClipUnique{1, 1}).changed, "a cell that shares nothing is already unique");
     c.setClipPattern(1, 1, patternWith(72), false); c.commit("Notes", 1, 1);
     require(pitch(0, 0) == 64 && pitch(3, 3) == 64, "its edits are its own");
     // Clearing a linked cell leaves the others their content.
@@ -726,7 +726,7 @@ static void linkedClipTests() {
     require(c.undo() && d.linkedCells(0, 0) == 2 && pitch(3, 3) == 64, "undo brings the link back");
     // Linking two cells that already hold equal notes is still an edit.
     c.setClipPattern(2, 3, patternWith(64), false); c.commit("Notes", 2, 3);
-    require(c.copyCell(0, 0) && c.pasteCell(2, 3, true) && c.undoLabel() == "Paste linked clip" && d.linkedCells(0, 0) == 3,
+    require(c.copyCell(0, 0) && alien::command::CommandEngine(c).execute(alien::command::PasteLinkedClip{2, 3}).changed && c.undoLabel() == "Paste linked clip" && d.linkedCells(0, 0) == 3,
             "linking equal content is an undoable edit");
     // Saving: links survive, written only where content is shared, from format 22.
     const auto data = alien::toProjectData(d);
@@ -1003,7 +1003,7 @@ static void savedRackBindingTests() {
     require(c.editRack("Shared edit", [](alien::rack::Project& p) { return p.setStepOn(0, 0, 1, true); }), "edit shared rack source");
     require(d.clip(0, 0).rackClip == d.clip(0, 1).rackClip && d.timeline.find(region)->rackClip == source && d.rackMatchesLibrary(),
             "Create, Session and Song retain one content owner");
-    require(c.copyCell(0, 0) && c.pasteCell(1, 2, false), "independent rack paste");
+    require(c.copyCell(0, 0) && alien::command::CommandEngine(c).execute(alien::command::PasteClip{1, 2}).changed, "independent rack paste");
     const auto independent = d.clip(1, 2).rackClip;
     require(independent != source && c.editRack("Independent edit", [](alien::rack::Project& p) { return p.setStepOn(1, 0, 1, false); })
         && c.channelRack().pattern(0).steps[0][1].on && !c.channelRack().pattern(1).steps[0][1].on,
