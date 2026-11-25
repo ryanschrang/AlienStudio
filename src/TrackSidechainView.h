@@ -59,7 +59,7 @@ public:
             auto button = std::make_unique<juce::TextButton>(label);
             button->setName(label); button->setEnabled(effect.capable);
             button->setTooltip(effect.capable ? "Choose a sidechain key from another track before its FX, or Off" : "This loaded effect has no sidechain input (or is unavailable)");
-            button->onClick = [this, request=requestFor(effect.track,effect.fx)] { showKeys(request); };
+            button->onClick = [this, request=requestFor(effect.track,effect.fx), anchor=button.get()] { showKeys(request,anchor); };
             addAndMakeVisible(*button); buttons.push_back(std::move(button));
         }
         resized(); repaint();
@@ -98,7 +98,7 @@ private:
         for (std::size_t i = 0; i < fx.size(); ++i) if (fx[i].instanceId == request.instance) return {track,static_cast<int>(i)};
         return {-1,-1};
     }
-    void showKeys(const Request& request) {
+    void showKeys(const Request& request, juce::Component* anchor) {
         const auto [track,fx] = resolve(request); if (track < 0) return;
         const auto& d = controller.document();
         juce::PopupMenu menu; const int current = d.tracks[static_cast<std::size_t>(track)].plugins.effects[static_cast<std::size_t>(fx)].sidechain;
@@ -108,7 +108,7 @@ private:
             if (source >= 0 && source != track) menu.addItem(static_cast<int>(i)+2,d.tracks[static_cast<std::size_t>(source)].name,true,current == source);
         }
         juce::Component::SafePointer<TrackSidechainView> safe(this);
-        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),[safe,request](int result) { if (safe && result > 0) safe->choose(request,result-2); });
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(anchor),[safe,request](int result) { if (safe && result > 0) safe->choose(request,result-2); });
     }
     ProjectController& controller;
     std::uint32_t scope{};
