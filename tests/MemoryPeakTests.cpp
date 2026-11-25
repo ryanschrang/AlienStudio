@@ -1,6 +1,7 @@
 #include "CommandEngine.h"
 #include "WavExport.h"
 #include "AudioFileWrite.h"
+#include "AudioClipImport.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -159,9 +160,9 @@ bool writeProject(alien::ProjectController& c, const juce::File& file) {
 }
 
 // What the app's Export WAV does, without plugins: a copy of the project and song, a render engine.
-bool exportSong(const alien::ProjectController& c, const juce::File& file) {
+// With options.stems, a folder of stems; with options.freezeTrack, the track a freeze renders (T1-04 D19).
+bool exportSong(const alien::ProjectController& c, const juce::File& file, alien::WavExportOptions options = {}) {
     auto song = c.captureArrangement();
-    alien::WavExportOptions options;
     std::vector<std::shared_ptr<const alien::SessionAudioClip>> keepAlive;
     options.rackClips = c.rackClipsForExport(keepAlive);
     auto project = std::make_shared<alien::SessionProjectData>(alien::toProjectData(c.document()));
@@ -223,6 +224,42 @@ static void projectPeakTests(bool report) {
         }));
         const auto afterExport = liveBytes.load();
         require(afterExport - phases.back().before < (1 << 20), "an export returns its render engine and copies when it ends");
+        // T1-04 D19: stems and freeze, the other offline renders gate 1 names.
+        phases.push_back(measure("Export stems of the 8-bar song (one file per track and bus)", [&] {
+            alien::WavExportOptions options; options.stems = true;
+            require(exportSong(*c, root.getChildFile("Stems"), options), "export stems of the full project");
+        }));
+        require(root.getChildFile("Stems").getNumberOfChildFiles(juce::File::findFiles, "*.wav") >= alien::maxSessionTracks,
+                "a stem export writes a file for every track");
+        require(liveBytes.load() - phases.back().before < (1 << 20), "a stem export returns its render engine and copies when it ends");
+        // What the app's freeze does: render the track alone, decode the render, then install it with FreezeTrack.
+        // Every cell of track 0 holds a clip and the Session is at its scene limit: the freeze is refused before
+        // it renders, rather than after (T1-04 D19). Deleting the last scene (no Song clip plays it) makes room.
+        if (c->document().sceneCount() == alien::maxSessionScenes) {
+            require(c->freezeRefusal(0).contains("scene limit"), "a freeze with nowhere to put its audio was not refused before rendering");
+            require(alien::command::CommandEngine(*c).execute(alien::command::DeleteScene{c->document().sceneCount() - 1}).changed,
+                    "delete the last scene");
+        }
+        require(c->freezeRefusal(0).isEmpty(), "a freeze with a free cell was refused");
+        const auto frozenFile = root.getChildFile("Freeze.wav");
+        const auto target = alien::freeze_edit::capture(c->document(), 0);
+        phases.push_back(measure("Freeze one track: render it alone (render engine of its own)", [&] {
+            alien::WavExportOptions options; options.freezeTrack = 0; options.toTick = c->freezeEndTick(0);
+            require(exportSong(*c, frozenFile, options), "render the track to freeze");
+        }));
+        require(phases.back().after - phases.back().before < (1 << 20), "a freeze render returns its render engine and copies when it ends");
+        std::size_t frozenBytes = 0;
+        phases.push_back(measure("Freeze one track: decode the render and install it", [&] {
+            auto imported = alien::importSessionAudioClip(frozenFile);
+            require(imported.clip != nullptr, "decode the freeze render");
+            frozenBytes = imported.clip->decodedBytes();
+            const auto installed = alien::command::CommandEngine(*c).execute(alien::command::FreezeTrack{target, frozenFile, std::move(imported.clip)});
+            if (!installed.changed) std::cerr << "freeze: " << installed.error << '\n';
+            require(installed.changed && c->isTrackFrozen(0), "install the frozen audio");
+            c->pushDocumentToEngine();
+        }));
+        require(frozenBytes > 0 && phases.back().after - phases.back().before < static_cast<std::int64_t>(frozenBytes) + (1 << 20),
+                "a freeze keeps only its frozen audio (and its undo step) once installed");
     }
     std::int64_t firstOpen = 0, settledReopen = 0;
     for (int pass = 0; pass < 2; ++pass) {

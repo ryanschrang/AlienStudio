@@ -628,7 +628,7 @@ What this shows:
   This is consistent with the engine's three-slot Song snapshot mailbox, whose old snapshots share
   the document's patterns; it was not traced further.
 
-Not measured: freeze, stems, source replacement, plugins and their state, malloc-based storage
+Not measured: freeze and stems (measured in D19), source replacement, plugins and their state, malloc-based storage
 (JUCE `HeapBlock`), the 32/64 build, and anything but this one synthetic project. A next step for
 D is to release retained audio of a replaced project once the engine no longer refers to it.
 
@@ -1215,3 +1215,61 @@ Not covered:
   The cache is keyed by path, and undo can bring the old file back.
 - **The running app.** Freeing happens on the app's timer while stopped. A drum pad still ringing at
   that moment, or a Channel Rack sample auditioned from the keyboard, is cut off.
+
+## Increment D19: peak memory during stem export and freeze
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+Gate 1 asks for peak allocation during freeze and export. D4 measured a plain Song export, but
+stem export and freeze were listed as not measured. `MemoryPeakTests` now measures both on the
+same full project, the way the app runs them:
+
+- **Stem export:** a copy of the project and Song, and a render engine of its own, with a file
+  for every track and bus.
+- **Freeze:** the same, rendering track 0 alone. Then decoding the render
+  (`importSessionAudioClip`) and installing it with the `FreezeTrack` command.
+
+2026-11-24, Release, 16/32 (`MemoryPeakTests --report`), same project as D4:
+
+| Step | Live before (MiB) | Peak (MiB) | Peak above before (MiB) | Live after (MiB) |
+| --- | ---: | ---: | ---: | ---: |
+| Export the 8-bar Song (render engine of its own) | 58.0 | 77.3 | 19.3 | 58.0 |
+| Export stems of the 8-bar Song (a file per track and bus) | 58.0 | 95.7 | 37.7 | 58.0 |
+| Freeze one track: render it alone | 58.1 | 95.8 | 37.6 | 58.1 |
+| Freeze one track: decode the render and install it | 58.1 | 64.5 | 6.4 | 64.2 |
+
+New checks:
+- a stem export writes a file for every track and returns its render engine and copies;
+- a freeze render returns its render engine and copies;
+- once installed, a freeze keeps only its frozen audio: 16 s of stereo float, 6.1 MiB, plus its
+  undo step.
+
+What this shows:
+- **A freeze render costs as much as 16 stems** (37.6 vs 37.7 MiB above the open project), about
+  18 MiB more than a plain export, though only one track plays. Both turn on the render's stem
+  capture. `StemCapture::prepare()` sizes each of its 25 delay lines (16 tracks, the Channel
+  Rack's direct bus and 8 group buses) to the full 96,000-sample maximum, about 0.73 MiB each:
+  25 × 0.73 ≈ 18.3 MiB, needed even when no plugin reports any latency. Sizing them to the latency
+  the render actually has, as D1 and D15 did for the live engine, is a next step.
+- **Decoding and installing the freeze costs little more than the frozen audio itself** (6.4 MiB
+  at the peak, 6.1 MiB kept).
+
+**A freeze with nowhere to put its audio is refused before it renders.** Measuring the freeze found
+that, on a track whose every cell holds a clip in a Session at its scene limit, `freezeRefusal()`
+said yes. The app rendered the whole track and only then failed at install with "The Session has
+reached its scene limit." Now:
+- `freeze_edit::freeCell()` finds the cell that takes the frozen audio (the same search `install()`
+  used);
+- `freezeRefusal()` refuses when there is no such cell and no room for another scene: "The Session
+  is at its scene limit and this track has no empty cell for the frozen audio. Clear an unused cell
+  on this track or delete a scene, then freeze."
+
+The test checks the refusal on the full project, deletes the last scene, and checks that the
+freeze then goes ahead.
+
+Mutation check: with the new refusal disabled, the test fails.
+
+Nothing changes on the audio thread.
+
+Not measured: plugins in the render, the 32/64 build, and malloc-based storage, as in D4. Not
+covered: the refusal in the running app.
