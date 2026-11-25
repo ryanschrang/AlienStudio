@@ -1163,14 +1163,6 @@ public:
         if (rackChanged) pushRackToEngine();
         return true;
     }
-    // The same edit as its own undo step, for callers that are not a view (the views run the command).
-    bool makePlacementUnique(std::uint32_t regionId) {
-        if (!applyMakePlacementUnique(regionId)) return false;
-        const auto [track, scene] = song_placement::audioCell(doc, regionId);
-        commit("Make placement unique", track, scene);
-        return true;
-    }
-
     void republishIfLive(int track, int scene) {
         if (!doc.isValidCell(track, scene)) return;
         const auto index = static_cast<std::size_t>(track);

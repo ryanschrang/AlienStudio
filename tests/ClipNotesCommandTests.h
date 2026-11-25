@@ -70,7 +70,7 @@ static void clipNotesCommandChecks() {
     {
         std::uint32_t a = 0, b = 0;
         c.setClipPattern(2, 1, patternWith(55), false); c.commit("Notes", 2, 1);
-        require(c.placeRegion(2, 1, 0, &a) && c.placeRegion(2, 1, 8 * alien::timeline::ticksPerBar, &b) && c.makePlacementUnique(a), "a placement clip");
+        require(c.placeRegion(2, 1, 0, &a) && c.placeRegion(2, 1, 8 * alien::timeline::ticksPerBar, &b) && alien::command::CommandEngine(c).execute(alien::command::MakeSongClipUnique{a}).changed, "a placement clip");
         require(commands.execute(cmd::DuplicateSongClips{{a}}).changed, "a second Song clip playing it");
         const auto placement = d.timeline.find(a)->clip;
         std::vector<std::uint32_t> playing;
