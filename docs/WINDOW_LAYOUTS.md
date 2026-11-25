@@ -51,6 +51,8 @@ in the status bar. No file I/O runs in an audio callback.
 
 Typing-piano notes are owned by the window that started them. Hiding or destroying a registered detached host releases its held notes immediately, without waiting for the asynchronous desktop focus callback. Removing a host also releases its notes if its focused child was already destroyed. Held keys must be lifted before they can restart after hiding, and unrelated windows keep their notes. Auxiliary key/component listeners are removed together when a host is removed or the router shuts down (claim #393). This is message-thread input cleanup, not an audio callback operation.
 
+When a focused control is destroyed inside a surviving window, its safe focus pointer may clear before desktop focus dispatch. The router still releases held typing notes on that dispatch; two null focus pointers are not treated as unchanged when an earlier focus target was observed. Native-origin typing that never had a focused JUCE control still supports chords and normal key-up release. Focus recovery does not retrigger a key held through deletion, and deleting an unfocused control leaves the current note alone (claim #405).
+
 ## Verification
 
 SongFlowTests covers schema round trips, damaged-state refusal, negative monitor
