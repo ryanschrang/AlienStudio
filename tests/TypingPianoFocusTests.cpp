@@ -892,8 +892,40 @@ static void detachedWindowLifecycleChecks() {
     root.removeFromDesktop();
 }
 
+static void deletedFocusNoteChecks() {
+    juce::Component window;
+    window.setBounds(10,10,300,150); window.setWantsKeyboardFocus(false); window.addToDesktop(0); window.setVisible(true);
+    auto child = std::make_unique<juce::Component>();
+    child->setBounds(10,10,100,50); child->setWantsKeyboardFocus(true); window.addAndMakeVisible(*child);
+    juce::MidiKeyboardState notes; Counter count; notes.addListener(&count); std::set<int> held;
+    {
+        TypingPianoRouter router(window,notes,[&](int k) { return held.count(k) != 0; });
+        window.getPeer()->handleFocusGain(); child->grabKeyboardFocus(); pump();
+        require(child->hasKeyboardFocus(false),"deleted-focus fixture focuses its child");
+        held.insert('A'); window.getPeer()->handleKeyPress(juce::KeyPress('a',{},'a'));
+        require(notes.isNoteOn(2,60),"focused child starts a typing note");
+        child.reset(); pump();
+        require(juce::Component::getCurrentlyFocusedComponent()==nullptr,"deleting the child leaves no replacement focus");
+        require(!notes.isNoteOn(2,60) && count.offs==1,"deleting a focused control releases its note when focus dispatch runs");
+        child=std::make_unique<juce::Component>(); child->setBounds(10,10,100,50); child->setWantsKeyboardFocus(true); window.addAndMakeVisible(*child);
+        child->grabKeyboardFocus(); pump();
+        window.getPeer()->handleKeyPress(juce::KeyPress('a',{},'a'));
+        require(!notes.isNoteOn(2,60),"focus recovery does not restart a key held through control deletion");
+        held.clear(); window.getPeer()->handleKeyUpOrDown(false);
+        held.insert('A'); window.getPeer()->handleKeyPress(juce::KeyPress('a',{},'a'));
+        require(notes.isNoteOn(2,60),"lifting and pressing again starts a fresh note after deleted focus");
+        auto unrelated=std::make_unique<juce::Component>(); window.addAndMakeVisible(*unrelated); unrelated.reset(); pump();
+        require(notes.isNoteOn(2,60),"deleting an unfocused control preserves the current note");
+        window.setVisible(false); pump();
+        require(!notes.isNoteOn(2,60) && count.ons==count.offs,"note-offs stay balanced after focus recovery and host hiding");
+        held.clear();
+    }
+    notes.removeListener(&count); child.reset(); window.removeFromDesktop();
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    deletedFocusNoteChecks();
     detachedWindowLifecycleChecks();
     juce::Component shell, root, piano, outside;
     juce::TextButton play{"Play"}, octaveUp{"Octave Up"};

@@ -77,7 +77,13 @@ private:
     }
     void refreshFocus() {
         auto* current = juce::Component::getCurrentlyFocusedComponent();
-        if (current == target.getComponent()) return;
+        if (current == target.getComponent()) {
+            // Deleting the focused control clears its SafePointer before the
+            // asynchronous focus callback. Two null pointers do not mean that
+            // held notes still have a valid focus owner.
+            if (current == nullptr && typingWindow != nullptr) release();
+            return;
+        }
         release();
         target = current;
     }
