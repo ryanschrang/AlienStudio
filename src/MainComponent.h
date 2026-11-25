@@ -1521,6 +1521,14 @@ private:
             juce::MessageManager::callAsync([safe,target,file,cancel,result,error,engine=std::move(renderEngine),host=std::move(renderHost)]{
                 if(!safe){file.deleteFile();return;}
                 safe->exportCancellation.reset();safe->setProjectBusy(false);safe->timelineView.setExporting(false);
+                // Plugins that failed during the render, and chains past the latency limit (T1-04 D18).
+                const auto outcome=alien::PluginHost::freezeOutcome(host->renderReport(),
+                    alien::droppedNotesText(engine->droppedRackHits(),engine->droppedTrackMidi()));
+                if(!cancel->load() && result->clip && !outcome.install){
+                    file.deleteFile();
+                    safe->timelineView.setStatus(outcome.status);
+                    return;
+                }
                 alien::command::Result installed;
                 if (!cancel->load() && result->clip)
                     installed = alien::command::CommandEngine(safe->controller).execute(
@@ -1531,10 +1539,7 @@ private:
                         :error.isNotEmpty()?error:result->error.isNotEmpty()?result->error:installed.error.isNotEmpty()?installed.error:"Could not install frozen audio (project changed, scene or memory limit). Original track unchanged.");
                 }else{
                     safe->refreshExtraViews();
-                    juce::String frozen="Track frozen. Fader, pan, sends and automation remain live; right-click the track header to unfreeze.";
-                    // Channel Rack hits the render had no room for (T1-04 D10) are missing from the frozen audio.
-                    if(const auto dropped=alien::droppedNotesText(engine->droppedRackHits(),engine->droppedTrackMidi());dropped.isNotEmpty())frozen+="  WARNING: "+dropped+"; the frozen audio is missing them.";
-                    safe->timelineView.setStatus(frozen);
+                    safe->timelineView.setStatus(outcome.status);   // with any dropped-note or latency warning
                 }
             });
             return juce::ThreadPoolJob::jobHasFinished;
