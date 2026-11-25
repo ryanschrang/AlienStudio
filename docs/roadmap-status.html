@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alien Studio roadmap status</title>
+<!--
+  Live roadmap status page.
+
+  Open this file in a browser (double-click it, or save a copy anywhere). Each time it opens or
+  you press Refresh, it reads docs/ROADMAP.md and docs/FEATURE_CHECKLIST.md from the main branch
+  on GitHub, and the open and recently merged pull requests from the GitHub API, and draws the
+  page from them. Nothing is stored and nothing needs to be edited here when a roadmap item is
+  finished: update the two docs in the feature PR as usual, and the page follows once it merges.
+
+  GitHub serves the raw files with up to five minutes of caching, so a merge can take that long
+  to appear. The pull request list uses GitHub's unauthenticated API (60 requests an hour).
+
+  The page relies on the tables keeping their current shape: the Tier 1 and Tier 2 tables in
+  ROADMAP.md with "Order", "Workstream" and "Status today" columns, and the checklist tables with
+  "ID" and "Status" columns. If those headers change, update the parsing below.
+-->
+<style>
+:root{color-scheme:light dark;--bg:light-dark(#ffffff,#0c1513);--ink:light-dark(#0f1f1b,#e4ece9);--soft:light-dark(#4b5d58,#9fb2ad);--rule:light-dark(#d9e2df,#24332f);--band:#00463c;--lime:#e6f5c8;--coral:#ff6f59;--done:light-dark(#00634f,#7fd6b4);--part:light-dark(#7fb8a6,#3f8f78);--plan:light-dark(#e3ebe8,#22312d)}
+*{box-sizing:border-box;min-width:0}
+html{scroll-padding-top:72px}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;overflow-x:clip}
+h1,h2,h3{font-family:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;font-weight:700;letter-spacing:-.015em;line-height:1.08;text-wrap:balance;margin:0}
+.band{padding-block:clamp(28px,4vw,64px);padding-inline:max(5vw,16px)}
+.wrap{max-width:1240px;margin:0 auto}
+.top{background:var(--band);color:#fff}
+.top h1{font-size:clamp(30px,4.4vw,48px);max-width:24ch}
+.lede{font-size:17px;max-width:64ch;margin:16px 0 0;color:var(--lime)}
+.meta{font-size:14px;color:#b9d6cc;margin:10px 0 0;display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center}
+.meta a{color:#fff}
+button{font:600 14px/1 inherit;font-family:inherit;padding:8px 14px;border-radius:999px;border:1px solid #7fb8a6;background:transparent;color:#fff;cursor:pointer}
+button:hover,button:focus-visible{background:#0b5a4d}
+.figs{display:grid;grid-template-columns:repeat(auto-fit,minmax(10em,1fr));margin:28px 0 8px;border-top:1px solid #2c6a5e}
+.figs div{padding:14px 16px 4px 0}
+.figs b{display:block;font-size:clamp(28px,3.4vw,40px);line-height:1;color:#fff;white-space:nowrap}
+.figs span{font-size:14px;color:#cfe5dd}
+.map{margin-top:28px;display:grid;gap:22px}
+.line{display:grid;grid-template-columns:7.5em minmax(0,1fr);gap:16px;align-items:start}
+.line h3{font-size:17px;color:#fff;padding-top:2px}
+.line h3 small{display:block;font-weight:400;font-size:13px;line-height:1.3;color:#b9d6cc;margin-top:4px;letter-spacing:0}
+.stops{position:relative;display:grid;grid-template-columns:repeat(var(--n),minmax(0,1fr));gap:6px}
+.stops::before{content:"";position:absolute;left:10px;right:10px;top:10px;height:4px;border-radius:2px;background:var(--c,#5fa894)}
+.stop{position:relative;display:flex;flex-direction:column;align-items:flex-start;gap:6px;font-size:13px;line-height:1.25;color:#e8f3ef;text-decoration:none}
+.dot{width:24px;height:24px;border-radius:50%;border:4px solid var(--lime);background:var(--band);position:relative;z-index:1;flex:none;display:inline-block}
+.dot.done{background:var(--lime)}
+.dot.part{background:linear-gradient(90deg,var(--lime) 50%,var(--band) 50%)}
+.dot.hw{background:var(--coral)}
+.dot.untested{box-shadow:0 0 0 3px var(--coral)}
+.stop b{font-weight:600;color:#fff;white-space:nowrap}
+.key{display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:26px;font-size:14px;color:#cfe5dd;align-items:center}
+.key span{display:inline-flex;align-items:center;gap:8px}
+.key .dot{width:18px;height:18px;border-width:3px}
+nav.links{display:flex;gap:6px 18px;flex-wrap:wrap;padding:14px max(5vw,16px);border-bottom:1px solid var(--rule);font-size:15px;background:var(--bg)}
+nav a{color:var(--done);text-decoration:none;font-weight:600}
+nav a:hover,nav a:focus-visible{text-decoration:underline}
+@media(min-width:900px){nav.links{position:sticky;top:0;z-index:5}}
+section h2{font-size:clamp(24px,3vw,32px);max-width:34ch}
+section .sub{color:var(--soft);margin:10px 0 22px;max-width:72ch}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:15px}
+th{text-align:left;font-weight:600;font-size:14px;color:var(--soft);border-bottom:2px solid var(--ink);padding:8px 12px 8px 0}
+td{border-bottom:1px solid var(--rule);padding:12px 12px 12px 0;vertical-align:top}
+td:first-child{font-weight:600;width:16em}
+td:nth-child(2){white-space:nowrap}
+code{font:13px/1.3 Consolas,monospace;background:var(--plan);padding:1px 4px;border-radius:4px}
+details{margin-top:6px;font-size:14px;color:var(--soft)}
+summary{cursor:pointer;color:var(--done);font-weight:600}
+.pill{display:inline-block;font-size:13px;font-weight:600;padding:2px 9px;border-radius:999px;white-space:nowrap}
+.p-done{background:color-mix(in srgb,var(--done) 16%,transparent);color:var(--done)}
+.p-part{background:color-mix(in srgb,var(--part) 28%,transparent);color:var(--ink)}
+.p-plan{background:var(--plan);color:var(--soft)}
+.p-hw{background:color-mix(in srgb,var(--coral) 20%,transparent);color:light-dark(#a3301f,#ff9c8c)}
+.tally{display:flex;height:44px;border-radius:6px;overflow:hidden;margin:6px 0 10px}
+.tally div{display:flex;align-items:center;padding:0 10px;font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden}
+.legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(12em,1fr));gap:10px 24px;font-size:15px}
+.legend b{font-size:26px;line-height:1.1;display:block}
+.sw{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:8px;vertical-align:-1px}
+.two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:clamp(24px,4vw,56px)}
+ul.plain{margin:18px 0 0;padding-left:0;list-style:none}
+ul.plain li{margin:10px 0}
+.pr{display:grid;grid-template-columns:5em minmax(0,1fr) 7.5em;gap:12px;padding:10px 0;border-bottom:1px solid var(--rule);align-items:baseline}
+.pr a{color:var(--done);font-weight:600;white-space:nowrap}
+.pr .when{color:var(--soft);font-size:14px;text-align:right}
+.note{font-size:14px;color:var(--soft);border-top:1px solid var(--rule);padding-top:16px;margin-top:24px}
+.error{background:color-mix(in srgb,var(--coral) 22%,transparent);color:#fff;border-radius:8px;padding:12px 16px;margin-top:20px}
+.loading{opacity:.6}
+@media(max-width:1100px){.stops.long{grid-template-columns:repeat(6,minmax(0,1fr));row-gap:16px}.stops.long::before{display:none}}
+@media(max-width:900px){.two{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:760px){.line{grid-template-columns:minmax(0,1fr);gap:10px}.stops,.stops.long{grid-template-columns:repeat(3,minmax(0,1fr));row-gap:16px}.stops::before{display:none}td:first-child{width:auto}}
+@media(max-width:600px){.pr{grid-template-columns:4.5em minmax(0,1fr)}.pr .when{grid-column:2;text-align:left}}
+</style>
+</head>
+<body>
+<header class="band top">
+<div class="wrap">
+<h1 id="headline">Loading the roadmap from GitHub…</h1>
+<p class="lede" id="lede">This page reads docs/ROADMAP.md and docs/FEATURE_CHECKLIST.md from main each time it opens.</p>
+<p class="meta"><span id="asof"></span><button type="button" id="refresh">Refresh</button></p>
+<div id="err"></div>
+<div class="figs" id="figs"></div>
+<div class="map" id="map"></div>
+<div class="key">
+<span><i class="dot done"></i>Finished in code</span>
+<span><i class="dot part"></i>Partly done</span>
+<span><i class="dot"></i>Planned</span>
+<span><i class="dot done untested"></i>Windows checks pending</span>
+<span><i class="dot hw"></i>Ongoing</span>
+</div>
+</div>
+</header>
+<nav class="links" aria-label="Sections">
+<a href="#tier1">Tier 1</a><a href="#tier2">Tier 2</a><a href="#later">Tiers 3 and 4</a><a href="#checklist">Checklist</a><a href="#prs">Pull requests</a>
+</nav>
+
+<section class="band" id="tier1"><div class="wrap">
+<h2>Tier 1: the DAW foundation</h2>
+<p class="sub">From the Tier 1 table in ROADMAP.md. "Still to do" is the part of each status that says what remains or is pending; open "Full status" for the whole entry.</p>
+<div class="scroll"><table><thead><tr><th>Workstream</th><th>Status</th><th>Still to do</th></tr></thead><tbody id="t1"></tbody></table></div>
+</div></section>
+
+<section class="band" id="tier2" style="padding-top:0"><div class="wrap">
+<h2>Tier 2: what makes Alien Studio competitive</h2>
+<p class="sub">These come after Tier 1. From the Tier 2 table in ROADMAP.md.</p>
+<div class="scroll"><table><thead><tr><th>Workstream</th><th>Status</th><th>Still to do</th></tr></thead><tbody id="t2"></tbody></table></div>
+</div></section>
+
+<section class="band" id="later" style="padding-top:0"><div class="wrap two">
+<div><h2>Tier 3: what could set it apart (not scheduled)</h2><ul class="plain" id="t3"></ul></div>
+<div><h2>Tier 4: frontier features (not scheduled)</h2><ul class="plain" id="t4"></ul></div>
+</div></section>
+
+<section class="band" id="checklist" style="padding-top:0"><div class="wrap">
+<h2 id="checkhead">Feature checklist</h2>
+<p class="sub">Counted from the Status column of every ID table in FEATURE_CHECKLIST.md. A status that starts with "Partial" or "Part 1 implemented" counts as partly done. "Implemented" means the code exists; most implemented items are still waiting on Windows listening checks.</p>
+<div class="tally" id="tally" role="img"></div>
+<div class="legend" id="legend"></div>
+</div></section>
+
+<section class="band" id="prs" style="padding-top:0"><div class="wrap two">
+<div><h2>Open pull requests</h2><div id="open" style="margin-top:18px"></div></div>
+<div><h2>Recently merged</h2><div id="merged" style="margin-top:18px"></div></div>
+</div>
+<div class="wrap"><p class="note" id="foot"></p></div>
+</section>
+
+<script>
+{
+const REPO = 'ryanschrang/AlienStudio';
+const BRANCH = 'main';
+const RAW = `https://raw.githubusercontent.com/${REPO}/${BRANCH}/docs/`;
+const API = `https://api.github.com/repos/${REPO}`;
+
+// Short names for the line map; anything not listed falls back to the start of its title.
+const NICK = {'T1-01':'Tempo map','T1-02':'Commands','T1-03':'Clip model','T1-04':'Tracks & limits','T1-05':'Routing',
+  'T1-06':'Piano Roll','T1-07':'Recording','T1-08':'Audio edit','T1-09':'Plugins','T1-10':'Browser','T1-11':'Workspace',
+  'T1-12':'HW checks','T2-01':'Sampler','T2-02':'Racks & FX','T2-03':'Mastering','T2-04':'Chords','T2-05':'Live'};
+// Tiers 3 and 4 have no table in ROADMAP.md; their stations take their status from these checklist rows.
+// Each entry: [station id, short name, description, checklist IDs].
+const LATER = {
+  t3: [['CONV','Conversion','Conversion pipeline: audio to stems, MIDI, chords and groove',['CONV-01','CONV-02','CONV-03']],
+       ['INTEL','Intelligence','Global musical intelligence: one chord and scale context for every tool',['INTEL-01']]],
+  t4: [['INST','Instruments','Large native instrument collection',['INST-03','INST-04','INST-05','INST-06','INST-09']],
+       ['PLAYER','Players','Intelligent Session Players',['PLAYER-01']],
+       ['PITCH','Pitch edit','Pitch correction and note-level pitch editing',['PITCH-01']],
+       ['AI-01','AI assistant','AI composition assistant using your own API key',['AI-01']],
+       ['CLOUD','Cloud','Optional backup and version history',['CLOUD-01']]]};
+
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// Enough Markdown for table cells: code, bold, links and PR numbers.
+const md = s => esc(s)
+  .replace(/`([^`]+)`/g, '<code>$1</code>')
+  .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+  .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, t, u) => /^https?:/.test(u) ? `<a href="${u}">${t}</a>` : t)
+  .replace(/(^|[\s(])#(\d{2,5})\b/g, (m, p, n) => `${p}<a href="https://github.com/${REPO}/pull/${n}">#${n}</a>`);
+
+// Splits a Markdown document into its tables: [{header:[...], rows:[[...]], line}].
+function tables(text) {
+  const out = []; let cur = null;
+  text.split(/\r?\n/).forEach((raw, i) => {
+    const l = raw.trim();
+    if (!l.startsWith('|')) { cur = null; return; }
+    const cells = l.replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+    if (!cur) { cur = {header: cells, rows: [], line: i}; out.push(cur); return; }
+    if (cells.every(c => /^:?-{3,}:?$/.test(c))) return;
+    cur.rows.push(cells);
+  });
+  return out;
+}
+const col = (t, name) => t.header.findIndex(h => h.toLowerCase() === name.toLowerCase());
+
+// The state a status cell starts with.
+function state(s) {
+  const l = s.trim().toLowerCase();
+  if (/^ongoing/.test(l)) return 'hw';
+  if (/^(planned|not started)/.test(l)) return 'plan';
+  if (/^(partial|part \d|first slice)/.test(l)) return 'part';
+  if (/^(implemented|done|mostly done|user confirmed)/.test(l)) return 'done';
+  return 'part';
+}
+const pending = s => /pending|not run|remain|still|needs? /i.test(s);
+// The clauses of a status that say what is left.
+function todo(s) {
+  const parts = s.split(/(?<=[.;])\s+|;\s*/).map(p => p.trim().replace(/[.;]+$/, '')).filter(Boolean);
+  const left = parts.filter(pending);
+  return left.length ? left.join('; ') : '';
+}
+const PILL = {done:['p-done','Finished in code'], part:['p-part','Partly done'], plan:['p-plan','Planned'], hw:['p-hw','Ongoing']};
+const pill = k => `<span class="pill ${PILL[k][0]}">${PILL[k][1]}</span>`;
+const dot = (k, untested) => `<i class="dot ${k === 'plan' ? '' : k}${untested ? ' untested' : ''}"></i>`;
+
+function workstreams(t) {
+  const o = col(t, 'Order'), w = col(t, 'Workstream'), s = col(t, 'Status today'), ids = col(t, 'Checklist IDs');
+  return t.rows.filter(r => /^T\d-\d+$/.test(r[o])).map(r => {
+    const st = state(r[s]);
+    return {id: r[o], title: r[w].replace(/\s*\(see below\)/, ''), status: r[s], ids: ids >= 0 ? r[ids] : '',
+            st, untested: st === 'done' && pending(r[s])};
+  }).sort((a, b) => a.id.localeCompare(b.id, 'en', {numeric: true}));
+}
+function wsRows(list) {
+  return list.map(x => `<tr><td>${x.id} ${md(x.title)}${x.ids ? `<div style="font-weight:400;font-size:13px;color:var(--soft)">${esc(x.ids)}</div>` : ''}</td>
+    <td>${pill(x.st)}</td><td>${md(todo(x.status) || (x.st === 'done' ? 'Nothing listed' : 'See the full status'))}
+    <details><summary>Full status</summary>${md(x.status)}</details></td></tr>`).join('');
+}
+function lineMap(lines) {
+  return lines.map(l => `<div class="line"><h3>${l.name}<small>${l.sub}</small></h3>
+    <div class="stops${l.stops.length > 8 ? ' long' : ''}" style="--n:${Math.max(l.stops.length, 6)};--c:${l.c}">
+    ${l.stops.map(s => `<a class="stop" href="${s.href}">${dot(s.st, s.untested)}<span><b>${esc(s.id)}</b><br>${esc(s.name)}</span></a>`).join('')}
+    </div></div>`).join('');
+}
+const ago = d => { const days = Math.round((Date.now() - new Date(d)) / 864e5);
+  return days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`; };
+async function get(url, json) {
+  const r = await fetch(url, {cache: 'no-store', headers: json ? {Accept: 'application/vnd.github+json'} : {}});
+  if (!r.ok) throw new Error(`${url.replace(/^https:\/\//, '')} answered ${r.status}`);
+  return json ? r.json() : r.text();
+}
+
+async function load() {
+  document.body.classList.add('loading'); $('err').innerHTML = '';
+  let roadmap, checklist;
+  try {
+    [roadmap, checklist] = await Promise.all([get(RAW + 'ROADMAP.md'), get(RAW + 'FEATURE_CHECKLIST.md')]);
+  } catch (e) {
+    $('headline').textContent = 'Could not read the roadmap from GitHub';
+    $('err').innerHTML = `<div class="error">${esc(String(e.message || e))}. Check the internet connection and press Refresh.</div>`;
+    document.body.classList.remove('loading'); return;
+  }
+
+  // Roadmap tiers: the first two tables whose rows are T1-xx and T2-xx workstreams.
+  const rt = tables(roadmap).filter(t => col(t, 'Workstream') >= 0 && col(t, 'Status today') >= 0);
+  const t1 = workstreams(rt.find(t => t.rows.some(r => /^T1-/.test(r[0]))) || {header: [], rows: []});
+  const t2 = workstreams(rt.find(t => t.rows.some(r => /^T2-/.test(r[0]))) || {header: [], rows: []});
+
+  // Checklist: every table with an ID and a Status column, one entry per ID (first wins).
+  const items = new Map();
+  for (const t of tables(checklist)) {
+    const i = col(t, 'ID'), s = col(t, 'Status'), c = t.header.findIndex(h => /^capability/i.test(h));
+    if (i < 0 || s < 0) continue;
+    for (const r of t.rows) if (/^[A-Z][A-Z0-9]*-\d+$/.test(r[i]) && !items.has(r[i]))
+      items.set(r[i], {id: r[i], cap: c >= 0 ? r[c] : '', status: r[s], st: state(r[s])});
+  }
+  const count = k => [...items.values()].filter(x => x.st === k).length;
+  const groupState = ids => { const s = ids.map(id => items.get(id)?.st || 'plan');
+    return s.every(x => x === 'done') ? 'done' : s.every(x => x === 'plan') ? 'plan' : 'part'; };
+
+  const n1 = t1.length, d1 = t1.filter(x => x.st === 'done').length, p1 = t1.filter(x => x.st === 'part').length;
+  const u1 = t1.filter(x => x.untested).length;
+  $('headline').textContent = d1 === n1 && n1 ? `Tier 1 is finished in code: all ${n1} workstreams`
+    : `${d1} of ${n1} Tier 1 workstreams are finished in code; ${p1} are partly done`;
+  $('lede').textContent = (u1 ? `${u1 === d1 ? (d1 === 1 ? 'It' : `All ${d1}`) : `${u1} of them`} still ${u1 === 1 ? 'needs' : 'need'} listening checks on real Windows hardware. ` : '')
+    + `Of ${t2.length} Tier 2 workstreams, ${t2.filter(x => x.st === 'done').length} are finished and ${t2.filter(x => x.st === 'part').length} are partly done. `
+    + `${count('done')} of ${items.size} checklist items are implemented.`;
+
+  const stop = (x, tier) => ({id: x.id, name: NICK[x.id] || x.title.split(/[\s:,]+/).slice(0, 2).join(' '), st: x.st, untested: x.untested, href: '#' + tier});
+  const later = k => LATER[k].map(([id, name, desc, ids]) => ({id, name, desc, ids, st: groupState(ids), href: '#later'}));
+  $('map').innerHTML = lineMap([
+    {name: 'Tier 1', sub: 'Foundation, now', c: '#7fd6b4', stops: t1.map(x => stop(x, 'tier1'))},
+    {name: 'Tier 2', sub: 'Competitive', c: '#5fa894', stops: t2.map(x => stop(x, 'tier2'))},
+    {name: 'Tier 3', sub: 'Not scheduled', c: '#3f8574', stops: later('t3')},
+    {name: 'Tier 4', sub: 'Not scheduled', c: '#2f7062', stops: later('t4')}]);
+  $('t1').innerHTML = wsRows(t1);
+  $('t2').innerHTML = wsRows(t2);
+  for (const k of ['t3', 't4']) $(k).innerHTML = later(k).map(x =>
+    `<li>${pill(x.st)} <b>${esc(x.desc)}</b> <span style="color:var(--soft);font-size:14px">(${x.ids.join(', ')})</span></li>`).join('');
+
+  const tally = [['Implemented', count('done'), 'var(--done)', '#fff'], ['Partial', count('part'), 'var(--part)', 'var(--ink)'],
+                 ['Planned', count('plan'), 'var(--plan)', 'var(--soft)'], ['Ongoing', count('hw'), 'var(--coral)', '#fff']];
+  $('checkhead').textContent = `Feature checklist: ${count('done')} of ${items.size} items implemented`;
+  $('tally').setAttribute('aria-label', tally.map(t => `${t[1]} ${t[0].toLowerCase()}`).join(', '));
+  $('tally').innerHTML = tally.filter(t => t[1]).map(t => `<div style="width:${t[1] / items.size * 100}%;background:${t[2]};color:${t[3]}">${t[1] > 4 ? t[1] : ''}</div>`).join('');
+  $('legend').innerHTML = tally.map(t => `<div><b>${t[1]}</b><span class="sw" style="background:${t[2]}"></span>${t[0]}</div>`).join('');
+
+  const figs = [[`${d1} / ${n1}`, 'Tier 1 finished in code'], [p1, 'Tier 1 partly done'], [`${count('done')} / ${items.size}`, 'checklist items implemented']];
+
+  // Pull requests and the latest commit come from the GitHub API; the page still works without them.
+  try {
+    const [open, closed, head] = await Promise.all([get(`${API}/pulls?state=open&per_page=50`, 1),
+      get(`${API}/pulls?state=closed&sort=updated&direction=desc&per_page=30`, 1), get(`${API}/commits/${BRANCH}`, 1)]);
+    const prRow = (p, when) => `<div class="pr"><a href="${esc(p.html_url)}">#${p.number}</a><span>${esc(p.title)}${p.draft ? ' <span class="pill p-plan">Draft</span>' : ''}</span><span class="when">${when}</span></div>`;
+    $('open').innerHTML = open.length ? open.map(p => prRow(p, 'opened ' + ago(p.created_at))).join('') : '<p class="sub">None open.</p>';
+    const merged = closed.filter(p => p.merged_at).sort((a, b) => b.merged_at.localeCompare(a.merged_at)).slice(0, 10);
+    $('merged').innerHTML = merged.map(p => prRow(p, ago(p.merged_at))).join('') || '<p class="sub">None recently.</p>';
+    figs.push([open.length, 'pull requests open']);
+    const c = head.commit;
+    $('asof').innerHTML = `Read from <a href="https://github.com/${REPO}/commit/${head.sha}">${BRANCH} at ${head.sha.slice(0, 7)}</a>, last changed ${ago(c.committer.date)} (${new Date(c.committer.date).toLocaleString()})`;
+  } catch (e) {
+    $('open').innerHTML = $('merged').innerHTML = `<p class="sub">Could not load pull requests: ${esc(String(e.message || e))}. GitHub allows 60 requests an hour without signing in.</p>`;
+    $('asof').textContent = `Read from ${BRANCH} on GitHub`;
+  }
+  $('figs').innerHTML = figs.map(f => `<div><b>${f[0]}</b><span>${f[1]}</span></div>`).join('');
+  $('foot').textContent = `Loaded ${new Date().toLocaleString()}. GitHub caches the docs for up to five minutes, so a merge can take that long to show. `
+    + `Statuses are read as written: a workstream counts as finished when its status starts with "Done", "Implemented" or "Mostly done".`;
+  document.body.classList.remove('loading');
+}
+$('refresh').addEventListener('click', load);
+load();
+}
+</script>
+</body>
+</html>

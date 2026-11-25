@@ -471,7 +471,7 @@ static void stems() {
         rig.track().send[6].store(0.5f); rig.track().send[0].store(0.5f);
         rig.settled();
         rig.engine->stemCapture = std::make_unique<alien::StemCapture>();
-        rig.engine->stemCapture->prepare();
+        rig.engine->stemCapture->prepare(*rig.engine->plugins);
         rig.engine->playing.store(false); rig.render(); rig.engine->playing.store(true);
         std::array<float, 512> l{}, r{};
         float* outputs[]{l.data(), r.data()};
@@ -487,6 +487,30 @@ static void stems() {
         require(first(0) == 3 && first(alien::StemCapture::returnBase) == 3 && first(alien::StemCapture::returnBase + 6) == 3,
                 "the dry track, return A and the latent return G stems line up");
         require(first(alien::StemCapture::returnBase + 5) == 512, "an unused slot captures nothing");
+        // T1-04 D20: the capture's lines are sized to this render's latency, not to maxDelay.
+        const auto& capture = *rig.engine->stemCapture;
+        require(capture.dryDelays[0].capacity == alien::PluginRuntime::alignmentGranule
+                && capture.busDelays[0].capacity == alien::PluginRuntime::alignmentGranule && capture.shortfalls == 0,
+                "a 3-sample return holds one granule per capture line, not 96,000 samples");
+    }
+    {   // T1-04 D20: with no latent bus or return plugin the capture holds (almost) no delay audio.
+        alien::StemCapture capture;
+        capture.prepare(0, 0);
+        const std::size_t worst = 2u * (alien::maxSessionTracks + 1 + alien::maxBuses) * (alien::PluginRuntime::maxDelay + 1u) * sizeof(float);
+        std::cout << "Stem capture delay lines: " << capture.delayBytes() << " bytes with no latency (were "
+                  << worst / (1024.0 * 1024.0) << " MiB)" << std::endl;
+        require(capture.delayBytes() < 1024, "a render without latency keeps no capture delay audio");
+    }
+    {   // T1-04 D20: latency that grows past what the capture was prepared for is counted, so the render fails.
+        Rig rig;
+        rig.ret(6).active.store(true);
+        rig.returnEffect(6, 1.0f, 3);
+        rig.track().send[6].store(0.5f);
+        rig.settled();
+        rig.engine->stemCapture = std::make_unique<alien::StemCapture>();
+        rig.engine->stemCapture->prepare(0, 0);   // as if prepared before the return's plugin reported latency
+        rig.render();
+        require(rig.engine->stemCapture->shortfalls > 0, "a capture line too short for the latency counts a shortfall");
     }
     {   // Files: one per return that exists, named by slot (and by name once renamed).
         auto project = std::make_unique<alien::SessionProjectData>();

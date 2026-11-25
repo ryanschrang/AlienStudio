@@ -398,7 +398,7 @@ static void stemCaptureWithBuses() {
     rig.track(1).send[0].store(0.5f);
     rig.settled();
     rig.engine->stemCapture = std::make_unique<alien::StemCapture>();
-    rig.engine->stemCapture->prepare();
+    rig.engine->stemCapture->prepare(*rig.engine->plugins);
     rig.engine->playing.store(false); rig.render(); rig.engine->playing.store(true);
     std::array<float, 512> l{}, r{};
     float* outputs[]{l.data(), r.data()};
