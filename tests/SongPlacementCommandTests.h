@@ -70,6 +70,44 @@ static void songPlacementCommandChecks() {
     }
     require(cmd::describe(c.document(), cmd::NewSongClip{0, 0}).contains(d.tracks[0].name) && cmd::describe(c.document(), cmd::MakeSongClipUnique{a}).contains(juce::String(a)),
             "the descriptions name the track and the clip");
+    {
+        c.markAsNewBaseline(); const auto baseline = d; const auto history = historyOf(c);
+        engine->arrangementMailbox.consume(); engine->rackMailbox.consume();
+        const auto published = engine->arrangementMailbox.publishedCount();
+        const std::vector<cmd::Command> edits{cmd::MakeSongClipUnique{a},cmd::MakeSongClipUnique{p},cmd::SetTrackVolume{0,.37}};
+        const auto prediction = commands.preview(edits);
+        require(prediction.ok && prediction.changed && alien::sameContent(baseline,d) && historyOf(c) == history
+            && engine->arrangementMailbox.publishedCount() == published && !engine->rackMailbox.consume(),
+            "MIDI/rack independence Preview leaves live sources, history and publications untouched");
+        require(commands.batch(edits,"Fork Song sources and mix").changed && alien::sameContent(prediction.after,d)
+            && song.find(a)->ownsClip() && song.find(b)->playsCell() && song.find(p)->rackClip != source
+            && d.clip(0,0).notes().notes[0].pitch == 60 && d.channelRack.patternCount == baseline.channelRack.patternCount + 1
+            && d.rackMatchesLibrary() && engine->tracks[0].gain.load() == .37f,
+            "mixed independence batch matches Preview and preserves the original shared sources");
+        engine->arrangementMailbox.consume(); const auto* heard = engine->arrangementMailbox.current();
+        const auto* rackHeard = engine->rackMailbox.consume();
+        require(engine->arrangementMailbox.publishedCount() == published + 1 && heard
+            && heard->timeline.find(a)->clip == song.find(a)->clip && heard->timeline.find(p)->rackClip == song.find(p)->rackClip
+            && rackHeard && rackHeard->indexOfClip(song.find(p)->rackClip) >= 0,
+            "accepted transaction publishes one Song snapshot and its forked rack source");
+        require(c.undo() && !c.canUndo() && alien::sameContent(baseline,d)
+            && engine->tracks[0].gain.load() == static_cast<float>(baseline.tracks[0].settings.gain),
+            "one Undo restores both source bindings and live mix");
+        engine->arrangementMailbox.consume(); engine->rackMailbox.consume();
+        const auto redo = historyOf(c); const auto restoredPublications = engine->arrangementMailbox.publishedCount();
+        const auto noop = commands.execute(cmd::SetTrackVolume{0,baseline.tracks[0].settings.gain});
+        const auto late = commands.batch({edits[1],edits[2],cmd::MakeSongClipUnique{0}},"Refused fork");
+        c.setExternalBusy(true); const auto busy = commands.batch(edits,"Busy fork"); c.setExternalBusy(false);
+        engine->recording.phase.store(alien::RecordControls::countIn);
+        const auto counting = commands.batch({edits[2],edits[0]},"Count-in fork"); engine->recording.phase.store(alien::RecordControls::idle);
+        require(noop.ok && !noop.changed && !late.ok && late.failedCommand == 2 && !busy.ok && !counting.ok
+            && alien::sameContent(baseline,d) && historyOf(c) == redo
+            && engine->tracks[0].gain.load() == static_cast<float>(baseline.tracks[0].settings.gain)
+            && engine->arrangementMailbox.publishedCount() == restoredPublications && !engine->rackMailbox.consume(),
+            "no-op and late/busy/count-in refusal preserve redo, source ownership and live publication");
+        require(c.redo() && alien::sameContent(prediction.after,d) && engine->tracks[0].gain.load() == .37f,
+            "Redo restores the accepted independent sources and mix");
+    }
 }
 
 static void harmonicMidiCommandChecks() {

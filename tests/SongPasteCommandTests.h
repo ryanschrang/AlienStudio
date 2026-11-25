@@ -13,7 +13,7 @@ static void songPasteCommandChecks() {
     c.setClipPattern(0, 0, patternWith(60), false); c.commit("Notes", 0, 0);
     std::uint32_t a = 0, other = 0;
     // Only a shared placement can be made unique, so the cell is placed twice.
-    require(c.placeRegion(0, 0, 0, &a) && c.placeRegion(0, 0, 8 * bar, &other) && c.makePlacementUnique(a), "a placement clip to copy");
+    require(c.placeRegion(0, 0, 0, &a) && c.placeRegion(0, 0, 8 * bar, &other) && alien::command::CommandEngine(c).execute(alien::command::MakeSongClipUnique{a}).changed, "a placement clip to copy");
     const auto clipOf = [&](std::uint32_t id) { return song.find(id)->clip; };
     const auto original = clipOf(a);
     require(original != 0 && d.library.clip(alien::library::ClipId{original}) != nullptr, "the region plays a clip of its own");
