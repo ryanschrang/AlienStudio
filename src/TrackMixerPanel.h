@@ -704,10 +704,15 @@ public:
         routingButton.setButtonText("Routing");
         routingButton.setTooltip("Switch between mixer strips and the track output routing graph");
         routingButton.onClick = [this] { showRouting(!routingShown); };
+        addChildComponent(routingModeButton);
+        routingModeButton.setButtonText("Show sends");
+        routingModeButton.onClick = [this] { showSendRouting(!routingGraph.showsSends()); };
         addChildComponent(routingViewport);
         routingViewport.setViewedComponent(&routingGraph, false);
         routingViewport.setScrollBarsShown(true, true);
         routingGraph.onOutputRequested = [this](int track, int bus) { return chooseOutput(track, bus); };
+        routingGraph.onSendRequested = [this](int track, int r, double level) { return chooseSend(track, r, level); };
+        routingGraph.onSendModeRequested = [this](int track, int r, bool pre) { return chooseSendMode(track, r, pre); };
 
         addAndMakeVisible(viewport);
         viewport.setViewedComponent(&content, false);
@@ -830,11 +835,32 @@ public:
     void showRouting(bool shown) {
         routingShown = shown;
         routingButton.setButtonText(shown ? "Strips" : "Routing");
-        help.setText(shown ? "Output graph: click a track to route it. Sends and sidechains stay in Strips / Plugins."
+        help.setText(shown ? (routingGraph.showsSends() ? "Sends: click a track for level and pre/post-fader choices. Sidechains stay in Plugins."
+                                                                     : "Outputs: click a track to route it. Show sends for return connections.")
                            : "Mixer strips: instruments, levels, sends and outputs. Bus and return FX are set in Plugins.", juce::dontSendNotification);
         help.setTooltip(help.getText());
         routingGraph.refresh(); resized();
     }
+    bool chooseSend(int track, int r, double level) {
+        const auto result = command::CommandEngine(controller).execute(command::SetTrackSend{track, r, level});
+        refreshSettings();
+        if (!result.ok || !result.changed) return false;
+        if (onTrackMixCommandExecuted) onTrackMixCommandExecuted(track);
+        return true;
+    }
+    bool chooseSendMode(int track, int r, bool pre) {
+        const auto result = command::CommandEngine(controller).execute(command::SetTrackSendMode{track, r, pre});
+        refreshSettings();
+        if (!result.ok || !result.changed) return false;
+        if (onTrackMixCommandExecuted) onTrackMixCommandExecuted(track);
+        return true;
+    }
+    void showSendRouting(bool shown) {
+        routingGraph.showSends(shown);
+        routingModeButton.setButtonText(shown ? "Show outputs" : "Show sends");
+        showRouting(true);
+    }
+    juce::TextButton& routingModeControl() { return routingModeButton; }
     OutputRoutingView& outputRoutingView() { return routingGraph; }
     juce::TextButton& routingControl() { return routingButton; }
 
@@ -844,10 +870,12 @@ public:
         auto header = area.removeFromTop(22);
         routingButton.setBounds(header.removeFromRight(80));
         header.removeFromRight(gap);
-        addBusButton.setBounds(header.removeFromRight(90));
-        header.removeFromRight(gap);
-        addReturnButton.setVisible(!routingShown);
-        if (!routingShown) {
+        routingModeButton.setVisible(routingShown);
+        if (routingShown) { routingModeButton.setBounds(header.removeFromRight(100)); header.removeFromRight(gap); }
+        addBusButton.setVisible(!routingShown || !routingGraph.showsSends());
+        if (addBusButton.isVisible()) { addBusButton.setBounds(header.removeFromRight(90)); header.removeFromRight(gap); }
+        addReturnButton.setVisible(!routingShown || routingGraph.showsSends());
+        if (addReturnButton.isVisible()) {
             addReturnButton.setBounds(header.removeFromRight(100));
             header.removeFromRight(gap);
         }
@@ -1006,7 +1034,7 @@ private:
     MasterChannelStrip masterStrip;
     OutputRoutingView routingGraph;
     juce::Viewport routingViewport;
-    juce::TextButton routingButton;
+    juce::TextButton routingButton, routingModeButton;
     bool routingShown{};
     std::vector<std::pair<int, std::unique_ptr<ReturnChannelStrip>>> returnStrips;   // (slot, strip), in slot order
     juce::Label help;

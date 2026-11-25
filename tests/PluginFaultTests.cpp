@@ -328,6 +328,30 @@ static void hostTests() {
         runtime->begin(32, 120, true, 0); fill(*runtime, 0, 0.5f, 32); runtime->effectsAndAlign(32);
         check(!runtime->racks[0].effects[0].faulted.get() && runtime->tracks[0].getSample(0, 5) == 0.5f, "which now processes");
     }
+    // T1-04 D18: a freeze render collects what failed during it. A failed plugin stops the freeze (the frozen audio
+    // would be missing its sound); a healthy render freezes, with any dropped-note warning.
+    {
+        add("dies-freezing", plan(Fail::nullWrite));
+        auto runtime = std::make_unique<PluginRuntime>(); PluginHost host(*runtime, {}, factory);
+        int liveReports = 0; host.onProblem = [&](const juce::String&) { ++liveReports; };
+        std::vector<PluginRackState> racks(1); PluginRackState master; racks[0].effects = {stateFor("good", false), stateFor("dies-freezing", false)};
+        host.restore(racks, master, 48000);
+        const auto healthy = host.renderReport();
+        check(healthy.failures.isEmpty() && healthy.latency.isEmpty(), "a render with nothing wrong reports nothing");
+        const auto frozen = PluginHost::freezeOutcome(healthy, {});
+        check(frozen.install && frozen.status.startsWith("Track frozen.") && !frozen.status.contains("WARNING"), "a healthy freeze installs, with no warning");
+        const auto dropped = PluginHost::freezeOutcome(healthy, "3 Channel Rack hits were not played");
+        check(dropped.install && dropped.status.contains("WARNING: 3 Channel Rack hits were not played; the frozen audio is missing them"),
+              "a freeze that dropped notes installs with a warning");
+        runtime->begin(32, 120, true, 0); fill(*runtime, 0, 0.5f, 32); runtime->effectsAndAlign(32);
+        const auto failed = host.renderReport();
+        check(failed.failures.contains("dies-freezing") && failed.failures.contains("track 1 FX 2"), "a plugin that failed during the render is reported");
+        const auto stopped = PluginHost::freezeOutcome(failed, "3 Channel Rack hits were not played");
+        check(!stopped.install && stopped.status.startsWith("Freeze stopped:") && stopped.status.contains("Original track unchanged")
+              && stopped.status.contains("dies-freezing"), "a plugin that failed during the render stops the freeze and is named");
+        check(liveReports == 0 && host.onProblem != nullptr, "collecting the report leaves the host's own callback in place, uncalled");
+        check(host.renderReport().failures.isEmpty(), "a failure is reported once");
+    }
     // The message thread learns about a runtime failure through poll().
     {
         add("dies", plan(Fail::nullWrite));

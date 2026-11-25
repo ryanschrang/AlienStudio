@@ -23,22 +23,24 @@ public:
         juce::Desktop::getInstance().removeFocusChangeListener(this);
         root.removeComponentListener(this);
         if (eventSource != nullptr) eventSource->removeKeyListener(this);
-        for(auto& window:auxiliaryRoots)if(window)window->removeKeyListener(this);
+        for(auto& window:auxiliaryRoots)if(window) { window->removeKeyListener(this); window->removeComponentListener(this); }
         release();
     }
     TypingPiano typing;
     std::function<void()> octaveChanged;
     void addAuxiliaryRoot(juce::Component& window) {
         for(const auto& root:auxiliaryRoots)if(root.getComponent()==&window)return;
-        auxiliaryRoots.emplace_back(&window);window.addKeyListener(this);
+        auxiliaryRoots.emplace_back(&window);window.addKeyListener(this);window.addComponentListener(this);
     }
     void removeAuxiliaryRoot(juce::Component& window) {
         window.removeKeyListener(this);
-        if(target==&window||window.isParentOf(target.getComponent())) {release();target=nullptr;}
+        window.removeComponentListener(this);
+        if(ownsTyping(window)||target==&window||window.isParentOf(target.getComponent())) {release();target=nullptr;}
         std::erase_if(auxiliaryRoots,[&](const auto& item){return item==nullptr||item.getComponent()==&window;});
     }
     void release() {
         typing.releaseAll([this](int n, bool on) { send(n, on); });
+        typingWindow = nullptr;
         // A key held through blur/panic must be lifted before repeats can start it again.
         for (std::size_t i = 0; i < watched.size(); ++i) blocked[i] = isDown(watched[i]);
     }
@@ -51,9 +53,19 @@ private:
         eventSource = window;
         window->addKeyListener(this);
     }
-    void componentParentHierarchyChanged(juce::Component&) override { attachToWindow(); }
+    void componentParentHierarchyChanged(juce::Component& component) override { if (&component == &root) attachToWindow(); }
+    bool ownsTyping(const juce::Component& component) const {
+        return typingWindow == &component || (&component == &root && typingWindow.getComponent() == eventSource.getComponent());
+    }
+    void componentVisibilityChanged(juce::Component& component) override {
+        if (!component.isVisible() && ownsTyping(component)) { release(); target = nullptr; }
+    }
+    void componentBeingDeleted(juce::Component& component) override {
+        if (&component == &root) { release(); target = nullptr; }
+        else removeAuxiliaryRoot(component);
+    }
     bool accepts(juce::Component* c) const {
-        if(c==nullptr||c->isCurrentlyBlockedByAnotherModalComponent())return false;
+        if(c==nullptr||!c->isShowing()||c->isCurrentlyBlockedByAnotherModalComponent())return false;
         bool owned=c==&root||c==root.getTopLevelComponent()||root.isParentOf(c);
         for(const auto& window:auxiliaryRoots)
             if(window&&(c==window.getComponent()||window->isParentOf(c)))owned=true;
@@ -86,6 +98,7 @@ private:
                 if (octaveChanged) octaveChanged();
                 return true;
             }
+            typingWindow = (target != nullptr ? target.getComponent() : origin)->getTopLevelComponent();
             return typing.press(k, [this](int n, bool on) { send(n, on); });
         }
         return false;
@@ -103,7 +116,7 @@ private:
     juce::Component& root;
     juce::MidiKeyboardState& state;
     KeyDown isDown;
-    juce::Component::SafePointer<juce::Component> target, eventSource;
+    juce::Component::SafePointer<juce::Component> target, eventSource, typingWindow;
     std::vector<juce::Component::SafePointer<juce::Component>> auxiliaryRoots;
     std::array<bool, watched.size()> blocked{};
 };
