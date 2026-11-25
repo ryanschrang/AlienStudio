@@ -200,6 +200,17 @@ int main(){
         juce::String collected; quiet.latencyProblems(collected);
         require(collected.contains("track 2 report 120,000") && collected.contains("Channel Rack channel 3"),
                 "poll() without a latency callback used up the report an export collects");
+        // T1-04 D18: a freeze render collects the same report, and freezes with the warning.
+        alien::PluginHost freezeHost(*over);
+        int liveLate=0; freezeHost.onLatencyProblem=[&](const juce::String&){++liveLate;};
+        const auto report=freezeHost.renderReport();
+        require(report.failures.isEmpty() && report.latency.contains("track 2 report 120,000") && report.latency.contains("Channel Rack channel 3"),
+                "a freeze render did not collect the latency report");
+        require(liveLate==0 && freezeHost.onLatencyProblem!=nullptr,"collecting a render report used or removed the host's latency callback");
+        const auto outcome=alien::PluginHost::freezeOutcome(report,{});
+        require(outcome.install && outcome.status.contains("WARNING: The plugins on track 2 report 120,000") && !outcome.status.contains("\n"),
+                "a freeze past the latency limit should install with the warning on one line");
+        require(freezeHost.renderReport().latency.isEmpty(),"a chain past the limit was named again by the next render report");
         std::cout<<"PASS: plugin latency past the limit and alignment shortfalls are reported\n";
     }
     // T1-04 D15: a Channel Rack plugin instrument's line is as long as the slowest rack instrument makes it wait,
