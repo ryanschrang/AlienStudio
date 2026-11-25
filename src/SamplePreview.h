@@ -20,6 +20,7 @@ public:
     // reserved until something is previewed. Returns false if the preview cannot be queued.
     bool request(const float* left, const float* right, int frames, double rate, bool alignToBeat = false) {
         if (!left || frames <= 0 || frames > capacity || !std::isfinite(rate) || rate < 8000 || rate > 192000) return false;
+        const auto requestedEpoch = alignedEpoch.load(std::memory_order_acquire);
         for (auto& slot : *slots) {
             int expected = free;
             if (!slot.state.compare_exchange_strong(expected, writing, std::memory_order_acquire)) continue;
@@ -30,12 +31,20 @@ public:
             std::copy_n(left, frames, slot.left.data());
             std::copy_n(right ? right : left, frames, slot.right.data());
             slot.frames = frames; slot.rate = rate; slot.alignToBeat = alignToBeat;
+            slot.alignedEpoch = requestedEpoch;
             slot.generation = generation.fetch_add(1, std::memory_order_acq_rel) + 1;
             slot.state.store(ready, std::memory_order_release); return true;
         }
         return false;
     }
     void stop() noexcept { generation.fetch_add(1, std::memory_order_acq_rel); }
+    // Audio thread: an explicit transport jump invalidates beat-aligned work,
+    // including a GUI producer still copying into a writing slot. Independent
+    // immediate auditions keep playing; slot storage is reclaimed off callback.
+    void cancelAligned() noexcept {
+        alignedEpoch.fetch_add(1, std::memory_order_acq_rel);
+        if (active >= 0 && (*slots)[active].alignToBeat) release();
+    }
     void prepare(double rate) noexcept { outputRate = rate > 0 ? rate : 44100; stop(); }
     void beginBlock(bool panic = false) noexcept {
         if (panic) stop();
@@ -46,7 +55,10 @@ public:
             if (slot.state.load(std::memory_order_acquire) != ready) continue;
             // A GUI request can be published after this block began. Compare
             // against the latest token so that request survives until playback.
-            if (slot.generation != generation.load(std::memory_order_acquire)) { slot.state.store(free, std::memory_order_release); continue; }
+            if (slot.generation != generation.load(std::memory_order_acquire)
+                || (slot.alignToBeat && slot.alignedEpoch != alignedEpoch.load(std::memory_order_acquire))) {
+                slot.state.store(free, std::memory_order_release); continue;
+            }
             release(); active = i; position = 0; waiting = slot.alignToBeat; slot.state.store(playing, std::memory_order_relaxed);
         }
     }
@@ -74,9 +86,10 @@ public:
 private:
     void release() noexcept { if (active >= 0) (*slots)[active].state.store(free, std::memory_order_release); active = -1; }
     enum { free, writing, ready, playing };
-    struct Slot { std::atomic<int> state{free}; std::vector<float> left, right; int frames{}; double rate{}; unsigned generation{}; bool alignToBeat{}; };
+    struct Slot { std::atomic<int> state{free}; std::vector<float> left, right; int frames{}; double rate{}; unsigned generation{}, alignedEpoch{}; bool alignToBeat{}; };
     std::unique_ptr<std::array<Slot, 3>> slots;
     std::atomic<unsigned> generation{0};
+    std::atomic<unsigned> alignedEpoch{0};
     int active{-1}; bool waiting{}; double position{}, outputRate{44100};
 public:
     // GUI thread: bytes of preview audio the slots hold now.

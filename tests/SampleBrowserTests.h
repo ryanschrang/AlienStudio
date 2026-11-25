@@ -316,10 +316,18 @@ static void sampleBrowserChecks() {
         preview->onClick();
         for (int i = 0; i < 400 && previews == 1; ++i) pump();
         require(previews == 2 && frames == 40000 && imports == 0, "stopped Song preview renders at the cursor's 90 BPM");
+        previousStops = stops;
+        browser.transportSeek();
+        require(stops == previousStops + 1 && hasLabel("Song position changed"), "explicit same-tempo seek stops a matched audition");
+        preview->onClick(); browser.transportSeek();
+        for (int i = 0; i < 30; ++i) pump();
+        require(previews == 2 && imports == 0 && hasLabel("Song position changed"), "seek invalidates matched worker results before publication");
         match->setToggleState(false, juce::dontSendNotification); match->onClick();
         previousStops = stops;
         browser.setTransportTempo(target(false, true, 1920, 0));
         require(stops == previousStops && hasLabel("Project: 120.0 BPM"), "original-tempo previews ignore tempo changes and label the new context");
+        browser.transportSeek();
+        require(stops == previousStops, "explicit seek does not stop an unmatched browser preview");
         browser.onStop = nullptr;
     }
     require(root.deleteRecursively(), "remove sample fixtures");

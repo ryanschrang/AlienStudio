@@ -525,7 +525,10 @@ private:
             }
             return names;
         };
-        canvas.onSeek = [this](std::int64_t tick) { engine.timelineSeek.store(tick); };
+        canvas.onSeek = [this](std::int64_t tick) {
+            if (engine.playing.load() && engine.patternMode.load() == 2) devicesView.samples().transportSeek();
+            engine.timelineSeek.store(tick);
+        };
         canvas.onPlayToggle = [this] { togglePlay(); };
         canvas.onOpenSource = [this](int row, int source) { openTimelineSource(row, source); };
         canvas.onOpenPlacement = [this](std::uint32_t region) { openPlacementClip(region); };
