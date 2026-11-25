@@ -567,7 +567,71 @@ static void measureCost() {
               << perSlotMb << " MB of delay lines a slot\n";
 }
 
-int main() {
+static void sendRoutingViewChecks(const juce::File& preview) {
+    auto engine = std::make_unique<ToneEngine>();
+    alien::ProjectController c(*engine); c.pushDocumentToEngine();
+    alien::TrackMixerPanel panel(c, engine->tracks, engine->returns, engine->masterControls, engine->buses);
+    panel.setSize(960,650); panel.showRouting(true); panel.routingModeControl().onClick();
+    auto& graph = panel.outputRoutingView();
+    require(graph.showsSends() && graph.isVisible() && panel.addReturnControl().isVisible() && !panel.addBusControl().isVisible(),
+        "routing mode control reveals send connections and return creation");
+    int notified = 0, lastTrack = -1;
+    panel.onTrackMixCommandExecuted = [&](int track) { ++notified; lastTrack = track; };
+    const auto request = graph.requestFor(0);
+    require(graph.chooseSend(request,0,.5) && graph.sendFor(0,0) == .5 && engine->tracks[0].send[0].load() == .5f
+        && panel.trackStrip(0)->sendKnob(0).getValue() == 50 && notified == 1 && lastTrack == 0 && c.undoLabel() == "Set send level",
+        "graph level choice uses the send command and updates the strip, document and engine once");
+    require(graph.chooseSendMode(request,0,true) && engine->tracks[0].sendPre[0].load()
+        && panel.trackStrip(0)->sendMode(0).getToggleState() && notified == 2 && c.undoLabel() == "Set send mode",
+        "graph pre-fader choice uses the existing mode command");
+    require(c.undo(), "undo send mode"); panel.refreshSettings();
+    require(!engine->tracks[0].sendPre[0].load() && !panel.trackStrip(0)->sendMode(0).getToggleState(), "one Undo restores post-fader mode");
+    require(c.undo(), "undo send level"); panel.refreshSettings();
+    require(graph.sendFor(0,0) == 0 && panel.trackStrip(0)->sendKnob(0).getValue() == 0, "one Undo removes the send edge");
+    require(c.redo() && c.redo(), "redo send level and mode"); panel.refreshSettings();
+    require(graph.sendFor(0,0) == .5 && engine->tracks[0].sendPre[0].load(), "Redo restores send connections and mode");
+    require(!graph.chooseSend(request,0,.5) && !graph.chooseSendMode(request,0,true) && notified == 2,
+        "same level and mode are no-ops without host notifications");
+    c.setExternalBusy(true);
+    require(!graph.chooseSend(request,0,.25) && !graph.chooseSendMode(request,0,false), "busy graph choices refuse");
+    c.setExternalBusy(false);
+    require(!graph.chooseSend(request,0,-1) && !graph.chooseSend(request,7,.5) && !graph.chooseSendMode(request,8,true)
+        && graph.sendFor(0,0) == .5 && notified == 2, "invalid levels and missing returns leave sends alone");
+    for (const auto phase : {alien::RecordControls::countIn, alien::RecordControls::recording}) {
+        engine->recording.phase.store(phase);
+        require(graph.chooseSend(request,0,.25) && graph.chooseSendMode(request,0,false)
+            && graph.chooseSend(request,0,.5) && graph.chooseSendMode(request,0,true),
+            "graph sends stay editable during count-in and recording, like the existing strips");
+    }
+    engine->recording.phase.store(alien::RecordControls::idle);
+    panel.setEnabled(false); require(!graph.chooseSend(request,0,.25), "disabled graph refuses deferred edits"); panel.setEnabled(true);
+    require(alien::command::CommandEngine(c).execute(alien::command::MoveTrack{0,1}).changed, "reorder send source"); panel.rebuild();
+    require(graph.chooseSend(request,0,.25) && lastTrack == 1 && engine->tracks[1].send[0].load() == .25f
+        && c.document().tracks[0].settings.send[0] == 0, "deferred send choice follows the original track through reorder");
+    require(alien::command::CommandEngine(c).execute(alien::command::DeleteTrack{1}).changed, "remove send source"); panel.rebuild();
+    require(!graph.chooseSend(request,0,.5), "deleted track identity refuses a stale send menu");
+    const auto oldReturn = graph.requestFor(0);
+    require(panel.deleteReturn(0) && panel.addReturn() == 0, "reuse a return slot");
+    require(!graph.chooseSend(oldReturn,0,.5) && !graph.chooseSendMode(oldReturn,0,true), "stale menu cannot edit a replacement return");
+    const auto fresh = graph.requestFor(0);
+    panel.routingModeControl().onClick();
+    require(!graph.showsSends() && !graph.chooseSend(fresh,0,.5), "switching to Outputs refuses deferred send choices");
+    panel.routingModeControl().onClick(); c.newProject(); panel.rebuild();
+    require(!graph.chooseSend(fresh,0,.5) && !graph.chooseSendMode(fresh,0,true), "replacement project refuses stale send choices");
+    while (panel.returnStripCount() < alien::maxReturns) require(panel.addReturn() >= 0, "add every return slot");
+    require(panel.renameReturn(7,"Space") && graph.chooseSend(graph.requestFor(0),7,.5)
+        && graph.chooseSendMode(graph.requestFor(0),7,true) && graph.getHeight() >= graph.busBounds(7).getBottom(),
+        "return H can be edited and stays within the scrollable graph");
+    if (preview != juce::File{}) {
+        juce::FileOutputStream stream(preview);
+        require(stream.openedOk() && stream.setPosition(0) && stream.truncate().wasOk()
+            && juce::PNGImageFormat().writeImageToStream(panel.createComponentSnapshot(panel.getLocalBounds()),stream), "render send graph");
+    }
+    panel.showRouting(false);
+    require(!graph.isVisible() && panel.addBusControl().isVisible() && panel.addReturnControl().isVisible(), "Strips restores the existing mixer controls");
+}
+
+int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI juce;
     returnsBeyondD();
     delayAlignment();
@@ -576,6 +640,7 @@ int main() {
     controllerAndUndo();
     projectFormat();
     panels();
+    sendRoutingViewChecks(argc > 1 ? juce::File::getCurrentWorkingDirectory().getChildFile(argv[1]) : juce::File{});
     stems();
     freezeIgnoresReturns();
     measureCost();
