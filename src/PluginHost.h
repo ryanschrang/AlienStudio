@@ -559,7 +559,11 @@ private:
         if (!slot.processor || slot.faulted.get()) return;
         juce::MemoryBlock bytes; fault::Fault fault;
         if (!fault::guarded([&]{ slot.processor->getStateInformation(bytes); },fault)) { runtime.markFaulted(slot,rack,index,PluginPhase::saveState,fault); return; }
-        state.stateBase64=bytes.toBase64Encoding();
+        // T1-04 D21: an unchanged state keeps the string it already has. juce::String copies share
+        // their text, so every undo step and autosave that copies the document shares this one
+        // buffer, instead of holding its own copy of every plugin's state.
+        auto encoded=bytes.toBase64Encoding();
+        if (encoded!=state.stateBase64) state.stateBase64=std::move(encoded);
     }
     void audioProcessorParameterChanged(juce::AudioProcessor*,int,float) override { changed.store(true); }
     void audioProcessorChanged(juce::AudioProcessor*,const juce::AudioProcessorListener::ChangeDetails& details) override {

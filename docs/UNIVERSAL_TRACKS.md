@@ -1256,3 +1256,35 @@ Not covered:
 - the running app;
 - a sliced or key-zoned channel switched to another file (the views and maps go by D14's rule,
   which `rackCacheTests` covers for an open, not for this sweep).
+
+## Increment D21: unchanged plugin states shared across undo steps
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+Gate 1 left plugins and their state unmeasured. The document keeps each mixer plugin's saved state
+(track, master, bus and return racks) as base64 text, and `DocumentHistory` keeps up to 200 full
+copies of the document. A `juce::String` copy shares its text, so those copies would cost almost
+nothing, except that `PluginHost::capture` always stored a freshly encoded string. Every time the
+plugin states were copied into the document (before a structural edit, on save and on autosave once
+something changed), every plugin got a new buffer, including the ones that had not changed. Each new
+undo step then held its own copy of every plugin's state. With ten plugins of 1 MiB state each, that
+is about 13 MiB per step, and the 200-step history could hold gigabytes.
+
+What D21 changes (`PluginHost::capture`): a state that encodes to the text the document already
+holds keeps that string, so the document, its undo steps and the autosave copy share one buffer. A
+state that changed still gets a new one, which undo needs. Channel Rack plugin instruments already
+kept an unchanged state (`rack::Project::setPluginState`).
+
+Tests (`PluginFaultTests`):
+- one effect with a 1 MiB state and one with a 64 KiB state, snapshotted 200 times and kept like
+  history steps, with the smaller one changing every 50 snapshots;
+- the 1 MiB state is one shared buffer across all 200 snapshots, and the changing one has one per
+  change (four);
+- the snapshots hold 1.7 MiB of plugin state. Before the fix they held 283 MiB.
+
+Mutation check: with the fresh string always stored again, both sharing checks fail and the
+snapshots hold 283 MiB.
+
+Not covered: the running app; real third-party plugins (a plugin that writes a different state each
+time it is asked, for example one that includes a timestamp, is still copied every time); and the
+encoding work itself, which still runs for every plugin on each snapshot.

@@ -11,6 +11,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <thread>
 
 using namespace alien;
@@ -35,6 +36,7 @@ struct Plan {
     bool crashPrepare{}, crashRelease{}, crashGetState{}, crashSetState{}, crashTail{}, crashEditor{}, crashLatencyChange{};
     float gain{1};
     int latency{0};
+    std::string state{"live"};              // what getStateInformation saves
 };
 
 class Probe final : public juce::AudioProcessor {
@@ -67,7 +69,7 @@ public:
     const juce::String getProgramName(int) override { return {}; } void changeProgramName(int, const juce::String&) override {}
     bool hasEditor() const override { return true; }
     juce::AudioProcessorEditor* createEditor() override { if (plan->crashEditor) crash(); return nullptr; }
-    void getStateInformation(juce::MemoryBlock& d) override { if (plan->crashGetState) crash(); const char text[] = "live"; d.append(text, 4); }
+    void getStateInformation(juce::MemoryBlock& d) override { if (plan->crashGetState) crash(); d.append(plan->state.data(), plan->state.size()); }
     void setStateInformation(const void*, int) override { if (plan->crashSetState) crash(); }
     std::shared_ptr<Plan> plan; std::shared_ptr<Counters> counters; bool instrument; int blocks{0};
 };
@@ -425,6 +427,35 @@ static void hostTests() {
         PluginFault f; check(!runtime->faults.pop(f), "no audio fault is recorded for an editor failure");
         runtime->racks[0].effects[1].faulted.set(true);
         check(host.openEditor(0, 1).contains("has failed and is switched off"), "a failed plugin's editor is not opened");
+    }
+    // T1-04 D21: undo history and autosave copy the whole document, plugin states included. A state that did not
+    // change keeps its string, so all those copies share one buffer; only a state that changed takes a new one.
+    {
+        add("big", plan()); plans["big"]->state.assign(1 << 20, 'b');
+        add("moving", plan()); plans["moving"]->state.assign(64 << 10, 'm');
+        auto runtime = std::make_unique<PluginRuntime>(); PluginHost host(*runtime, {}, factory);
+        std::vector<PluginRackState> racks(1); PluginRackState master;
+        racks[0].effects = {stateFor("big", false), stateFor("moving", false)};
+        host.restore(racks, master, 48000);
+        std::vector<std::vector<PluginRackState>> history;   // what DocumentHistory keeps: one copy per step
+        for (int step = 0; step < 200; ++step) {
+            if (step % 50 == 0) plans["moving"]->state[0] = static_cast<char>('a' + step / 50);
+            host.snapshot(racks, master);
+            history.push_back(racks);
+        }
+        std::set<const void*> bigBuffers, movingBuffers; std::size_t heldChars = 0;
+        for (const auto& step : history) {
+            if (bigBuffers.insert(step[0].effects[0].stateBase64.getCharPointer().getAddress()).second) heldChars += static_cast<std::size_t>(step[0].effects[0].stateBase64.length());
+            if (movingBuffers.insert(step[0].effects[1].stateBase64.getCharPointer().getAddress()).second) heldChars += static_cast<std::size_t>(step[0].effects[1].stateBase64.length());
+        }
+        const double perStep = static_cast<double>(history[0][0].effects[0].stateBase64.length() + history[0][0].effects[1].stateBase64.length());
+        std::cout << "Plugin state held by 200 snapshots: " << heldChars / (1024.0 * 1024.0) << " MiB (one copy each would be "
+                  << 200.0 * perStep / (1024.0 * 1024.0) << " MiB)" << std::endl;
+        check(history.front()[0].effects[0].stateBase64.length() > (1 << 20), "the 1 MiB state is captured");
+        check(bigBuffers.size() == 1, "a state that never changes is shared by every snapshot");
+        check(movingBuffers.size() == 4, "a state that changes takes a new buffer once per change");
+        check(history.back()[0].effects[1].stateBase64 == juce::MemoryBlock(plans["moving"]->state.data(), plans["moving"]->state.size()).toBase64Encoding(),
+              "and the latest snapshot holds the latest state");
     }
 }
 
