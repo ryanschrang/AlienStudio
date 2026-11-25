@@ -1314,3 +1314,56 @@ What this shows:
 Not covered: a physical audio device, buffer sizes chosen by a driver, third-party plugins,
 streamed (disk) audio, more than one run, and the 32/64 build on this machine (the CI job runs it).
 A single CPU percentage is still not a track-count guarantee (gate 2).
+
+## Increment D23: less callback work for silent tracks
+
+No project format change; the supported limits stay 16 tracks and 32 scenes. The rendered audio is
+unchanged (shown below).
+
+D22 measured that a loaded track playing nothing cost more per block than making it play. To find
+where, each piece of per-track callback work was switched off in turn in a temporary build (not
+committed) and the 16-track idle row timed. Most of it was one loop:
+
+- **`DrumSampler::nextSample`** asked all 16 of its voices' players for a sample, every sample, on
+  every track, even when no drum was playing. An idle player returns silence at once, so the cost
+  was the calls themselves: about half of a silent track's time. Idle voices are now skipped.
+- **The Session/Song audio lane** worked out its clip's fade and crossfade gains every sample even
+  when the track had no clip or crossfade tail playing. Such a track now just writes silence.
+- **The mix loop** read all 26 of each track's atomic controls again for every sample, and looked
+  through every automation lane for every track. It now uses the copy the block already reads once
+  (the same values the fader and sends were set from), and only tracks that have an enabled
+  automation lane look through the lanes. This made no measurable difference on its own.
+
+### Same audio
+
+The capacity report now prints each row's output energy (the sum of squared output samples over the
+measured blocks) exactly, and has a new row with 16 Session drum tracks (four pads a beat apart,
+hits a quarter second long, so voices overlap). The report was run with the engine and drum sampler
+from before and after this change and the same report code: all 33 rows render the same energy to
+every printed digit. The full test suite, which includes exact live-versus-export comparisons,
+passes unchanged.
+
+### Measurements
+
+Same machine as D22 (Intel Core Ultra 9 288V), Release, 16/32, offline, one run each. p50
+microseconds per callback, D22 then D23:
+
+| Workload, 16 tracks in use | 64 frames | 256 frames | 1,024 frames |
+| --- | ---: | ---: | ---: |
+| Nothing playing | 85.3 → 51.3 | 335 → 191 | 1,352 → 763 |
+| 1 Session MIDI track playing | 88.8 → 53.4 | 339 → 198 | 1,399 → 814 |
+| 16 Session MIDI tracks | 125 → 78.1 | 475 → 296 | 1,802 → 1,214 |
+| 16 Session MIDI tracks, sends to 4 returns | 121 → 88.3 | 461 → 348 | 1,918 → 1,443 |
+| 16 Session audio clips | 89.6 → 56.0 | 357 → 229 | 1,401 → 867 |
+| 16 Session MIDI tracks, stock EQ + compressor | 142 → 108 | 561 → 411 | 2,323 → 1,667 |
+| 16 Session rack occurrences | 169 → 126 | 706 → 501 | 2,650 → 2,210 |
+
+A silent loaded track now costs about 2.3 us per 64-frame block (was 4.6 us); 16 silent tracks
+use 4.6 % of the 64-frame budget at p95 (was 7.7 %). Every row still makes zero callback
+allocations. Timings on this laptop vary by 10 to 30 % between runs; the idle rows were steady
+across the three runs made for this change.
+
+What a silent track still costs: its synth's voice check, the rack and instrument passes, its
+mixer strip, sends, peak meter and alignment delay. No single one stood out in the switch-off runs.
+
+Not covered: a physical device, the 32/64 build on this machine, and more than single runs.
