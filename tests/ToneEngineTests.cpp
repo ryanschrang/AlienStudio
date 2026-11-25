@@ -889,6 +889,18 @@ static void samplePreviewTests() {
         "Song wait follows the 60 BPM map and fractional loop wrap, not the 120 BPM project clock");
     require(rig->render(1024) > .00001 && allocationCount == songAllocations,
         "Song preview starts at the next Song quarter-note beat without callback allocation");
+    const auto seekAllocations = allocationCount;
+    rig->engine.timelineSeek.store(1560);
+    require(rig->render(512) == 0 && allocationCount == seekAllocations,
+        "same-tempo hard seek cancels an active matched preview without callback allocation");
+    require(rig->engine.samplePreview.request(left.data(), nullptr, 4800, 48000, true), "queue a matched preview before a seek");
+    rig->engine.timelineSeek.store(1440);
+    require(rig->render(512) == 0 && !rig->engine.samplePreview.waitingForBeat(), "hard seek cancels a ready matched request");
+    require(rig->engine.samplePreview.request(left.data(), nullptr, 4800, 48000), "queue an independent immediate preview");
+    rig->render(512); rig->engine.timelineSeek.store(1680);
+    const auto immediateSeekAllocations = allocationCount;
+    require(rig->render(512) > .00001 && allocationCount == immediateSeekAllocations,
+        "same-tempo seek preserves independent immediate audition without allocation");
     rig->engine.playing.store(false); rig->render(1);
     rig->engine.masterControls.gain.store(0); rig->render(48000);
     rig->engine.samplePreview.request(left.data(), nullptr, 4800, 48000);

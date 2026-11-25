@@ -96,6 +96,10 @@ public:
         updateButtons();
     }
     void focusSearch() { search.grabKeyboardFocus(); }
+    void transportSeek() {
+        if (!matchTempo.getToggleState()) return;
+        stop(); setStatus("Song position changed. Press Preview to align to the new position.");
+    }
     // Browses the Starter Pack that ships with Alien Studio; tests point it at another folder.
     void setStarterFolder(const juce::File& root) { starterFolder = root; updateButtons(); }
     void showStarterPack() { if (starterFolder.isDirectory()) scan(starterFolder); }

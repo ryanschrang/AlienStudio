@@ -1451,6 +1451,7 @@ private:
     // sample. `hard` (the user jumped) silences what was sounding; a loop wrap
     // lets release tails ring.
     void seekTimeline(double tick, bool hard) noexcept {
+        if (hard) samplePreview.cancelAligned();
         setTimelineTick(std::max(0.0, tick));
         loopArmed = timelineTick < static_cast<double>(song->timeline.loopEnd);
         for (std::size_t t = 0; t < boundSlots; ++t) { clearTrack(t, hard); trackLanes[t].boundary = -1.0; }   // look again at the new place
