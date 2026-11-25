@@ -1356,6 +1356,35 @@ Nothing changes on the audio thread.
 Not measured: plugins in the render, the 32/64 build, and malloc-based storage, as in D4. Not
 covered: the refusal in the running app.
 
+## Increment D20: stem and freeze capture delay lines sized to latency
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+A stem export or a freeze renders on its own engine with a `StemCapture`, which keeps each track,
+the rack's direct bus and each group bus in its own buffer. Tracks wait for the bus and return
+stages they skip, and group buses wait for the returns, so every file lines up. D19 measured that
+these 25 lines were always full length: 96,001 stereo samples each, 18.3 MiB per render, even when
+no plugin has any latency. That made a one-track freeze peak as high as a full stem export.
+
+What D20 changes (`StemCapture`, `ToneEngine::prepare`, `exportArrangementWav`):
+
+- **Sized to this render.** `prepare(plugins)` runs after the plugins are prepared. It sizes the
+  dry lines to the bus plus return latency and the group-bus lines to the return latency, rounded up
+  to D1's 1,024-sample granules. A render with no latent bus or return plugin holds 200 bytes of
+  capture delay audio. The lines are still allocated before the render, never on the callback.
+- **Shortfalls fail the render.** A line asked for more delay than it holds (a plugin whose latency
+  grew after the capture was prepared) delays as much as it can and counts a shortfall. The export
+  or freeze then stops without publishing, with the same message as D1's alignment stages.
+
+Tests (`FlexibleReturnTests`):
+- a 3-sample latent return lines its stems up as before, with each capture line one granule long;
+- a capture with no latency holds under 1 KiB of delay audio (was 18.3 MiB);
+- a capture prepared for less latency than the return reports counts a shortfall.
+
+Not covered: the running app; a real latent third-party plugin; a peak-memory figure for a freeze
+after this change (D19's measurement is in its own pull request); and the export-level refusal,
+since no test plugin changes its latency in the middle of a render.
+
 ## Increment D22: callback cost of loaded tracks, sends, audio clips and plugins
 
 No project format change and no engine change; the supported limits stay 16 tracks and 32 scenes.
