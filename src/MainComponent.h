@@ -169,6 +169,11 @@ public:
         };
         pluginPanel.hasSidechainInput = [this](int rack,int slot) { return pluginHost.hasSidechainInput(rack,slot); };
         pluginPanel.onSidechain = [this](int slot,alien::KeySource from,int source) { setSidechain(slot,from,source); };
+        mixerPanel.trackSidechainView().hasInput = [this](int track,int fx) { return pluginHost.hasSidechainInput(track,fx); };
+        mixerPanel.trackSidechainView().onKeyRequested = [this](int track,int fx,int source) {
+            const bool changed = runPluginCommand(alien::command::SetSidechain{alien::RackStage::track,track,fx,alien::KeySource::track,source});
+            mixerPanel.refreshSettings(); return changed;
+        };
         if (auto xml = juce::parseXML(pluginListFile())) knownPlugins.recreateFromXml(*xml);
         controller.onBeforeSnapshot = [this] { snapshotPlugins(SnapshotReason::save); };
         controller.onBeforeAutosaveSnapshot = [this] { snapshotPlugins(SnapshotReason::autosave); };
