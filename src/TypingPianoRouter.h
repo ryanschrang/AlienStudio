@@ -35,7 +35,7 @@ public:
     void removeAuxiliaryRoot(juce::Component& window) {
         window.removeKeyListener(this);
         window.removeComponentListener(this);
-        if(ownsTyping(window)||target==&window||window.isParentOf(target.getComponent())) {release();target=nullptr;}
+        if(ownsTyping(window)||target==&window||window.isParentOf(target.getComponent())) {release();target=nullptr;hadFocusTarget=false;}
         std::erase_if(auxiliaryRoots,[&](const auto& item){return item==nullptr||item.getComponent()==&window;});
     }
     void release() {
@@ -58,10 +58,10 @@ private:
         return typingWindow == &component || (&component == &root && typingWindow.getComponent() == eventSource.getComponent());
     }
     void componentVisibilityChanged(juce::Component& component) override {
-        if (!component.isVisible() && ownsTyping(component)) { release(); target = nullptr; }
+        if (!component.isVisible() && ownsTyping(component)) { release(); target = nullptr; hadFocusTarget = false; }
     }
     void componentBeingDeleted(juce::Component& component) override {
-        if (&component == &root) { release(); target = nullptr; }
+        if (&component == &root) { release(); target = nullptr; hadFocusTarget = false; }
         else removeAuxiliaryRoot(component);
     }
     bool accepts(juce::Component* c) const {
@@ -77,15 +77,12 @@ private:
     }
     void refreshFocus() {
         auto* current = juce::Component::getCurrentlyFocusedComponent();
-        if (current == target.getComponent()) {
-            // Deleting the focused control clears its SafePointer before the
-            // asynchronous focus callback. Two null pointers do not mean that
-            // held notes still have a valid focus owner.
-            if (current == nullptr && typingWindow != nullptr) release();
-            return;
-        }
+        // A deleted control clears its SafePointer before focus dispatch. Keep
+        // that distinct from native-origin input that never had a JUCE target.
+        if (current == target.getComponent() && (current != nullptr || !hadFocusTarget)) return;
         release();
         target = current;
+        hadFocusTarget = current != nullptr;
     }
     void globalFocusChanged(juce::Component*) override { refreshFocus(); }
     bool keyPressed(const juce::KeyPress& key, juce::Component* origin) override {
@@ -123,6 +120,7 @@ private:
     juce::MidiKeyboardState& state;
     KeyDown isDown;
     juce::Component::SafePointer<juce::Component> target, eventSource, typingWindow;
+    bool hadFocusTarget{};
     std::vector<juce::Component::SafePointer<juce::Component>> auxiliaryRoots;
     std::array<bool, watched.size()> blocked{};
 };

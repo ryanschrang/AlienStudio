@@ -892,6 +892,23 @@ static void detachedWindowLifecycleChecks() {
     root.removeFromDesktop();
 }
 
+static void noFocusTypingFallbackChecks() {
+    juce::Component window;
+    window.setBounds(10,10,300,150); window.setWantsKeyboardFocus(false); window.addToDesktop(0); window.setVisible(true);
+    window.getPeer()->handleFocusGain(); pump();
+    require(juce::Component::getCurrentlyFocusedComponent()==nullptr,"fallback fixture has native focus without a focused JUCE control");
+    juce::MidiKeyboardState notes; std::set<int> held;
+    {
+        TypingPianoRouter router(window,notes,[&](int k) { return held.count(k) != 0; });
+        held.insert('A'); window.getPeer()->handleKeyPress(juce::KeyPress('a',{},'a'));
+        held.insert('S'); window.getPeer()->handleKeyUpOrDown(true); window.getPeer()->handleKeyPress(juce::KeyPress('s',{},'s'));
+        require(notes.isNoteOn(2,60) && notes.isNoteOn(2,62),"native-origin fallback preserves polyphonic held notes without a JUCE focus target");
+        held.clear(); window.getPeer()->handleKeyUpOrDown(false);
+        require(!notes.isNoteOn(2,60) && !notes.isNoteOn(2,62),"fallback key-up releases both notes");
+    }
+    window.removeFromDesktop();
+}
+
 static void deletedFocusNoteChecks() {
     juce::Component window;
     window.setBounds(10,10,300,150); window.setWantsKeyboardFocus(false); window.addToDesktop(0); window.setVisible(true);
@@ -925,6 +942,7 @@ static void deletedFocusNoteChecks() {
 
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    noFocusTypingFallbackChecks();
     deletedFocusNoteChecks();
     detachedWindowLifecycleChecks();
     juce::Component shell, root, piano, outside;
