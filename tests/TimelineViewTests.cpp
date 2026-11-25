@@ -2346,7 +2346,7 @@ static void placementClipChecks() {
     require(rig.controller.placeRegion(0, 0, 4 * bar, &second), "a second placement of clip a");
     rig.view.refresh();
     const auto scenes = rig.controller.document().sceneCount();
-    require(rig.c.makePlacementUnique(second), "Make this placement unique");
+    require(alien::command::CommandEngine(rig.c).execute(alien::command::MakeSongClipUnique{second}).changed, "Make this placement unique");
     const auto clip = rig.reg(second).clip;
     require(clip != 0 && rig.reg(rig.id.a).playsCell() && rig.controller.document().sceneCount() == scenes,
             "it gets a clip of its own without taking a Session cell");
