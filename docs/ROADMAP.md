@@ -10,6 +10,10 @@ complete. After that, expand the Tier 2 items that are only partly done. Tier 3 
 not scheduled; they must not pull effort away from the foundation. Status for every ID lives in
 FEATURE_CHECKLIST.md; this file says what order to do things in and how to split the work.
 
+A live status page, [roadmap-status.html](roadmap-status.html), draws a summary from this file and
+FEATURE_CHECKLIST.md on `main` each time it is opened in a browser, so keep the Tier tables'
+columns (Order, Workstream, Status today) and the checklist's ID and Status columns as they are.
+
 Until the Tier 1 systems are mature, Alien Studio should not be described as competitive with
 established professional DAWs. Logic Pro, Ableton Live 12 and FL Studio set a high baseline:
 recording, takes and comping, timing and pitch editing, routing, automation, global tempo and
