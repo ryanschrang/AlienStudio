@@ -1056,7 +1056,7 @@ Mutation checks: with the "named once" guard removed, or the shortfall report di
 
 Not covered: the status bar in the running app, the export summary and a real latent third-party
 plugin (the test plugin reports the latency it is told to). Freezing a track does not collect the
-report.
+report (D18 adds that).
 
 ## Increment D14: a replaced project's Channel Rack samples are freed
 
@@ -1256,6 +1256,47 @@ Not covered:
 - the running app;
 - a sliced or key-zoned channel switched to another file (the views and maps go by D14's rule,
   which `rackCacheTests` covers for an open, not for this sweep).
+
+## Increment D18: a freeze collects its render's plugin report
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+A freeze renders the track offline with its own engine and plugin host, then installs the result.
+Unlike an export, it never asked that host what happened during the render:
+
+- **A plugin that failed while rendering** was switched off (its fault contained, as always), so
+  the frozen audio was missing its sound. The freeze still replaced the live track, said "Track
+  frozen" and gave no sign of it.
+- **A chain past the latency limit** (D13) plays late in the frozen audio too, with no warning.
+
+What D18 changes:
+
+- **`PluginHost::renderReport()`** collects, once the render has finished, the failures `poll()`
+  reports and the D13 latency report. It leaves the host's own callbacks in place and doesn't call
+  them; each failure and each chain past the limit is reported once, as by `poll()`.
+- **`PluginHost::freezeOutcome(report, droppedNotes)`** decides what the freeze does:
+  - a plugin failed: the freeze stops, the rendered file is deleted, the track is left as it was,
+    and the status bar says "Freeze stopped: a plugin failed while the track was rendering ...
+    Original track unchanged." with the plugin's report;
+  - otherwise the track freezes, and the status bar adds a warning for notes the render had no
+    room for (D10, D11, as before) and for a chain past the latency limit, on one line.
+- The app's freeze job uses both on the message thread, before running the `FreezeTrack` command.
+
+Nothing changes on the audio thread.
+
+Tests:
+- `PluginFaultTests`:
+  - a healthy render reports nothing and freezes with no warning, or with the dropped-note warning;
+  - a plugin that crashes during the render is named with its slot, and the freeze stops with
+    "Original track unchanged";
+  - the host's own problem callback stays set and is not called;
+  - a second report doesn't repeat the failure.
+- `PluginRuntimeTests`: a host whose chains are past the latency limit gives a render report that
+  names track 2 and the Channel Rack instrument. The freeze installs with the warning on one line,
+  the host's latency callback is untouched, and the next report doesn't repeat it.
+
+Not covered: the running app's freeze job itself (it calls these two functions) and a real
+third-party plugin failing during a freeze.
 
 ## Increment D20: stem and freeze capture delay lines sized to latency
 

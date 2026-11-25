@@ -2,6 +2,20 @@
 #include <cstdlib>
 #include <iostream>
 
+// Deterministically model a seek while the GUI request grows a slot, before it
+// can publish. No test hooks or sleeps are needed in the preview implementation.
+static alien::SamplePreview* cancelDuringAllocation{};
+void* operator new(std::size_t size) {
+    if (auto* preview = cancelDuringAllocation) { cancelDuringAllocation = nullptr; preview->cancelAligned(); }
+    if (auto* memory = std::malloc(size == 0 ? 1 : size)) return memory;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* memory) noexcept { std::free(memory); }
+void operator delete[](void* memory) noexcept { std::free(memory); }
+void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
+
 static void require(bool value, const char* message) {
     if (!value) { std::cerr << message << '\n'; std::exit(1); }
 }
@@ -57,5 +71,31 @@ int main() {
     queue(true);
     preview.nextSample(true, 0, step);
     require(!preview.waitingForBeat() && audible(), "transport origin is a beat boundary");
+    preview.cancelAligned();
+    require(!audible(), "a seek cancels an active aligned audition");
+    queue(true); preview.cancelAligned(); preview.beginBlock();
+    require(!preview.waitingForBeat() && !audible(), "a seek cancels a waiting aligned audition");
+    require(preview.request(audio.data(), nullptr, 4800, 48000, true), "queue aligned work before its first block");
+    preview.cancelAligned(); preview.beginBlock();
+    require(!preview.waitingForBeat() && !audible(), "ready work from before the seek cannot start later");
+    queue(false); preview.cancelAligned();
+    require(audible(), "a seek preserves an active independent immediate audition");
+    require(preview.request(audio.data(), nullptr, 4800, 48000), "queue immediate work before a seek");
+    preview.cancelAligned(); preview.beginBlock();
+    require(audible(), "a seek preserves a ready immediate audition");
+    {
+        alien::SamplePreview inflight; inflight.prepare(48000);
+        cancelDuringAllocation = &inflight;
+        require(inflight.request(audio.data(), nullptr, 4800, 48000, true) && !cancelDuringAllocation,
+            "a seek interrupts the GUI storage allocation before publication");
+        inflight.beginBlock();
+        require(!inflight.waitingForBeat() && inflight.nextSample(true, 0, step)[0] == 0,
+            "an aligned producer that crossed the seek cannot publish stale playback");
+        require(inflight.request(audio.data(), nullptr, 4800, 48000, true), "a fresh request after the seek is accepted");
+        inflight.beginBlock(); inflight.nextSample(true, 0, step);
+        require(!inflight.waitingForBeat(), "the fresh epoch can align to the new beat");
+        for (int i = 0; i < 300; ++i) inflight.nextSample();
+        require(inflight.nextSample()[0] > .39f, "fresh post-seek playback remains audible");
+    }
     std::cout << "SamplePreviewTests passed\n";
 }
