@@ -4,7 +4,7 @@ static void deleteClipCommandChecks() {
     alien::ProjectController c(*engine); cmd::CommandEngine commands(c);
     c.pushDocumentToEngine();
     c.setClipPattern(0, 0, patternWith(65), false);
-    require(c.copyCell(0, 0) && c.pasteCell(1, 0, true), "linked delete fixture");
+    require(c.copyCell(0, 0) && alien::command::CommandEngine(c).execute(alien::command::PasteLinkedClip{1, 0}).changed, "linked delete fixture");
     auto audio = std::make_shared<alien::SessionAudioClip>();
     audio->sampleRate = 8000; audio->channels = 1; audio->frames = 80;
     audio->left.assign(80, .2f); audio->buildWaveform();

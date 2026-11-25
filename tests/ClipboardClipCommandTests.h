@@ -68,5 +68,45 @@ static void clipboardClipCommandChecks() {
     juce::String error;
     require(!cmd::parse("PasteClip", juce::JSON::parse("{\"track\":0,\"scene\":true}"), error)
         && !cmd::parse("PasteLinkedClip", juce::JSON::parse("{\"track\":0,\"scene\":0,\"extra\":1}"), error), "clipboard parsing rejects mistyped/unknown arguments");
+    {
+        require(c.copyCell(0,0), "mixed clipboard transaction fixture");
+        c.markAsNewBaseline();
+        const auto baseline = c.document(); const auto history = historyOf(c); const auto copiedSource = c.clipClipboard().source;
+        alien::SessionClipLaunch launch;
+        for (std::size_t t = 0; t < engine->pianoRollLaunches.size(); ++t) engine->pianoRollLaunches[t].consume(launch);
+        engine->playing.store(true); engine->requestedPianoRollClip[0].store(2);
+        engine->requestedPianoRollClip[1].store(3); engine->requestedPianoRollClip[2].store(3);
+        const std::vector<cmd::Command> edits{cmd::PasteLinkedClip{1,3},cmd::MakeClipUnique{1,3},cmd::SetTrackPan{1,.27},cmd::PasteClip{2,3}};
+        const auto prediction = commands.preview(edits);
+        require(prediction.ok && prediction.changed && alien::sameContent(baseline,c.document()) && historyOf(c) == history
+            && !engine->pianoRollLaunches[1].consume(launch) && !engine->pianoRollLaunches[2].consume(launch),
+            "mixed clipboard Preview leaves document, history and live launches untouched");
+        require(commands.batch(edits,"Paste, detach and mix").changed && alien::sameContent(prediction.after,c.document())
+            && c.document().linkOf(1,3) != c.document().linkOf(0,0) && c.document().linkOf(2,3) != c.document().linkOf(0,0)
+            && c.document().clip(1,3).notes().notes[0].pitch == 72 && c.document().clip(2,3).notes().notes[0].pitch == 72
+            && engine->tracks[1].pan.load() == .27f && c.clipClipboard().source == copiedSource,
+            "mixed clipboard batch matches Preview, detaches content and publishes the live mix without changing the clipboard");
+        require(engine->pianoRollLaunches[1].consume(launch) && launch.clipIndex == 3 && launch.pattern.notes[0].pitch == 72
+            && engine->pianoRollLaunches[2].consume(launch) && launch.clipIndex == 3 && launch.pattern.notes[0].pitch == 72
+            && !engine->pianoRollLaunches[0].consume(launch) && engine->requestedPianoRollClip[0].load() == 2 && engine->playing.load(),
+            "accepted pastes republish only addressed live cells and preserve unrelated transport");
+        require(c.undo() && !c.canUndo() && alien::sameContent(baseline,c.document())
+            && engine->tracks[1].pan.load() == static_cast<float>(baseline.tracks[1].settings.pan), "one Undo restores clipboard edits and the live mix");
+        const auto redo = historyOf(c);
+        for (std::size_t t = 0; t < engine->pianoRollLaunches.size(); ++t) engine->pianoRollLaunches[t].consume(launch);
+        const auto noop = commands.execute(cmd::PasteLinkedClip{1,0});
+        require(noop.ok && !noop.changed && historyOf(c) == redo, "already-linked paste preserves redo");
+        const auto late = commands.batch({edits[0],edits[2],cmd::PasteClip{99,0}},"Refused paste");
+        c.setExternalBusy(true); const auto busy = commands.batch(edits,"Busy paste"); c.setExternalBusy(false);
+        engine->recording.phase.store(alien::RecordControls::countIn);
+        const auto counting = commands.batch(edits,"Count-in paste"); engine->recording.phase.store(alien::RecordControls::idle);
+        require(!late.ok && late.failedCommand == 2 && !busy.ok && !counting.ok && alien::sameContent(baseline,c.document())
+            && historyOf(c) == redo && c.clipClipboard().source == copiedSource
+            && engine->tracks[1].pan.load() == static_cast<float>(baseline.tracks[1].settings.pan)
+            && !engine->pianoRollLaunches[1].consume(launch) && !engine->pianoRollLaunches[2].consume(launch),
+            "late, busy and count-in refusals preserve clipboard, redo and live state");
+        require(c.redo() && alien::sameContent(prediction.after,c.document()) && engine->tracks[1].pan.load() == .27f,
+            "Redo restores the accepted clipboard/mixer transaction");
+    }
     std::cout << "PASS: clipboard commands, snapshots, linked/live content, all-type independence and atomic refusal\n";
 }

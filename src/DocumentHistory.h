@@ -81,6 +81,11 @@ public:
         return &entries[position].document;
     }
 
+    // Every state an undo or redo can return to, the current one included (oldest first).
+    template<class Fn> void forEachDocument(Fn&& visit) const {
+        for (const auto& entry : entries) visit(entry.document);
+    }
+
     void breakCoalescing() { if (!entries.empty()) entries[position].coalesceKey.clear(); }
 
     // Identifies the current state; equal ids mean identical documents.

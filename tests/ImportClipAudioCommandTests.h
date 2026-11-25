@@ -84,7 +84,7 @@ static void importClipAudioCommandChecks() {
 
     // A linked cell shares the audio, and is one undo step.
     c.setClipPattern(1, 2, patternWith(67), false); c.commit("Linked source");
-    require(c.copyCell(1, 2) && c.pasteCell(2, 2, true), "linked fixture");
+    require(c.copyCell(1, 2) && alien::command::CommandEngine(c).execute(alien::command::PasteLinkedClip{2, 2}).changed, "linked fixture");
     require(commands.execute(cmd::ImportClipAudio{preparedImport(c, file, 1, 2, audio)}).changed && c.document().clip(2, 2).audio == audio, "linked cells share the audio");
     require(c.undo() && !c.document().clip(2, 2).isAudioClip() && !c.document().clip(1, 2).isAudioClip(), "and one Undo takes it from both");
 
