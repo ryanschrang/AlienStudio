@@ -1212,6 +1212,47 @@ Not covered:
 - **Freeze renders and recording takes** use the same `retained` list and the same sweep, but
   aren't exercised by this test.
 - **A Channel Rack channel given a different file** keeps the old file's decode as before (D14).
-  The cache is keyed by path, and undo can bring the old file back.
+  The cache is keyed by path, and undo can bring the old file back. (D17 frees it once no undo step
+  can.)
 - **The running app.** Freeing happens on the app's timer while stopped. A drum pad still ringing at
   that moment, or a Channel Rack sample auditioned from the keyboard, is cut off.
+
+## Increment D17: a Channel Rack file switched away from is freed
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+After D16, a Channel Rack channel given a different file (Load sample, a drop, a relink to another
+file) still kept the old file's decode in `rackAudio` until the next open or File > New (D14). The
+cache is keyed by path, and an undo can name the old path again, so it could not simply be dropped.
+In a long session, each file auditioned on a channel stayed decoded and counted against the 512 MiB
+audio budget.
+
+What D17 changes:
+
+- **`DocumentHistory::forEachDocument()`** visits every state an undo or redo can return to.
+- **The D16 sweep forgets rack files no state names.** Before `setAsideRetainedAudio()`, the
+  stopped-transport sweep collects the file of every channel in every history state and calls D14's
+  `forgetUnusedRackAudio()` with that set, on top of the open document's files. A file no state
+  names leaves the cache, with the slice views and key maps made from it, and D14's chain rule sets
+  them aside together.
+- Freeing still waits for D16's engine answer, which only comes in a stopped block.
+
+An undo can therefore never land on a channel whose file has been forgotten: while any state names
+the file it stays decoded, so the channel is never shown as offline because of the sweep.
+
+Nothing changes on the audio thread.
+
+Tests (`MemoryPeakTests`, after the D16 checks, a 1-second rack sample replaced by a 2-second one on
+the same channel):
+- both files are counted while the switch can be undone, and a sweep frees neither;
+- undo plays the first file again (not offline), and a sweep then keeps it; redo plays the second;
+- after 201 more edits push the switch off the history, a sweep frees the first file's bytes:
+  - live memory falls by about its size;
+  - the budget gets them back;
+  - the channel still plays the second file, and the clipboard clip stays;
+- a second sweep frees nothing more.
+
+Not covered:
+- the running app;
+- a sliced or key-zoned channel switched to another file (the views and maps go by D14's rule,
+  which `rackCacheTests` covers for an open, not for this sweep).
