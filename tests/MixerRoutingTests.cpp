@@ -369,7 +369,7 @@ static void freezeWorkflow() {
         && c.document().tracks[0].plugins.effects[0].instanceId == instance,
         "freezing retains saved parameter target and original plugin identity");
     require(!c.editTimeline("Delete cache",[](alien::timeline::Timeline& t){t.regions.clear();return true;}),"frozen cache is read-only");
-    require(!c.removeAudio(0,c.document().tracks[0].settings.freezeScene) && !c.deleteScene(0),"original and cache source cells protected");
+    require(!alien::command::CommandEngine(c).execute(alien::command::RemoveClipAudio{0,c.document().tracks[0].settings.freezeScene}).ok && !c.deleteScene(0),"original and cache source cells protected");
     alien::PianoRollPattern changed;changed.add(80,0,1);c.setClipPattern(0,0,changed,false);
     require(c.document().clip(0,0).notes().notes[0].pitch==60,"original MIDI is read-only while frozen");
     require(c.undo() && !c.isTrackFrozen(0) && c.timeline()==original && file.existsAsFile(),"undo freeze restores original without deleting file");

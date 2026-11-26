@@ -1347,9 +1347,6 @@ public:
                 && engine.requestedPianoRollClip[static_cast<std::size_t>(t)].load() == s) publishClip(t,s);
         return true;
     }
-    bool removeAudio(int track, int scene) {
-        return doc.isValidCell(track,scene) && doc.clip(track,scene).isAudioClip() && applyRemoveClipAudioCommand(track,scene);
-    }
 
     // Files -----------------------------------------------------------------
     // done(true) once the project is safely on disk; done(false) if the user

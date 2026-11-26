@@ -437,7 +437,7 @@ static void missingAudioTests() {
     require(offline.audioOffline() && !offline.hasAudio() && offline.isAudioClip() && !offline.isEmpty() && offline.audioFileName == "loop.wav",
         "the clip is offline but keeps its reference and is not treated as empty or MIDI");
     require(lastStatus.contains("offline") && lastTip.contains("loop.wav") && lastTip.contains("kick.wav"), "the user is told what is offline");
-    require(c.removeAudio(0, 0) == false, "an ordinary MIDI clip has no audio to remove");
+    require(!alien::command::CommandEngine(c).execute(alien::command::RemoveClipAudio{0, 0}).changed, "an ordinary MIDI clip has no audio to remove");
 
     // Saving keeps the references so nothing is lost; a portable save cannot copy what is missing and says so.
     bool done = false, ok = false;
@@ -679,7 +679,7 @@ static void clipLibraryOwnershipTests() {
     const auto file = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("clip-library-test.wav");
     require(c.installAudio(file, 2, 0, audio) && d.clip(2, 0).audio == audio && d.clip(2, 0).audioFilePath == file.getFullPathName()
             && d.media.size() == 1, "imported audio is a media entry its clip plays");
-    require(c.removeAudio(2, 0) && d.media.empty() && !d.clip(2, 0).isAudioClip(), "removing it drops the media entry");
+    require(alien::command::CommandEngine(c).execute(alien::command::RemoveClipAudio{2, 0}).changed && d.media.empty() && !d.clip(2, 0).isAudioClip(), "removing it drops the media entry");
     // Saving writes each cell's content; opening gives every non-empty cell its own clip.
     c.setClipPattern(2, 1, patternWith(62), false);
     auto reopened = alien::fromProjectData(alien::toProjectData(d));
