@@ -554,7 +554,7 @@ static void trackSidechainViewTests(const juce::File& preview) {
         && std::abs(engine->plugins->racks[0].effects[0].processor->getParameters()[0]->getValue()-.78f)<.01f,"Undo removes the key but keeps the captured live setting");
     require(c.redo(),"redo graph key"); rebuild(); panel.refreshSettings();
     require(run(cmd::InsertDevice{alien::RackStage::master,0,0,compressorState()}).changed
-        && run(cmd::InsertDevice{alien::RackStage::master,0,1,eq}).changed,"master graph FX fixture");
+        && run(cmd::InsertDevice{alien::RackStage::master,0,1,alien::PluginState(alien::stock::describe(alien::stock::catalog[0]).createXml()->toString(),{})}).changed,"master graph FX fixture");
     panel.refreshSettings();
     const auto masterRequest=graph.requestFor(0,0,alien::RackStage::master);
     auto& masterSlot=engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[0];
@@ -580,6 +580,17 @@ static void trackSidechainViewTests(const juce::File& preview) {
     bool masterNode=false;
     for (auto* child:graph.getChildren()) if(child->getName().startsWith("Master / FX 2")) masterNode=true;
     require(masterNode,"master effect has a visible graph node");
+    require(run(cmd::SetSidechain{alien::RackStage::master,0,1,alien::KeySource::trackPostFader,1}).changed,"existing post-fader master key fixture");
+    panel.refreshSettings();
+    bool otherKeyLabel=false;
+    for (auto* child:graph.getChildren())
+        if(child->getName().startsWith("Master / FX 2") && child->getName().contains("key set in Plugins")) otherKeyLabel=true;
+    require(otherKeyLabel && engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyFrom==alien::KeySource::trackPostFader,
+        "refresh labels an existing other-stage key without changing it");
+    require(graph.choose(masterRequest,1) && engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyFrom==alien::KeySource::track,
+        "choosing the same track explicitly replaces its post-fader key with a pre-FX key");
+    require(graph.choose(masterRequest,-1) && engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyIndex==-1
+        && graph.choose(masterRequest,1),"master graph can turn a key Off and restore it");
     if (preview != juce::File{}) {
         juce::FileOutputStream out(preview);
         require(out.openedOk() && out.setPosition(0) && out.truncate().wasOk()
