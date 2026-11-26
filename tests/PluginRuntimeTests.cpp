@@ -1,6 +1,7 @@
 #include "ToneEngine.h"
 #include "PluginHost.h"
 #include <iostream>
+#include <vector>
 #include <cstdlib>
 
 static thread_local std::size_t allocations{};
@@ -155,6 +156,32 @@ int main(){
         require(grow->reserveAlignment(true)==1,"a restore fits the stage to the plugins");
         block(-1);
         require(grow->alignmentCapacity(R::trackAlignment)==R::alignmentGranule,"the stage shrank after a restore");
+    }
+    // T1-04 D27: a line asked for no delay hands the block back as it is, but keeps the newest samples, so when
+    // a delay is asked for again the first samples it gives are the ones that played just before.
+    {
+        using R=alien::PluginRuntime;
+        auto rt=std::make_unique<R>();rt->racks[0].effectCount=1;rt->racks[0].effects[0].processor=std::make_unique<TestProcessor>(false,1,4);rt->prepare(48000);
+        float next=1.0f;std::vector<float> in,outL,outR;
+        auto block=[&]{
+            rt->begin(64,120,true,0);rt->useTracks(2);
+            for(int i=0;i<64;++i){rt->tracks[1].setSample(0,i,next);rt->tracks[1].setSample(1,i,-next);in.push_back(next);next+=1.0f;}
+            rt->effectsAndAlign(64);
+            for(int i=0;i<64;++i){outL.push_back(rt->tracks[1].getSample(0,i));outR.push_back(rt->tracks[1].getSample(1,i));}
+        };
+        block();block();                                                  // 4 samples behind the latent track
+        rt->racks[0].effects[0].processor->setLatencySamples(0);
+        block();block();                                                  // no delay: as played
+        rt->racks[0].effects[0].processor->setLatencySamples(4);
+        block();block();                                                  // 4 behind again
+        bool delayed=true,straight=true,resumed=true;
+        for(int i=0;i<4;++i) delayed=delayed&&outL[static_cast<std::size_t>(i)]==0.0f;
+        for(std::size_t i=4;i<128;++i) delayed=delayed&&outL[i]==in[i-4]&&outR[i]==-in[i-4];
+        for(std::size_t i=128;i<256;++i) straight=straight&&outL[i]==in[i]&&outR[i]==-in[i];
+        for(std::size_t i=256;i<384;++i) resumed=resumed&&outL[i]==in[i-4]&&outR[i]==-in[i-4];
+        require(delayed,"a track waits for the latent one");
+        require(straight,"a track with nothing to wait for plays as it is");
+        require(resumed,"a delay asked for after no delay plays the samples from just before");
     }
     // T1-04 D13: a chain whose plugins report more latency than maxDelay cannot be lined up; it is named, once,
     // until it is back within the limit. So is a Channel Rack instrument.

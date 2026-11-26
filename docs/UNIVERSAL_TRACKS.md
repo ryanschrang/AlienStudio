@@ -1709,3 +1709,69 @@ more pair run in the opposite order (new first) showed the same changes, within 
 
 Not covered: a physical device, the 32/64 build, and plugin instruments in the rack (which never
 used the built-in synth).
+
+## Increment D27: alignment lines with nothing to delay, and empty group buses
+
+No project format change; the supported limits stay 16 tracks and 32 scenes. The rendered audio is
+unchanged.
+
+D23 found no single cost that stood out for a silent track. This time the callback was timed phase
+by phase, with temporary timers that are not part of the change. With one silent track the stages
+after the tracks (group buses, returns, master) took about 125 ns per sample, about as long as all
+the rest together, and the Channel Rack pass about 40 ns with nothing playing in it. Both came
+mostly from the plugin alignment delay lines (D1):
+
+- **`PluginRuntime::Delay::process`** delayed every line, every sample, with two integer divisions
+  to wrap its ring, even when the delay asked for was 0 (no latent plugin anywhere, the usual case),
+  where it gives back exactly what it was given. That runs for each track and `live` (17 lines), for
+  the Channel Rack's channels, the 8 group buses, the sends and the direct mix (13 lines) and the
+  returns (5 lines). A zero delay now leaves the block as it is and only copies the newest samples
+  into the ring, which leaves the ring exactly as the loop would, so a delay asked for later still
+  reads the right past. A real delay wraps the ring with a compare instead of the divisions; the
+  positions read and written are the same.
+- **`ToneEngine::mixBuses`** ran each of the 8 group buses' strips, sidechain keys, meters and
+  master sums sample by sample, even for buses nothing is routed to. A bus whose block is all zeros
+  after its FX and alignment, and whose fader has finished gliding, is now skipped: its sidechain
+  key is filled with silence and its meter reads 0, as the loop would have left them. A bus whose
+  fader is still gliding, or a stem export or freeze, takes the full path.
+
+### Same audio
+
+The capacity report run with the old and new code renders the same output energy on all 33 rows, to
+every printed digit, with zero callback allocations. `PluginRuntimeTests` adds a track that waits
+for a latent plugin, then has nothing to wait for, then waits again: every output sample is checked,
+and the first delayed samples after the zero-delay blocks must be the ones played just before.
+`GroupBusTests` adds an emptied bus that meters silence, a bus fader moved while the bus is silent
+that has finished gliding when the bus is heard again, and a fader moved while it plays that still
+glides. Mutation checks: with a zero delay not keeping its newest samples, or with a bus skipped
+while its fader is gliding, the tests fail.
+
+### Measurements
+
+Same machine as D24, Release, 16/32, offline. The old and new builds were run alternately, three
+times each, three rounds per run (`--repeat 3`); the table gives the median of the three runs. One
+more pair run in the opposite order (new first) agreed within a few percent on every row except the
+drum rows at 256 and 1,024 frames (-54 % one way, -31 % the other), so only the 64-frame drum
+figure is given.
+
+| Workload, 16 tracks unless stated | Block frames | p50 us, before | p50 us, D27 | p95 us, before | p95 us, D27 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Transport, no clips, 1 track | 64 | 17.3 | 9.0 (-48 %) | 18.4 | 9.5 (-48 %) |
+| Transport, no clips | 64 | 59.0 | 40.8 (-31 %) | 66.5 | 45.1 (-32 %) |
+| Transport, no clips | 1,024 | 863 | 581 (-33 %) | 915 | 620 (-32 %) |
+| Every track plays MIDI | 64 | 85.0 | 71.0 (-16 %) | 101.7 | 81.3 (-20 %) |
+| Every track plays an audio clip | 64 | 63.9 | 47.9 (-25 %) | 67.2 | 52.8 (-21 %) |
+| Every track plays drums | 64 | 64.6 | 45.1 (-30 %) | 70.4 | 49.8 (-29 %) |
+| A rack occurrence on every track | 64 | 113.0 | 98.9 (-12 %) | 127.8 | 109.8 (-14 %) |
+| Every track plays MIDI through a stock EQ and compressor | 64 | 144.0 | 114.8 (-20 %) | 163.9 | 126.4 (-23 %) |
+
+- **The fixed cost of a block about halves**: one silent track now costs 9.0 us per 64-frame block
+  instead of 17.3, and the busiest 16-track row 114.8 us (9 % of the 64-frame budget at p95).
+- **A silent loaded track costs about 2.1 us per 64-frame block** (was 2.8; the 1 and 16 idle-track
+  rows, divided by 15). What is left is mostly the per-sample loop over the tracks (instrument,
+  drum sampler and clip lanes, about 16 ns per track and sample) and the mixer strip loop.
+- The stock EQ and compressor row gained 20 % in one order and 13 % in the other.
+
+Not covered: a physical device, the 32/64 build, latent third-party plugins (a real delay takes the
+compare-instead-of-divide path, covered by the existing delay tests but not timed), and a project
+that routes tracks to group buses (the skip only applies to empty buses).
