@@ -21,9 +21,9 @@ static void deleteClipCommandChecks() {
     engine->activePianoRollClip[1].store(0); engine->requestedPianoRollClip[1].store(0);
     alien::SessionClipLaunch launch;
     for (std::size_t t = 0; t < engine->pianoRollLaunches.size(); ++t) engine->pianoRollLaunches[t].consume(launch);
-    const std::vector<cmd::Command> edits{cmd::DeleteClip{0, 0}, cmd::DeleteClip{2, 0}, cmd::DeleteClip{3, 0}, cmd::DeleteClip{0, 1}};
+    const std::vector<cmd::Command> edits{cmd::DeleteClip{0, 0}, cmd::DeleteClip{2, 0}, cmd::DeleteClip{3, 0}, cmd::DeleteClip{0, 1}, cmd::SetTrackPan{0,.27}};
     const auto preview = commands.preview(edits);
-    require(preview.ok && preview.changed && preview.changes.size() == 4
+    require(preview.ok && preview.changed && preview.changes.size() == 5
         && !preview.after.cellClip(0, 0) && !preview.after.cellClip(2, 0)
         && !preview.after.cellClip(3, 0) && !preview.after.cellClip(0, 1), "Preview removes MIDI/audio/rack/explicit empty cells");
     require(alien::sameContent(before, c.document()) && historyOf(c) == history
@@ -33,7 +33,7 @@ static void deleteClipCommandChecks() {
         && preview.after.library.clip(alien::library::ClipId{rackId}) != nullptr,
         "delete preserves linked content and shared rack source");
     require(commands.batch(edits, "Delete selected clips").changed
-        && alien::sameContent(c.document(), preview.after), "live delete batch matches Preview");
+        && alien::sameContent(c.document(), preview.after) && engine->tracks[0].pan.load()==.27f, "live delete/mixer batch matches Preview");
     require(c.document().selectedTrack == 2 && c.document().selectedScene == 2
         && engine->playing.load() && engine->requestedPianoRollClip[1].load() == 0,
         "delete preserves selection, transport and unrelated launches");
@@ -43,14 +43,19 @@ static void deleteClipCommandChecks() {
         "Song cell placement remains in place and falls silent");
     require(c.undoLabel() == "Delete selected clips" && c.undo() && !c.canUndo()
         && alien::sameContent(before, c.document()) && c.document().cellClip(2, 0) == audioId
-        && c.document().clip(2, 0).audio == audio, "single undo restores exact clip identities, links and audio ownership");
-    require(c.redo() && alien::sameContent(preview.after, c.document()), "single redo removes the same cells");
+        && c.document().clip(2, 0).audio == audio && engine->tracks[0].pan.load()==static_cast<float>(before.tracks[0].settings.pan), "single undo restores exact clip identities, links, audio ownership and mix");
+    require(c.redo() && alien::sameContent(preview.after, c.document()) && engine->tracks[0].pan.load()==.27f, "single redo removes the same cells and restores the live mix");
     require(c.undo(), "prepare redo preservation");
     const auto redo = historyOf(c);
     require(commands.execute(cmd::DeleteClip{3, 3}).ok && !commands.preview(cmd::DeleteClip{3, 3}).changed
         && historyOf(c) == redo, "absent-cell no-op preserves redo");
-    require(!commands.batch({cmd::DeleteClip{0, 0}, cmd::DeleteClip{99, 0}}, "Invalid delete").ok
-        && alien::sameContent(before, c.document()) && historyOf(c) == redo, "invalid later delete refuses the entire batch");
+    for (std::size_t t = 0; t < engine->pianoRollLaunches.size(); ++t) engine->pianoRollLaunches[t].consume(launch);
+    const auto late=commands.batch({edits[0],edits[4],cmd::DeleteClip{99,0}},"Invalid delete");
+    c.setExternalBusy(true); const auto busy=commands.batch(edits,"Busy delete"); c.setExternalBusy(false);
+    require(!late.ok && late.failedCommand==2 && !busy.ok
+        && alien::sameContent(before, c.document()) && historyOf(c) == redo
+        && engine->tracks[0].pan.load()==static_cast<float>(before.tracks[0].settings.pan)
+        && !engine->pianoRollLaunches[0].consume(launch), "late and busy refusals preserve live mix, launches and redo");
     auto frozen = before; frozen.tracks[0].settings.freezeScene = 0;
     require(cmd::refusal(frozen, cmd::DeleteClip{0, 0}).isNotEmpty(), "frozen delete refuses before mutation");
     auto offline = before; alien::SessionClip missing; missing.audioFilePath = "missing-delete.wav";
@@ -60,8 +65,10 @@ static void deleteClipCommandChecks() {
     c.setExternalBusy(true); require(!commands.execute(cmd::DeleteClip{0, 0}).ok, "busy delete refuses"); c.setExternalBusy(false);
     for (const auto phase : {alien::RecordControls::countIn, alien::RecordControls::recording}) {
         engine->recording.phase.store(phase);
-        require(!commands.batch({cmd::RenameTrack{0, "Never"}, cmd::DeleteClip{0, 0}}, "Recording delete").ok
-            && alien::sameContent(before, c.document()) && historyOf(c) == redo, "recording/count-in refuses all commands before any prefix edit");
+        require(!commands.batch(edits, "Recording delete").ok
+            && alien::sameContent(before, c.document()) && historyOf(c) == redo
+            && engine->tracks[0].pan.load()==static_cast<float>(before.tracks[0].settings.pan)
+            && !engine->pianoRollLaunches[0].consume(launch), "recording/count-in refuses mixed deletion before any live edit");
     }
     engine->recording.phase.store(alien::RecordControls::idle);
     juce::String error;
