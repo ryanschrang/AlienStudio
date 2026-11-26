@@ -218,3 +218,5 @@ restoration. Existing rendered-audio checks cover overdub, replacement, count-in
 monitoring and note termination. Physical MIDI and Windows listening remain separate.
 
 Session audio removal now uses only `RemoveClipAudio`. The obsolete direct controller `removeAudio` route is removed, and controller/media and frozen-track fixtures submit the named command. CommandEngineTests covers shared audio removal with a mixer edit, Preview/live agreement, addressed publication, one-step Undo/Redo, no-op redo preservation, and late/busy/count-in refusal before live changes (claim #407). Other direct routes and native acceptance remain pending.
+
+Session clip deletion now uses only `DeleteClip`. The obsolete `clearCell` controller route and paired manual history commits are removed; linked-content and audio-lifetime fixtures submit the command. CommandEngineTests covers all-type deletion plus a mixer edit, pure Preview, addressed publication, one-step Undo/Redo, no-op redo preservation and late/busy/count-in/recording refusal before live changes (claim #413). Other direct routes and native acceptance remain pending.

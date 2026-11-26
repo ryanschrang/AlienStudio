@@ -721,8 +721,7 @@ static void linkedClipTests() {
     c.setClipPattern(1, 1, patternWith(72), false); c.commit("Notes", 1, 1);
     require(pitch(0, 0) == 64 && pitch(3, 3) == 64, "its edits are its own");
     // Clearing a linked cell leaves the others their content.
-    require(c.clearCell(3, 3) && !d.cellClip(3, 3) && pitch(0, 0) == 64 && d.linkedCells(0, 0) == 1, "clearing one linked cell empties only that cell");
-    c.commit("Clear clip", 3, 3);
+    require(alien::command::CommandEngine(c).execute(alien::command::DeleteClip{3, 3}).changed && !d.cellClip(3, 3) && pitch(0, 0) == 64 && d.linkedCells(0, 0) == 1, "clearing one linked cell empties only that cell");
     require(c.undo() && d.linkedCells(0, 0) == 2 && pitch(3, 3) == 64, "undo brings the link back");
     // Linking two cells that already hold equal notes is still an edit.
     c.setClipPattern(2, 3, patternWith(64), false); c.commit("Notes", 2, 3);
