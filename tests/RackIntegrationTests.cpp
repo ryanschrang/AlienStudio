@@ -623,7 +623,55 @@ static void stableSongBindingAcrossBankReorder() {
 
 // Opt-in diagnostic: fixed workloads, warm-up, then individual real callback
 // durations. Timing has no pass threshold; allocation and finite-output checks do.
-static void capacityReport() {
+// T1-04 D24: helpers for the repeated capacity report.
+static double medianOf(std::vector<double> values) {
+    if (values.empty()) return 0.0;
+    std::sort(values.begin(), values.end());
+    const auto mid = values.size() / 2;
+    return values.size() % 2 ? values[mid] : (values[mid - 1] + values[mid]) / 2.0;
+}
+
+// The order round `round` visits `cells` measurements in: forward on even rounds, backward on odd
+// ones, so slow drift during a run (heat, other desktop activity) falls on every workload alike.
+static std::vector<std::size_t> capacityRoundOrder(std::size_t cells, int round) {
+    std::vector<std::size_t> order(cells);
+    for (std::size_t i = 0; i < cells; ++i) order[i] = round % 2 ? cells - 1 - i : i;
+    return order;
+}
+
+// Reads `--capacity-report [--repeat N]`. Returns the round count (1 to 50), 0 when the arguments
+// are not a capacity report, or -1 when they ask for one with a bad round count.
+static int capacityReportRounds(int argc, const char* const* argv) {
+    if (argc < 2 || std::string_view(argv[1]) != "--capacity-report") return 0;
+    if (argc == 2) return 1;
+    if (argc != 4 || std::string_view(argv[2]) != "--repeat") return -1;
+    const std::string_view text(argv[3]);
+    if (text.empty() || text.size() > 2) return -1;
+    int rounds = 0;
+    for (char c : text) { if (c < '0' || c > '9') return -1; rounds = rounds * 10 + (c - '0'); }
+    return rounds >= 1 && rounds <= 50 ? rounds : -1;
+}
+
+static void capacityHelpers() {
+    require(medianOf({}) == 0.0 && medianOf({3.0}) == 3.0, "median of none and one");
+    require(medianOf({5.0, 1.0, 3.0}) == 3.0 && medianOf({4.0, 1.0, 3.0, 2.0}) == 2.5, "median of odd and even counts");
+    require(capacityRoundOrder(3, 0) == std::vector<std::size_t>{0, 1, 2}, "even rounds run forward");
+    require(capacityRoundOrder(3, 1) == std::vector<std::size_t>{2, 1, 0}, "odd rounds run backward");
+    const char* plain[]{"t", "--capacity-report"};
+    const char* five[]{"t", "--capacity-report", "--repeat", "5"};
+    const char* none[]{"t"};
+    require(capacityReportRounds(2, plain) == 1 && capacityReportRounds(4, five) == 5, "capacity report round counts");
+    require(capacityReportRounds(1, none) == 0, "no arguments run the tests");
+    for (const char* bad : {"0", "51", "x", "", "-1", "100"}) {
+        const char* args[]{"t", "--capacity-report", "--repeat", bad};
+        require(capacityReportRounds(4, args) == -1, "bad round counts are refused");
+    }
+    const char* missing[]{"t", "--capacity-report", "--repeat"};
+    const char* other[]{"t", "--capacity-report", "--again", "5"};
+    require(capacityReportRounds(3, missing) == -1 && capacityReportRounds(4, other) == -1, "bad report options are refused");
+}
+
+static void capacityReport(int rounds) {
     const int full = alien::maxSessionTracks;
     {
         const auto before = allocatedBytes;
@@ -683,7 +731,9 @@ static void capacityReport() {
     require(hit.valid(), "capacity drum hit");
     alien::PianoRollPattern beat; beat.loopSteps = 16;
     for (int n = 0; n < 4; ++n) beat.add(alien::drumBaseNote + 2 * n, 4 * n, 1);
-    for (const auto& c : cases) for (int frames : {64, 256, 1024}) {
+    struct Run { std::array<double, 256> times{}; std::size_t allocations = 0; double energy = 0; };
+    const auto measure = [&](const Case& c, int frames) {
+        Run run;
         auto rig = std::make_unique<Rig>();
         rig->engine.setActiveTracks(c.tracks);
         rig->project.clips[0] = 101;
@@ -736,8 +786,7 @@ static void capacityReport() {
         std::array<float, 1024> left{}, right{}; float* outputs[]{left.data(), right.data()};
         const auto callback = [&] { rig->engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, frames, {}); };
         for (int n = 0; n < 32; ++n) callback();
-        std::array<double, 256> times{}; const auto before = allocationCount;
-        double energy = 0;
+        auto& times = run.times; auto& energy = run.energy; const auto before = allocationCount;
         for (auto& elapsed : times) {
             const auto start = std::chrono::steady_clock::now(); callback();
             elapsed = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
@@ -746,7 +795,7 @@ static void capacityReport() {
                 energy += left[n] * left[n] + right[n] * right[n];
             }
         }
-        const auto allocations = allocationCount - before;
+        const auto allocations = run.allocations = allocationCount - before;
         require(allocations == 0, "capacity callbacks allocate nothing");
         require(c.kind == 0 || energy > 0, "capacity workload is audible");
         for (int t = 0; t < instances; ++t)
@@ -756,14 +805,73 @@ static void capacityReport() {
             require(rig->engine.activePianoRollClip[static_cast<std::size_t>(t)].load() == 0, "capacity Session clips remain active");
         require(rig->engine.plugins->faultCount.load() == 0, "capacity plugins run without faults");
         std::sort(times.begin(), times.end());
-        std::cout << "| " << c.name << " | " << c.tracks << " | " << frames << " | " << times[128] << " | " << times[243]
-            << " | " << times.back() << " | " << times[243] / (frames * 1.0e6 / 48000.0) * 100.0 << " | " << allocations << " | " << std::defaultfloat << std::setprecision(17) << energy
-            << std::fixed << std::setprecision(2) << " |\n";
+        return run;
+    };
+    const std::array<int, 3> blockSizes{64, 256, 1024};
+    const auto budget = [](int frames) { return frames * 1.0e6 / 48000.0; };
+    if (rounds == 1) {
+        for (const auto& c : cases) for (int frames : blockSizes) {
+            const auto run = measure(c, frames); const auto& times = run.times;
+            std::cout << "| " << c.name << " | " << c.tracks << " | " << frames << " | " << times[128] << " | " << times[243]
+                << " | " << times.back() << " | " << times[243] / budget(frames) * 100.0 << " | " << run.allocations << " | "
+                << std::defaultfloat << std::setprecision(17) << run.energy << std::fixed << std::setprecision(2) << " |\n";
+        }
+        return;
+    }
+
+    // T1-04 D24: every row measured `rounds` times, rounds interleaved across the rows (alternating
+    // direction), so that drift during a run falls on every row alike and the spread can be seen.
+    struct Cell { std::size_t c; int frames; std::vector<double> p50, p95; double energy = -1; };
+    std::vector<Cell> cells;
+    for (std::size_t c = 0; c < cases.size(); ++c) for (int frames : blockSizes) cells.push_back({c, frames, {}, {}});
+    for (int round = 0; round < rounds; ++round)
+        for (auto i : capacityRoundOrder(cells.size(), round)) {
+            auto& cell = cells[i];
+            const auto run = measure(cases[cell.c], cell.frames);
+            cell.p50.push_back(run.times[128]); cell.p95.push_back(run.times[243]);
+            // The engine is deterministic: every round of a row must render exactly the same audio.
+            require(cell.energy < 0 || cell.energy == run.energy, "capacity rounds render identical audio");
+            cell.energy = run.energy;
+        }
+    std::cout << "\nEach row above was measured " << rounds << " times; the rounds are interleaved across rows, alternating\n"
+        << "direction. The table gives the median over rounds of each round's p50 and p95, and their range.\n"
+        << "Every round of a row rendered identical output energy and made zero callback allocations.\n\n"
+        << "| Workload | Tracks in use | Block frames | p50 us, median | p50 us, range | p95 us, median | p95 us, range | median p95 / block budget % |\n"
+        << "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n";
+    for (const auto& cell : cells) {
+        const auto& c = cases[cell.c];
+        const auto [p50lo, p50hi] = std::minmax_element(cell.p50.begin(), cell.p50.end());
+        const auto [p95lo, p95hi] = std::minmax_element(cell.p95.begin(), cell.p95.end());
+        std::cout << "| " << c.name << " | " << c.tracks << " | " << cell.frames << " | " << medianOf(cell.p50) << " | "
+            << *p50lo << " - " << *p50hi << " | " << medianOf(cell.p95) << " | " << *p95lo << " - " << *p95hi << " | "
+            << medianOf(cell.p95) / budget(cell.frames) * 100.0 << " |\n";
+    }
+    if (full <= 16) return;
+    // From 16 tracks in use to all of them: the same workload with every extra track doing the same work.
+    std::cout << "\n| Workload (16 tracks, then " << full << ") | Block frames | 16 tracks, median p50 us | " << full
+        << " tracks, median p50 us | Ratio | us per added track |\n| --- | ---: | ---: | ---: | ---: | ---: |\n";
+    for (const auto& big : cells) {
+        const auto& b = cases[big.c];
+        if (b.tracks != full) continue;
+        for (const auto& small : cells) {
+            const auto& s = cases[small.c];
+            const bool sameWork = s.kind == b.kind && s.tracks == 16 && small.frames == big.frames
+                && (b.occurrences == b.tracks ? s.occurrences == s.tracks : s.occurrences == b.occurrences);
+            if (!sameWork) continue;
+            const auto lo = medianOf(small.p50), hi = medianOf(big.p50);
+            std::cout << "| " << b.name << " | " << big.frames << " | " << lo << " | " << hi << " | " << hi / lo << " | "
+                << (hi - lo) / (full - 16) << " |\n";
+        }
     }
 }
 
 int main(int argc, char** argv) {
-    if (argc == 2 && std::string_view(argv[1]) == "--capacity-report") { capacityReport(); return 0; }
+    if (const int rounds = capacityReportRounds(argc, argv); rounds != 0) {
+        if (rounds < 0) { std::cerr << "usage: RackIntegrationTests --capacity-report [--repeat 1-50]\n"; return 2; }
+        capacityReport(rounds); return 0;
+    }
+
+    capacityHelpers();
 
     performLaunches();
     overlappingPerformCallback();
