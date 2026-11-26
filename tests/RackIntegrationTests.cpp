@@ -653,15 +653,18 @@ static void capacityReport() {
         << "T1-04 D22 rows: loaded versus playing (one playing track among all in use), sends at 0.5 to returns A-D,\n"
         << "in-memory Session audio clips (one shared 8 s mono clip, no streaming), and the stock EQ and compressor\n"
         << "on every playing track's FX rack (prepared before timing).\n"
-        << "Times include the whole callback; p95/max are observations, not real-time guarantees.\n\n"
-        << "| Workload | Tracks in use | Block frames | p50 us | p95 us | max us | p95 / block budget % | Callback allocations |\n"
-        << "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n" << std::fixed << std::setprecision(2);
+        << "Times include the whole callback; p95/max are observations, not real-time guarantees.\n"
+        << "Output energy is the sum of squared output samples over the measured blocks, printed exactly, so two\n"
+        << "builds can be shown to render the same audio (T1-04 D23).\n\n"
+        << "| Workload | Tracks in use | Block frames | p50 us | p95 us | max us | p95 / block budget % | Callback allocations | Output energy |\n"
+        << "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n" << std::fixed << std::setprecision(2);
     struct Case { const char* name; int kind, tracks, occurrences; };
     std::vector<Case> cases{{"Transport, no clips", 0, 1, 0}, {"Transport, no clips", 0, 16, 0}, {"1 Session rack occurrence", 1, 16, 1},
         {"16 Session rack occurrences", 1, 16, 16}, {"4 Song rack occurrences", 3, 16, 0}, {"16 Session MIDI tracks", 4, 16, 16},
         // T1-04 D22: loaded versus playing tracks, sends and returns, audio clips and plugins (measurement gates 2 and 3).
         {"1 Session MIDI track playing", 4, 16, 1}, {"16 Session MIDI tracks, sends to 4 returns", 5, 16, 16},
-        {"16 Session audio clips", 6, 16, 16}, {"16 Session MIDI tracks, stock EQ + compressor", 7, 16, 16}};
+        {"16 Session audio clips", 6, 16, 16}, {"16 Session MIDI tracks, stock EQ + compressor", 7, 16, 16},
+        {"16 Session drum tracks", 8, 16, 16}};
     if (full > 16) {
         cases.push_back({"Transport, no clips", 0, full, 0});
         cases.push_back({"All Session rack occurrences", 1, full, full});
@@ -674,6 +677,12 @@ static void capacityReport() {
     alien::SessionAudioClip audio; audio.sampleRate = 48000; audio.channels = 1; audio.frames = 8 * 48000;
     audio.left.assign(audio.frames, 0.1f); audio.buildWaveform();
     require(audio.valid(), "capacity audio clip");
+    // D23: a quarter-second drum hit, so hits on four pads a beat apart overlap in the sampler's voices.
+    alien::SessionAudioClip hit; hit.sampleRate = 48000; hit.channels = 1; hit.frames = 12000;
+    hit.left.assign(hit.frames, 0.2f); hit.buildWaveform();
+    require(hit.valid(), "capacity drum hit");
+    alien::PianoRollPattern beat; beat.loopSteps = 16;
+    for (int n = 0; n < 4; ++n) beat.add(alien::drumBaseNote + 2 * n, 4 * n, 1);
     for (const auto& c : cases) for (int frames : {64, 256, 1024}) {
         auto rig = std::make_unique<Rig>();
         rig->engine.setActiveTracks(c.tracks);
@@ -695,10 +704,15 @@ static void capacityReport() {
             require(rig->engine.arrangementMailbox.publish(song), "capacity Song publication");
             rig->engine.patternMode.store(alien::songMode);
         }
-        const bool midi = c.kind == 4 || c.kind == 5 || c.kind == 7;
+        const bool midi = c.kind == 4 || c.kind == 5 || c.kind == 7 || c.kind == 8;
+        if (c.kind == 8) for (int t = 0; t < c.occurrences; ++t) {
+            rig->engine.tracks[static_cast<std::size_t>(t)].instrument.store(1);
+            for (int pad = 0; pad < alien::drumPadCount; ++pad)
+                rig->engine.drumKits[static_cast<std::size_t>(t)].samples[static_cast<std::size_t>(pad)].store(&hit);
+        }
         if (midi || c.kind == 6) for (int t = 0; t < c.occurrences; ++t) {
             alien::SessionClipLaunch launch; launch.clipIndex = 0;
-            if (midi) launch.pattern = chord; else launch.audio = &audio;
+            if (midi) launch.pattern = c.kind == 8 ? beat : chord; else launch.audio = &audio;
             require(rig->engine.pianoRollLaunches[static_cast<std::size_t>(t)].publish(launch), "capacity Session launch");
         }
         if (c.kind == 5) for (int t = 0; t < c.occurrences; ++t)
@@ -743,7 +757,8 @@ static void capacityReport() {
         require(rig->engine.plugins->faultCount.load() == 0, "capacity plugins run without faults");
         std::sort(times.begin(), times.end());
         std::cout << "| " << c.name << " | " << c.tracks << " | " << frames << " | " << times[128] << " | " << times[243]
-            << " | " << times.back() << " | " << times[243] / (frames * 1.0e6 / 48000.0) * 100.0 << " | " << allocations << " |\n";
+            << " | " << times.back() << " | " << times[243] / (frames * 1.0e6 / 48000.0) * 100.0 << " | " << allocations << " | " << std::defaultfloat << std::setprecision(17) << energy
+            << std::fixed << std::setprecision(2) << " |\n";
     }
 }
 

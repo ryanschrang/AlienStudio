@@ -456,8 +456,12 @@ private:
             soloState.addBus(b, buses[static_cast<std::size_t>(b)].active.load() && buses[static_cast<std::size_t>(b)].solo.load());
         const bool anySolo = soloState.any;
         std::array<float, sessionTracks> peaks{};
+        // T1-04 D23: each track's controls are read once per block, here, and the mix below uses this
+        // copy instead of reading every atomic again for every sample.
+        std::array<alien::TrackSettings, sessionTracks> blockSettings;
         for (std::size_t t = 0; t < blockTracks; ++t) {
-            auto settings = tracks[t].snapshot();
+            auto& settings = blockSettings[t];
+            settings = tracks[t].snapshot();
             settings.solo = soloState.trackHeard(trackOutputs[t], settings.solo);
             auto& rack=plugins->racks[t];
             if(rack.frozen!=settings.frozen()) {
@@ -696,7 +700,11 @@ private:
                 const auto drum = plugins->racks[track].frozen ? std::array<float,2>{} : drumSamplers[track].nextSample();
                 plugins->tracks[track].setSample(0,i,voice + drum[0]);
                 plugins->tracks[track].setSample(1,i,voice + drum[1]);
-                if (playNow && (modeNow == 1 || modeNow == 2)) {
+                // D23: a track with no clip and no crossfade tail playing has nothing to fade or mix.
+                if (playNow && (modeNow == 1 || modeNow == 2) && !audioPlayers[track].isPlaying() && !tails[track].active) {
+                    clipBuffers[track].setSample(0,i,0.0f);
+                    clipBuffers[track].setSample(1,i,0.0f);
+                } else if (playNow && (modeNow == 1 || modeNow == 2)) {
                     const auto sample = audioPlayers[track].nextSample();
                     const auto& lane = trackLanes[track];
                     const double into = std::max(0.0, timelineTick - static_cast<double>(lane.start));
@@ -739,9 +747,13 @@ private:
         std::array<bool, sessionTracks> sending{};
         for (std::size_t t = 0; t < blockTracks; ++t)
             for (const auto& ramp : sendRamps[t]) sending[t] = sending[t] || !ramp.idle();
+        // D23: only tracks with an enabled mixer automation lane look through the lanes on each sample.
+        std::array<bool, sessionTracks> laneAutomated{};
         if (modeNow == 2) for (const auto& lane : song->timeline.automationLanes)
-            if (lane.enabled && !lane.points.empty() && alien::automation::sendIndex(lane.parameter) >= 0
-                && lane.track >= 0 && lane.track < static_cast<int>(sessionTracks)) sending[static_cast<std::size_t>(lane.track)] = true;
+            if (lane.enabled && !lane.points.empty() && lane.track >= 0 && lane.track < static_cast<int>(sessionTracks)) {
+                laneAutomated[static_cast<std::size_t>(lane.track)] = true;
+                if (alien::automation::sendIndex(lane.parameter) >= 0) sending[static_cast<std::size_t>(lane.track)] = true;
+            }
         for (int i = 0; i < samples; ++i) {
             float left = plugins->live.getSample(0,i), right = plugins->live.getSample(1,i);
             if (stemCapture) {
@@ -751,12 +763,15 @@ private:
             for (std::size_t t = 0; t < blockTracks; ++t) {
                 float l = plugins->tracks[t].getSample(0,i), r = plugins->tracks[t].getSample(1,i);
                 const float preLeft = l, preRight = r;
-                auto settings = tracks[t].snapshot();
-                settings.solo = soloState.trackHeard(trackOutputs[t], settings.solo);
+                const alien::TrackSettings* current = &blockSettings[t];
+                alien::TrackSettings automatedSettings;
                 bool automated = false;
                 std::array<bool, alien::maxReturns> automatedSends{};
                 const double automationTick = automationTicks[static_cast<std::size_t>(i)];
-                if (modeNow == 2 && automationTick >= 0.0) {
+                if (modeNow == 2 && automationTick >= 0.0 && laneAutomated[t]) {
+                    automatedSettings = blockSettings[t];
+                    current = &automatedSettings;
+                    auto& settings = automatedSettings;
                     for (const auto& lane : song->timeline.automationLanes) {
                         if (lane.track != static_cast<int>(t) || !lane.enabled || lane.points.empty()) continue;
                         const int send = alien::automation::sendIndex(lane.parameter);
@@ -770,6 +785,7 @@ private:
                         }
                     }
                 }
+                const auto& settings = *current;
                 if (automated) trackMixers[t].processAutomated(l, r, settings, anySolo);
                 else trackMixers[t].process(l,r);
                 plugins->keyPostFader(t, i, l, r);   // a sidechain key for the buses', returns' and master's FX

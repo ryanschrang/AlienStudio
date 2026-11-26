@@ -70,6 +70,9 @@ public:
     std::array<float, 2> nextSample() noexcept {
         std::array<float, 2> result{};
         for (auto& voice : voices) {
+            // T1-04 D23: an idle voice adds nothing (its player returns silence at once), so it is not
+            // asked: on a track that plays no drums this loop was half of a silent track's callback cost.
+            if (!voice.player.isPlaying()) continue;
             const auto sample = voice.player.nextSample();
             result[0] += sample[0] * voice.velocity * 0.25f;
             result[1] += sample[1] * voice.velocity * 0.25f;
