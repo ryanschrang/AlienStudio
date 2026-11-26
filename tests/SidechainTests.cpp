@@ -536,7 +536,7 @@ static void trackSidechainViewTests(const juce::File& preview) {
     c.markAsNewBaseline(); captures=0; rebuilds=0;
     alien::TrackMixerPanel panel(c,engine->tracks,engine->returns,engine->masterControls,engine->buses); panel.setSize(960,650);
     auto& graph = panel.trackSidechainView();
-    graph.hasInput = [&](alien::RackStage stage,int track,int fx) { return host.hasSidechainInput(stage == alien::RackStage::master ? alien::PluginRuntime::masterIndex : track,fx); };
+    graph.hasInput = [&](alien::RackStage stage,int track,int fx) { return host.hasSidechainInput(stage == alien::RackStage::master ? alien::PluginRuntime::masterIndex : stage == alien::RackStage::bus ? alien::PluginRuntime::busIndex(track) : track,fx); };
     graph.onKeyRequested = [&](alien::RackStage stage,int track,int fx,int source) {
         const auto result=run(cmd::SetSidechain{stage,track,fx,alien::KeySource::track,source});
         panel.refreshSettings(); return result.ok && result.changed;
@@ -591,6 +591,38 @@ static void trackSidechainViewTests(const juce::File& preview) {
         "choosing the same track explicitly replaces its post-fader key with a pre-FX key");
     require(graph.choose(masterRequest,-1) && engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyIndex==-1
         && graph.choose(masterRequest,1),"master graph can turn a key Off and restore it");
+    require(commands.execute(cmd::CreateBus{}).changed && commands.execute(cmd::RenameBus{0,"Drums"}).changed
+        && run(cmd::InsertDevice{alien::RackStage::bus,0,0,compressorState()}).changed,"bus graph fixture");
+    panel.rebuild();
+    const auto busRequest=graph.requestFor(0,0,alien::RackStage::bus);
+    auto& busSlot=engine->plugins->racks[alien::PluginRuntime::busIndex(0)].effects[0];
+    busSlot.processor->getParameters()[0]->setValueNotifyingHost(.71f);
+    require(graph.choose(busRequest,0) && busSlot.keyIndex==0 && busSlot.keyFrom==alien::KeySource::track
+        && std::abs(busSlot.processor->getParameters()[0]->getValue()-.71f)<.01f,"bus graph keys the real effect and preserves live settings");
+    require(c.undo(),"undo bus graph key"); rebuild(); panel.refreshSettings();
+    require(busSlot.keyIndex==-1 && std::abs(busSlot.processor->getParameters()[0]->getValue()-.71f)<.01f,"bus Undo restores Off and captured settings");
+    require(c.redo(),"redo bus graph key"); rebuild(); panel.refreshSettings();
+    require(busSlot.keyIndex==0,"bus Redo restores runtime key");
+    const int busCaptures=captures, busRebuilds=rebuilds;
+    c.setExternalBusy(true); const bool busBusy=graph.choose(busRequest,1); c.setExternalBusy(false);
+    engine->recording.phase.store(alien::RecordControls::countIn);
+    const bool busCounting=graph.choose(busRequest,1); engine->recording.phase.store(alien::RecordControls::idle);
+    graph.setEnabled(false); const bool busDisabled=graph.choose(busRequest,1); graph.setEnabled(true);
+    require(!graph.choose(busRequest,0) && !graph.choose(busRequest,99) && !busBusy && !busCounting && !busDisabled
+        && captures==busCaptures && rebuilds==busRebuilds,"bus no-op/invalid/busy/count-in/disabled choices skip plugin callbacks");
+    require(run(cmd::SetSidechain{alien::RackStage::bus,0,0,alien::KeySource::trackPostFader,0}).changed,"post-fader bus key fixture");
+    panel.refreshSettings();
+    require(busSlot.keyFrom==alien::KeySource::trackPostFader && graph.choose(busRequest,0)
+        && busSlot.keyFrom==alien::KeySource::track,"bus refresh preserves other key stages until an explicit graph choice");
+    require(graph.choose(busRequest,-1) && busSlot.keyIndex==-1 && graph.choose(busRequest,1),"bus Off and fresh key choices work");
+    require(run(cmd::InsertDevice{alien::RackStage::bus,0,1,alien::PluginState(alien::stock::describe(alien::stock::catalog[0]).createXml()->toString(),{})}).changed
+        && !graph.choose(graph.requestFor(0,1,alien::RackStage::bus),0),"unsupported bus FX refuses graph routing");
+    require(run(cmd::MoveDevice{alien::RackStage::bus,0,0,1}).changed && graph.choose(busRequest,2)
+        && engine->plugins->racks[alien::PluginRuntime::busIndex(0)].effects[1].keyIndex==2,"bus deferred choice follows its effect across FX moves");
+    require(commands.execute(cmd::RenameBus{0,"Drum group"}).changed,"rename graph bus"); panel.refreshSettings();
+    bool busNode=false;
+    for (auto* child:graph.getChildren()) if(child->getName().startsWith("Bus: Drum group / FX 2")) busNode=true;
+    require(busNode,"bus rename refreshes its visible effect nodes");
     if (preview != juce::File{}) {
         juce::FileOutputStream out(preview);
         require(out.openedOk() && out.setPosition(0) && out.truncate().wasOk()
@@ -612,6 +644,9 @@ static void trackSidechainViewTests(const juce::File& preview) {
     require(run(cmd::RemoveDevice{alien::RackStage::track,1,1}).changed
         && run(cmd::InsertDevice{alien::RackStage::track,1,1,compressorState()}).changed && !graph.choose(request,-1),"replaced FX instance refuses stale choice");
     const auto fresh=graph.requestFor(1,1);
+    require(graph.choose(busRequest,-1) && graph.choose(busRequest,2)
+        && engine->plugins->racks[alien::PluginRuntime::busIndex(0)].effects[1].keyIndex==3,
+        "bus deferred source follows reordered track identity");
     require(graph.choose(masterRequest,2) && engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyIndex==3,
         "master deferred source follows reordered track identity");
     require(run(cmd::RemoveDevice{alien::RackStage::master,0,1}).changed
@@ -621,7 +656,16 @@ static void trackSidechainViewTests(const juce::File& preview) {
     require(commands.execute(cmd::DeleteTrack{3}).changed,"delete source"); rebuild(); panel.rebuild();
     require(!graph.choose(fresh,3),"deleted source refuses stale choice");
     require(!graph.choose(freshMaster,3),"deleted master key source refuses stale choice");
-    c.newProject(); rebuild(); panel.rebuild(); require(!graph.choose(fresh,-1) && !graph.choose(freshMaster,-1),"replacement project refuses track and master stale choices");
+    require(!graph.choose(busRequest,2),"deleted bus key source refuses stale choice");
+    const auto retiredBusEffect=c.document().buses[0].plugins.effects[1];
+    const auto oldBus=c.document().trackId(alien::TrackRole::bus,0);
+    require(commands.execute(cmd::DeleteBus{0}).changed && !graph.choose(busRequest,-1)
+        && commands.execute(cmd::CreateBus{}).changed
+        && c.document().trackId(alien::TrackRole::bus,0)!=oldBus
+        && run(cmd::InsertDevice{alien::RackStage::bus,0,0,retiredBusEffect}).changed && !graph.choose(busRequest,-1),
+        "reused bus slot refuses a stale choice even when it contains the same saved effect identity");
+    const auto freshBus=graph.requestFor(0,0,alien::RackStage::bus);
+    c.newProject(); rebuild(); panel.rebuild(); require(!graph.choose(fresh,-1) && !graph.choose(freshMaster,-1) && !graph.choose(freshBus,-1),"replacement project refuses track/master/bus stale choices");
     panel.showRouting(false); require(!graph.isVisible(),"Strips hides the sidechain view");
 }
 
