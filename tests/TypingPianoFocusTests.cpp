@@ -893,8 +893,9 @@ static void detachedWindowLifecycleChecks() {
 }
 
 static void disabledHostNoteChecks() {
-    juce::Component root, floating;
-    for (auto* host : {&root,&floating}) {
+    juce::Component shell, root, floating;
+    shell.addAndMakeVisible(root); root.setBounds(0,0,300,150); root.setWantsKeyboardFocus(true);
+    for (auto* host : {&shell,&floating}) {
         host->setBounds(10,10,300,150); host->setWantsKeyboardFocus(true); host->addToDesktop(0); host->setVisible(true);
     }
     juce::MidiKeyboardState notes; std::set<int> held; Counter count; notes.addListener(&count);
@@ -909,7 +910,7 @@ static void disabledHostNoteChecks() {
             const int offs=count.offs;
             host->setEnabled(false);
             require(!notes.isNoteOn(2,60) && count.offs==offs+1,"disabling the source host releases its note before focus dispatch");
-            pump(); press(*host); require(!notes.isNoteOn(2,60),"disabled host refuses typing");
+            pump(); lift(*host); press(*host); require(!notes.isNoteOn(2,60),"disabled host refuses a fresh typing press");
             host->setEnabled(true); focus(*host); press(*host);
             require(!notes.isNoteOn(2,60),"re-enabling cannot restart a key held through disabling");
             lift(*host); press(*host); require(notes.isNoteOn(2,60),"fresh press after re-enable starts a note");
@@ -921,7 +922,7 @@ static void disabledHostNoteChecks() {
     }
     floating.setEnabled(false); // surviving host must no longer call a destroyed router
     notes.removeListener(&count);
-    floating.removeFromDesktop(); root.removeFromDesktop();
+    floating.removeFromDesktop(); shell.removeFromDesktop();
 }
 
 static void noFocusTypingFallbackChecks() {
