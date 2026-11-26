@@ -1,5 +1,6 @@
 #pragma once
 #include "SessionAudioClip.h"
+#include <algorithm>
 #include <array>
 #include <atomic>
 
@@ -63,25 +64,31 @@ public:
             for (auto& voice : voices) if (voice.age < chosen->age) chosen = &voice;
         }
         chosen->player.stop();
+        span = std::max(span, static_cast<std::size_t>(chosen - voices.data()) + 1);
         chosen->pad = pad; chosen->source = source; chosen->age = ++age;
         chosen->velocity = std::clamp(velocity, 0.0f, 1.0f);
         chosen->player.queue(sample, 1); chosen->player.launchPendingNow(sampleRate);
     }
     std::array<float, 2> nextSample() noexcept {
         std::array<float, 2> result{};
-        for (auto& voice : voices) {
-            // T1-04 D23: an idle voice adds nothing (its player returns silence at once), so it is not
-            // asked: on a track that plays no drums this loop was half of a silent track's callback cost.
+        // T1-04 D28: only voices below span can be playing, so a track that plays no drums visits none,
+        // instead of checking all 16 every sample. Voices are summed in the same order as before.
+        for (std::size_t slot = 0; slot < span; ++slot) {
+            // T1-04 D23: an idle voice adds nothing (its player returns silence at once), so it is not asked.
+            auto& voice = voices[slot];
             if (!voice.player.isPlaying()) continue;
             const auto sample = voice.player.nextSample();
             result[0] += sample[0] * voice.velocity * 0.25f;
             result[1] += sample[1] * voice.velocity * 0.25f;
         }
+        while (span > 0 && !voices[span - 1].player.isPlaying()) --span;
         return result;
     }
     void stop(int source = -1) noexcept {
         for (auto& voice : voices) if (source < 0 || source == voice.source) voice.player.stop();
     }
+    // How many voice slots the next sample visits: every voice from this index on is idle.
+    std::size_t voicesInUse() const noexcept { return span; }
 private:
     struct Voice {
         SessionAudioPlayer player;
@@ -90,6 +97,7 @@ private:
         float velocity{};
     };
     std::array<Voice, 16> voices{};
+    std::size_t span{};   // every voice from this index on is idle (T1-04 D28)
     std::array<const SessionAudioClip*, drumPadCount> samples{};
     std::uint64_t age{};
     double sampleRate{44100};
