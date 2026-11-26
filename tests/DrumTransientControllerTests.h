@@ -65,13 +65,21 @@ static void drumTransientControllerTests() {
         require(c.autoSliceDrum(c.drumSliceTarget(0, 0)), "auto slice selected view"); wait(c);
         require(c.document().tracks[0].drumSlices[0] == alien::DrumSlice{2000, 4000}
             && c.document().tracks[0].drumSlices[2] == alien::DrumSlice{6400, 8000}, "view-local detections map to original source frames");
-        c.loadDrum(silent, 0, 0); wait(c); c.clearDrum(0, 1); c.undo();
+        c.loadDrum(silent, 0, 0); wait(c);
+        require(alien::command::CommandEngine(c).execute(alien::command::ClearDrumPad{0,1}).changed,"clear for silent-analysis redo fixture"); c.undo();
         const auto before = c.document().tracks[0]; const auto redo = c.redoLabel();
         require(c.autoSliceDrum(c.drumSliceTarget(0, 0)), "silent analysis can start"); wait(c);
         require(c.document().tracks[0].drumAssets == before.drumAssets && c.redoLabel() == redo, "no useful attacks preserve kit and Redo");
         c.loadDrum(file, 0, 0); wait(c);
         require(c.autoSliceDrum(c.drumSliceTarget(0, 0)), "start stale-kit analysis");
-        c.clearDrum(0, 1); const auto changed = c.document().tracks[0]; wait(c);
+        const auto pending=c.document();
+        require(!alien::command::CommandEngine(c).execute(alien::command::ClearDrumPad{0,1}).ok
+            && alien::sameContent(pending,c.document()),"clear command refuses while auto-slice worker is busy");
+        // Simulate a replacement state to retain the worker's stale-kit guard
+        // independently of the UI edit route, which correctly refuses while busy.
+        auto replacement=pending;
+        require(alien::command::applyTo(replacement,alien::command::ClearDrumPad{0,1}).isEmpty(),"replacement kit fixture");
+        c.revertTo(replacement); const auto changed = c.document().tracks[0]; wait(c);
         require(c.document().tracks[0].drumAssets == changed.drumAssets, "kit change during worker refuses entire result");
         require(c.autoSliceDrum(c.drumSliceTarget(0, 0)), "start recording-transition analysis");
         engine.recording.phase.store(alien::RecordControls::countIn); wait(c);
