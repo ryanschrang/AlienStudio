@@ -200,6 +200,8 @@ public:
         left = targetLeft; right = targetRight;
         l *= left; r *= right;
     }
+    // True once the gain has finished gliding to its target: process() then only multiplies (T1-04 D27).
+    bool settled() const noexcept { return left == targetLeft && right == targetRight; }
     void process(float& l, float& r) noexcept {
         left += coefficient * (targetLeft - left);
         right += coefficient * (targetRight - right);

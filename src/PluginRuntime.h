@@ -314,6 +314,12 @@ public:
     // each bus after its strip, each return after its strip (MIX-04).
     void keyPostFader(std::size_t track, int i, float left, float right) noexcept { store(postKeys, track, i, left, right); }
     void keyBus(std::size_t bus, int i, float left, float right) noexcept { store(busKeys, bus, i, left, right); }
+    // A bus that is silent for the whole block keys silence, as keyBus would for each of its samples (T1-04 D27).
+    void silentBusKey(std::size_t bus, int samples) noexcept {
+        if (bus >= busKeys.size()) return;
+        const auto count = static_cast<std::size_t>(std::clamp(samples, 0, blockSize));
+        for (auto& side : busKeys[bus]) std::fill_n(side.begin(), count, 0.0f);
+    }
     void keyReturn(std::size_t r, int i, float left, float right) noexcept { store(returnKeys, r, i, left, right); }
     // Where in the mix a rack runs, which decides the keys it can hear.
     static constexpr RackStage stageOf(int rack) noexcept {
@@ -587,13 +593,35 @@ private:
             if (left == nullptr) return count <= 0;
             const bool fits = count < length;
             count = std::clamp(count, 0, length - 1);
+            if (samples <= 0) return fits;
+            if (count == 0) {
+                // T1-04 D27: no delay hands the block back as it is. The line still keeps the newest samples,
+                // exactly as the loop below would leave it, so a delay asked for later reads the right past.
+                const float* inLeft = buffer.getReadPointer(0);
+                const float* inRight = buffer.getReadPointer(1);
+                int from = 0;
+                if (samples > length) { from = samples - length; position = static_cast<int>((static_cast<long long>(position) + from) % length); }
+                while (from < samples) {
+                    const int run = std::min(samples - from, length - position);
+                    std::memcpy(left + position, inLeft + from, sizeof(float) * static_cast<std::size_t>(run));
+                    std::memcpy(right + position, inRight + from, sizeof(float) * static_cast<std::size_t>(run));
+                    from += run; position += run;
+                    if (position == length) position = 0;
+                }
+                written = static_cast<int>(std::min<long long>(length, static_cast<long long>(written) + samples));
+                return fits;
+            }
+            // T1-04 D27: the ring wraps with a compare instead of two divisions per sample (same positions).
+            float* outLeft = buffer.getWritePointer(0);
+            float* outRight = buffer.getWritePointer(1);
             for (int i=0;i<samples;++i) {
-                left[position]=buffer.getSample(0,i); right[position]=buffer.getSample(1,i);
+                left[position]=outLeft[i]; right[position]=outRight[i];
                 if (written<length) ++written;
-                const int read=(position-count+length)%length;
+                int read=position-count;
+                if (read<0) read+=length;
                 const bool fresh=count<written;
-                buffer.setSample(0,i,fresh?left[read]:0.0f); buffer.setSample(1,i,fresh?right[read]:0.0f);
-                position=(position+1)%length;
+                outLeft[i]=fresh?left[read]:0.0f; outRight[i]=fresh?right[read]:0.0f;
+                if (++position==length) position=0;
             }
             return fits;
         }
