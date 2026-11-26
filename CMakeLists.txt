@@ -35,6 +35,14 @@ target_include_directories(AlienPluginCheck PRIVATE src)
 target_compile_definitions(AlienPluginCheck PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_PLUGINHOST_VST3=1 JUCE_MODAL_LOOPS_PERMITTED=1 JUCE_APPLICATION_NAME_STRING="AlienPluginCheck" JUCE_APPLICATION_VERSION_STRING="0.1")
 target_link_libraries(AlienPluginCheck PRIVATE juce::juce_audio_processors juce::juce_audio_utils juce::juce_gui_extra Threads::Threads ${CMAKE_DL_LIBS})
 
+# AlienDeviceTiming: times the shared playback callback on a real audio device, one capacity workload at
+# a time (T1-04 D31, docs/DEVICE_TIMING.md). Built with the app so it can be run on the machine being measured.
+juce_add_console_app(AlienDeviceTiming PRODUCT_NAME "AlienDeviceTiming" COMPANY_NAME "Alien Studio")
+target_sources(AlienDeviceTiming PRIVATE src/DeviceTimingMain.cpp)
+target_include_directories(AlienDeviceTiming PRIVATE src)
+target_compile_definitions(AlienDeviceTiming PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1 JUCE_APPLICATION_NAME_STRING="AlienDeviceTiming" JUCE_APPLICATION_VERSION_STRING="0.1")
+target_link_libraries(AlienDeviceTiming PRIVATE juce::juce_audio_processors juce::juce_audio_utils juce::juce_gui_extra Threads::Threads ${CMAKE_DL_LIBS})
+
 if(WIN32)
     enable_language(RC)
     set(ALIEN_STUDIO_WINDOWS_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/branding/AlienStudio_Icon_Corrected.ico")
@@ -152,6 +160,9 @@ if(BUILD_TESTING)
     target_link_libraries(RackPluginInstrumentTests PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_gui_extra
         juce::juce_audio_devices juce::juce_audio_formats juce::juce_audio_basics)
     add_test(NAME RackPluginInstrumentTests COMMAND RackPluginInstrumentTests)
+    add_executable(CallbackTimingTests tests/CallbackTimingTests.cpp)
+    target_include_directories(CallbackTimingTests PRIVATE src)
+    add_test(NAME CallbackTimingTests COMMAND CallbackTimingTests)
     add_executable(RackIntegrationTests tests/RackIntegrationTests.cpp)
     target_include_directories(RackIntegrationTests PRIVATE src)
     target_compile_definitions(RackIntegrationTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
