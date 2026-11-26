@@ -1495,3 +1495,76 @@ What a silent track still costs: its synth's voice check, the rack and instrumen
 mixer strip, sends, peak meter and alignment delay. No single one stood out in the switch-off runs.
 
 Not covered: a physical device, the 32/64 build on this machine, and more than single runs.
+
+## Increment D24: repeated measurement of 16 versus 32 tracks in use
+
+No project format change; the supported limits stay 16 tracks and 32 scenes. Test and
+measurement only: nothing in the app changes.
+
+C3 measured the 32/64 build once and found that with all 32 tracks in use the callback cost 1.9
+to 3.3 times the 16-track cost, more than linear. It left "a repeated, controlled measurement" to
+D. This increment makes that measurement.
+
+**The capacity report can now repeat itself.** `RackIntegrationTests --capacity-report --repeat N`
+(N from 1 to 50) measures every row N times and adds two tables:
+- the median over rounds of each round's p50 and p95, with their range;
+- in a build above 16 tracks, each workload at 16 tracks and at all of them, side by side, with
+  the ratio and the cost of each added track.
+
+The rounds are interleaved across rows, forward on even rounds and backward on odd ones, so
+drift during a run falls on every row alike. Every round of a row must render exactly the same
+output energy (the engine is deterministic), as well as make no callback allocations. Without
+`--repeat` the report prints what it did before. RackIntegrationTests checks the median, the
+round order and the argument parsing. Mutation check: with every round run forward, the test
+fails.
+
+### Measurements
+
+2026-11-25, Intel Core Ultra 9 288V, 32 GB, Windows 11 x64, Release, offline, five rounds each,
+built on D23. Median p50 microseconds per callback, 32/64 build:
+
+| Workload | Block frames | 16 tracks in use | 32 tracks in use | Ratio | us per added track |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Transport, no clips | 64 | 70.0 | 128.9 | 1.84 | 3.7 |
+| Transport, no clips | 1,024 | 1,048 | 1,908 | 1.82 | 53.8 |
+| One MIDI track playing | 64 | 75.6 | 134.3 | 1.78 | 3.7 |
+| Every track plays MIDI | 64 | 122.5 | 232.6 | 1.90 | 6.9 |
+| Every track plays MIDI | 1,024 | 1,865 | 3,578 | 1.92 | 107.0 |
+| Every track plays an audio clip | 64 | 78.6 | 142.5 | 1.81 | 4.0 |
+| A rack occurrence on every track | 64 | 198.2 | 299.3 | 1.51 | 6.3 |
+| Every track plays MIDI through a stock EQ and compressor | 64 | 173.3 | 338.1 | 1.95 | 10.3 |
+| Every track plays MIDI through a stock EQ and compressor | 1,024 | 2,616 | 5,074 | 1.94 | 153.6 |
+
+- **The cost grows linearly, not faster.** Doubling the tracks in use multiplies the cost by 1.5
+  to 1.95, never by more than 2, at every block size and workload. A silent track added beyond
+  16 costs 3.7 us per 64-frame block; from 1 to 16 tracks the same build costs 3.4 us per track.
+  C3's "more than linear" came from single runs before D1 to D23.
+- **Rack occurrences scale best** (1.5), because the tracks share one rack's work.
+- **The busiest 32-track row**, every track playing MIDI through two stock effects, uses 30 % of
+  the 64-frame budget and 32 % of the 1,024-frame budget at p95. Every row made zero callback
+  allocations and rendered identical audio in every round.
+- **The 16-track rows cost about the same in both builds** (p50 within 3 %, 7 % for the idle
+  64-frame row), as C1 intended.
+- **Single runs on this laptop are not reliable.** In the 32/64 run, the rows measured first had
+  one round 25 to 30 % faster than their other four, which looks like the processor's short boost
+  running out; the 16/32 run, started straight after a build, had no such round. So a single run
+  partly measures how warm the machine was. D23's 51 us for 16 idle tracks at 64 frames was likely
+  such a run; here the median is 70 to 75 us, with D23's change in both builds.
+- **At 1,024 frames, rows where every track plays MIDI have a p95 33 to 50 % above their p50**, in
+  every round (16 tracks: 1,865 against 2,692 us), in both builds, with sends and with effects.
+  Other rows and block sizes do not show it. It is repeatable, not noise; the cause is not
+  explained yet.
+- Engine heap with every slot reserved: 19.2 MiB for 16 tracks (16/32 build), 36.9 MiB for 32
+  (32/64 build).
+
+What this does not show: a physical device, dense note loads, plugins other than the stock EQ and
+compressor, and the 64-track profile. It is not a supported-limit guarantee; raising the limit
+is E.
+
+Reproduce, on each build directory:
+
+```powershell
+cmake -S . -B build-32x64 -A x64 -DALIEN_SESSION_TRACKS=32 -DALIEN_SESSION_SCENES=64
+cmake --build build-32x64 --config Release --target RackIntegrationTests --parallel 2
+build-32x64/Release/RackIntegrationTests.exe --capacity-report --repeat 5
+```

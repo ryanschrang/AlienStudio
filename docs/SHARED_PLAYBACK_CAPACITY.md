@@ -14,6 +14,10 @@ cmake --build build --config Release --target TrackCapacityReport RackIntegratio
 ./build/Release/RackIntegrationTests.exe --capacity-report
 ```
 
+Add `--repeat N` (1 to 50) to measure every row N times, interleaved, and print the median and
+range over rounds; in a build above 16 tracks it also compares 16 tracks in use with all of them
+(T1-04 D24). Single runs on a laptop mostly measure how warm the processor was.
+
 Use the same commands with Debug to inspect that configuration. The callback
 report constructs the full engine offline, warms each independent workload and
 measures 256 callbacks after 32 warm-up blocks at each block size. The 16-track
