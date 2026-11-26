@@ -216,3 +216,5 @@ was not kept. There is no direct-commit fallback and no project format change.
 no-op redo preservation, invalid-target refusal and failed replacement playback
 restoration. Existing rendered-audio checks cover overdub, replacement, count-in,
 monitoring and note termination. Physical MIDI and Windows listening remain separate.
+
+Session audio removal now uses only `RemoveClipAudio`. The obsolete direct controller `removeAudio` route is removed, and controller/media and frozen-track fixtures submit the named command. CommandEngineTests covers shared audio removal with a mixer edit, Preview/live agreement, addressed publication, one-step Undo/Redo, no-op redo preservation, and late/busy/count-in refusal before live changes (claim #407). Other direct routes and native acceptance remain pending.
