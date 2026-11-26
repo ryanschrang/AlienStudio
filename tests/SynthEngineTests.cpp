@@ -5,6 +5,7 @@
 #include <iostream>
 #include <limits>
 #include <new>
+#include <vector>
 
 static std::size_t allocations = 0;
 void* operator new(std::size_t size) {
@@ -140,6 +141,26 @@ int main() {
     synth.setModulation(9,127);
     require(energy(synth,4800)>0,"modulation keeps the active voice finite and audible");
     synth.allSoundOff();
+    {
+        // T1-04 D25: a voice skips the bend and vibrato maths while its channel's wheel is centred and
+        // modulation is zero. Centring the wheel explicitly must sound exactly like never touching it,
+        // modulation alone must still move the pitch, and a wheel returned to centre plays in tune.
+        const auto render = [](SynthEngine& s, int n) { std::vector<float> out(static_cast<std::size_t>(n));
+            for (auto& x : out) x = s.nextSample(); return out; };
+        const auto crossings = [](const std::vector<float>& v) { int n = 0;
+            for (std::size_t i = 1; i < v.size(); ++i) if (v[i - 1] <= 0 && v[i] > 0) ++n; return n; };
+        const Patch tone{Waveform::sine, 0, 0, 1, .01, 20000};
+        SynthEngine plain, centred, modulated;
+        for (auto* s : {&plain, &centred, &modulated}) { s->prepare(48000); s->setPatch(tone); s->noteOn(69, 1, 3); }
+        centred.setPitchWheel(3, 8192); centred.setModulation(3, 0);
+        modulated.setModulation(3, 127);
+        const auto a = render(plain, 48000), b = render(centred, 48000), c = render(modulated, 48000);
+        require(a == b, "a centred wheel and zero modulation sound exactly like untouched controls");
+        require(a != c, "modulation alone still moves the pitch");
+        SynthEngine returned; returned.prepare(48000); returned.setPatch(tone); returned.noteOn(69, 1, 3);
+        returned.setPitchWheel(3, 0); render(returned, 4800); returned.setPitchWheel(3, 8192);
+        require(std::abs(crossings(render(returned, 48000)) - 440) <= 1, "a wheel returned to centre plays in tune");
+    }
     synth.noteOn(60, 1); synth.prepare(96000);
     require(synth.activeVoices() == 0, "device restart clears notes");
     const auto before = allocations;

@@ -150,8 +150,13 @@ public:
             if (!v.active()) continue;
             const auto index=static_cast<std::size_t>(std::clamp(v.channel,0,
                 static_cast<int>(pitchSemitones.size())-1));
-            const double vibrato=modulation[index]*0.25*std::sin(6.283185307179586*modulationPhase);
-            const double increment=std::min(0.45,v.increment*std::exp2((pitchSemitones[index]+vibrato)/12.0));
+            // T1-04 D25: with the wheel centred and no modulation the factor below is exactly 1, so the
+            // voice keeps its own increment (already at most 0.45) without an exp2 and a sin per sample.
+            double increment = v.increment;
+            if (pitchSemitones[index] != 0.0 || modulation[index] != 0.0) {
+                const double vibrato=modulation[index]*0.25*std::sin(6.283185307179586*modulationPhase);
+                increment=std::min(0.45,v.increment*std::exp2((pitchSemitones[index]+vibrato)/12.0));
+            }
             double value = std::sin(6.283185307179586 * v.phase);
             if (v.waveform == Waveform::saw) value = 2 * v.phase - 1 - blep(v.phase, increment);
             if (v.waveform == Waveform::square) {

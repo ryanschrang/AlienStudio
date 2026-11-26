@@ -1600,3 +1600,54 @@ cmake -S . -B build-32x64 -A x64 -DALIEN_SESSION_TRACKS=32 -DALIEN_SESSION_SCENE
 cmake --build build-32x64 --config Release --target RackIntegrationTests --parallel 2
 build-32x64/Release/RackIntegrationTests.exe --capacity-report --repeat 5
 ```
+
+## Increment D25: synth voices skip pitch maths when nothing bends them
+
+No project format change; the supported limits stay 16 tracks and 32 scenes. The rendered audio is
+unchanged.
+
+D24 found that, at 1,024 frames, rows where every track plays MIDI had a p95 33 to 50 % above their
+p50, and left it unexplained. Timing every block of the 16-track MIDI row showed where: the slow
+blocks come in bursts of five or six right after the test chord's loop restarts (every two seconds),
+where the old chord's voices are still releasing as the new ones start. The 64- and 256-frame rows
+never reach a restart in their measured blocks, which is why only 1,024 frames showed it.
+
+While reading the voice loop for that, a cost every playing voice pays turned up:
+
+- **`SynthEngine::nextSample`** worked out each voice's pitch-bend and vibrato factor with a
+  `std::sin` and a `std::exp2` for every sample, even with the pitch wheel centred and no
+  modulation, when the factor is exactly 1. It now skips both in that case and uses the voice's
+  own increment, which is the same number. The Session track synth and the Channel Rack's synth
+  channels both use it.
+
+### Same audio
+
+The capacity report run with the old and new synth renders the same output energy on all 33 rows,
+to every printed digit. `SynthEngineTests` adds checks that a wheel set to centre with zero
+modulation sounds exactly like controls never touched, that modulation alone still moves the
+pitch, and that a wheel bent and returned to centre plays in tune. Mutation check: with the
+shortcut ignoring modulation, the test fails.
+
+### Measurements
+
+Same machine as D24, Release, 16/32, offline. The old and new builds were run alternately, three
+times each, three rounds per run (`--repeat 3`), so the machine's warmth fell on both alike; the
+table gives the median of the three runs. Rows the change cannot affect (transport only, audio
+clips, drums) moved by 2 % or less at p50 apart from two small ones (1 track idle +7 %, drums at 64
+frames +5 %).
+
+| Workload, 16 tracks | Block frames | p50 us, before | p50 us, D25 | p95 us, before | p95 us, D25 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Every track plays MIDI | 64 | 115.8 | 89.4 (-23 %) | 125.7 | 98.0 (-22 %) |
+| Every track plays MIDI | 1,024 | 1,756 | 1,339 (-24 %) | 2,608 | 1,808 (-31 %) |
+| Sends to 4 returns | 1,024 | 2,094 | 1,690 (-19 %) | 2,968 | 2,142 (-28 %) |
+| Stock EQ + compressor | 1,024 | 2,578 | 2,171 (-16 %) | 3,446 | 2,615 (-24 %) |
+| A rack occurrence on every track | 64 | 189.4 | 153.0 (-19 %) | 199.3 | 163.9 (-18 %) |
+| One MIDI track playing | 64 | 71.6 | 70.1 (-2 %) | 74.1 | 71.8 (-3 %) |
+
+At 1,024 frames the 16-track MIDI row's p95 is now 35 % above its p50 (was 49 %): the bursts at
+each loop restart remain, smaller, because every voice in them costs less. They are the workload's
+shape (two chords sounding at once for a moment), not a fault.
+
+Not covered: a physical device, a voice with the wheel or modulation in use (which takes the old
+path unchanged), and the 32/64 build.
