@@ -536,9 +536,9 @@ static void trackSidechainViewTests(const juce::File& preview) {
     c.markAsNewBaseline(); captures=0; rebuilds=0;
     alien::TrackMixerPanel panel(c,engine->tracks,engine->returns,engine->masterControls,engine->buses); panel.setSize(960,650);
     auto& graph = panel.trackSidechainView();
-    graph.hasInput = [&](int track,int fx) { return host.hasSidechainInput(track,fx); };
-    graph.onKeyRequested = [&](int track,int fx,int source) {
-        const auto result=run(cmd::SetSidechain{alien::RackStage::track,track,fx,alien::KeySource::track,source});
+    graph.hasInput = [&](alien::RackStage stage,int track,int fx) { return host.hasSidechainInput(stage == alien::RackStage::master ? alien::PluginRuntime::masterIndex : track,fx); };
+    graph.onKeyRequested = [&](alien::RackStage stage,int track,int fx,int source) {
+        const auto result=run(cmd::SetSidechain{stage,track,fx,alien::KeySource::track,source});
         panel.refreshSettings(); return result.ok && result.changed;
     };
     panel.showSidechains(true);
@@ -553,6 +553,33 @@ static void trackSidechainViewTests(const juce::File& preview) {
     require(engine->plugins->racks[0].effects[0].keyIndex==-1
         && std::abs(engine->plugins->racks[0].effects[0].processor->getParameters()[0]->getValue()-.78f)<.01f,"Undo removes the key but keeps the captured live setting");
     require(c.redo(),"redo graph key"); rebuild(); panel.refreshSettings();
+    require(run(cmd::InsertDevice{alien::RackStage::master,0,0,compressorState()}).changed
+        && run(cmd::InsertDevice{alien::RackStage::master,0,1,eq}).changed,"master graph FX fixture");
+    panel.refreshSettings();
+    const auto masterRequest=graph.requestFor(0,0,alien::RackStage::master);
+    auto& masterSlot=engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[0];
+    masterSlot.processor->getParameters()[0]->setValueNotifyingHost(.63f);
+    const int masterCaptures=captures, masterRebuilds=rebuilds;
+    require(graph.choose(masterRequest,0) && captures==masterCaptures+1 && rebuilds==masterRebuilds+1
+        && masterSlot.keyIndex==0 && masterSlot.keyFrom==alien::KeySource::track,
+        "master graph permits track zero as a pre-FX key through capture/rebuild");
+    require(std::abs(masterSlot.processor->getParameters()[0]->getValue()-.63f)<.01f,"master graph keeps live plugin settings");
+    require(!graph.choose(masterRequest,0) && !graph.choose(graph.requestFor(0,1,alien::RackStage::master),1)
+        && captures==masterCaptures+1 && rebuilds==masterRebuilds+1,"master no-op and unsupported effect skip plugin callbacks");
+    require(c.undo(),"undo master graph key"); rebuild(); panel.refreshSettings();
+    require(masterSlot.keyIndex==-1 && std::abs(masterSlot.processor->getParameters()[0]->getValue()-.63f)<.01f,
+        "master Undo restores Off and retains captured settings");
+    require(c.redo(),"redo master graph key"); rebuild(); panel.refreshSettings();
+    require(masterSlot.keyIndex==0,"master Redo restores actual runtime key");
+    c.setExternalBusy(true); require(!graph.choose(masterRequest,1),"busy master graph refuses"); c.setExternalBusy(false);
+    engine->recording.phase.store(alien::RecordControls::countIn);
+    const bool masterCounting=graph.choose(masterRequest,1); engine->recording.phase.store(alien::RecordControls::idle);
+    require(!masterCounting && !graph.choose(masterRequest,99),"master count-in and missing source refuse");
+    require(run(cmd::MoveDevice{alien::RackStage::master,0,0,1}).changed && graph.choose(masterRequest,1)
+        && engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyIndex==1,"master deferred choice follows effect instance across FX moves");
+    bool masterNode=false;
+    for (auto* child:graph.getChildren()) if(child->getName().startsWith("Master / FX 2")) masterNode=true;
+    require(masterNode,"master effect has a visible graph node");
     if (preview != juce::File{}) {
         juce::FileOutputStream out(preview);
         require(out.openedOk() && out.setPosition(0) && out.truncate().wasOk()
@@ -574,9 +601,16 @@ static void trackSidechainViewTests(const juce::File& preview) {
     require(run(cmd::RemoveDevice{alien::RackStage::track,1,1}).changed
         && run(cmd::InsertDevice{alien::RackStage::track,1,1,compressorState()}).changed && !graph.choose(request,-1),"replaced FX instance refuses stale choice");
     const auto fresh=graph.requestFor(1,1);
+    require(graph.choose(masterRequest,2) && engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyIndex==3,
+        "master deferred source follows reordered track identity");
+    require(run(cmd::RemoveDevice{alien::RackStage::master,0,1}).changed
+        && run(cmd::InsertDevice{alien::RackStage::master,0,1,compressorState()}).changed && !graph.choose(masterRequest,-1),
+        "replaced master effect refuses stale choice");
+    const auto freshMaster=graph.requestFor(0,1,alien::RackStage::master);
     require(commands.execute(cmd::DeleteTrack{3}).changed,"delete source"); rebuild(); panel.rebuild();
     require(!graph.choose(fresh,3),"deleted source refuses stale choice");
-    c.newProject(); rebuild(); panel.rebuild(); require(!graph.choose(fresh,-1),"replacement project refuses stale choice");
+    require(!graph.choose(freshMaster,3),"deleted master key source refuses stale choice");
+    c.newProject(); rebuild(); panel.rebuild(); require(!graph.choose(fresh,-1) && !graph.choose(freshMaster,-1),"replacement project refuses track and master stale choices");
     panel.showRouting(false); require(!graph.isVisible(),"Strips hides the sidechain view");
 }
 
