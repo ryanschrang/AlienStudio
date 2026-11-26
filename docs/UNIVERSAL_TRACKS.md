@@ -1416,3 +1416,61 @@ snapshots hold 283 MiB.
 Not covered: the running app; real third-party plugins (a plugin that writes a different state each
 time it is asked, for example one that includes a timestamp, is still copied every time); and the
 encoding work itself, which still runs for every plugin on each snapshot.
+
+## Increment D22: callback cost of loaded tracks, sends, audio clips and plugins
+
+No project format change and no engine change; the supported limits stay 16 tracks and 32 scenes.
+
+Measurement gate 2 asks for callback time with notes, audio, sends/returns and plugins at several
+buffer sizes, and gate 3 for loaded versus active track costs. The capacity report
+(`RackIntegrationTests --capacity-report`, also run by the Windows CI capacity job for 16/32 and
+32/64) only timed transport, Session MIDI and rack workloads. D22 adds four rows at 64, 256 and
+1,024 frames:
+
+- **1 Session MIDI track playing** among all tracks in use: loaded versus playing.
+- **16 Session MIDI tracks, sends to 4 returns**: each playing track sends 0.5 to returns A to D.
+- **16 Session audio clips**: one shared, decoded 8 s mono clip launched on every track (no
+  streaming, so no disk reads).
+- **16 Session MIDI tracks, stock EQ + compressor**: both stock effects on every playing track's
+  FX rack, prepared before timing.
+
+The 32/64 build adds the playing, audio and plugin rows for every track. Each row now also checks
+that every launched Session clip is still playing at the end and that no plugin failed, so a row
+measures what it names. As before, a row fails if its callbacks allocate or produce non-finite
+output; timing has no pass threshold.
+
+### Measurements
+
+2026-11-25, Intel Core Ultra 9 288V (8 logical processors, 32 GB), Windows 11, Release, 16/32,
+offline (no device), one run. p50 microseconds per callback, with the p95 share of the block's
+time budget in brackets:
+
+| Workload, 16 tracks in use | 64 frames | 256 frames | 1,024 frames |
+| --- | ---: | ---: | ---: |
+| Transport only, 1 track in use | 16.0 (1.3 %) | 58.8 (1.4 %) | 230 (1.4 %) |
+| Transport only, nothing playing | 85.3 (7.7 %) | 335 (8.7 %) | 1,352 (7.5 %) |
+| 1 Session MIDI track playing | 88.8 (8.3 %) | 339 (8.1 %) | 1,399 (7.9 %) |
+| 16 Session MIDI tracks | 125 (13.7 %) | 475 (12.8 %) | 1,802 (10.8 %) |
+| 16 Session MIDI tracks, sends to 4 returns | 121 (12.9 %) | 461 (10.9 %) | 1,918 (11.5 %) |
+| 16 Session audio clips | 89.6 (11.2 %) | 357 (9.0 %) | 1,401 (7.7 %) |
+| 16 Session MIDI tracks, stock EQ + compressor | 142 (13.4 %) | 561 (12.9 %) | 2,323 (14.1 %) |
+
+Every row made zero callback allocations.
+
+What this shows:
+
+- **A loaded track that plays nothing costs more than making it play.** Going from 1 to 16 tracks
+  in use with nothing playing adds about 4.6 us per 64-frame block per track. Making all 16 play a
+  three-note chord then adds only about 2.5 us per track. So the cost of a larger track limit is
+  mostly the per-track work done for silent tracks (their mixer strips, synth and sampler passes),
+  not the notes. Skipping that work for silent tracks is the obvious next step for D.
+- **Sends cost nothing measurable here.** The four default returns already run with nothing
+  routed to them; sending to them stays within run-to-run noise.
+- **In-memory audio clips are cheap.** Sixteen playing clips cost about the same as sixteen silent
+  tracks.
+- **Two stock effects per track add 13 % at 64 frames and 29 % at 1,024 frames** over the same MIDI
+  load.
+
+Not covered: a physical audio device, buffer sizes chosen by a driver, third-party plugins,
+streamed (disk) audio, more than one run, and the 32/64 build on this machine (the CI job runs it).
+A single CPU percentage is still not a track-count guarantee (gate 2).
