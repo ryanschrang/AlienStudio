@@ -437,7 +437,7 @@ static void missingAudioTests() {
     require(offline.audioOffline() && !offline.hasAudio() && offline.isAudioClip() && !offline.isEmpty() && offline.audioFileName == "loop.wav",
         "the clip is offline but keeps its reference and is not treated as empty or MIDI");
     require(lastStatus.contains("offline") && lastTip.contains("loop.wav") && lastTip.contains("kick.wav"), "the user is told what is offline");
-    require(c.removeAudio(0, 0) == false, "an ordinary MIDI clip has no audio to remove");
+    require(!alien::command::CommandEngine(c).execute(alien::command::RemoveClipAudio{0, 0}).changed, "an ordinary MIDI clip has no audio to remove");
 
     // Saving keeps the references so nothing is lost; a portable save cannot copy what is missing and says so.
     bool done = false, ok = false;
@@ -679,7 +679,7 @@ static void clipLibraryOwnershipTests() {
     const auto file = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("clip-library-test.wav");
     require(c.installAudio(file, 2, 0, audio) && d.clip(2, 0).audio == audio && d.clip(2, 0).audioFilePath == file.getFullPathName()
             && d.media.size() == 1, "imported audio is a media entry its clip plays");
-    require(c.removeAudio(2, 0) && d.media.empty() && !d.clip(2, 0).isAudioClip(), "removing it drops the media entry");
+    require(alien::command::CommandEngine(c).execute(alien::command::RemoveClipAudio{2, 0}).changed && d.media.empty() && !d.clip(2, 0).isAudioClip(), "removing it drops the media entry");
     // Saving writes each cell's content; opening gives every non-empty cell its own clip.
     c.setClipPattern(2, 1, patternWith(62), false);
     auto reopened = alien::fromProjectData(alien::toProjectData(d));
@@ -767,7 +767,7 @@ static void placementUniqueTests() {
     require(c.placementShared(first) && c.placementShared(second), "they share what they play");
     const auto scenes = d.sceneCount();
     const auto clips = d.library.clipCount();
-    require(c.makePlacementUnique(second) && c.undoLabel() == "Make placement unique", "Make placement unique is one undo step");
+    require(alien::command::CommandEngine(c).execute(alien::command::MakeSongClipUnique{second}).changed && c.undoLabel() == "Make placement unique", "Make placement unique is one undo step");
     const auto* own = d.timeline.find(second);
     require(own != nullptr && own->ownsClip() && own->source == -1 && d.sceneCount() == scenes && d.library.clipCount() == clips + 1
             && d.timeline.find(first)->playsCell(), "a MIDI placement gets a clip of its own, with no Session cell or new scene");
@@ -777,7 +777,7 @@ static void placementUniqueTests() {
         "the piano roll edits a placement clip through the command");
     require(d.clip(0, 0).notes().notes[0].pitch == 60 && d.placementContent(*d.timeline.find(second)).notes().notes[0].pitch == 70,
             "editing it leaves the cell and the other placement alone");
-    require(!c.makePlacementUnique(second) && !c.placementShared(first) && !c.placementShared(second), "neither placement shares anything now");
+    require(!alien::command::CommandEngine(c).execute(alien::command::MakeSongClipUnique{second}).changed && !c.placementShared(first) && !c.placementShared(second), "neither placement shares anything now");
     require(c.undo() && d.placementContent(*d.timeline.find(second)).notes().notes[0].pitch == 60, "undo takes the edit back");
     require(c.undo() && d.timeline.find(second)->playsCell() && d.timeline.find(second)->source == 0 && d.library.clipCount() == clips,
             "undo puts it back on the shared cell, and its clip is gone");
@@ -792,7 +792,7 @@ static void placementClipTests() {
     using alien::timeline::ticksPerBar;
     c.setClipPattern(1, 0, patternWith(48), false); c.commit("Notes", 1, 0);
     std::uint32_t a = 0, b = 0;
-    require(c.placeRegion(1, 0, 0, &a) && c.placeRegion(1, 0, 2 * ticksPerBar, &b) && c.makePlacementUnique(a), "a placement clip");
+    require(c.placeRegion(1, 0, 0, &a) && c.placeRegion(1, 0, 2 * ticksPerBar, &b) && alien::command::CommandEngine(c).execute(alien::command::MakeSongClipUnique{a}).changed, "a placement clip");
     const auto clip = d.timeline.find(a)->clip;
     const auto cell = d.cellClip(1, 0);
     require(!alien::command::CommandEngine(c).execute(alien::command::SetPlacementClipNotes{0, std::make_shared<const alien::PianoRollPattern>(patternWith(70))}).ok
@@ -839,7 +839,7 @@ static void placementClipFileTests() {
     using alien::timeline::ticksPerBar;
     c.setClipPattern(0, 0, patternWith(60), false); c.commit("Notes", 0, 0);
     std::uint32_t a = 0, b = 0;
-    require(c.placeRegion(0, 0, 0, &a) && c.placeRegion(0, 0, ticksPerBar, &b) && c.makePlacementUnique(a), "a placement clip");
+    require(c.placeRegion(0, 0, 0, &a) && c.placeRegion(0, 0, ticksPerBar, &b) && alien::command::CommandEngine(c).execute(alien::command::MakeSongClipUnique{a}).changed, "a placement clip");
     require(c.editTimeline("Duplicate", [&](alien::timeline::Timeline& t) { return t.duplicate({a}); }), "and a copy of it");
     require(alien::command::CommandEngine(c).execute(alien::command::SetPlacementClipNotes{d.timeline.find(a)->clip, std::make_shared<const alien::PianoRollPattern>(patternWith(66))}).changed,
         "with notes of its own through the command");
@@ -1014,7 +1014,7 @@ static void savedRackBindingTests() {
     require(sceneCopy != source && c.rackPatternForClip(sceneCopy) >= 0 && d.clip(2, 1).notes().count == 1
         && d.clip(2, 1).notes().notes[0].pitch == 66 && c.undo() && c.redo(),
             "scene copies get independent rack sources, with undo and redo");
-    require(c.makePlacementUnique(region) && d.timeline.find(region)->rackClip != source && c.undo()
+    require(alien::command::CommandEngine(c).execute(alien::command::MakeSongClipUnique{region}).changed && d.timeline.find(region)->rackClip != source && c.undo()
         && d.timeline.find(region)->rackClip == source, "Song Make unique forks the composite source in one undo step");
     const auto data = alien::toProjectData(d);
     const auto json = alien::serializeSessionProject(data);

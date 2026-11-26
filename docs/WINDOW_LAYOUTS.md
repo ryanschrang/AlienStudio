@@ -49,6 +49,10 @@ JUCE TemporaryFile replacement; an invalid state or failed directory creation
 leaves the previous preference file intact. A failed manual save reports its path
 in the status bar. No file I/O runs in an audio callback.
 
+Typing-piano notes are owned by the window that started them. Hiding or destroying a registered detached host releases its held notes immediately, without waiting for the asynchronous desktop focus callback. Removing a host also releases its notes if its focused child was already destroyed. Held keys must be lifted before they can restart after hiding, and unrelated windows keep their notes. Auxiliary key/component listeners are removed together when a host is removed or the router shuts down (claim #393). This is message-thread input cleanup, not an audio callback operation.
+
+When a focused control is destroyed inside a surviving window, its safe focus pointer may clear before desktop focus dispatch. The router still releases held typing notes on that dispatch; two null focus pointers are not treated as unchanged when an earlier focus target was observed. Native-origin typing that never had a focused JUCE control still supports chords and normal key-up release. Focus recovery does not retrigger a key held through deletion, and deleting an unfocused control leaves the current note alone (claim #405).
+
 ## Verification
 
 SongFlowTests covers schema round trips, damaged-state refusal, negative monitor
@@ -57,7 +61,7 @@ bounds and displays smaller than the ordinary minimum. It writes/reloads only a
 test-created preference file and verifies failure/fallback paths. Native host
 tests exercise cached bounds, maximize/normal capture, restoration of the same
 editor, default docking and balanced listener lifecycle. Live display-recovery tests inject changed work-area snapshots into a real native host, covering an unrelated display addition, offscreen recovery, unchanged topology, hidden/minimized deferral, maximized/normal geometry and editor identity. These simulated snapshots do not establish physical hot-plug or mixed-DPI behavior. Existing detach/dock,
-shared typing piano and menu stale-state tests remain part of the suite.
+shared typing piano and menu stale-state tests remain part of the suite. TypingPianoFocusTests includes a regression that failed before the lifecycle fix: destroying the detached source left a note on before focus dispatch. It also covers hide/show repeat suppression, removed focus children, unrelated-window preservation, balanced note-offs and a surviving host after router shutdown.
 
 Build/test results and the tested commit are recorded in the implementation PR.
 Physical Windows multi-monitor/mixed-DPI acceptance remains pending. Before marking

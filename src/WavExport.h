@@ -316,8 +316,9 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         if (capture && engine->plugins->faultCount.load() != faultsBefore) {
             error="Plugin failed during offline capture; no output published."; return false;
         }
-        // A plugin reported more latency than its alignment stage held (T1-04 D): this pass is out of step.
-        if (engine->plugins->alignmentShortfalls() != shortfallsBefore) {
+        // A plugin reported more latency than its alignment stage held (T1-04 D): this pass is out of step. The stem capture's
+        // own lines count the same way (D20).
+        if (engine->plugins->alignmentShortfalls() != shortfallsBefore || (capture && engine->stemCapture->shortfalls != 0)) {
             error="A plugin's latency grew during export, so the tracks were not lined up; no output published. Export again.";
             return false;
         }

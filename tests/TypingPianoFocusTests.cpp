@@ -838,8 +838,113 @@ static void checkSessionClipButton() {
     require(launches == 1 && edits == 1, "right-click edits without launching a Session clip");
 }
 
+static void detachedWindowLifecycleChecks() {
+    juce::Component root;
+    root.setBounds(10,10,300,150); root.setWantsKeyboardFocus(true); root.addToDesktop(0); root.setVisible(true);
+    juce::MidiKeyboardState notes; std::set<int> held;
+    Counter count; notes.addListener(&count);
+    auto makeWindow = [] {
+        auto window = std::make_unique<juce::Component>();
+        window->setBounds(350,10,300,150); window->setWantsKeyboardFocus(true); window->addToDesktop(0); window->setVisible(true);
+        return window;
+    };
+    auto floating = makeWindow();
+    {
+        TypingPianoRouter router(root,notes,[&](int k) { return held.count(k) != 0; });
+        auto focus = [](juce::Component& window) { window.getPeer()->handleFocusGain(); window.grabKeyboardFocus(); pump(); };
+        auto press = [&](juce::Component& window) { held.insert('A'); window.getPeer()->handleKeyPress(juce::KeyPress('a',{},'a')); };
+        auto lift = [&](juce::Component& window) { held.clear(); window.getPeer()->handleKeyUpOrDown(false); };
+        router.addAuxiliaryRoot(*floating);
+        focus(*floating); press(*floating);
+        require(notes.isNoteOn(2,60), "lifecycle fixture starts a detached typing note");
+        floating.reset();
+        require(!notes.isNoteOn(2,60), "destroying an auxiliary window releases its held typing note before focus dispatch");
+        held.clear(); floating = makeWindow();
+        router.addAuxiliaryRoot(*floating); router.addAuxiliaryRoot(*floating);
+        focus(*floating); press(*floating);
+        require(notes.isNoteOn(2,60), "a new auxiliary window can play after the previous one is destroyed");
+        floating->setVisible(false);
+        require(!notes.isNoteOn(2,60), "hiding the source window releases typing notes synchronously");
+        floating->setVisible(true); focus(*floating); press(*floating);
+        require(!notes.isNoteOn(2,60), "showing a window cannot restart a key still held through hiding");
+        lift(*floating); press(*floating);
+        require(notes.isNoteOn(2,60), "lifting and pressing the key starts a fresh note");
+        lift(*floating);
+        auto child = std::make_unique<juce::Component>();
+        child->setWantsKeyboardFocus(true); child->setBounds(10,10,100,50); floating->addAndMakeVisible(*child);
+        child->grabKeyboardFocus(); pump(); press(*floating);
+        require(notes.isNoteOn(2,60), "focused child starts a detached note");
+        child.reset(); router.removeAuxiliaryRoot(*floating);
+        require(!notes.isNoteOn(2,60), "removing the source root releases its note even after its focused child disappeared");
+        held.clear(); router.addAuxiliaryRoot(*floating); focus(root); press(root);
+        require(notes.isNoteOn(2,60), "main window note fixture");
+        floating->setVisible(false);
+        require(notes.isNoteOn(2,60), "hiding an unrelated auxiliary window preserves the main note");
+        floating.reset();
+        require(notes.isNoteOn(2,60), "destroying an unrelated auxiliary window preserves the main note");
+        lift(root);
+        require(!notes.isNoteOn(2,60) && count.ons == count.offs, "each lifecycle note has exactly one matching note-off");
+        floating = makeWindow(); router.addAuxiliaryRoot(*floating);
+    }
+    // Router destruction must detach both listeners from a surviving auxiliary root.
+    floating->setVisible(false); floating.reset();
+    notes.removeListener(&count);
+    root.removeFromDesktop();
+}
+
+static void noFocusTypingFallbackChecks() {
+    juce::Component window;
+    window.setBounds(10,10,300,150); window.setWantsKeyboardFocus(false); window.addToDesktop(0); window.setVisible(true);
+    window.getPeer()->handleFocusGain(); pump();
+    require(juce::Component::getCurrentlyFocusedComponent()==nullptr,"fallback fixture has native focus without a focused JUCE control");
+    juce::MidiKeyboardState notes; std::set<int> held;
+    {
+        TypingPianoRouter router(window,notes,[&](int k) { return held.count(k) != 0; });
+        held.insert('A'); window.getPeer()->handleKeyPress(juce::KeyPress('a',{},'a'));
+        held.insert('S'); window.getPeer()->handleKeyUpOrDown(true); window.getPeer()->handleKeyPress(juce::KeyPress('s',{},'s'));
+        require(notes.isNoteOn(2,60) && notes.isNoteOn(2,62),"native-origin fallback preserves polyphonic held notes without a JUCE focus target");
+        held.clear(); window.getPeer()->handleKeyUpOrDown(false);
+        require(!notes.isNoteOn(2,60) && !notes.isNoteOn(2,62),"fallback key-up releases both notes");
+    }
+    window.removeFromDesktop();
+}
+
+static void deletedFocusNoteChecks() {
+    juce::Component window;
+    window.setBounds(10,10,300,150); window.setWantsKeyboardFocus(false); window.addToDesktop(0); window.setVisible(true);
+    auto child = std::make_unique<juce::Component>();
+    child->setBounds(10,10,100,50); child->setWantsKeyboardFocus(true); window.addAndMakeVisible(*child);
+    juce::MidiKeyboardState notes; Counter count; notes.addListener(&count); std::set<int> held;
+    {
+        TypingPianoRouter router(window,notes,[&](int k) { return held.count(k) != 0; });
+        window.getPeer()->handleFocusGain(); child->grabKeyboardFocus(); pump();
+        require(child->hasKeyboardFocus(false),"deleted-focus fixture focuses its child");
+        held.insert('A'); window.getPeer()->handleKeyPress(juce::KeyPress('a',{},'a'));
+        require(notes.isNoteOn(2,60),"focused child starts a typing note");
+        child.reset(); pump();
+        require(juce::Component::getCurrentlyFocusedComponent()==nullptr,"deleting the child leaves no replacement focus");
+        require(!notes.isNoteOn(2,60) && count.offs==1,"deleting a focused control releases its note when focus dispatch runs");
+        child=std::make_unique<juce::Component>(); child->setBounds(10,10,100,50); child->setWantsKeyboardFocus(true); window.addAndMakeVisible(*child);
+        child->grabKeyboardFocus(); pump();
+        window.getPeer()->handleKeyPress(juce::KeyPress('a',{},'a'));
+        require(!notes.isNoteOn(2,60),"focus recovery does not restart a key held through control deletion");
+        held.clear(); window.getPeer()->handleKeyUpOrDown(false);
+        held.insert('A'); window.getPeer()->handleKeyPress(juce::KeyPress('a',{},'a'));
+        require(notes.isNoteOn(2,60),"lifting and pressing again starts a fresh note after deleted focus");
+        auto unrelated=std::make_unique<juce::Component>(); window.addAndMakeVisible(*unrelated); unrelated.reset(); pump();
+        require(notes.isNoteOn(2,60),"deleting an unfocused control preserves the current note");
+        window.setVisible(false); pump();
+        require(!notes.isNoteOn(2,60) && count.ons==count.offs,"note-offs stay balanced after focus recovery and host hiding");
+        held.clear();
+    }
+    notes.removeListener(&count); child.reset(); window.removeFromDesktop();
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    noFocusTypingFallbackChecks();
+    deletedFocusNoteChecks();
+    detachedWindowLifecycleChecks();
     juce::Component shell, root, piano, outside;
     juce::TextButton play{"Play"}, octaveUp{"Octave Up"};
     juce::TextEditor editor;

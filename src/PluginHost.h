@@ -371,6 +371,37 @@ public:
         for (int c = 0; c < PluginRuntime::maxRackChannels; ++c)
             check(PluginRuntime::channelBase + c, overLimitChannels[static_cast<std::size_t>(c)]);
     }
+    // T1-04 D18. Message thread, once an offline render (a freeze) has finished with this host: the plugins that
+    // failed during it and the chains past the latency limit, as text for the user (each empty when there is
+    // nothing). The callbacks are left as they were; a failure is reported once, as by poll().
+    struct RenderReport { juce::String failures, latency; };
+    RenderReport renderReport() {
+        RenderReport out;
+        auto problem = std::move(onProblem);
+        auto late = std::move(onLatencyProblem);
+        onProblem = [&out](const juce::String& text) { out.failures += text + "\n"; };
+        onLatencyProblem = nullptr;
+        poll();
+        onProblem = std::move(problem);
+        onLatencyProblem = std::move(late);
+        latencyProblems(out.latency);
+        out.failures = out.failures.trim();
+        out.latency = out.latency.trim();
+        return out;
+    }
+    // What a finished freeze render means for the track (D18). A plugin that failed while rendering was switched
+    // off, so the frozen audio would be missing its sound: the freeze stops and the track is left as it was. A
+    // chain past the latency limit, or notes the render had no room for (D10, D11), still freeze, with a warning.
+    struct FreezeOutcome { bool install{}; juce::String status; };
+    static FreezeOutcome freezeOutcome(const RenderReport& report, const juce::String& droppedNotes) {
+        if (report.failures.isNotEmpty())
+            return {false, "Freeze stopped: a plugin failed while the track was rendering, so the frozen audio would be missing "
+                           "its sound. Original track unchanged.\n" + report.failures};
+        juce::String status = "Track frozen. Fader, pan, sends and automation remain live; right-click the track header to unfreeze.";
+        if (droppedNotes.isNotEmpty()) status += "  WARNING: " + droppedNotes + "; the frozen audio is missing them.";
+        if (report.latency.isNotEmpty()) status += "  WARNING: " + report.latency.replace("\n", " ");
+        return {true, status};
+    }
     // "The plugins on track 2 report 120,000 samples of latency, ..." (place as where() names it).
     static juce::String latencyLimitText(const juce::String& place, std::int64_t latency) {
         const auto count = [](std::int64_t n) {
@@ -559,7 +590,11 @@ private:
         if (!slot.processor || slot.faulted.get()) return;
         juce::MemoryBlock bytes; fault::Fault fault;
         if (!fault::guarded([&]{ slot.processor->getStateInformation(bytes); },fault)) { runtime.markFaulted(slot,rack,index,PluginPhase::saveState,fault); return; }
-        state.stateBase64=bytes.toBase64Encoding();
+        // T1-04 D21: an unchanged state keeps the string it already has. juce::String copies share
+        // their text, so every undo step and autosave that copies the document shares this one
+        // buffer, instead of holding its own copy of every plugin's state.
+        auto encoded=bytes.toBase64Encoding();
+        if (encoded!=state.stateBase64) state.stateBase64=std::move(encoded);
     }
     void audioProcessorParameterChanged(juce::AudioProcessor*,int,float) override { changed.store(true); }
     void audioProcessorChanged(juce::AudioProcessor*,const juce::AudioProcessorListener::ChangeDetails& details) override {

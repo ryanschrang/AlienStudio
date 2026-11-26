@@ -628,7 +628,7 @@ What this shows:
   This is consistent with the engine's three-slot Song snapshot mailbox, whose old snapshots share
   the document's patterns; it was not traced further.
 
-Not measured: freeze, stems, source replacement, plugins and their state, malloc-based storage
+Not measured: freeze and stems (measured in D19), source replacement, plugins and their state, malloc-based storage
 (JUCE `HeapBlock`), the 32/64 build, and anything but this one synthetic project. A next step for
 D is to release retained audio of a replaced project once the engine no longer refers to it.
 
@@ -1056,7 +1056,7 @@ Mutation checks: with the "named once" guard removed, or the shortfall report di
 
 Not covered: the status bar in the running app, the export summary and a real latent third-party
 plugin (the test plugin reports the latency it is told to). Freezing a track does not collect the
-report.
+report (D18 adds that).
 
 ## Increment D14: a replaced project's Channel Rack samples are freed
 
@@ -1256,6 +1256,166 @@ Not covered:
 - the running app;
 - a sliced or key-zoned channel switched to another file (the views and maps go by D14's rule,
   which `rackCacheTests` covers for an open, not for this sweep).
+
+## Increment D18: a freeze collects its render's plugin report
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+A freeze renders the track offline with its own engine and plugin host, then installs the result.
+Unlike an export, it never asked that host what happened during the render:
+
+- **A plugin that failed while rendering** was switched off (its fault contained, as always), so
+  the frozen audio was missing its sound. The freeze still replaced the live track, said "Track
+  frozen" and gave no sign of it.
+- **A chain past the latency limit** (D13) plays late in the frozen audio too, with no warning.
+
+What D18 changes:
+
+- **`PluginHost::renderReport()`** collects, once the render has finished, the failures `poll()`
+  reports and the D13 latency report. It leaves the host's own callbacks in place and doesn't call
+  them; each failure and each chain past the limit is reported once, as by `poll()`.
+- **`PluginHost::freezeOutcome(report, droppedNotes)`** decides what the freeze does:
+  - a plugin failed: the freeze stops, the rendered file is deleted, the track is left as it was,
+    and the status bar says "Freeze stopped: a plugin failed while the track was rendering ...
+    Original track unchanged." with the plugin's report;
+  - otherwise the track freezes, and the status bar adds a warning for notes the render had no
+    room for (D10, D11, as before) and for a chain past the latency limit, on one line.
+- The app's freeze job uses both on the message thread, before running the `FreezeTrack` command.
+
+Nothing changes on the audio thread.
+
+Tests:
+- `PluginFaultTests`:
+  - a healthy render reports nothing and freezes with no warning, or with the dropped-note warning;
+  - a plugin that crashes during the render is named with its slot, and the freeze stops with
+    "Original track unchanged";
+  - the host's own problem callback stays set and is not called;
+  - a second report doesn't repeat the failure.
+- `PluginRuntimeTests`: a host whose chains are past the latency limit gives a render report that
+  names track 2 and the Channel Rack instrument. The freeze installs with the warning on one line,
+  the host's latency callback is untouched, and the next report doesn't repeat it.
+
+Not covered: the running app's freeze job itself (it calls these two functions) and a real
+third-party plugin failing during a freeze.
+
+## Increment D19: peak memory during stem export and freeze
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+Gate 1 asks for peak allocation during freeze and export. D4 measured a plain Song export, but
+stem export and freeze were listed as not measured. `MemoryPeakTests` now measures both on the
+same full project, the way the app runs them:
+
+- **Stem export:** a copy of the project and Song, and a render engine of its own, with a file
+  for every track and bus.
+- **Freeze:** the same, rendering track 0 alone. Then decoding the render
+  (`importSessionAudioClip`) and installing it with the `FreezeTrack` command.
+
+2026-11-24, Release, 16/32 (`MemoryPeakTests --report`), same project as D4:
+
+| Step | Live before (MiB) | Peak (MiB) | Peak above before (MiB) | Live after (MiB) |
+| --- | ---: | ---: | ---: | ---: |
+| Export the 8-bar Song (render engine of its own) | 58.0 | 77.3 | 19.3 | 58.0 |
+| Export stems of the 8-bar Song (a file per track and bus) | 58.0 | 95.7 | 37.7 | 58.0 |
+| Freeze one track: render it alone | 58.1 | 95.8 | 37.6 | 58.1 |
+| Freeze one track: decode the render and install it | 58.1 | 64.5 | 6.4 | 64.2 |
+
+New checks:
+- a stem export writes a file for every track and returns its render engine and copies;
+- a freeze render returns its render engine and copies;
+- once installed, a freeze keeps only its frozen audio: 16 s of stereo float, 6.1 MiB, plus its
+  undo step.
+
+What this shows:
+- **A freeze render costs as much as 16 stems** (37.6 vs 37.7 MiB above the open project), about
+  18 MiB more than a plain export, though only one track plays. Both turn on the render's stem
+  capture. `StemCapture::prepare()` sizes each of its 25 delay lines (16 tracks, the Channel
+  Rack's direct bus and 8 group buses) to the full 96,000-sample maximum, about 0.73 MiB each:
+  25 × 0.73 ≈ 18.3 MiB, needed even when no plugin reports any latency. Sizing them to the latency
+  the render actually has, as D1 and D15 did for the live engine, is a next step.
+- **Decoding and installing the freeze costs little more than the frozen audio itself** (6.4 MiB
+  at the peak, 6.1 MiB kept).
+
+**A freeze with nowhere to put its audio is refused before it renders.** Measuring the freeze found
+that, on a track whose every cell holds a clip in a Session at its scene limit, `freezeRefusal()`
+said yes. The app rendered the whole track and only then failed at install with "The Session has
+reached its scene limit." Now:
+- `freeze_edit::freeCell()` finds the cell that takes the frozen audio (the same search `install()`
+  used);
+- `freezeRefusal()` refuses when there is no such cell and no room for another scene: "The Session
+  is at its scene limit and this track has no empty cell for the frozen audio. Clear an unused cell
+  on this track or delete a scene, then freeze."
+
+The test checks the refusal on the full project, deletes the last scene, and checks that the
+freeze then goes ahead.
+
+Mutation check: with the new refusal disabled, the test fails.
+
+Nothing changes on the audio thread.
+
+Not measured: plugins in the render, the 32/64 build, and malloc-based storage, as in D4. Not
+covered: the refusal in the running app.
+
+## Increment D20: stem and freeze capture delay lines sized to latency
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+A stem export or a freeze renders on its own engine with a `StemCapture`, which keeps each track,
+the rack's direct bus and each group bus in its own buffer. Tracks wait for the bus and return
+stages they skip, and group buses wait for the returns, so every file lines up. D19 measured that
+these 25 lines were always full length: 96,001 stereo samples each, 18.3 MiB per render, even when
+no plugin has any latency. That made a one-track freeze peak as high as a full stem export.
+
+What D20 changes (`StemCapture`, `ToneEngine::prepare`, `exportArrangementWav`):
+
+- **Sized to this render.** `prepare(plugins)` runs after the plugins are prepared. It sizes the
+  dry lines to the bus plus return latency and the group-bus lines to the return latency, rounded up
+  to D1's 1,024-sample granules. A render with no latent bus or return plugin holds 200 bytes of
+  capture delay audio. The lines are still allocated before the render, never on the callback.
+- **Shortfalls fail the render.** A line asked for more delay than it holds (a plugin whose latency
+  grew after the capture was prepared) delays as much as it can and counts a shortfall. The export
+  or freeze then stops without publishing, with the same message as D1's alignment stages.
+
+Tests (`FlexibleReturnTests`):
+- a 3-sample latent return lines its stems up as before, with each capture line one granule long;
+- a capture with no latency holds under 1 KiB of delay audio (was 18.3 MiB);
+- a capture prepared for less latency than the return reports counts a shortfall.
+
+Not covered: the running app; a real latent third-party plugin; a peak-memory figure for a freeze
+after this change (D19's measurement is in its own pull request); and the export-level refusal,
+since no test plugin changes its latency in the middle of a render.
+
+## Increment D21: unchanged plugin states shared across undo steps
+
+No project format change; the supported limits stay 16 tracks and 32 scenes.
+
+Gate 1 left plugins and their state unmeasured. The document keeps each mixer plugin's saved state
+(track, master, bus and return racks) as base64 text, and `DocumentHistory` keeps up to 200 full
+copies of the document. A `juce::String` copy shares its text, so those copies would cost almost
+nothing, except that `PluginHost::capture` always stored a freshly encoded string. Every time the
+plugin states were copied into the document (before a structural edit, on save and on autosave once
+something changed), every plugin got a new buffer, including the ones that had not changed. Each new
+undo step then held its own copy of every plugin's state. With ten plugins of 1 MiB state each, that
+is about 13 MiB per step, and the 200-step history could hold gigabytes.
+
+What D21 changes (`PluginHost::capture`): a state that encodes to the text the document already
+holds keeps that string, so the document, its undo steps and the autosave copy share one buffer. A
+state that changed still gets a new one, which undo needs. Channel Rack plugin instruments already
+kept an unchanged state (`rack::Project::setPluginState`).
+
+Tests (`PluginFaultTests`):
+- one effect with a 1 MiB state and one with a 64 KiB state, snapshotted 200 times and kept like
+  history steps, with the smaller one changing every 50 snapshots;
+- the 1 MiB state is one shared buffer across all 200 snapshots, and the changing one has one per
+  change (four);
+- the snapshots hold 1.7 MiB of plugin state. Before the fix they held 283 MiB.
+
+Mutation check: with the fresh string always stored again, both sharing checks fail and the
+snapshots hold 283 MiB.
+
+Not covered: the running app; real third-party plugins (a plugin that writes a different state each
+time it is asked, for example one that includes a timestamp, is still copied every time); and the
+encoding work itself, which still runs for every plugin on each snapshot.
 
 ## Increment D22: callback cost of loaded tracks, sends, audio clips and plugins
 

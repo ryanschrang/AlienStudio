@@ -102,6 +102,14 @@ imports placed on the Song timeline run their own command, `ImportSongAudio`, th
 
 ## Direct route cleanup
 
+Song placement independence now uses only `MakeSongClipUnique`; the obsolete
+`makePlacementUnique` controller commit wrapper is removed. Controller, note-edit,
+Song-paste and timeline fixtures use the same command as the Song menu.
+CommandEngineTests covers MIDI/rack independence and a mixer edit in one batch:
+pure Preview, original source preservation, Song/rack publication, one-step
+Undo/Redo and no-op/late/busy/count-in refusal preserving ownership and redo
+(claim #397). Other direct routes and native acceptance remain pending.
+
 Session clipboard edits now use only `PasteClip`, `PasteLinkedClip` and
 `MakeClipUnique`; the direct `pasteCell` and `makeCellUnique` commit wrappers
 are removed. Clipboard capture stays a separate lifecycle action. Controller,
@@ -208,3 +216,5 @@ was not kept. There is no direct-commit fallback and no project format change.
 no-op redo preservation, invalid-target refusal and failed replacement playback
 restoration. Existing rendered-audio checks cover overdub, replacement, count-in,
 monitoring and note termination. Physical MIDI and Windows listening remain separate.
+
+Session audio removal now uses only `RemoveClipAudio`. The obsolete direct controller `removeAudio` route is removed, and controller/media and frozen-track fixtures submit the named command. CommandEngineTests covers shared audio removal with a mixer edit, Preview/live agreement, addressed publication, one-step Undo/Redo, no-op redo preservation, and late/busy/count-in refusal before live changes (claim #407). Other direct routes and native acceptance remain pending.
