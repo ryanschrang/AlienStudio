@@ -753,13 +753,24 @@ private:
                 laneAutomated[static_cast<std::size_t>(lane.track)] = true;
                 if (alien::automation::sendIndex(lane.parameter) >= 0) sending[static_cast<std::size_t>(lane.track)] = true;
             }
+        // T1-04 D29: a track whose block is all zeros, with its fader settled, no automation lane and no
+        // send gliding or open, would only add zeros to its bus or the master and meter nothing. It is left
+        // out of the per-sample mix; its post-fader key is silence, as the loop would have written.
+        std::array<std::size_t, sessionTracks> mixedTracks{};
+        std::size_t mixedCount = 0;
+        for (std::size_t t = 0; t < blockTracks; ++t) {
+            if (!stemCapture && !laneAutomated[t] && !sending[t] && trackMixers[t].settled()
+                && silentBlock(plugins->tracks[t], samples)) plugins->silentPostFaderKey(t, samples);
+            else mixedTracks[mixedCount++] = t;
+        }
         for (int i = 0; i < samples; ++i) {
             float left = plugins->live.getSample(0,i), right = plugins->live.getSample(1,i);
             if (stemCapture) {
                 stemCapture->buses[alien::StemCapture::directBus].setSample(0,i,left);
                 stemCapture->buses[alien::StemCapture::directBus].setSample(1,i,right);
             }
-            for (std::size_t t = 0; t < blockTracks; ++t) {
+            for (std::size_t m = 0; m < mixedCount; ++m) {
+                const std::size_t t = mixedTracks[m];
                 float l = plugins->tracks[t].getSample(0,i), r = plugins->tracks[t].getSample(1,i);
                 const float preLeft = l, preRight = r;
                 const alien::TrackSettings* current = &blockSettings[t];

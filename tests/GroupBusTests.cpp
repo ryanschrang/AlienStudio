@@ -124,6 +124,30 @@ static void silentBusSkip() {
     require(rig.left[0] < 0.21f && rig.left[1023] > rig.left[0], "a fader moved while the bus plays glides from where it was");
 }
 
+// T1-04 D29: a track whose block is silent, with its fader settled and nothing sent, is left out of the
+// per-sample mix. Its meter still goes dark, and a fader moved while it is silent still glides.
+static void silentTrackSkip() {
+    Rig rig;
+    auto& voice = *static_cast<TestProcessor*>(rig.engine->plugins->racks[0].instrument.processor.get());
+    require(approx(rig.settled().first, 0.3f) && rig.track(0).peak.load() > 0.19f, "the track plays");
+    voice.factor = 0.0f;
+    require(approx(rig.settled().first, 0.1f) && rig.track(0).peak.load() == 0.0f && rig.track(1).peak.load() > 0.09f,
+            "a silent track meters silence and the other still plays");
+    rig.track(0).gain.store(0.5f);
+    rig.render(12);
+    voice.factor = 1.0f;
+    rig.render(1);
+    require(approx(rig.left[0], 0.2f) && approx(rig.left[1023], 0.2f), "a fader moved while the track was silent has finished gliding");
+    rig.track(0).gain.store(1.0f);
+    rig.render(1);
+    require(rig.left[0] < 0.21f && rig.left[1023] > rig.left[0], "a fader moved while the track plays glides from where it was");
+    rig.route(0, 0);
+    voice.factor = 0.0f;
+    require(approx(rig.settled().first, 0.1f) && rig.bus(0).peak.load() == 0.0f, "a silent track adds nothing to its bus");
+    voice.factor = 1.0f;
+    require(approx(rig.settled().first, 0.3f) && rig.bus(0).peak.load() > 0.19f, "and is heard through it again once it plays");
+}
+
 static void soloAcrossBuses() {
     Rig rig;
     rig.route(0, 0);
@@ -551,6 +575,7 @@ int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI juce;
     busLevels();
     silentBusSkip();
+    silentTrackSkip();
     soloAcrossBuses();
     busDelayCompensation();
     realTimeSafety();
