@@ -108,6 +108,7 @@ public:
             if (v.envelope.state() == Envelope::Stage::release && (!chosen || v.age < chosen->age)) chosen = &v;
         if (!chosen) for (auto& v : voices) if (!chosen || v.age < chosen->age) chosen = &v;
         *chosen = Voice{};
+        span = std::max(span, static_cast<std::size_t>(chosen - voices.data()) + 1);
         chosen->note = note; chosen->channel = channel; chosen->age = ++age;
         chosen->velocity = std::clamp(velocity, 0.0f, 1.0f);
         chosen->increment = std::min(0.45, 440.0 * std::exp2((note - 69) / 12.0) / sampleRate);
@@ -128,7 +129,7 @@ public:
             modulation[static_cast<std::size_t>(channel)] = std::clamp(value, 0, 127) / 127.0;
     }
     void allSoundOff() noexcept {
-        voices = {}; age = 0; pitchSemitones.fill(0.0); modulation.fill(0.0); modulationPhase=0.0;
+        voices = {}; span = 0; age = 0; pitchSemitones.fill(0.0); modulation.fill(0.0); modulationPhase=0.0;
     }
     void allSoundOff(int channel) noexcept {
         for (auto& v : voices) if (v.channel == channel) v = {};
@@ -138,15 +139,17 @@ public:
         }
     }
     std::size_t activeVoices() const noexcept {
-        std::size_t n = 0; for (const auto& v : voices) if (v.active()) ++n; return n;
+        std::size_t n = 0; for (std::size_t i = 0; i < span; ++i) if (voices[i].active()) ++n; return n;
     }
     bool isNoteActive(int note) const noexcept {
-        for (const auto& v : voices) if (v.active() && v.note == note) return true;
+        for (std::size_t i = 0; i < span; ++i) if (voices[i].active() && voices[i].note == note) return true;
         return false;
     }
     float nextSample() noexcept {
         double sum = 0;
-        for (auto& v : voices) {
+        // T1-04 D26: only the first `span` voices can be sounding, so the loop stops there (same order, same sum).
+        for (std::size_t slot = 0; slot < span; ++slot) {
+            auto& v = voices[slot];
             if (!v.active()) continue;
             const auto index=static_cast<std::size_t>(std::clamp(v.channel,0,
                 static_cast<int>(pitchSemitones.size())-1));
@@ -169,6 +172,7 @@ public:
             if (std::abs(v.filtered) < 1e-20) v.filtered = 0;
             sum += v.filtered * v.envelope.next() * v.velocity;
         }
+        while (span > 0 && !voices[span - 1].active()) --span;
         modulationPhase += 5.0/sampleRate;
         if(modulationPhase>=1.0) modulationPhase-=1.0;
         return static_cast<float>(sum * voiceMixScale);
@@ -186,6 +190,10 @@ private:
         bool active() const noexcept { return envelope.state() != Envelope::Stage::idle; }
     };
     std::array<Voice, maxVoices> voices{};
+    // T1-04 D26: every voice from index `span` on is idle. A note-on can only raise it, to just past the voice it
+    // takes; a full reset clears it; a sample shrinks it past voices that have finished. The Channel Rack gives each
+    // of its notes a synth of its own, so there `span` is 1 and a sample visits one voice instead of 16, twice.
+    std::size_t span{};
     std::array<double,128> pitchSemitones{},modulation{};
     double sampleRate{44100},modulationPhase{}; std::uint64_t age{}; Patch patch{presets[0]};
 };

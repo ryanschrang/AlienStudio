@@ -1651,3 +1651,61 @@ shape (two chords sounding at once for a moment), not a fault.
 
 Not covered: a physical device, a voice with the wheel or modulation in use (which takes the old
 path unchanged), and the 32/64 build.
+
+## Increment D26: the synth visits only the voices a note can be sounding in
+
+No project format change; the supported limits stay 16 tracks and 32 scenes. The rendered audio is
+unchanged.
+
+After D25, a rack occurrence was still the most expensive thing a track could hold (16 of them:
+153 us per 64-frame block), and D23 had left "its synth's voice check" on the list of what a silent
+track still costs. Both come from the same loop:
+
+- **`SynthEngine`** has 16 voices and, for every sample, walked all 16 to render the sounding ones.
+  The Channel Rack gives each of its notes a synth of its own, which only ever holds that one note,
+  and then asked the synth, again for every sample, how many voices were sounding (another walk of
+  all 16) to know when the note had ended. Every Session track's synth did the first walk too, even
+  with nothing playing.
+- The synth now keeps `span`: every voice from that index on is idle. A note-on raises it to just
+  past the voice it takes, a full reset clears it, and each sample shrinks it past voices that have
+  finished. Rendering, the sounding count and the note check stop at `span`, so a rack note visits
+  one voice instead of 16, twice, and an idle track's synth visits none. Voices are still summed in
+  the same order, so the output is the same to the last bit.
+
+### Same audio
+
+The capacity report run with the old and new synth renders the same output energy on all 33 rows,
+to every printed digit, with zero callback allocations. `SynthEngineTests` adds checks that a note
+held above notes that have finished is still sounding and counted, that a new note reuses a freed
+slot below it, that a reset starts from nothing and that a per-channel reset silences its voices.
+Mutation check: with the span shrunk by looking at the first voice instead of the last, the test
+fails.
+
+### Measurements
+
+Same machine as D24, Release, 16/32, offline. The old and new builds were run alternately, three
+times each, three rounds per run (`--repeat 3`); the table gives the median of the three runs. One
+more pair run in the opposite order (new first) showed the same changes, within a few percent.
+
+| Workload, 16 tracks | Block frames | p50 us, before | p50 us, D26 | p95 us, before | p95 us, D26 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A rack occurrence on every track | 64 | 169.4 | 124.5 (-27 %) | 194.2 | 140.9 (-27 %) |
+| A rack occurrence on every track | 1,024 | 2,599 | 1,856 (-29 %) | 2,929 | 2,220 (-24 %) |
+| 4 Song rack occurrences | 64 | 95.8 | 76.8 (-20 %) | 110.7 | 86.9 (-21 %) |
+| Transport, no clips | 64 | 75.7 | 63.0 (-17 %) | 87.0 | 70.0 (-20 %) |
+| Every track plays an audio clip | 64 | 86.1 | 70.1 (-19 %) | 104.8 | 83.7 (-20 %) |
+| Every track plays drums | 64 | 80.0 | 64.1 (-20 %) | 92.4 | 72.3 (-22 %) |
+| Every track plays MIDI | 64 | 103.5 | 93.0 (-10 %) | 122.6 | 109.5 (-11 %) |
+| Every track plays MIDI through a stock EQ and compressor | 64 | 153.7 | 155.7 (+1 %) | 187.1 | 180.4 (-4 %) |
+
+- **Every row that holds a track's synth without many notes in it gets cheaper**, idle ones
+  included: a silent loaded track now costs about 3.0 us per 64-frame block in these runs (was 3.7; the 1 and 16 idle-track rows, divided by 15).
+- **The rows that play a chord on every track gain least** (-10 %, and about nothing with two stock
+  effects), because those synths already had three of their voices sounding and the effects
+  dominate.
+- Two p95 figures went up in one run (1 rack occurrence at 256 and 1,024 frames, +5 and +7 %; EQ
+  and compressor at 256 frames, +36 %) with their p50 down; the opposite-order pair did not repeat
+  them, so they read as single slow rounds, not a cost.
+
+Not covered: a physical device, the 32/64 build, and plugin instruments in the rack (which never
+used the built-in synth).
