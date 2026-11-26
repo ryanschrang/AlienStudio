@@ -161,6 +161,26 @@ int main() {
         returned.setPitchWheel(3, 0); render(returned, 4800); returned.setPitchWheel(3, 8192);
         require(std::abs(crossings(render(returned, 48000)) - 440) <= 1, "a wheel returned to centre plays in tune");
     }
+    {
+        // T1-04 D26: the synth only visits voices up to the last one a note can be sounding in. A note held above
+        // finished ones keeps sounding and is still counted; a new note reuses the freed slot below it; a reset
+        // starts from nothing; and the rack's one-note synths end their note exactly as before.
+        const Patch quick{Waveform::sine, 0, 0, 1, .001, 20000};
+        SynthEngine s; s.prepare(48000); s.setPatch(quick);
+        s.noteOn(60, 1); s.noteOn(64, 1); s.noteOn(67, 1);
+        s.noteOff(60); s.noteOff(64); energy(s, 480);
+        require(s.activeVoices() == 1 && s.isNoteActive(67) && !s.isNoteActive(60), "a note held above finished ones is counted");
+        require(energy(s, 480) > 0, "a note held above finished ones keeps sounding");
+        s.noteOn(72, 1);
+        require(s.activeVoices() == 2 && s.isNoteActive(72) && s.isNoteActive(67), "a new note takes a freed slot below");
+        s.noteOff(67); s.noteOff(72); energy(s, 480);
+        require(s.activeVoices() == 0 && energy(s, 64) == 0, "every finished note leaves silence");
+        for (int n = 0; n < 16; ++n) s.noteOn(40 + n, 1);
+        s.allSoundOff(); s.noteOn(50, 1);
+        require(s.activeVoices() == 1 && energy(s, 64) > 0, "after a reset the first note sounds alone");
+        s.allSoundOff(5); s.allSoundOff(0);
+        require(s.activeVoices() == 0 && energy(s, 64) == 0, "a per-channel reset silences its voices");
+    }
     synth.noteOn(60, 1); synth.prepare(96000);
     require(synth.activeVoices() == 0, "device restart clears notes");
     const auto before = allocations;
