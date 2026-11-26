@@ -81,16 +81,18 @@ static void drumPadCommandChecks() {
     require(commands.execute(cmd::ClearDrumPad{0,7}).ok && historyOf(c)==redo,"empty-pad clear preserves redo");
     const auto late=commands.batch({clearAndMix[0],clearAndMix[1],cmd::ClearDrumPad{0,99}},"Invalid clear");
     c.setExternalBusy(true); const auto busyBatch=commands.batch(clearAndMix,"Busy clear"); c.setExternalBusy(false);
-    for(const auto phase : {alien::RecordControls::countIn,alien::RecordControls::recording}) {
-        engine->recording.phase.store(phase);
-        require(!commands.batch(clearAndMix,"Recording clear").ok,"count-in/recording refuses clear/mixer batch");
-    }
-    engine->recording.phase.store(alien::RecordControls::idle);
     require(!late.ok && late.failedCommand==2 && !busyBatch.ok && historyOf(c)==redo && alien::sameContent(threePads,c.document())
         && engine->drumKits[0].samples[1].load()==threePads.tracks[0].drumAssets[1].get()
         && engine->tracks[0].pan.load()==static_cast<float>(threePads.tracks[0].settings.pan),"refused batches preserve redo, pad publication and live mix");
     require(c.redo() && alien::sameContent(clearPreview.after,c.document()) && engine->drumKits[0].samples[1].load()==nullptr
         && engine->tracks[0].pan.load()==.27f && c.undo(),"one Redo restores the pad/mixer transaction");
+    for(const auto phase : {alien::RecordControls::countIn,alien::RecordControls::recording}) {
+        engine->recording.phase.store(phase);
+        const auto allowed=commands.batch(clearAndMix,"Live clear");
+        engine->recording.phase.store(alien::RecordControls::idle);
+        require(allowed.changed && engine->drumKits[0].samples[1].load()==nullptr && engine->tracks[0].pan.load()==.27f
+            && c.undo() && alien::sameContent(threePads,c.document()),"clear/mixer commands preserve count-in/recording compatibility and one-step Undo");
+    }
 
     // A take and a busy project refuse.
     engine->recording.phase.store(alien::RecordControls::countIn);

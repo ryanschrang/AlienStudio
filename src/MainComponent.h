@@ -77,7 +77,7 @@ public:
         drumPanel.onAutoSlice = [this](const alien::DrumSliceTarget& target) { controller.autoSliceDrum(target); };
         drumPanel.onClear = [this](int t, int p) {
             const auto result = alien::command::CommandEngine(controller).execute(alien::command::ClearDrumPad{t,p});
-            if (!result.ok) controller.reportProjectStatus(result.error);
+            if (!result.ok) statusBar.setProjectStatus(result.error, result.error);
             refreshExtraViews();
         };
         drumPanel.onHit = [this](int t, int p) { engine.drumAuditions[t].push(alien::drumBaseNote + p, 0.8f); };
