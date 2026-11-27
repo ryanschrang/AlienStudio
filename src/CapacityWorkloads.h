@@ -14,8 +14,8 @@ namespace alien::capacity {
 // kind: 0 transport only, 1 Session rack occurrences, 3 Song rack lanes, 4 Session MIDI tracks,
 // 5 MIDI with sends to the four returns, 6 Session audio clips, 7 MIDI through the stock EQ and
 // compressor, 8 Session drum tracks, 9 Session audio clips streamed from disk (T1-04 D32), 10 tracks
-// monitoring a stereo input (T1-04 D33). `occurrences` is how many tracks play (or rack occurrences,
-// or tracks monitoring).
+// monitoring a stereo input (T1-04 D33), 11 tracks recording a stereo input to a Song take (T1-04
+// D34). `occurrences` is how many tracks play (or rack occurrences, or tracks monitoring or recording).
 // deviceOnly: the offline report leaves the row out. It plays blocks back to back, far faster than
 // real time, which no disk stream keeps up with; on a device the callbacks come at playback's pace.
 struct Case { const char* name; int kind, tracks, occurrences; bool deviceOnly = false; };
@@ -30,7 +30,9 @@ inline std::vector<Case> cases(int full) {
         // T1-04 D32: every track plays its own decoder of one WAV file through the engine's disk-stream worker.
         {"16 Session audio clips, streamed from disk", 9, 16, 16, true},
         // T1-04 D33: every track plays the device's first two inputs through its own strip (monitor "always").
-        {"16 tracks monitoring a stereo input", 10, 16, 16}};
+        {"16 tracks monitoring a stereo input", 10, 16, 16},
+        // T1-04 D34: a Song-view audio take on every track, armed (so also monitored), each into its own queue.
+        {"16 tracks recording a stereo input to a Song take", 11, 16, 16}};
     if (full > 16) {
         all.push_back({"Transport, no clips", 0, full, 0});
         all.push_back({"All Session rack occurrences", 1, full, full});
@@ -66,15 +68,26 @@ struct Media {
 
 // An engine with the default Channel Rack project published to it, as the capacity report uses.
 struct Rig {
+    // D34: the queues a Song take records into, one per armed track. Declared before the engine so they
+    // outlive it: its take holds pointers to them.
+    std::vector<std::unique_ptr<RecordingQueue>> takes;
     ToneEngine engine;
     rack::Project project = rack::Project::createDefault();
     std::vector<std::shared_ptr<const SessionAudioClip>> keepAlive;
 
-    explicit Rig(double rate = 48000.0) {
+    const double sampleRate;   // what the engine is prepared at (the device tool prepares it at the device's rate)
+
+    explicit Rig(double rate = 48000.0) : sampleRate(rate) {
         engine.prepare(rate);
         engine.bpm.store(120);          // one sixteenth = 6000 samples at 48 kHz
         for (auto& step : engine.steps) step.store(false);
         publish();
+    }
+    // D34: empties the take queues, as the app's recording thread does when it writes them to disk (here
+    // the audio is dropped). Call it between callbacks, never from one: it is the queues' only consumer.
+    void drainTakes() {
+        for (auto& take : takes)
+            while (take->drain([](const float* const*, int, int) { return true; }, 1 << 16)) {}
     }
     // Message-thread side of the hand-off: clips first, then the snapshot.
     void publish() {
@@ -97,7 +110,8 @@ struct Rig {
 inline bool playsMidi(const Case& c) { return c.kind == 4 || c.kind == 5 || c.kind == 7 || c.kind == 8; }
 inline bool playsAudio(const Case& c) { return c.kind == 6 || c.kind == 9; }
 // The row needs input audio: the report hands the callback a test signal, the device tool opens an input.
-inline bool monitorsInput(const Case& c) { return c.kind == 10; }
+// A recording track is armed, so it monitors too (monitor "automatic").
+inline bool monitorsInput(const Case& c) { return c.kind == 10 || c.kind == 11; }
 
 // Sets the workload up on a prepared rig, short of starting the transport. Returns what failed, or nullptr.
 inline const char* configure(Rig& rig, const Case& c, const Media& media) {
@@ -125,8 +139,26 @@ inline const char* configure(Rig& rig, const Case& c, const Media& media) {
         for (int pad = 0; pad < drumPadCount; ++pad)
             engine.drumKits[static_cast<std::size_t>(t)].samples[static_cast<std::size_t>(pad)].store(&media.hit);
     }
+    // D34: a Song-view audio take with no count-in, as the Record button makes with the song playing;
+    // begin() asks for it. The song is empty and 512 bars long (17 min at 120 BPM), longer than any run.
+    if (c.kind == 11) {
+        auto song = std::make_shared<ArrangementPlayback>(); song->timeline.setLengthBars(512);
+        if (!engine.arrangementMailbox.publish(song)) return "capacity Song publication";
+        engine.patternMode.store(songMode);
+        for (int t = 0; t < c.occurrences; ++t) {
+            auto& track = engine.tracks[static_cast<std::size_t>(t)];
+            track.input.store(0); track.stereoInput.store(true); track.armed.store(true);
+            track.monitor.store(static_cast<int>(InputMonitor::automatic));
+            rig.takes.push_back(std::make_unique<RecordingQueue>(rig.sampleRate, 2));
+            engine.songTake->sinks[static_cast<std::size_t>(t)].store(rig.takes.back().get());
+        }
+        RecordSettings settings; settings.countInBars = 0;
+        engine.recording.apply(settings);
+        engine.recording.take.store(1);
+        engine.recording.audioTake.store(true);
+    }
     // D33: monitoring "always", so the input plays whether the track is armed or not; inputs 1 and 2.
-    if (monitorsInput(c)) for (int t = 0; t < c.occurrences; ++t) {
+    if (c.kind == 10) for (int t = 0; t < c.occurrences; ++t) {
         auto& track = engine.tracks[static_cast<std::size_t>(t)];
         track.input.store(0); track.stereoInput.store(true);
         track.monitor.store(static_cast<int>(InputMonitor::always));
@@ -162,10 +194,23 @@ inline const char* configure(Rig& rig, const Case& c, const Media& media) {
     return nullptr;
 }
 
+// Starts the row: the transport, and for the recording row the take. Call it once the engine is attached
+// to whatever will play it, not before: a device's start prepares the engine again, and preparing refuses
+// a take that was asked for but had not begun, as a device change does in the app (D34).
+inline void begin(Rig& rig, const Case& c) {
+    auto& engine = rig.engine;
+    if (c.kind == 11) {
+        engine.recording.stopRequested.store(false);
+        engine.recording.startRequested.store(true);
+    }
+    engine.playing.store(true);
+}
+
 // Whether everything the row plays has started: the device tool waits for this before it records,
 // because a streamed clip starts only once its first audio has been read (D32).
 inline bool started(const Rig& rig, const Case& c) {
     const auto& engine = rig.engine;
+    if (c.kind == 11 && engine.recording.phase.load() != RecordControls::recording) return false;
     for (int t = 0; t < c.occurrences; ++t) {
         const auto track = static_cast<std::size_t>(t);
         if (c.kind == 1 && engine.activeTrackRackClip[track].load() != 101) return false;
@@ -192,6 +237,16 @@ inline const char* stillPlaying(const Rig& rig, const Case& c) {
     if (playsMidi(c) || playsAudio(c))
         for (int t = 0; t < c.occurrences; ++t)
             if (engine.activePianoRollClip[static_cast<std::size_t>(t)].load() != 0) return "capacity Session clips remain active";
+    // D34: every armed track's queue took input, none overran (its take would be cut short), and the take
+    // is still recording.
+    if (c.kind == 11) {
+        for (const auto& take : rig.takes) {
+            if (take->overrun.load()) return "capacity takes never overrun their queues";
+            if (take->frames.load() == 0) return "capacity takes record every armed track";
+        }
+        if (engine.recording.phase.load() != RecordControls::recording
+            || engine.songTake->ended.load() != SongTakeCapture::notEnded) return "capacity take is still recording";
+    }
     // D33: each monitoring track metered input, so the input reached every strip.
     if (monitorsInput(c))
         for (int t = 0; t < c.occurrences; ++t)

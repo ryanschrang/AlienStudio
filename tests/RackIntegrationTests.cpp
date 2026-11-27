@@ -780,6 +780,52 @@ static void inputMonitoringCapacityWorkload() {
             "without an input the row is silent and fails");
 }
 
+// T1-04 D34: the recording row. 16 armed tracks record the test signal into a Song take, each into its own queue.
+static void recordingCapacityWorkload() {
+    const auto cases = alien::capacity::cases(16);
+    const auto recording = std::find_if(cases.begin(), cases.end(), [](const alien::capacity::Case& c) { return c.kind == 11; });
+    require(recording != cases.end() && !recording->deviceOnly && recording->occurrences == 16 && alien::capacity::monitorsInput(*recording),
+            "the recording row is timed offline, with 16 tracks recording an input");
+    const alien::capacity::Media media;
+    const CapacityInput input;
+    // Plays `blocks` of 256 frames, emptying the queues after each one when `drain` is set.
+    // `deviceStart`: the engine is prepared again between setting up and starting, as attaching it to a
+    // device does in AlienDeviceTiming.
+    const auto play = [&](int blocks, bool drain, std::uint64_t& recorded, bool deviceStart = false) {
+        auto rig = std::make_unique<alien::capacity::Rig>();
+        require(alien::capacity::configure(*rig, *recording, media) == nullptr && rig->takes.size() == 16, "the recording row is set up");
+        if (deviceStart) rig->engine.prepare(48000.0);
+        for (int t = 0; t < 16; ++t) {
+            const auto& track = rig->engine.tracks[static_cast<std::size_t>(t)];
+            require(track.armed.load() && track.input.load() == 0 && track.stereoInput.load()
+                    && rig->engine.songTake->sinks[static_cast<std::size_t>(t)].load() == rig->takes[static_cast<std::size_t>(t)].get(),
+                    "every track is armed on inputs 1-2 and records into its own queue");
+        }
+        require(!alien::capacity::started(*rig, *recording), "the take has not started before the first callback");
+        alien::capacity::begin(*rig, *recording);
+        std::array<float, 256> left{}, right{}; float* outputs[]{left.data(), right.data()};
+        for (int block = 0; block < blocks; ++block) {
+            rig->engine.audioDeviceIOCallbackWithContext(input.channels, 2, outputs, 2, 256, {});
+            if (block == 0) require(alien::capacity::started(*rig, *recording), "the first callback starts the take");
+            if (drain) rig->drainTakes();
+        }
+        recorded = rig->takes.front()->frames.load();
+        for (const auto& take : rig->takes) require(take->frames.load() == recorded, "every track recorded the same frames");
+        return alien::capacity::stillPlaying(*rig, *recording);
+    };
+    std::uint64_t recorded = 0;
+    // The take begins in the first callback, so it holds all of it or all but part of that block.
+    require(play(1200, true, recorded) == nullptr && recorded >= 1199u * 256u && recorded <= 1200u * 256u,
+            "16 tracks record 1,200 blocks (6.4 s) without a gap while the queues are emptied");
+    // Setting up asks for nothing that a device start would refuse: the take still starts and records.
+    require(play(1200, true, recorded, true) == nullptr && recorded >= 1199u * 256u,
+            "a take begun after the engine is prepared again (a device start) records every track");
+    const char* overran = play(1200, false, recorded);
+    require(overran != nullptr && std::string_view(overran) == "capacity takes never overrun their queues"
+            && recorded == alien::RecordingQueue::defaultCapacity,
+            "a queue nobody empties fills up, and the row fails as an overrun");
+}
+
 static void capacityReport(int rounds) {
     const int full = alien::maxSessionTracks;
     {
@@ -811,6 +857,8 @@ static void capacityReport(int rounds) {
         << "in-memory Session audio clips (one shared 8 s mono clip, no streaming), and the stock EQ and compressor\n"
         << "on every playing track's FX rack (prepared before timing).\n"
         << "T1-04 D33 row: every track monitors inputs 1-2 (monitor \"always\", not armed), fed a 330 Hz test signal.\n"
+        << "T1-04 D34 row: every track armed on inputs 1-2 records that signal into a Song take, one queue each,\n"
+        << "emptied between callbacks outside the timing (the app's recording thread empties them).\n"
         << "Streamed audio (D32) is timed only on a device, by AlienDeviceTiming.\n"
         << "Times include the whole callback; p95/max are observations, not real-time guarantees.\n"
         << "Output energy is the sum of squared output samples over the measured blocks, printed exactly, so two\n"
@@ -829,7 +877,7 @@ static void capacityReport(int rounds) {
         Run run;
         auto rig = std::make_unique<alien::capacity::Rig>();
         if (const char* failed = alien::capacity::configure(*rig, c, media)) require(false, failed);
-        rig->engine.playing.store(true);
+        alien::capacity::begin(*rig, c);
         std::array<float, 1024> left{}, right{}; float* outputs[]{left.data(), right.data()};
         // D33: the input-monitoring row is given a test signal on two inputs; every other row none.
         static const CapacityInput input;
@@ -837,11 +885,14 @@ static void capacityReport(int rounds) {
         const auto callback = [&] {
             rig->engine.audioDeviceIOCallbackWithContext(inputs ? input.channels : nullptr, inputs ? 2 : 0, outputs, 2, frames, {});
         };
-        for (int n = 0; n < 32; ++n) callback();
+        // D34: a recording row's queues are emptied between callbacks, outside the timing, as the app's
+        // recording thread empties them; for every other row there is nothing to empty.
+        for (int n = 0; n < 32; ++n) { callback(); rig->drainTakes(); }
         auto& times = run.times; auto& energy = run.energy; const auto before = allocationCount;
         for (auto& elapsed : times) {
             const auto start = std::chrono::steady_clock::now(); callback();
             elapsed = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
+            rig->drainTakes();
             for (int n = 0; n < frames; ++n) {
                 require(std::isfinite(left[n]) && std::isfinite(right[n]), "capacity finite output");
                 energy += left[n] * left[n] + right[n] * right[n];
@@ -921,6 +972,7 @@ int main(int argc, char** argv) {
     capacityHelpers();
     streamedCapacityWorkload();
     inputMonitoringCapacityWorkload();
+    recordingCapacityWorkload();
 
     performLaunches();
     overlappingPerformCallback();

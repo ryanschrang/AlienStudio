@@ -129,6 +129,13 @@ void usage(const std::vector<alien::capacity::Case>& cases) {
 
 void wait(double seconds) { juce::MessageManager::getInstance()->runDispatchLoopUntil(static_cast<int>(seconds * 1000.0)); }
 
+// Plays on for `seconds`, emptying a recording row's take queues every 10 ms, as the app's recording
+// thread does (T1-04 D34); for any other row there is nothing to empty.
+void playFor(alien::capacity::Rig& rig, double seconds) {
+    const double end = juce::Time::getMillisecondCounterHiRes() + seconds * 1000.0;
+    do { wait(0.01); rig.drainTakes(); } while (juce::Time::getMillisecondCounterHiRes() < end);
+}
+
 // T1-04 D32: the streamed workload plays a real file from disk. Writes `seconds` of a quiet stereo tone
 // as 16-bit, 48 kHz WAV, a block at a time, and returns it as a clip that streams from that file, as a
 // long import would.
@@ -261,18 +268,18 @@ int main(int argc, char* argv[]) {
             if (const char* failed = alien::capacity::configure(*rig, c, media)) { std::cerr << c.name << ": " << failed << '\n'; ++failures; continue; }
             timed.engine = &rig->engine;
             manager.addAudioCallback(&timed);   // prepares the engine at the device's rate, as the app does
-            rig->engine.playing.store(true);
-            wait(options->warmup);
+            alien::capacity::begin(*rig, c);   // after: preparing refuses a take asked for before it (D34)
+            playFor(*rig, options->warmup);
             // Record only once the row is playing: a streamed clip starts when its first audio is read (D32).
-            for (int waited = 0; !alien::capacity::started(*rig, c) && waited < 3000; waited += 10) wait(0.01);
+            for (int waited = 0; !alien::capacity::started(*rig, c) && waited < 3000; waited += 10) playFor(*rig, 0.01);
             const int xrunsBefore = device->getXRunCount();
             callbackAllocations.store(0); countingAllocations.store(true);
             recorder.arm();
-            wait(options->seconds);
+            playFor(*rig, options->seconds);
             recorder.disarm();
             countingAllocations.store(false);
             const int xrunsAfter = device->getXRunCount();
-            wait(std::max(0.05, 4.0 * periodUs / 1.0e6));   // a callback inside record() finishes its entry
+            playFor(*rig, std::max(0.05, 4.0 * periodUs / 1.0e6));   // a callback inside record() finishes its entry
             const char* stopped = alien::capacity::stillPlaying(*rig, c);
             manager.removeAudioCallback(&timed);
             timed.engine = nullptr;
