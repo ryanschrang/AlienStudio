@@ -315,11 +315,9 @@ public:
     void keyPostFader(std::size_t track, int i, float left, float right) noexcept { store(postKeys, track, i, left, right); }
     void keyBus(std::size_t bus, int i, float left, float right) noexcept { store(busKeys, bus, i, left, right); }
     // A bus that is silent for the whole block keys silence, as keyBus would for each of its samples (T1-04 D27).
-    void silentBusKey(std::size_t bus, int samples) noexcept {
-        if (bus >= busKeys.size()) return;
-        const auto count = static_cast<std::size_t>(std::clamp(samples, 0, blockSize));
-        for (auto& side : busKeys[bus]) std::fill_n(side.begin(), count, 0.0f);
-    }
+    void silentBusKey(std::size_t bus, int samples) noexcept { silence(busKeys, bus, samples); }
+    // A track that is silent for the whole block keys silence, as keyPostFader would for each sample (T1-04 D29).
+    void silentPostFaderKey(std::size_t track, int samples) noexcept { silence(postKeys, track, samples); }
     void keyReturn(std::size_t r, int i, float left, float right) noexcept { store(returnKeys, r, i, left, right); }
     // Where in the mix a rack runs, which decides the keys it can hear.
     static constexpr RackStage stageOf(int rack) noexcept {
@@ -715,6 +713,12 @@ private:
     }
     static std::atomic<std::size_t>& quarantineTally() { static std::atomic<std::size_t> tally{0}; return tally; }
     using Key = std::array<std::array<float,blockSize>,2>;
+    template <std::size_t N>
+    static void silence(std::array<Key,N>& set, std::size_t which, int samples) noexcept {
+        if (which >= set.size()) return;
+        const auto count = static_cast<std::size_t>(std::clamp(samples, 0, blockSize));
+        for (auto& side : set[which]) std::fill_n(side.begin(), count, 0.0f);
+    }
     template <std::size_t N>
     static void store(std::array<Key,N>& set, std::size_t which, int i, float left, float right) noexcept {
         if (which >= N || i < 0 || i >= blockSize) return;
