@@ -226,7 +226,7 @@ while 16 files are being written.
   real time.
 
 First result, on the development laptop: Windows Audio, 48 kHz, 480 frames, output muted, input the
-built-in microphone array (2 channels), 4 s per row, the temporary folder on the laptop's internal SSD.
+built-in microphone array (2 channels), 4 s per row, the temporary folder on the laptop's system drive.
 
 | Workload | p50 us | p95 us | p99 us | max us | p95 / budget % | Over budget | Late | Xruns | Allocations |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -238,5 +238,5 @@ The row passed: no writer fell behind, and every take finished with all it recor
 16 files did not make the callback slower than recording into queues alone (the two rows are within
 the spread between runs), which fits the design: the callback only fills each take's queue, and the
 16 writer threads do the disk work. No callback was late or over budget, and the audio thread
-allocated nothing. The folder was removed afterwards. One run on one laptop, with a fast internal
-drive; a slow or busy drive is where a writer could fall behind.
+allocated nothing. The folder was removed afterwards. One run on one laptop, on its system drive; a
+slow or busy drive is where a writer could fall behind.
