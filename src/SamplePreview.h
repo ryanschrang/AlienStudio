@@ -21,6 +21,7 @@ public:
     bool request(const float* left, const float* right, int frames, double rate, bool alignToBeat = false) {
         if (!left || frames <= 0 || frames > capacity || !std::isfinite(rate) || rate < 8000 || rate > 192000) return false;
         const auto requestedEpoch = alignedEpoch.load(std::memory_order_acquire);
+        auto requestedGeneration = generation.load(std::memory_order_acquire);
         for (auto& slot : *slots) {
             int expected = free;
             if (!slot.state.compare_exchange_strong(expected, writing, std::memory_order_acquire)) continue;
@@ -32,7 +33,14 @@ public:
             std::copy_n(right ? right : left, frames, slot.right.data());
             slot.frames = frames; slot.rate = rate; slot.alignToBeat = alignToBeat;
             slot.alignedEpoch = requestedEpoch;
-            slot.generation = generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+            // Stop/panic may arrive while the producer copies audio. Publish only
+            // if that cancellation token still matches; never supersede it with
+            // an older in-flight request. Failed requests reclaim storage here.
+            const auto nextGeneration = requestedGeneration + 1;
+            if (!generation.compare_exchange_strong(requestedGeneration,nextGeneration,std::memory_order_acq_rel)) {
+                slot.state.store(free,std::memory_order_release); return false;
+            }
+            slot.generation = nextGeneration;
             slot.state.store(ready, std::memory_order_release); return true;
         }
         return false;
