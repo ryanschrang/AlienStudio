@@ -586,7 +586,6 @@ public:
 private:
     static bool canSliceDrumSource(const std::shared_ptr<const SessionAudioClip>& audio, const juce::String& path);
 public:
-    void clearDrum(int track, int pad);
     void loadDrum(const juce::File& file, int track, int pad);
     // Channel Rack ------------------------------------------------------------
     const rack::Project& channelRack() const noexcept { return doc.channelRack; }

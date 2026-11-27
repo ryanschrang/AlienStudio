@@ -1754,15 +1754,6 @@ bool ProjectController::canSliceDrumSource(const std::shared_ptr<const SessionAu
     return audio && !audio->streamed() && audio->frames >= drumPadCount && path.isNotEmpty();
 }
 
-void ProjectController::clearDrum(int track, int pad) {
-    drum_pad::Edit e; e.kind = drum_pad::Kind::clear; e.track = track; e.pad = pad;
-    if (drumPadCommands) { drumPadCommands(e, "Clear drum pad"); return; }
-    // Not routed (tests and fixtures): the edit as it always was, an undo step even for an empty pad and
-    // even while a worker is busy.
-    if (track < 0 || track >= doc.trackCount() || isTrackFrozen(track) || drum_pad::apply(doc, e).isNotEmpty()) return;
-    pushDocumentToEngine(); commit("Clear drum pad");
-}
-
 void ProjectController::loadDrum(const juce::File& file, int track, int pad) {
     if(isTrackFrozen(track)){importStatus("Unfreeze the track before changing its samples.",{});return;}
     if (busy || track < 0 || track >= doc.trackCount() || pad < 0 || pad >= drumPadCount) return;
