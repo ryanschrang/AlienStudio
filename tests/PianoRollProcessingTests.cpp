@@ -349,6 +349,9 @@ static void splitTests() {
     const auto untouched = pattern.add(72, 0, 8);
     const auto endsHere = pattern.add(40, 0, 2.5);
     const auto startsHere = pattern.add(41, 2.5, 1);
+    pattern.find(a)->velocity=.001f;
+    pattern.find(b)->velocity=.005f;
+    require(pattern.valid(),"split accepts valid external velocities below the note-creation minimum");
     const auto before = pattern;
     PianoRollSelection selected;
     for (const auto id : {a, b, endsHere, startsHere}) selected.add(id);
