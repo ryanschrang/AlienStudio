@@ -2134,3 +2134,48 @@ allocation count covers the engine's own allocations only: a plugin's DLL alloca
 runtime, which the count does not see. Not covered: other patches and denser notes, instruments
 reporting latency, an audio interface, the 32/64 build, and whether each instance sounded (the output
 was muted and not checked per track).
+
+## Increment E1: acceptance at the compiled limits, and what E still needs
+
+E releases one larger profile. Its gate: save/reopen/portable/undo, launch every supported scene,
+duplicate/reorder/delete boundary cases, audio/recording/export stress, Windows hardware evidence. E1
+raises nothing; it adds the boundary tests that were missing and maps the gate to the evidence, so the
+release itself is a decision on known facts. Every test named here runs at the compiled maximum, so CI's
+32/64 build (the `capacity` label) runs it at 32 tracks and 64 scenes.
+
+New tests:
+
+- **`TrackCapacityTests` `structureEditsAtTheLimits`**, through `CommandEngine` as the UI edits:
+  - a full grid refuses CreateTrack, CreateScene and DuplicateScene (of the first and of the last scene)
+    with a reason, and changes nothing: not the document, the undo label or the engine's tracks in use;
+  - a clip moves out of the last cell and back with undo and redo;
+  - the last track and the last scene move to the front with their clips, and back with undo;
+  - deleting the last track takes its slot out of use; undo brings the track and its clip back, the slot
+    returns to use and the track plays the last scene's clip; redo deletes it again;
+  - the full grid saves and reopens unchanged.
+- **A fix the reorder test found: undo kept the selected position, not the selected track.** Undoing a
+  track or scene move put the tracks back but left the selection at the index the moved track had
+  reached, so a different track was selected (at any size, not only at the limit). `ProjectController::
+  restore` now keeps the selected track and scene by their IDs when the step names no clip; one the
+  restored project does not have keeps its position, as before. Checked in `ProjectControllerTests`
+  (undo and redo of a move keep "Kick" selected) and in the limit test.
+- **`MidiRecordingTests` `recordingAtTheLimitsTests`**: with every track and scene in use, a take on the
+  last track's clip in the last scene records the played note there and nowhere else, is one undo step,
+  and plays back from that cell.
+
+| E requirement | Evidence at the compiled limits | Open |
+| --- | --- | --- |
+| Save/reopen | `SessionProjectTests` `songRowFormatTests` (last track, last scene, rack lanes; byte-identical resave); E1 full grid | - |
+| Portable | `SessionProjectTests` `capacityRefusalTests`: a project past the build's limits is refused with both counts, the open project kept | Projects past 16/32 open only in a build that large: shipping one supported profile ends that |
+| Undo | E1 (delete, move, reorder, recording); `ProjectControllerTests` structure undo | - |
+| Launch every supported scene | `TrackCapacityTests` `everyTrackAndSceneLaunches` (the last scene on every track, the whole synchronized-launch mask) | MIDI controllers map scene buttons 1-4 only (`MidiControllerMappings::sceneCount`, by design) |
+| Duplicate/reorder/delete | E1; `ProjectControllerTests` add/delete/move to the limit | Copy/paste across the last cell is covered only by the ordinary clipboard tests |
+| Audio stress | `TrackCapacityTests` (no allocation with every track playing, slots leaving use, device restart); `RackIntegrationTests --capacity-report` | - |
+| Recording | E1 (MIDI in the last cell); D34/D35 Song takes on every track | An audio take on the last track of a full project through the controller (the engine path is timed at 32 in D38) |
+| Export | `MemoryPeakTests` (stems of every track at the limit, freeze at the scene limit refused before rendering) | - |
+| Windows hardware evidence | D31-D38 on the development laptop (see [DEVICE_TIMING.md](DEVICE_TIMING.md)) | An audio interface (ASIO), other buffer sizes, more than one machine; at 480 frames 32 Surge XT instances overran one callback (D38, #460) |
+| UI | `SessionViewTests`, `TimelineViewTests` pass at 32/64 (C3: the grid and the Song view scroll) | Hands-on use of a 32-track grid and mixer on a Windows display |
+
+What E1 does not decide: which profile to release, and whether the laptop evidence is enough. A
+release changes the constants in `SessionCapacity.h`, the CMake default, the docs that state 16 / 32,
+and project portability (a released 32-track project will not open in an older 16-track build).

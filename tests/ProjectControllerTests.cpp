@@ -170,6 +170,13 @@ static void undoTests() {
     require(c.moveTrack(0, 2), "move track");
     c.commit("Move track");
     require(c.undo() && d.tracks[0].name == "Kick", "undo move track");
+    // T1-04 E1: the selection is kept by identity. "Kick" was selected and moved with its track; undoing the
+    // move keeps it selected, now back in first place, rather than whichever track takes its old position.
+    c.selectClip(0, 0);
+    require(c.moveTrack(0, 2) && d.selectedTrack == 2, "fixture: the selection follows the moved track");
+    c.commit("Move track");
+    require(c.undo() && d.tracks[0].name == "Kick" && d.selectedTrack == 0, "undo of a move keeps the same track selected");
+    require(c.redo() && d.tracks[2].name == "Kick" && d.selectedTrack == 2, "and so does redo");
 
     c.newProject();
     require(!c.canUndo() && !c.isDirty() && d.trackCount() == 4, "new project resets history");

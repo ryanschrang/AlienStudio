@@ -922,6 +922,39 @@ void overdubTests() {
     std::cout << "PASS: overdub\n";
 }
 
+// T1-04 E1: recording at the compiled limits. With every track and scene in use, a take on the last
+// track's clip in the last scene records there, is one undo step, and plays back from that cell.
+void recordingAtTheLimitsTests() {
+    ControllerRig rig;
+    auto& c = rig.controller;
+    while (c.addTrack()) {}
+    while (c.addScene()) {}
+    const int track = alien::maxSessionTracks - 1, scene = alien::maxSessionScenes - 1;
+    require(c.document().trackCount() == alien::maxSessionTracks && c.document().sceneCount() == alien::maxSessionScenes,
+            "fixture: every track and scene");
+    c.setClipPattern(track, scene, twoNotes(), false);
+    c.commit("Add notes", track, scene);
+    c.selectClip(track, scene);
+    c.launchClip(track, scene);
+    rig.engine.playing.store(true);
+    rig.render(1000);
+    const auto start = c.startRecording();
+    require(start.started && c.recordingTrack() == track && c.recordingScene() == scene, "a take starts on the last track's last-scene clip");
+    rig.render(23000);
+    rig.tap(64, 11744);
+    c.stopRecording();
+    rig.render(512);
+    require(!c.isRecording() && rig.outcomes.size() == 1 && rig.outcomes[0].notesAdded == 1
+            && rig.outcomes[0].track == track && rig.outcomes[0].scene == scene, "the take ends in the last cell");
+    require(rig.count(track, scene) == 3 && rig.find(64, track, scene) != nullptr && rig.count(0, 0) == 0,
+            "the played note lands in the last cell and nowhere else");
+    require(c.undoLabel() == "Record MIDI" && c.undo() && rig.count(track, scene) == 2 && c.redo() && rig.count(track, scene) == 3,
+            "the take is one undo step");
+    rig.render(2 * 384000);
+    require(rig.render(2000) > 0.0005, "the last cell plays back what was recorded");
+    std::cout << "PASS: recording at the limits\n";
+}
+
 void recordingCommandBoundaryTests() {
     ControllerRig rig;
     auto& c = rig.controller;
@@ -1239,6 +1272,7 @@ int main() {
     monitoringTests();
     realTimeSafetyTests();
     overdubTests();
+    recordingAtTheLimitsTests();
     recordingCommandBoundaryTests();
     replaceTests();
     countInIntegrationTests();

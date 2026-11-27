@@ -2565,9 +2565,17 @@ void ProjectController::restore(const ProjectDocument& state, const DocumentHist
     doc = state;
     doc.library.retainIssuedIdsFrom(previous.library);
     doc.trackRegistry.retainIssuedIdsFrom(previous.trackRegistry);
-    // Keep the user's current selection unless the step names a clip.
-    doc.selectedTrack = step.focusTrack >= 0 ? step.focusTrack : previous.selectedTrack;
-    doc.selectedScene = step.focusScene >= 0 ? step.focusScene : previous.selectedScene;
+    // Keep the user's current selection unless the step names a clip. The selection is kept by identity: after
+    // undoing a reorder the same track and scene stay selected, wherever they now are (T1-04 E1). One the
+    // restored project does not have (undoing its creation) keeps the position, as before.
+    const auto follow = [](const auto& items, const auto& before, int selected) {
+        if (selected < 0 || selected >= static_cast<int>(before.size())) return selected;
+        const auto id = before[static_cast<std::size_t>(selected)].id;
+        for (std::size_t i = 0; i < items.size(); ++i) if (items[i].id == id) return static_cast<int>(i);
+        return selected;
+    };
+    doc.selectedTrack = step.focusTrack >= 0 ? step.focusTrack : follow(doc.tracks, previous.tracks, previous.selectedTrack);
+    doc.selectedScene = step.focusScene >= 0 ? step.focusScene : follow(doc.scenes, previous.scenes, previous.selectedScene);
     doc.clampSelection();
     doc.channelRack.selectedPattern = juce::jlimit(0, doc.channelRack.patternCount - 1, previous.channelRack.selectedPattern);
     doc.channelRack.nameColumnWidth = previous.channelRack.nameColumnWidth;
