@@ -535,6 +535,7 @@ static void trackSidechainViewTests(const juce::File& preview) {
         && run(cmd::InsertDevice{alien::RackStage::track,0,1,eq}).changed,"graph FX fixture");
     c.markAsNewBaseline(); captures=0; rebuilds=0;
     alien::TrackMixerPanel panel(c,engine->tracks,engine->returns,engine->masterControls,engine->buses); panel.setSize(960,650);
+    panel.addToDesktop(0); panel.setVisible(true);
     auto& graph = panel.trackSidechainView();
     graph.hasInput = [&](alien::RackStage stage,int track,int fx) { return host.hasSidechainInput(stage == alien::RackStage::master ? alien::PluginRuntime::masterIndex : stage == alien::RackStage::bus ? alien::PluginRuntime::busIndex(track) : stage == alien::RackStage::returnTrack ? alien::PluginRuntime::returnIndex(track) : track,fx); };
     graph.onKeyRequested = [&](alien::RackStage stage,int track,int fx,alien::KeySource from,int source) {
@@ -781,6 +782,7 @@ static void trackSidechainViewTests(const juce::File& preview) {
     require(!graph.choose(staleReturnSource,0,alien::KeySource::returnTrack),"reused return source refuses old key menu by persistent identity");
     c.newProject(); rebuild(); panel.rebuild(); require(!graph.choose(fresh,-1) && !graph.choose(freshMaster,-1) && !graph.choose(freshBus,-1) && !graph.choose(freshReturn,-1),"replacement project refuses all stale FX choices");
     panel.showRouting(false); require(!graph.isVisible(),"Strips hides the sidechain view");
+    panel.removeFromDesktop();
 }
 
 int main(int argc, char** argv) {
