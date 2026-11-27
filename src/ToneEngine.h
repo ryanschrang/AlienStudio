@@ -701,10 +701,9 @@ private:
                 plugins->tracks[track].setSample(0,i,voice + drum[0]);
                 plugins->tracks[track].setSample(1,i,voice + drum[1]);
                 // D23: a track with no clip and no crossfade tail playing has nothing to fade or mix.
-                if (playNow && (modeNow == 1 || modeNow == 2) && !audioPlayers[track].isPlaying() && !tails[track].active) {
-                    clipBuffers[track].setSample(0,i,0.0f);
-                    clipBuffers[track].setSample(1,i,0.0f);
-                } else if (playNow && (modeNow == 1 || modeNow == 2)) {
+                // D28: its clip lane was cleared at the start of the block, so it is left as it is (a lane
+                // nothing was written to is also skipped when it is added to the track below).
+                if (playNow && (modeNow == 1 || modeNow == 2) && (audioPlayers[track].isPlaying() || tails[track].active)) {
                     const auto sample = audioPlayers[track].nextSample();
                     const auto& lane = trackLanes[track];
                     const double into = std::max(0.0, timelineTick - static_cast<double>(lane.start));
