@@ -2023,9 +2023,14 @@ D33 timed monitoring; gate 2 names recording as well, and nothing timed a take b
   calls it between callbacks, outside the timing; the device tool every 10 ms while the device plays.
   Nothing is written to disk: the disk side is the recording thread's work, not the callback's.
 - **The row fails** if a queue overran, a track recorded nothing, or the take stopped.
+- **The take is asked for when the row starts** (`capacity::begin`), after the engine is attached to what
+  plays it. Attaching it to a device prepares it again, and preparing refuses a take that was asked for
+  but had not begun, as a device change does in the app; the first device run asked during setup, so
+  every queue stayed empty and the row failed as "capacity takes record every armed track".
 
 Checks (`RackIntegrationTests`): every track is armed on inputs 1-2 and records into its own queue; the
-take starts in the first callback; with the queues emptied, all 16 tracks record the same frames, all
+take starts in the first callback, also when the engine is prepared again between setup and start (as a
+device start does); with the queues emptied, all 16 tracks record the same frames, all
 of 1,200 blocks (6.4 s, more than a queue holds) less at most part of the first; with nobody emptying
 them the queues fill at their 262,144 frames and the row fails as an overrun.
 

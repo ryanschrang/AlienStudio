@@ -268,7 +268,7 @@ int main(int argc, char* argv[]) {
             if (const char* failed = alien::capacity::configure(*rig, c, media)) { std::cerr << c.name << ": " << failed << '\n'; ++failures; continue; }
             timed.engine = &rig->engine;
             manager.addAudioCallback(&timed);   // prepares the engine at the device's rate, as the app does
-            rig->engine.playing.store(true);
+            alien::capacity::begin(*rig, c);   // after: preparing refuses a take asked for before it (D34)
             playFor(*rig, options->warmup);
             // Record only once the row is playing: a streamed clip starts when its first audio is read (D32).
             for (int waited = 0; !alien::capacity::started(*rig, c) && waited < 3000; waited += 10) playFor(*rig, 0.01);

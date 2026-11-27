@@ -789,9 +789,12 @@ static void recordingCapacityWorkload() {
     const alien::capacity::Media media;
     const CapacityInput input;
     // Plays `blocks` of 256 frames, emptying the queues after each one when `drain` is set.
-    const auto play = [&](int blocks, bool drain, std::uint64_t& recorded) {
+    // `deviceStart`: the engine is prepared again between setting up and starting, as attaching it to a
+    // device does in AlienDeviceTiming.
+    const auto play = [&](int blocks, bool drain, std::uint64_t& recorded, bool deviceStart = false) {
         auto rig = std::make_unique<alien::capacity::Rig>();
         require(alien::capacity::configure(*rig, *recording, media) == nullptr && rig->takes.size() == 16, "the recording row is set up");
+        if (deviceStart) rig->engine.prepare(48000.0);
         for (int t = 0; t < 16; ++t) {
             const auto& track = rig->engine.tracks[static_cast<std::size_t>(t)];
             require(track.armed.load() && track.input.load() == 0 && track.stereoInput.load()
@@ -799,7 +802,7 @@ static void recordingCapacityWorkload() {
                     "every track is armed on inputs 1-2 and records into its own queue");
         }
         require(!alien::capacity::started(*rig, *recording), "the take has not started before the first callback");
-        rig->engine.playing.store(true);
+        alien::capacity::begin(*rig, *recording);
         std::array<float, 256> left{}, right{}; float* outputs[]{left.data(), right.data()};
         for (int block = 0; block < blocks; ++block) {
             rig->engine.audioDeviceIOCallbackWithContext(input.channels, 2, outputs, 2, 256, {});
@@ -814,6 +817,9 @@ static void recordingCapacityWorkload() {
     // The take begins in the first callback, so it holds all of it or all but part of that block.
     require(play(1200, true, recorded) == nullptr && recorded >= 1199u * 256u && recorded <= 1200u * 256u,
             "16 tracks record 1,200 blocks (6.4 s) without a gap while the queues are emptied");
+    // Setting up asks for nothing that a device start would refuse: the take still starts and records.
+    require(play(1200, true, recorded, true) == nullptr && recorded >= 1199u * 256u,
+            "a take begun after the engine is prepared again (a device start) records every track");
     const char* overran = play(1200, false, recorded);
     require(overran != nullptr && std::string_view(overran) == "capacity takes never overrun their queues"
             && recorded == alien::RecordingQueue::defaultCapacity,
@@ -871,7 +877,7 @@ static void capacityReport(int rounds) {
         Run run;
         auto rig = std::make_unique<alien::capacity::Rig>();
         if (const char* failed = alien::capacity::configure(*rig, c, media)) require(false, failed);
-        rig->engine.playing.store(true);
+        alien::capacity::begin(*rig, c);
         std::array<float, 1024> left{}, right{}; float* outputs[]{left.data(), right.data()};
         // D33: the input-monitoring row is given a test signal on two inputs; every other row none.
         static const CapacityInput input;

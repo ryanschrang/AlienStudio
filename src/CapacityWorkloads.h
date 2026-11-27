@@ -139,8 +139,8 @@ inline const char* configure(Rig& rig, const Case& c, const Media& media) {
         for (int pad = 0; pad < drumPadCount; ++pad)
             engine.drumKits[static_cast<std::size_t>(t)].samples[static_cast<std::size_t>(pad)].store(&media.hit);
     }
-    // D34: a Song-view audio take, started with no count-in, as the Record button does with the song
-    // playing. The song is empty and 512 bars long (17 min at 120 BPM), longer than any run.
+    // D34: a Song-view audio take with no count-in, as the Record button makes with the song playing;
+    // begin() asks for it. The song is empty and 512 bars long (17 min at 120 BPM), longer than any run.
     if (c.kind == 11) {
         auto song = std::make_shared<ArrangementPlayback>(); song->timeline.setLengthBars(512);
         if (!engine.arrangementMailbox.publish(song)) return "capacity Song publication";
@@ -156,8 +156,6 @@ inline const char* configure(Rig& rig, const Case& c, const Media& media) {
         engine.recording.apply(settings);
         engine.recording.take.store(1);
         engine.recording.audioTake.store(true);
-        engine.recording.stopRequested.store(false);
-        engine.recording.startRequested.store(true);
     }
     // D33: monitoring "always", so the input plays whether the track is armed or not; inputs 1 and 2.
     if (c.kind == 10) for (int t = 0; t < c.occurrences; ++t) {
@@ -194,6 +192,18 @@ inline const char* configure(Rig& rig, const Case& c, const Media& media) {
         plugins.reserveAlignment();
     }
     return nullptr;
+}
+
+// Starts the row: the transport, and for the recording row the take. Call it once the engine is attached
+// to whatever will play it, not before: a device's start prepares the engine again, and preparing refuses
+// a take that was asked for but had not begun, as a device change does in the app (D34).
+inline void begin(Rig& rig, const Case& c) {
+    auto& engine = rig.engine;
+    if (c.kind == 11) {
+        engine.recording.stopRequested.store(false);
+        engine.recording.startRequested.store(true);
+    }
+    engine.playing.store(true);
 }
 
 // Whether everything the row plays has started: the device tool waits for this before it records,
