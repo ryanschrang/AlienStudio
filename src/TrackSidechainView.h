@@ -103,8 +103,8 @@ public:
     }
     void paint(juce::Graphics& g) override {
         g.fillAll(ui::colours::surface); g.setFont(ui::font(12)); g.setColour(ui::colours::textFaint);
-        g.drawText("Track keys (pre FX / post fader)",24,10,240,24,juce::Justification::centredLeft);
-        g.drawText("Effects (click to choose track key)",getWidth()-300,10,276,24,juce::Justification::centredLeft);
+        g.drawText("Track taps and bus keys",24,10,240,24,juce::Justification::centredLeft);
+        g.drawText("Effects (click to choose key)",getWidth()-300,10,276,24,juce::Justification::centredLeft);
         if (effects.empty()) g.drawFittedText("Add an effect in Plugins to choose its sidechain here.",{getWidth()-300,44,276,70},juce::Justification::centred,3);
         for (std::size_t i = 0; i < trackNames.size(); ++i) for (int tap = 0; tap < 2; ++tap) {
             const juce::Rectangle<int> bounds{24,44+(static_cast<int>(i)*2+tap)*52,160,34};
