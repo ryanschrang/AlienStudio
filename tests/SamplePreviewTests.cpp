@@ -7,7 +7,9 @@
 static alien::SamplePreview* cancelDuringAllocation{};
 static alien::SamplePreview* stopDuringAllocation{};
 static bool panicDuringAllocation{};
+static int allocationsUntilFailure{};
 void* operator new(std::size_t size) {
+    if (allocationsUntilFailure > 0 && --allocationsUntilFailure == 0) throw std::bad_alloc();
     if (auto* preview = cancelDuringAllocation) { cancelDuringAllocation = nullptr; preview->cancelAligned(); }
     if (auto* preview = stopDuringAllocation) {
         stopDuringAllocation = nullptr;
@@ -116,6 +118,23 @@ int main() {
         inflight.beginBlock(); inflight.nextSample(true,0,step);
         for (int i=0;i<300;++i) inflight.nextSample();
         require(inflight.nextSample()[0]>.39f,"fresh playback works after in-flight cancellation");
+    }
+    std::vector<float> stereoLeft(9600,.8f), stereoRight(9600,-.4f);
+    for (const int failure : {1,2}) for (const bool aligned : {false,true}) {
+        alien::SamplePreview recovery; recovery.prepare(48000);
+        allocationsUntilFailure=failure;
+        const bool failed=recovery.request(stereoLeft.data(),stereoRight.data(),4800,48000,aligned);
+        require(!failed && allocationsUntilFailure==0,"either stereo allocation can fail without publishing a request");
+        recovery.beginBlock();
+        require(!recovery.waitingForBeat() && recovery.nextSample()[0]==0,"a failed allocation publishes no partial playback");
+        for (const int frames : {2400,4800,9600}) {
+            require(recovery.request(stereoLeft.data(),stereoRight.data(),frames,48000,aligned),"failed slot supports smaller, same and larger fresh requests");
+            recovery.beginBlock(); recovery.nextSample(true,0,step);
+            for (int i=0;i<300;++i) recovery.nextSample();
+            const auto sample=recovery.nextSample();
+            require(sample[0]>.39f && sample[1]<-.19f,"recovered stereo buffers retain both independent channels");
+            recovery.stop(); recovery.beginBlock();
+        }
     }
     std::cout << "SamplePreviewTests passed\n";
 }

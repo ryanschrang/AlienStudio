@@ -25,10 +25,12 @@ public:
         for (auto& slot : *slots) {
             int expected = free;
             if (!slot.state.compare_exchange_strong(expected, writing, std::memory_order_acquire)) continue;
-            if (slot.left.size() < static_cast<std::size_t>(frames)) {
-                try { slot.left.resize(static_cast<std::size_t>(frames)); slot.right.resize(static_cast<std::size_t>(frames)); }
-                catch (const std::bad_alloc&) { slot.state.store(free, std::memory_order_release); return false; }
-            }
+            try {
+                // One resize can succeed before the other throws. Recover each
+                // channel independently when this free slot is requested again.
+                if (slot.left.size() < static_cast<std::size_t>(frames)) slot.left.resize(static_cast<std::size_t>(frames));
+                if (slot.right.size() < static_cast<std::size_t>(frames)) slot.right.resize(static_cast<std::size_t>(frames));
+            } catch (const std::bad_alloc&) { slot.state.store(free, std::memory_order_release); return false; }
             std::copy_n(left, frames, slot.left.data());
             std::copy_n(right ? right : left, frames, slot.right.data());
             slot.frames = frames; slot.rate = rate; slot.alignToBeat = alignToBeat;
