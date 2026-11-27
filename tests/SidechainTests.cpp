@@ -667,6 +667,23 @@ static void trackSidechainViewTests(const juce::File& preview) {
         require(c.redo(),"redo post-fader key"); rebuild(); panel.refreshSettings();
         require(engine->plugins->racks[runtime].effects[1].keyFrom==alien::KeySource::trackPostFader,"Redo restores the post-fader stage");
     }
+    const auto masterBus=graph.requestFor(0,1,alien::RackStage::master);
+    const auto returnBus=graph.requestFor(0,1,alien::RackStage::returnTrack);
+    const int beforeBusCapture=captures;
+    require(!graph.choose(request,0,alien::KeySource::bus) && !graph.choose(busRequest,0,alien::KeySource::bus)
+        && captures==beforeBusCapture,"track/bus racks reject bus keys before plugin capture");
+    for (const auto& target : {masterBus,returnBus}) {
+        const int runtime=target.stage==alien::RackStage::master ? alien::PluginRuntime::masterIndex : alien::PluginRuntime::returnIndex(0);
+        require(graph.choose(target,0,alien::KeySource::bus) && engine->plugins->racks[runtime].effects[1].keyFrom==alien::KeySource::bus
+            && engine->plugins->racks[runtime].effects[1].keyIndex==0,"return/master graph selects actual bus key");
+        require(!graph.choose(target,0,alien::KeySource::bus),"same bus key is a no-op");
+        require(c.undo(),"undo bus key"); rebuild(); panel.refreshSettings();
+        require(engine->plugins->racks[runtime].effects[1].keyFrom==alien::KeySource::trackPostFader,"Undo restores previous track tap");
+        require(c.redo(),"redo bus key"); rebuild(); panel.refreshSettings();
+        require(engine->plugins->racks[runtime].effects[1].keyFrom==alien::KeySource::bus,"Redo restores bus source");
+        require(graph.choose(target,-1) && engine->plugins->racks[runtime].effects[1].keyIndex==-1
+            && graph.choose(target,0,alien::KeySource::bus),"Off clears a bus key and fresh choice restores it");
+    }
     if (preview != juce::File{}) {
         juce::FileOutputStream out(preview);
         require(out.openedOk() && out.setPosition(0) && out.truncate().wasOk()
@@ -711,6 +728,7 @@ static void trackSidechainViewTests(const juce::File& preview) {
         && run(cmd::InsertDevice{alien::RackStage::bus,0,0,retiredBusEffect}).changed && !graph.choose(busRequest,-1),
         "reused bus slot refuses a stale choice even when it contains the same saved effect identity");
     const auto freshBus=graph.requestFor(0,0,alien::RackStage::bus);
+    require(!graph.choose(returnBus,0,alien::KeySource::bus),"reused bus source refuses old key menu by persistent identity");
     require(!graph.choose(returnRequest,2),"deleted return key source refuses stale choice");
     const auto retiredReturnEffect=c.document().returns[0].plugins.effects[1];
     const auto oldReturn=c.document().trackId(alien::TrackRole::returnTrack,0);
