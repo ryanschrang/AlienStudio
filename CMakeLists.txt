@@ -12,7 +12,7 @@ include(FetchContent)
 FetchContent_Declare(JUCE GIT_REPOSITORY https://github.com/juce-framework/JUCE.git GIT_TAG 8.0.10 GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(JUCE)
 juce_add_gui_app(AlienStudio PRODUCT_NAME "Alien Studio" COMPANY_NAME "Alien Studio" BUNDLE_ID "org.alienstudio.daw")
-target_sources(AlienStudio PRIVATE src/Main.cpp)
+target_sources(AlienStudio PRIVATE src/Main.cpp src/ProjectController.cpp)
 target_compile_definitions(AlienStudio PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_PLUGINHOST_VST3=1)
 # Branding artwork embedded for the splash screen and in-app logo (the Windows
 # executable icon is embedded separately from the ICO below).
@@ -636,7 +636,37 @@ if(BUILD_TESTING AND ALIEN_SHARED_JUCE)
             continue()   # links no JUCE module
         endif()
         set_property(TARGET ${target} PROPERTY LINK_LIBRARIES ${kept} AlienJuceShared)
+        set_property(TARGET ${target} PROPERTY ALIEN_SHARED_JUCE_USER TRUE)
         math(EXPR alien_shared_count "${alien_shared_count} + 1")
     endforeach()
     message(STATUS "AlienJuceShared: ${alien_shared_count} test executables share one compiled JUCE")
+
+    # Code moved out of headers into .cpp files, compiled once into a library for the test executables
+    # that share AlienJuceShared (same JUCE settings, so one compiled copy is valid for all of them).
+    add_library(AlienCore STATIC src/ProjectController.cpp)
+    target_include_directories(AlienCore PUBLIC src)
+    target_link_libraries(AlienCore PUBLIC AlienJuceShared)
+endif()
+
+# Test executables whose sources include ProjectController.h (directly or through another header), so
+# they need its out-of-line members from src/ProjectController.cpp. A test that starts including it and
+# is missing here fails to link with "unresolved external symbol ... ProjectController ...".
+# With shared JUCE they link AlienCore; otherwise (or with their own JUCE build) each compiles the file.
+if(BUILD_TESTING)
+    set(ALIEN_PROJECT_CONTROLLER_TESTS
+        ChannelRackViewTests CommandEngineTests FlexibleReturnTests GroupBusTests MemoryPeakTests
+        MidiRecordingTests MixerRoutingTests PluginAutomationPlaybackTests ProjectControllerTests
+        RackPluginInstrumentTests RackProjectTests SessionViewTests SidechainTests SongRecordingTests
+        TimelineViewTests TrackCapacityTests)
+    foreach(target IN LISTS ALIEN_PROJECT_CONTROLLER_TESTS)
+        if(NOT TARGET ${target})
+            continue()
+        endif()
+        get_target_property(shared ${target} ALIEN_SHARED_JUCE_USER)
+        if(shared)
+            set_property(TARGET ${target} APPEND PROPERTY LINK_LIBRARIES AlienCore)
+        else()
+            target_sources(${target} PRIVATE src/ProjectController.cpp)
+        endif()
+    endforeach()
 endif()

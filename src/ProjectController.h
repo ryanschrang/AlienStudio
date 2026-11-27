@@ -94,34 +94,15 @@ class ProjectController {
 public:
     static constexpr std::size_t maxSessionAudioBytes = 512u * 1024u * 1024u;
 
-    explicit ProjectController(ToneEngine& toneEngine)
-        : engine(toneEngine), doc(ProjectDocument::createDefault()) {
-        runtimeDirty = false;
-        history.reset(doc);
-        savedId = history.currentId();
-        markStreamProblemsReported();   // only what happens from here on is reported (T1-04 D12)
-    }
+    explicit ProjectController(ToneEngine& toneEngine);
 
-    ~ProjectController() {
-        warpCancelled.store(true);
-        alive.reset();
-        audioFileChooser.reset();
-        projectFileChooser.reset();
-        pool.removeAllJobs(true, -1);
-        engine.arrangementPreparing.store(false);
-    }
+    ~ProjectController();
 
     std::function<void()> onMusicalScaleChanged;
     // The key cannot change during a take, or while the last one is still finishing.
     bool projectScaleOpen() const { return !busy && !isRecording() && !engine.recording.active(); }
     // Live side of SetProjectScale. CommandEngine owns the history entry.
-    bool applyProjectScale(int root, ScaleType type) {
-        const ProjectMusicalScale next{true, root, type};
-        if (!projectScaleOpen() || !next.valid()) return false;
-        doc.musicalScale = next;
-        if (onMusicalScaleChanged) onMusicalScaleChanged();
-        return true;
-    }
+    bool applyProjectScale(int root, ScaleType type);
     const ProjectDocument& document() const noexcept { return doc; }
     void setExternalBusy(bool value) { setBusy(value); }
     bool isBusy() const noexcept { return busy; }
@@ -147,112 +128,41 @@ public:
     // edit changed (shown again when it is undone). Edits with the same
     // coalesceKey made in quick succession become one undo step.
     void commit(const juce::String& label, int focusTrack = -1, int focusScene = -1,
-                const juce::String& coalesceKey = {}, bool continuous = false, int undoTrack = -1, int undoScene = -1) {
-        for(int t=0;t<doc.trackCount();++t)engine.tracks[static_cast<std::size_t>(t)].freezeScene.store(doc.tracks[static_cast<std::size_t>(t)].settings.freezeScene);
-        doc.synchronizeTrackRegistry();
-        const auto previous = history.currentId();
-        history.record(doc, label, focusTrack, focusScene, coalesceKey, continuous, undoTrack, undoScene);
-        if (history.currentId() != previous || (engine.arrangementPreparing.load() && !warpWorkActive)) publishArrangement();
-        historyChanged();
-    }
+                const juce::String& coalesceKey = {}, bool continuous = false, int undoTrack = -1, int undoScene = -1);
 
     // Start a fresh history from the current document (e.g. at startup).
-    void markAsNewBaseline() {
-        runtimeDirty = false;
-        history.reset(doc);
-        savedId = history.currentId();
-        historyChanged();
-    }
+    void markAsNewBaseline();
 
     void runtimePluginEdited() { runtimeDirty = true; historyChanged(); }
     // True when a plugin was edited since its state was last copied into the document.
     bool pluginStateDirty() const noexcept { return runtimeDirty; }
-    void setPluginRacks(const std::vector<PluginRackState>& racks, const PluginRackState& master) {
-        setPluginRacks(racks, master, returnRacks());
-    }
-    void setPluginRacks(const std::vector<PluginRackState>& racks, const PluginRackState& master, const ReturnRacks& returns) {
-        setPluginRacks(racks, master, returns, busRacks());
-    }
-    void setPluginRacks(const std::vector<PluginRackState>& racks, const PluginRackState& master, const ReturnRacks& returns, const BusRacks& buses) {
-        if (racks.size() != doc.tracks.size()) return;
-        for (std::size_t t=0;t<racks.size();++t) doc.tracks[t].plugins = racks[t];
-        doc.masterPlugins = master; runtimeDirty = false;
-        for (std::size_t r=0;r<returns.size();++r) if (doc.returns[r].used) doc.returns[r].plugins = returns[r];
-        for (std::size_t b=0;b<buses.size();++b) if (doc.buses[b].used) doc.buses[b].plugins = buses[b];
-        commit("Change plugins");
-    }
+    void setPluginRacks(const std::vector<PluginRackState>& racks, const PluginRackState& master);
+    void setPluginRacks(const std::vector<PluginRackState>& racks, const PluginRackState& master, const ReturnRacks& returns);
+    void setPluginRacks(const std::vector<PluginRackState>& racks, const PluginRackState& master, const ReturnRacks& returns, const BusRacks& buses);
     // The group buses' FX racks (empty for unused slots), in the shape PluginHost takes them.
-    BusRacks busRacks() const {
-        BusRacks racks;
-        for (std::size_t b=0;b<racks.size();++b) if (doc.buses[b].used) racks[b] = doc.buses[b].plugins;
-        return racks;
-    }
+    BusRacks busRacks() const;
 
     // The return tracks' FX racks (empty for unused slots), in the shape PluginHost takes them.
-    ReturnRacks returnRacks() const {
-        ReturnRacks racks;
-        for (std::size_t r=0;r<racks.size();++r) if (doc.returns[r].used) racks[r] = doc.returns[r].plugins;
-        return racks;
-    }
+    ReturnRacks returnRacks() const;
     bool canUndo() const noexcept { return history.canUndo(); }
     bool canRedo() const noexcept { return history.canRedo(); }
     juce::String undoLabel() const { return history.undoLabel(); }
     juce::String redoLabel() const { return history.redoLabel(); }
     bool isDirty() const noexcept { return runtimeDirty || history.currentId() != savedId; }
 
-    bool undo() {
-        if (take.active || songTake.active) return false; // the take would be written over the restored clip
-        DocumentHistory::Step step;
-        if (const auto* state = history.undo(step)) { restore(*state, step); return true; }
-        return false;
-    }
+    bool undo();
 
-    bool redo() {
-        if (take.active || songTake.active) return false;
-        DocumentHistory::Step step;
-        if (const auto* state = history.redo(step)) { restore(*state, step); return true; }
-        return false;
-    }
+    bool redo();
 
     // Put back a document captured earlier in the same edit, before it was committed
     // (e.g. a command batch that failed part way). The history is not changed.
     void revertTo(const ProjectDocument& state) { restore(state, {{}, state.selectedTrack, state.selectedScene}); }
 
     // Replace the song with an empty default project.
-    void newProject() {
-        abandonRecording();
-        engine.playing.store(false);
-        engine.requestedRackClip.store(rack::RackPlayer::noLaunchRequest);
-        engine.sceneRackClip.store(rack::RackPlayer::noLaunchRequest);
-        for (auto& request : engine.requestedTrackRackClip) request.store(rack::RackPlayer::noLaunchRequest);
-        for (auto& request : engine.sceneTrackRackClip) request.store(rack::RackPlayer::noLaunchRequest);
-        engine.rackPerformMode.store(false);
-        engine.resetRackPlayback.store(true);
-        copiedCell = {};
-        if (copiedContent && copiedContent->rackClip != 0) copiedContent.reset();
-        if (beforeDocumentReplaced) beforeDocumentReplaced();
-        releaseReplacedAudio();
-        stopEverySlot();
-        doc = ProjectDocument::createDefault();
-        projectFile = juce::File{};
-        pushDocumentToEngine();
-        runtimeDirty = false;
-        history.reset(doc);
-        // The replaced project's audio, and the rack samples only it used (D14), freed once the engine lets go of them.
-        awaitAudioRelease(setAsideRetainedAudio(forgetUnusedRackAudio()));
-        savedId = history.currentId();
-        discardRecovery();
-        if (onDocumentReplaced) onDocumentReplaced();
-        historyChanged();
-        status("New session", {});
-    }
+    void newProject();
 
     // Autosave and crash recovery ----------------------------------------
-    static juce::File recoveryDirectory() {
-        if (recoveryDirectoryOverride() != juce::File{}) return recoveryDirectoryOverride();
-        return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-            .getChildFile("Alien Studio").getChildFile("Recovery");
-    }
+    static juce::File recoveryDirectory();
     // Tests point autosave somewhere temporary so a real autosave is never touched.
     static juce::File& recoveryDirectoryOverride() { static juce::File directory; return directory; }
     static juce::File recoveryFile() { return recoveryDirectory().getChildFile("Autosave.alienstudio"); }
@@ -262,600 +172,140 @@ public:
     static bool hasRecoverableSession() { return recoveryFile().existsAsFile(); }
 
     // The project the autosave belonged to, if it had been saved before.
-    static juce::File recoveredOriginalFile() {
-        const auto info = juce::JSON::parse(recoveryInfoFile().loadFileAsString());
-        if (auto* object = info.getDynamicObject()) {
-            const auto path = object->getProperty("projectFile").toString();
-            if (path.isNotEmpty() && juce::File::isAbsolutePath(path)) return juce::File(path);
-        }
-        return {};
-    }
+    static juce::File recoveredOriginalFile();
 
-    static void deleteRecoveryFiles() {
-        recoveryFile().deleteFile();
-        recoveryInfoFile().deleteFile();
-    }
+    static void deleteRecoveryFiles();
 
     // Serialise cleanup with an in-flight writer. A queued writer and its UI
     // completion also carry a generation so neither can revive discarded work.
-    void discardRecovery() {
-        recoveryGeneration.fetch_add(1);
-        std::lock_guard<std::mutex> lock(recoveryMutex);
-        deleteRecoveryFiles();
-        autosaving = false;
-        autosavedId = 0;
-    }
+    void discardRecovery();
     bool isAutosaving() const noexcept { return autosaving; }
 
     // Write an autosave copy on the worker thread if there are unsaved edits
     // that have not been autosaved yet. Never touches the user's project file.
-    void autosaveIfNeeded() {
-        if (busy || autosaving || !isDirty()) return;
-        if (onBeforeAutosaveSnapshot) onBeforeAutosaveSnapshot();
-        else if (onBeforeSnapshot) onBeforeSnapshot();
-        if (history.currentId() == autosavedId) return;
-        for (int t = 0; t < doc.trackCount(); ++t) trackSettingsEdited(t);
-        for (int r = 0; r < maxReturns; ++r) returnSettingsEdited(r);
-        for (int b = 0; b < maxBuses; ++b) busSettingsEdited(b);
-        masterGainEdited();
-        auto project = toProjectData(doc);
-
-        if (!project.valid()) {
-            // Say so once; a silent failure would leave the user believing they are protected.
-            if (!autosaveWarned) {
-                autosaveWarned = true;
-                const auto reason = describeInvalidSession(doc);
-                status("Autosave skipped: " + reason, reason);
-            }
-            return;
-        }
-        autosaveWarned = false;
-        autosaving = true;
-        const auto id = history.currentId();
-        const auto original = projectFile.getFullPathName();
-        const auto generation = recoveryGeneration.load();
-        std::weak_ptr<int> token = alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, project, id, original, generation] {
-            std::lock_guard<std::mutex> lock(recoveryMutex);
-            if (generation != recoveryGeneration.load()) return juce::ThreadPoolJob::jobHasFinished;
-            bool ok = recoveryDirectory().createDirectory().wasOk();
-            SessionProjectData written;
-            juce::String error;
-            ok = ok && writeSessionProjectFile(recoveryFile(), project, false, written, error);
-            if (ok) {
-                auto info = juce::var(new juce::DynamicObject());
-                info.getDynamicObject()->setProperty("projectFile", original);
-                info.getDynamicObject()->setProperty("savedAt", juce::Time::getCurrentTime().toISO8601(true));
-                ok = recoveryInfoFile().replaceWithText(juce::JSON::toString(info));
-            }
-            juce::MessageManager::callAsync([this, token, id, ok, generation] {
-                if (token.lock() == nullptr || generation != recoveryGeneration.load()) return;
-                autosaving = false;
-                if (ok) autosavedId = id;
-            });
-            return juce::ThreadPoolJob::jobHasFinished;
-        };
-        pool.addJob(std::move(job));
-    }
+    void autosaveIfNeeded();
 
     // Open the autosave. The result keeps the original project path (if any)
     // and counts as unsaved, so the user decides where to keep it.
-    void recoverSession() {
-        recoveringFrom = recoveredOriginalFile();
-        openProject(recoveryFile(), true);
-    }
+    void recoverSession();
 
     // Engine synchronisation ---------------------------------------------
-    void pushDocumentToEngine() {
-        doc.synchronizeTrackRegistry();
-        engine.bpm.store(doc.bpm);
-        engine.launchQuantizationSteps.store(doc.launchQuantizationSteps);
-        engine.preset.store(doc.livePreset);
-        for (std::size_t i = 0; i < doc.steps.on.size(); ++i) {
-            engine.steps[i].store(doc.steps.on[i]);
-            engine.stepPitches[i].store(doc.steps.pitch[i]);
-            engine.stepVelocities[i].store(doc.steps.velocity[i]);
-        }
-        for (std::size_t t = 0; t < engine.tracks.size(); ++t)
-            engine.tracks[t].set(t < doc.tracks.size() ? doc.tracks[t].settings : TrackSettings{});
-        engine.setActiveTracks(doc.trackCount());
-        engine.masterControls.gain.store(doc.masterGain);
-        for (std::size_t r = 0; r < engine.returns.size(); ++r) {
-            engine.returns[r].set(doc.returns[r].settings);
-            engine.returns[r].active.store(doc.returns[r].used);
-        }
-        for (std::size_t b = 0; b < engine.buses.size(); ++b) {
-            engine.buses[b].set(doc.buses[b].settings);
-            engine.buses[b].active.store(doc.buses[b].used);
-        }
-        engine.recording.apply(doc.recording);
-
-        for (std::size_t t = 0; t < engine.tracks.size(); ++t)
-            for (int pad = 0; pad < drumPadCount; ++pad)
-                engine.drumKits[t].samples[pad].store(t < doc.tracks.size() ? doc.tracks[t].drumAssets[pad].get() : nullptr);
-        pushRackToEngine();
-        publishArrangement();
-    }
+    void pushDocumentToEngine();
 
     // Track and scene structure --------------------------------------------
     // Appending never disturbs playback. Any other structural edit renumbers
     // tracks or scenes, so Session playback is stopped first; this keeps the
     // engine's per-track slots and clip indices consistent with the document.
-    bool addTrack() {
-        if (busy) return false;
-        if (beforeStructureEdit) beforeStructureEdit();
-        if (!doc.canAddTrack() || !doc.trackRegistry.canAllocate()) return false;
-        if (!prepareEngineTracks(doc.trackCount() + 1, "Could not add a track")) return false;
-        doc.tracks.push_back({doc.nextTrackName(), {}, doc.nextTrackColour()});
-        for (auto& scene : doc.cells) scene.emplace_back();
-        publishStop(static_cast<std::size_t>(doc.trackCount() - 1));
-        pushDocumentToEngine();
-        return true;
-    }
+    bool addTrack();
 
-    bool deleteTrack(int track) {
-        if (busy) return false;
-        if (beforeStructureEdit) beforeStructureEdit();
-        if (doc.trackCount() <= 1 || track < 0 || track >= doc.trackCount()) return false;
-        stopEverySlot();
-        const int route = engine.liveDrumTrack.load();
-        if (route == track) engine.liveDrumTrack.store(-1);
-        else if (route > track) engine.liveDrumTrack.store(route - 1);
-        doc.timeline.trackDeleted(track);
-        doc.channelRack.trackDeleted(track); // channels routed there fall back to the master bus
-        doc.sidechainTrackDeleted(track);    // effects keyed by it lose their key
-        doc.tracks.erase(doc.tracks.begin() + track);
-        for (auto& scene : doc.cells) scene.erase(scene.begin() + track);
-        doc.prune();
-        if (doc.selectedTrack > track) --doc.selectedTrack;
-        doc.clampSelection();
-        pushDocumentToEngine();
-        return true;
-    }
+    bool deleteTrack(int track);
 
-    bool moveTrack(int track, int delta) {
-        if (busy) return false;
-        if (beforeStructureEdit) beforeStructureEdit();
-        const int target = track + delta;
-        if (track < 0 || track >= doc.trackCount() || target < 0 || target >= doc.trackCount()) return false;
-        stopEverySlot();
-        const int route = engine.liveDrumTrack.load();
-        if (route == track) engine.liveDrumTrack.store(target);
-        else if (route == target) engine.liveDrumTrack.store(track);
-        doc.timeline.tracksSwapped(track, target);
-        doc.channelRack.tracksSwapped(track, target); // channel routes follow their tracks
-        doc.sidechainTracksSwapped(track, target);
-        std::swap(doc.tracks[static_cast<std::size_t>(track)], doc.tracks[static_cast<std::size_t>(target)]);
-        for (auto& scene : doc.cells)
-            std::swap(scene[static_cast<std::size_t>(track)], scene[static_cast<std::size_t>(target)]);
-        if (doc.selectedTrack == track) doc.selectedTrack = target;
-        else if (doc.selectedTrack == target) doc.selectedTrack = track;
-        pushDocumentToEngine();
-        return true;
-    }
+    bool moveTrack(int track, int delta);
 
-    bool renameTrack(int track, const juce::String& name) {
-        if (busy) return false;
-        const auto trimmed = name.trim().substring(0, 64);
-        if (track < 0 || track >= doc.trackCount() || trimmed.isEmpty()) return false;
-        doc.tracks[static_cast<std::size_t>(track)].name = trimmed;
-        return true;
-    }
+    bool renameTrack(int track, const juce::String& name);
 
     // Number of colours in the track palette (ui::trackColour).
     static constexpr int trackColourCount = 8;
-    bool setTrackColour(int track, int colour) {
-        if (busy || track < 0 || track >= doc.trackCount() || colour < 0 || colour >= trackColourCount) return false;
-        doc.tracks[static_cast<std::size_t>(track)].colour = colour;
-        return true;
-    }
+    bool setTrackColour(int track, int colour);
 
     bool addScene() { return insertScene(doc.sceneCount(), nullptr); }
 
-    bool duplicateScene(int scene) {
-        if (scene < 0 || scene >= doc.sceneCount()) return false;
-        return insertScene(scene + 1, &doc.cells[static_cast<std::size_t>(scene)]);
-    }
+    bool duplicateScene(int scene);
 
-    bool deleteScene(int scene) {
-        if (busy) return false;
-        for(const auto& track:doc.tracks)if(track.settings.freezeScene==scene)return false;
-        for(const auto& region:doc.timeline.frozenOriginals)if(region.source==scene)return false;
-        if (beforeStructureEdit) beforeStructureEdit();
-        if (doc.sceneCount() <= 1 || scene < 0 || scene >= doc.sceneCount()) return false;
-        stopEverySlot();
-        doc.timeline.sceneDeleted(scene);
-        for(auto& track:doc.tracks)if(track.settings.freezeScene>scene)--track.settings.freezeScene;
-        doc.scenes.erase(doc.scenes.begin() + scene);
-        doc.cells.erase(doc.cells.begin() + scene);
-        doc.prune();
-        if (doc.selectedScene > scene) --doc.selectedScene;
-        doc.clampSelection();
-        return true;
-    }
+    bool deleteScene(int scene);
 
-    bool moveScene(int scene, int delta) {
-        if (busy) return false;
-        if (beforeStructureEdit) beforeStructureEdit();
-        const int target = scene + delta;
-        if (scene < 0 || scene >= doc.sceneCount() || target < 0 || target >= doc.sceneCount()) return false;
-        stopEverySlot();
-        doc.timeline.scenesSwapped(scene, target);
-        for(auto& track:doc.tracks){auto& frozen=track.settings.freezeScene;if(frozen==scene)frozen=target;else if(frozen==target)frozen=scene;}
-        std::swap(doc.scenes[static_cast<std::size_t>(scene)], doc.scenes[static_cast<std::size_t>(target)]);
-        std::swap(doc.cells[static_cast<std::size_t>(scene)], doc.cells[static_cast<std::size_t>(target)]);
-        if (doc.selectedScene == scene) doc.selectedScene = target;
-        else if (doc.selectedScene == target) doc.selectedScene = scene;
-        return true;
-    }
+    bool moveScene(int scene, int delta);
 
-    bool renameScene(int scene, const juce::String& name) {
-        if (busy) return false;
-        const auto trimmed = name.trim().substring(0, 64);
-        if (scene < 0 || scene >= doc.sceneCount() || trimmed.isEmpty()) return false;
-        doc.scenes[static_cast<std::size_t>(scene)].name = trimmed;
-        return true;
-    }
+    bool renameScene(int scene, const juce::String& name);
 
     // Validated noncommitting adapter for the master-volume command.
-    bool setMasterVolume(double gain) {
-        if(busy || !std::isfinite(gain) || gain<0 || gain>maxMasterGain)return false;
-        doc.masterGain=static_cast<float>(gain);
-        engine.masterControls.gain.store(doc.masterGain);
-        return true; // CommandEngine owns the history entry
-    }
+    bool setMasterVolume(double gain);
     // Legacy engine readback for saving/autosave and remaining direct controls.
     void masterGainEdited() { doc.masterGain = sanitizedMasterGain(engine.masterControls.gain.load()); }
-    void returnSettingsEdited(int r) {
-        if (r < 0 || r >= maxReturns || !doc.returns[static_cast<std::size_t>(r)].used) return;
-        const auto next = engine.returns[static_cast<std::size_t>(r)].snapshot();
-        if (next.valid()) doc.returns[static_cast<std::size_t>(r)].settings = next;
-    }
-    void busSettingsEdited(int b) {
-        if (b < 0 || b >= maxBuses || !doc.buses[static_cast<std::size_t>(b)].used) return;
-        const auto next = engine.buses[static_cast<std::size_t>(b)].snapshot();
-        if (next.valid()) doc.buses[static_cast<std::size_t>(b)].settings = next;
-    }
+    void returnSettingsEdited(int r);
+    void busSettingsEdited(int b);
 
     // Group buses. A new bus takes the first free slot (its index, or -1 when all are in use);
     // deleting one sends its tracks back to the master and drops its FX. Buses feed only the
     // master, so no edit can make a loop. The caller commits, and rebuilds the plugin racks
     // after a delete.
-    int addBus(const juce::String& name = {}) {
-        const int b = bus_edit::firstFreeSlot(doc);
-        if (busy || bus_edit::apply(doc, {bus_edit::Kind::create, -1, name}).isNotEmpty()) return -1;
-        pushDocumentToEngine();
-        return b;
-    }
-    bool renameBus(int b, const juce::String& name) {
-        return !busy && bus_edit::apply(doc, {bus_edit::Kind::rename, b, name}).isEmpty();
-    }
-    bool deleteBus(int b) {
-        if (busy || !bus_edit::slotInUse(doc, b)) return false;
-        for (int t = 0; t < doc.trackCount(); ++t) trackSettingsEdited(t);
-        if (bus_edit::apply(doc, {bus_edit::Kind::remove, b}).isNotEmpty()) return false;
-        pushDocumentToEngine();
-        return true;
-    }
+    int addBus(const juce::String& name = {});
+    bool renameBus(int b, const juce::String& name);
+    bool deleteBus(int b);
     // Validated noncommitting strip adapters: each writes the document and the engine, and the
     // caller commits. A strip takes the same ranges as a track fader and pan.
-    bool setBusVolume(int b, double gain) {
-        if (busy || !bus_edit::slotInUse(doc, b) || !std::isfinite(gain) || gain < 0 || gain > 2) return false;
-        const auto value = static_cast<float>(gain); const auto slot = static_cast<std::size_t>(b);
-        doc.buses[slot].settings.gain = value;
-        engine.buses[slot].gain.store(value);
-        return true;
-    }
-    bool setBusPan(int b, double pan) {
-        if (busy || !bus_edit::slotInUse(doc, b) || !std::isfinite(pan) || pan < -1 || pan > 1) return false;
-        const auto value = static_cast<float>(pan); const auto slot = static_cast<std::size_t>(b);
-        doc.buses[slot].settings.pan = value;
-        engine.buses[slot].pan.store(value);
-        return true;
-    }
-    bool setBusMute(int b, bool muted) {
-        if (busy || !bus_edit::slotInUse(doc, b)) return false;
-        doc.buses[static_cast<std::size_t>(b)].settings.mute = muted;
-        engine.buses[static_cast<std::size_t>(b)].mute.store(muted);
-        return true;
-    }
-    bool setBusSolo(int b, bool soloed) {
-        if (busy || !bus_edit::slotInUse(doc, b)) return false;
-        doc.buses[static_cast<std::size_t>(b)].settings.solo = soloed;
-        engine.buses[static_cast<std::size_t>(b)].solo.store(soloed);
-        return true;
-    }
-    bool setReturnVolume(int r, double gain) {
-        if (busy || !return_edit::slotInUse(doc, r) || !std::isfinite(gain) || gain < 0 || gain > 2) return false;
-        const auto value = static_cast<float>(gain); const auto slot = static_cast<std::size_t>(r);
-        doc.returns[slot].settings.gain = value;
-        engine.returns[slot].gain.store(value);
-        return true;
-    }
-    bool setReturnPan(int r, double pan) {
-        if (busy || !return_edit::slotInUse(doc, r) || !std::isfinite(pan) || pan < -1 || pan > 1) return false;
-        const auto value = static_cast<float>(pan); const auto slot = static_cast<std::size_t>(r);
-        doc.returns[slot].settings.pan = value;
-        engine.returns[slot].pan.store(value);
-        return true;
-    }
-    bool setReturnMute(int r, bool muted) {
-        if (busy || !return_edit::slotInUse(doc, r)) return false;
-        doc.returns[static_cast<std::size_t>(r)].settings.mute = muted;
-        engine.returns[static_cast<std::size_t>(r)].mute.store(muted);
-        return true;
-    }
+    bool setBusVolume(int b, double gain);
+    bool setBusPan(int b, double pan);
+    bool setBusMute(int b, bool muted);
+    bool setBusSolo(int b, bool soloed);
+    bool setReturnVolume(int r, double gain);
+    bool setReturnPan(int r, double pan);
+    bool setReturnMute(int r, bool muted);
     // Return tracks (MIX-05). A new return takes the first free slot (its index, or -1 when all are
     // in use) and that slot's letter: sends and send automation name the slot, so removing a return
     // never moves another's. Removing one turns every track's send to it off, drops its send
     // automation and its FX. The caller commits, and rebuilds the plugin racks after a removal.
-    int addReturn(const juce::String& name = {}) {
-        const int r = return_edit::firstFreeSlot(doc);
-        if (busy || return_edit::apply(doc, {return_edit::Kind::create, -1, name}).isNotEmpty()) return -1;
-        pushDocumentToEngine();
-        return r;
-    }
-    bool renameReturn(int r, const juce::String& name) {
-        if (busy || !return_edit::slotInUse(doc, r) || doc.returns[static_cast<std::size_t>(r)].name == return_edit::storedName(name)) return false;
-        return return_edit::apply(doc, {return_edit::Kind::rename, r, name}).isEmpty();
-    }
-    bool deleteReturn(int r) {
-        if (busy || !return_edit::slotInUse(doc, r)) return false;
-        for (int t = 0; t < doc.trackCount(); ++t) trackSettingsEdited(t);
-        if (return_edit::apply(doc, {return_edit::Kind::remove, r}).isNotEmpty()) return false;
-        pushDocumentToEngine();
-        return true;
-    }
+    int addReturn(const juce::String& name = {});
+    bool renameReturn(int r, const juce::String& name);
+    bool deleteReturn(int r);
 
     // -1 sends the track to the master. The engine hears the change at once; the caller commits.
-    bool setTrackOutput(int track, int output) {
-        if (busy || track < 0 || track >= doc.trackCount() || track >= static_cast<int>(engine.tracks.size())
-            || output < -1 || output >= maxBuses || (output >= 0 && !doc.buses[static_cast<std::size_t>(output)].used)) return false;
-        auto& settings = doc.tracks[static_cast<std::size_t>(track)].settings;
-        if (settings.output == output) return false;
-        settings.output = output;
-        engine.tracks[static_cast<std::size_t>(track)].output.store(output);
-        return true;
-    }
+    bool setTrackOutput(int track, int output);
 
     // Writes the key to the document only. The caller commits, and the host rebuilds the plugin racks.
     bool applySidechainCommand(const sidechain_edit::Edit& edit) { return !busy && sidechain_edit::apply(doc, edit).isEmpty(); }
     bool applyDeviceCommand(const device_edit::Edit& edit) { return !busy && device_edit::apply(doc, edit).isEmpty(); }
-    bool applyConvolutionResponseCommand(const device_edit::ConvolutionResponseEdit& edit) {
-        return canEditMidiClips() && device_edit::applyConvolutionResponse(doc, edit).isEmpty();
-    }
+    bool applyConvolutionResponseCommand(const device_edit::ConvolutionResponseEdit& edit);
 
     // Message-thread command setters. Only the addressed control changes; the
     // caller commits after the complete command/batch, just like track renaming.
-    bool setTrackVolume(int track, double gain) {
-        if (busy || track < 0 || track >= doc.trackCount() || !std::isfinite(gain) || gain < 0 || gain > 2) return false;
-        const auto value = static_cast<float>(gain);
-        doc.tracks[static_cast<std::size_t>(track)].settings.gain = value;
-        engine.tracks[static_cast<std::size_t>(track)].gain.store(value);
-        return true;
-    }
-    bool setTrackSend(int track, int r, double level) {
-        if (busy || track < 0 || track >= doc.trackCount() || !return_edit::slotInUse(doc, r) || !std::isfinite(level) || level < 0 || level > 1) return false;
-        const auto value = static_cast<float>(level); const auto slot = static_cast<std::size_t>(r);
-        doc.tracks[static_cast<std::size_t>(track)].settings.send[slot] = value;
-        engine.tracks[static_cast<std::size_t>(track)].send[slot].store(value);
-        return true;
-    }
-    bool setTrackSendMode(int track, int r, bool preFader) {
-        if (busy || track < 0 || track >= doc.trackCount() || !return_edit::slotInUse(doc, r)) return false;
-        const auto slot = static_cast<std::size_t>(r);
-        doc.tracks[static_cast<std::size_t>(track)].settings.sendPre[slot] = preFader;
-        engine.tracks[static_cast<std::size_t>(track)].sendPre[slot].store(preFader);
-        return true;
-    }
-    bool setTrackPan(int track, double pan) {
-        if (busy || track < 0 || track >= doc.trackCount() || !std::isfinite(pan) || pan < -1 || pan > 1) return false;
-        const auto value = static_cast<float>(pan);
-        doc.tracks[static_cast<std::size_t>(track)].settings.pan = value;
-        engine.tracks[static_cast<std::size_t>(track)].pan.store(value);
-        return true;
-    }
+    bool setTrackVolume(int track, double gain);
+    bool setTrackSend(int track, int r, double level);
+    bool setTrackSendMode(int track, int r, bool preFader);
+    bool setTrackPan(int track, double pan);
 
-    bool setTrackMute(int track, bool muted) {
-        if (busy || track < 0 || track >= doc.trackCount()) return false;
-        doc.tracks[static_cast<std::size_t>(track)].settings.mute = muted;
-        engine.tracks[static_cast<std::size_t>(track)].mute.store(muted);
-        return true;
-    }
+    bool setTrackMute(int track, bool muted);
     // Live side of SetTrackSound. CommandEngine owns the history entry.
-    bool setTrackSound(int track, int preset, bool drumKit) {
-        if (busy || track < 0 || track >= doc.trackCount() || track >= static_cast<int>(engine.tracks.size()) || isTrackFrozen(track)
-            || (!drumKit && (preset < 0 || preset >= presetCount))) return false;
-        auto& settings = doc.tracks[static_cast<std::size_t>(track)].settings;
-        settings.instrument = drumKit ? 1 : 0;
-        engine.tracks[static_cast<std::size_t>(track)].instrument.store(settings.instrument);
-        if (!drumKit) { settings.preset = preset; engine.tracks[static_cast<std::size_t>(track)].preset.store(preset); }
-        return true;
-    }
-    bool setTrackSolo(int track, bool soloed) {
-        if (busy || track < 0 || track >= doc.trackCount()) return false;
-        doc.tracks[static_cast<std::size_t>(track)].settings.solo = soloed;
-        engine.tracks[static_cast<std::size_t>(track)].solo.store(soloed);
-        return true;
-    }
+    bool setTrackSound(int track, int preset, bool drumKit);
+    bool setTrackSolo(int track, bool soloed);
 
-    void trackSettingsEdited(int track) {
-        if (track < 0 || track >= doc.trackCount() || track >= static_cast<int>(engine.tracks.size())) return;
-        auto next=engine.tracks[static_cast<std::size_t>(track)].snapshot();
-        const auto& previous=doc.tracks[static_cast<std::size_t>(track)].settings;
-        if(previous.frozen()) {
-            next.preset=previous.preset;next.instrument=previous.instrument;next.freezeScene=previous.freezeScene;
-            engine.tracks[static_cast<std::size_t>(track)].preset.store(previous.preset);
-            engine.tracks[static_cast<std::size_t>(track)].instrument.store(previous.instrument);
-        }
-        doc.tracks[static_cast<std::size_t>(track)].settings=next;
-    }
+    void trackSettingsEdited(int track);
 
     // Live sides of SetTrackArmed, SetTrackInput and SetTrackMonitor: the engine hears the change at once.
     // CommandEngine owns the history entry.
-    bool setTrackArmed(int track, bool armed) {
-        if (!recordingSetupOpen(track)) return false;
-        doc.tracks[static_cast<std::size_t>(track)].settings.armed = armed;
-        engine.tracks[static_cast<std::size_t>(track)].armed.store(armed);
-        return true;
-    }
-    bool setTrackInput(int track, int input, bool stereo) {
-        if (!recordingSetupOpen(track) || input < 0 || input + (stereo ? 1 : 0) >= maxTrackInputs) return false;
-        auto& settings = doc.tracks[static_cast<std::size_t>(track)].settings;
-        settings.input = input; settings.stereoInput = stereo;
-        auto& controls = engine.tracks[static_cast<std::size_t>(track)];
-        controls.input.store(input); controls.stereoInput.store(stereo);
-        return true;
-    }
-    bool setTrackMonitor(int track, int mode) {
-        if (!recordingSetupOpen(track) || mode < 0 || mode > 2) return false;
-        doc.tracks[static_cast<std::size_t>(track)].settings.monitor = mode;
-        engine.tracks[static_cast<std::size_t>(track)].monitor.store(mode);
-        return true;
-    }
-    bool recordingSetupOpen(int track) const {
-        return !busy && track >= 0 && track < doc.trackCount() && track < static_cast<int>(engine.tracks.size()) && !isTrackFrozen(track);
-    }
+    bool setTrackArmed(int track, bool armed);
+    bool setTrackInput(int track, int input, bool stereo);
+    bool setTrackMonitor(int track, int mode);
+    bool recordingSetupOpen(int track) const;
     // The loudest input on `track` since the last call (0 when it is neither armed nor monitoring).
-    float takeInputLevel(int track) noexcept {
-        if (track < 0 || track >= static_cast<int>(engine.tracks.size())) return 0.0f;
-        return engine.tracks[static_cast<std::size_t>(track)].inputPeak.exchange(0.0f, std::memory_order_relaxed);
-    }
+    float takeInputLevel(int track) noexcept;
 
     // Playback --------------------------------------------------------------
-    void selectClip(int track, int scene) {
-        if (!doc.isValidCell(track, scene)) return;
-        doc.selectedTrack = track;
-        doc.selectedScene = scene;
-    }
+    void selectClip(int track, int scene);
 
-    void launchClip(int track, int scene) {
-        selectClip(track, scene);
-        if (doc.isValidCell(track, scene) && doc.clip(track, scene).rackClip != 0) {
-            if (launchRackClip(doc.clip(track, scene).rackClip, track)) publishStop(static_cast<std::size_t>(track));
-            return;
-        }
-        if (doc.isValidCell(track, scene)) stopRackOnTrack(track);
-        publishClip(doc.selectedTrack, doc.selectedScene);
-    }
+    void launchClip(int track, int scene);
 
     // A clip or scene launched from the Session view should be heard at once: while Session clips are what the
     // engine plays (not the Song, not the Channel Rack, not a recording's count-in), a stopped transport starts.
     // Returns whether it started; the launch itself waits for the next Beat/Bar boundary as usual.
-    bool startTransportForLaunch() {
-        if (engine.patternMode.load() != sessionMode || engine.playing.load()
-            || engine.recording.phase.load() == RecordControls::countIn) return false;
-        engine.playing.store(true);
-        return true;
-    }
+    bool startTransportForLaunch();
 
-    void launchScene(int scene) {
-        scene = juce::jlimit(0, doc.sceneCount() - 1, scene);
-        bool hasRack = false;
-        for (int track = 0; track < doc.trackCount(); ++track)
-            if (const auto source = doc.clip(track, scene).rackClip) {
-                if (!canLaunchRackClip(source)) return;
-                hasRack = true;
-            }
-        if (hasRack) {
-            pushRackToEngine(); engine.rackPerformMode.store(true); engine.patternMode.store(1); engine.playing.store(true);
-        }
-        engine.requestedRackClip.store(rack::RackPlayer::noLaunchRequest);
-        engine.sceneRackClip.store(0); // A scene owns every Session slot and stops the menu's standalone launch.
-        for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track) {
-            engine.requestedTrackRackClip[track].store(rack::RackPlayer::noLaunchRequest);
-            auto source = static_cast<int>(track) < doc.trackCount() ? doc.clip(static_cast<int>(track), scene).rackClip : 0;
-            if (doc.legacyRackSceneLaunch && source != 0)
-                for (int earlier = 0; earlier < static_cast<int>(track); ++earlier)
-                    if (doc.clip(earlier, scene).rackClip == source) { source = 0; break; }
-            engine.sceneTrackRackClip[track].store(source);
-        }
-        engine.synchronizedSceneLaunch.store(true);
-        for (int track = 0; track < doc.trackCount(); ++track) {
-            const auto rack = doc.clip(track, scene).rackClip;
-            if (rack != 0) publishStop(static_cast<std::size_t>(track));
-            else publishClip(track, scene);
-        }
-    }
+    void launchScene(int scene);
 
-    void stopAllTracks() {
-        engine.sceneRackClip.store(0);
-        for (auto& source : engine.sceneTrackRackClip) source.store(0);
-        engine.synchronizedSceneLaunch.store(true);
-        for (int track = 0; track < doc.trackCount(); ++track) publishStop(static_cast<std::size_t>(track));
-        stopRackClip();
-    }
+    void stopAllTracks();
 
     // A launch is transport state, not an edit or a change of the pattern being edited.
-    int rackPatternForClip(std::uint64_t clip) const noexcept {
-        return doc.rackPatternForClip(clip);
-    }
-    bool rackPatternInUse(int pattern) const {
-        if (!doc.channelRack.validPattern(pattern)) return false;
-        const auto id = doc.channelRack.clips[static_cast<std::size_t>(pattern)];
-        for (const auto& scene : doc.cells) for (auto cell : scene) if (cell.value == id) return true;
-        for (const auto& r : doc.timeline.regions) if (r.isPattern() && r.rackClip == id) return true;
-        return false;
-    }
-    bool canLaunchRackClip(std::uint64_t clip) const {
-        if (busy || isRecording() || engine.patternMode.load() == 2 || rackPatternForClip(clip) < 0) return false;
-        for (int c = 0; c < doc.channelRack.channelCount; ++c)
-            if (isTrackFrozen(doc.channelRack.channels[static_cast<std::size_t>(c)].output)) return false;
-        return true;
-    }
-    bool launchRackClip(std::uint64_t clip, int track = -1) {
-        if (track < -1 || track >= doc.trackCount()) return false;
-        if (!canLaunchRackClip(clip)) return false;
-        pushRackToEngine();
-        engine.rackPerformMode.store(true);
-        engine.patternMode.store(1);
-        if (track >= 0) engine.requestedTrackRackClip[static_cast<std::size_t>(track)].store(clip);
-        else engine.requestedRackClip.store(clip);
-        engine.playing.store(true);
-        return true;
-    }
-    bool stopRackClip() {
-        if (busy || isRecording()) return false;
-        engine.requestedRackClip.store(0);
-        return true;
-    }
+    int rackPatternForClip(std::uint64_t clip) const noexcept;
+    bool rackPatternInUse(int pattern) const;
+    bool canLaunchRackClip(std::uint64_t clip) const;
+    bool launchRackClip(std::uint64_t clip, int track = -1);
+    bool stopRackClip();
 
     // Stops one Session track at the next launch boundary; the other tracks keep playing.
-    void stopTrack(int track) {
-        if (track < 0 || track >= doc.trackCount()) return;
-        publishStop(static_cast<std::size_t>(track));
-        stopRackOnTrack(track);
-    }
-    void stopRackOnTrack(int track) {
-        if (track < 0 || track >= doc.trackCount()) return;
-        const auto index = static_cast<std::size_t>(track);
-        const auto hasSource = [](std::uint64_t id) { return id != 0 && id != rack::RackPlayer::noLaunchRequest; };
-        if (hasSource(engine.activeTrackRackClip[index].load()) || hasSource(engine.queuedTrackRackClip[index].load())
-            || hasSource(engine.requestedTrackRackClip[index].load()) || hasSource(engine.sceneTrackRackClip[index].load()))
-            engine.requestedTrackRackClip[index].store(0);
-        else if (doc.legacyRackSceneLaunch) {
-            // Before D3, duplicate assignments in a scene controlled one occurrence.
-            for (int scene = 0; scene < doc.sceneCount(); ++scene) if (const auto source = doc.clip(track, scene).rackClip; source != 0)
-                for (std::size_t other = 0; other < ToneEngine::sessionTracks; ++other)
-                    if (engine.activeTrackRackClip[other].load() == source || engine.queuedTrackRackClip[other].load() == source
-                        || engine.requestedTrackRackClip[other].load() == source || engine.sceneTrackRackClip[other].load() == source)
-                        engine.requestedTrackRackClip[other].store(0);
-        }
-    }
+    void stopTrack(int track);
+    void stopRackOnTrack(int track);
 
-    void publishClip(int track, int scene) {
-        if (!doc.isValidCell(track, scene)) return;
-        if (doc.clip(track, scene).rackClip != 0) return;
-        if(isTrackFrozen(track) && scene!=doc.tracks[static_cast<std::size_t>(track)].settings.freezeScene){publishStop(static_cast<std::size_t>(track));return;}
-        const auto& clip = doc.clip(track, scene);
-        const auto index = static_cast<std::size_t>(track);
-        engine.requestedPianoRollClip[index].store(scene);
-        SessionClipLaunch launch;
-        launch.pattern = clip.isAudioClip() ? PianoRollPattern{} : clip.notes();
-        launch.audio = clip.audio.get();
-        launch.clipIndex = scene;
-        engine.pianoRollLaunches[index].publish(launch);
-    }
+    void publishClip(int track, int scene);
 
     // Recording ---------------------------------------------------------------
     // What the user is told when a take ends.
@@ -877,88 +327,21 @@ public:
     // Message thread only. Records into the selected clip, which must be empty
     // or hold MIDI. The count-in, metronome and monitoring are done by the
     // engine; the take becomes one undo step when it ends.
-    RecordStart startRecording() {
-        if (take.active || songTake.active) return {false, "Already recording."};
-        if (busy) return {false, "Wait for the current operation to finish."};
-        if (!recordMidiNotes) return {false, "MIDI recording commands are not connected."};
-        if (engine.recording.active()) return {false, "The previous take is still finishing. Try again in a moment."};
-        if (engine.patternMode.load() != 1)
-            return {false, "Open the Piano Roll or Session view to record."};
-        const int track = doc.selectedTrack, scene = doc.selectedScene;
-        if(isTrackFrozen(track))return {false,"Unfreeze the track before recording."};
-        if (!doc.isValidCell(track, scene)) return {false, "Select a clip to record into."};
-        const auto& clip = doc.clip(track, scene);
-        if (clip.isAudioClip()) return {false, "This clip holds audio. Choose an empty or MIDI clip to record into."};
-        if (clip.rackClip != 0) return {false, "This cell launches a Channel Rack clip. Choose an empty or MIDI clip to record into."};
-
-        take = {};
-        take.active = true;
-        take.track = track; take.scene = scene;
-        take.replace = doc.recording.replace;
-        take.id = ++lastTakeId;
-        take.assembler.reset(clip.notes().loopSteps);
-        take.droppedAtStart = engine.recording.events.droppedCount();
-        for (RecordEvent stale; engine.recording.events.pop(stale);) {}
-
-        engine.recording.apply(doc.recording);
-        engine.recording.targetTrack.store(track);
-        engine.recording.targetScene.store(scene);
-        engine.recording.take.store(take.id);
-        prepareClipForTake(track, scene, take.replace);
-        engine.recording.stopRequested.store(false);
-        engine.recording.startRequested.store(true);
-        return {true, {}};
-    }
+    RecordStart startRecording();
 
     // Ask the engine to end the take; its notes arrive through pollRecording().
-    void stopRecording() {
-        if (songTake.active) { stopSongTake(); return; }
-        if (!take.active) return;
-        // Cancelled before the engine saw the request: nothing was recorded.
-        if (engine.recording.startRequested.exchange(false)) {
-            RecordEvent refusal;
-            refusal.kind = RecordEventKind::refused;
-            refusal.take = take.id;
-            take.assembler.consume(refusal);
-            take.cancelled = true;
-            finishTake();
-            return;
-        }
-        engine.recording.stopRequested.store(true);
-    }
+    void stopRecording();
 
     bool isRecording() const noexcept { return take.active || songTake.active; }
     int recordingTrack() const noexcept { return take.active ? take.track : -1; }
     int recordingScene() const noexcept { return take.active ? take.scene : -1; }
 
     // Drops a take without keeping it (the document is being replaced).
-    void abandonRecording() {
-        if (songTake.active) { songTake.abandoned = true; stopSongTake(); }
-        if (!take.active) return;
-        take.active = false;
-        engine.recording.startRequested.store(false);
-        engine.recording.stopRequested.store(true);
-    }
+    void abandonRecording();
 
     // Message-thread timer: turns what the engine captured into notes, lets the
     // looping clip play back what has been recorded so far, and finishes the take.
-    void pollRecording() {
-        if (songTake.active) { pollSongTake(); return; }
-        if (!take.active) {
-            for (RecordEvent stale; engine.recording.events.pop(stale);) {}
-            return;
-        }
-        bool changed = false, ended = false;
-        for (RecordEvent event; engine.recording.events.pop(event);) {
-            if (event.take != take.id) continue;
-            take.assembler.consume(event);
-            changed = true;
-            if (event.kind == RecordEventKind::refused) take.refused = true;
-            if (event.kind == RecordEventKind::end || event.kind == RecordEventKind::refused) { ended = true; break; }
-        }
-        if (ended) finishTake();
-        else if (changed) previewTake();
-    }
+    void pollRecording();
 
     // Song-view audio takes ----------------------------------------------------
     // What the user is told when an audio take ends.
@@ -976,602 +359,134 @@ public:
     // Message thread only. Records every armed track whose input the device has (`deviceInputs` enabled
     // channels) into a new WAV in `folder` while the song plays; the engine counts in and starts the song,
     // and with punch on records only the loop range. The take is placed as one undo step when it ends.
-    RecordStart startSongTake(const juce::File& folder, double sampleRate, int deviceInputs) {
-        if (take.active || songTake.active) return {false, "Already recording."};
-        if (busy) return {false, "Wait for the current operation to finish."};
-        if (engine.recording.active()) return {false, "The previous take is still finishing. Try again in a moment."};
-        if (engine.patternMode.load() != 2) return {false, "Open the Song view (or turn on Song mode) to record onto the timeline."};
-        std::vector<int> armed;
-        bool anyArmed = false, frozenArmed=false;
-        for (int t = 0; t < doc.trackCount() && t < maxSessionTracks; ++t) {
-            const auto& s = doc.tracks[static_cast<std::size_t>(t)].settings;
-            anyArmed = anyArmed || s.armed;
-            frozenArmed=frozenArmed || (s.armed && s.frozen());
-            if (s.armed && !s.frozen() && s.input + (s.stereoInput ? 1 : 0) < deviceInputs) armed.push_back(t);
-        }
-        if(armed.empty() && frozenArmed)return {false,"Unfreeze an armed track before recording."};
-        if (armed.empty())
-            return {false, anyArmed ? "The armed tracks' inputs are not enabled. Turn them on in Audio settings."
-                                    : "Arm a track in the Song view (the button on its header) to record onto it."};
-        if (doc.timeline.takes.size() + armed.size() > timeline::maxTakes)
-            return {false, "The recording take list is full. Forget unused takes in the Takes panel before recording."};
-        if (!folder.createDirectory().wasOk()) return {false, "Cannot create the folder for takes: " + folder.getFullPathName()};
-
-        SongTake next;
-        for (const int t : armed) {
-            const auto& track = doc.tracks[static_cast<std::size_t>(t)];
-            const auto file = folder.getNonexistentChildFile(juce::File::createLegalFileName(track.name + " take"), ".wav", false);
-            juce::String error;
-            // Tests that move the autosave folder keep take journals next to it too.
-            const auto journals = recoveryDirectoryOverride() != juce::File{} ? recoveryDirectoryOverride().getChildFile("Recording Recovery")
-                                                                               : RecordingFile::recoveryDirectory();
-            auto recording = DiskRecording::start(file, sampleRate, track.settings.stereoInput ? 2 : 1, error, journals);
-            if (!recording) {
-                for (auto& started : next.recordings) started.second->finish(); // nothing captured: removes its files
-                return {false, "Cannot record " + track.name + ": " + error};
-            }
-            next.recordings.emplace_back(t, std::move(recording));
-        }
-        next.active = true;
-        next.id = ++lastTakeId;
-        next.sampleRate = sampleRate;
-        next.bpm = doc.bpm;
-        next.tempoChanges = doc.timeline.tempoChanges;
-        next.offsetMs = doc.recording.audioLatencyOffsetMs;
-        next.punch = doc.recording.punch;
-        next.punchIn = doc.timeline.loopStart;
-        next.punchOut = doc.timeline.loopEnd;
-        next.loopStart = doc.timeline.loopStart;
-        next.loopEnd = doc.timeline.loopEnd;
-        songTake = std::move(next);
-        for (RecordEvent stale; engine.recording.events.pop(stale);) {}
-
-        auto& capture = *engine.songTake;
-        for (auto& sink : capture.sinks) sink.store(nullptr);
-        for (const auto& [t, recording] : songTake.recordings) capture.sinks[static_cast<std::size_t>(t)].store(recording.get());
-        capture.punch.store(songTake.punch);
-        capture.punchIn.store(songTake.punchIn);
-        capture.punchOut.store(songTake.punchOut);
-        engine.recording.apply(doc.recording);
-        engine.recording.targetTrack.store(-1);
-        engine.recording.targetScene.store(-1);
-        engine.recording.take.store(songTake.id);
-        engine.recording.audioTake.store(true);
-        engine.recording.stopRequested.store(false);
-        engine.recording.startRequested.store(true);
-        return {true, {}};
-    }
+    RecordStart startSongTake(const juce::File& folder, double sampleRate, int deviceInputs);
     bool isSongTakeActive() const noexcept { return songTake.active; }
     // The tracks being recorded, for the view.
-    std::vector<int> songTakeTracks() const {
-        std::vector<int> result;
-        for (const auto& recording : songTake.recordings) result.push_back(recording.first);
-        return result;
-    }
+    std::vector<int> songTakeTracks() const;
 
     // Live side of SetRecordSettings. CommandEngine owns the history entry.
-    bool applyRecordSettings(const RecordSettings& settings) {
-        if (busy || !settings.valid()) return false;
-        doc.recording = settings;
-        engine.recording.apply(settings);
-        return true;
-    }
+    bool applyRecordSettings(const RecordSettings& settings);
 
     // Republish only when the clip is playing or queued, so content changes
     // are heard without launching anything new.
     // Republishes every other cell that shares this cell's content, where it is playing or queued.
-    void republishLinked(int track, int scene) {
-        const auto link = doc.isValidCell(track, scene) ? doc.linkOf(track, scene) : 0;
-        if (link == 0) return;
-        for (int s = 0; s < doc.sceneCount(); ++s) for (int t = 0; t < doc.trackCount(); ++t)
-            if ((t != track || s != scene) && doc.linkOf(t, s) == link) republishIfLive(t, s);
-    }
+    void republishLinked(int track, int scene);
 
     // ---- linked clips (T1-03): Session cells that share one clip's content ----------------------
-    bool applyRackCommand(const rack_command::Edit& edit) {
-        if (!canEditMidiClips()) return false;
-        const auto before = doc;
-        if (rack_command::apply(doc, edit).isNotEmpty()) return false;
-        if (sameContent(before, doc)) return true;
-        if (edit.kind == rack_command::Kind::create) pushRackToEngine();
-        else publishStop(static_cast<std::size_t>(edit.track)); // preserve existing assignment playback semantics
-        return true;
-    }
+    bool applyRackCommand(const rack_command::Edit& edit);
     // Copy remembers a cell's clip. Paste puts an independent copy of it in a cell; Paste linked puts a
     // clip that shares its content (an edit of either is an edit of both). Make unique gives a linked
     // cell its own copy again. Each is one undo step; a pasted cell's old content is replaced, not edited.
-    bool copyCell(int track, int scene) {
-        if (!doc.isValidCell(track, scene) || !doc.cellClip(track, scene)) return false;
-        copiedCell = doc.cellClip(track, scene);
-        copiedContent = doc.clip(track, scene);
-        return true;
-    }
+    bool copyCell(int track, int scene);
     bool hasCopiedCell() const noexcept { return copiedContent.has_value(); }
     bool canPasteLinked() const { return copiedCell && doc.library.clip(copiedCell) != nullptr; }
     clipboard_clip::Clipboard clipClipboard() const { return {copiedCell, copiedContent}; }
-    bool applyClipboardClipCommand(const clipboard_clip::Edit& edit, const clipboard_clip::Clipboard& clipboard) {
-        if (!canEditMidiClips()) return false;
-        const auto before = doc;
-        if (clipboard_clip::apply(doc, edit, &clipboard).isNotEmpty()) return false;
-        if (sameContent(before, doc)) return true;
-        if (doc.channelRack != before.channelRack) pushRackToEngine();
-        if (doc.clip(edit.track, edit.scene).rackClip) publishStop(static_cast<std::size_t>(edit.track));
-        else if (edit.kind != clipboard_clip::Kind::unique) republishIfLive(edit.track, edit.scene);
-        return true;
-    }
+    bool applyClipboardClipCommand(const clipboard_clip::Edit& edit, const clipboard_clip::Clipboard& clipboard);
     // Non-committing command boundary. Only the addressed live cell is
     // republished; queued launches, transport and unrelated voices keep running.
     bool canEditMidiClips() const { return !busy && !isRecording() && engine.recording.phase.load()==RecordControls::idle; }
-    bool applyMidiClipCommand(const midi_clip::Edit& edit) {
-        if (!canEditMidiClips() || midi_clip::refusal(doc,edit).isNotEmpty()) return false;
-        const auto id=doc.cellClip(edit.track,edit.scene);const auto link=doc.linkOf(edit.track,edit.scene);
-        if (!midi_clip::apply(doc,edit)) return false;
-        if (edit.kind!=midi_clip::Kind::makeUnique && (id!=doc.cellClip(edit.track,edit.scene) || link!=doc.linkOf(edit.track,edit.scene))) republishIfLive(edit.track,edit.scene);
-        return true;
-    }
-    bool applyDuplicateClipCommand(const session_clip::Duplicate& edit) {
-        if (!canEditMidiClips()) return false;
-        const auto rackBefore = doc.channelRack;
-        if (session_clip::duplicate(doc, edit).isNotEmpty()) return false;
-        if (doc.channelRack != rackBefore) pushRackToEngine();
-        const auto index = static_cast<std::size_t>(edit.toTrack);
-        if (engine.requestedPianoRollClip[index].load() == edit.toScene) {
-            if (doc.clip(edit.toTrack, edit.toScene).rackClip) publishStop(index);
-            else publishClip(edit.toTrack, edit.toScene);
-        }
-        return true;
-    }
-    bool applyMoveClipCommand(const session_clip::Move& edit) {
-        if (!canEditMidiClips() || session_clip::moveRefusal(doc, edit).isNotEmpty()) return false;
-        if (edit.track == edit.toTrack && edit.scene == edit.toScene) return true;
-        const auto sourceRequest = engine.requestedPianoRollClip[static_cast<std::size_t>(edit.track)].load();
-        const auto targetRequest = engine.requestedPianoRollClip[static_cast<std::size_t>(edit.toTrack)].load();
-        if (!session_clip::move(doc, edit)) return false;
-        // Do not replace another scene's queued request, including a pending stop.
-        if (sourceRequest == edit.scene) publishClip(edit.track, edit.scene);
-        if (targetRequest == edit.toScene) {
-            if (doc.clip(edit.toTrack, edit.toScene).rackClip) publishStop(static_cast<std::size_t>(edit.toTrack));
-            else publishClip(edit.toTrack, edit.toScene);
-        }
-        return true;
-    }
+    bool applyMidiClipCommand(const midi_clip::Edit& edit);
+    bool applyDuplicateClipCommand(const session_clip::Duplicate& edit);
+    bool applyMoveClipCommand(const session_clip::Move& edit);
     // Validated noncommitting adapter for the named command. Publish only a
     // changed cell; unrelated voices, launches and transport keep running.
-    bool applyDeleteClipCommand(int track, int scene) {
-        if (!canEditMidiClips() || session_clip::deleteRefusal(doc, track, scene).isNotEmpty()) return false;
-        const bool present = static_cast<bool>(doc.cellClip(track, scene));
-        if (!session_clip::remove(doc, track, scene)) return false;
-        if (present) republishIfLive(track, scene);
-        return true;
-    }
+    bool applyDeleteClipCommand(int track, int scene);
     // Whether a Song placement shares what it plays with something else: another placement of the same
     // cell or placement clip, or a linked cell.
     bool placementShared(std::uint32_t regionId) const { return song_placement::shared(doc, regionId); }
     // Live side of MakeSongClipUnique (see SongPlacementEdit.h). CommandEngine owns the history entry.
-    bool applyMakePlacementUnique(std::uint32_t regionId) {
-        if (busy || isRecording()) return false;
-        auto candidate = doc;
-        if (song_placement::makeUnique(candidate, regionId).isNotEmpty()) return false;
-        if (candidate.sceneCount() != doc.sceneCount() && beforeStructureEdit) beforeStructureEdit();
-        const bool rackChanged = !(candidate.channelRack == doc.channelRack);
-        doc = std::move(candidate);
-        if (rackChanged) pushRackToEngine();
-        return true;
-    }
-    void republishIfLive(int track, int scene) {
-        if (!doc.isValidCell(track, scene)) return;
-        const auto index = static_cast<std::size_t>(track);
-        if (engine.activePianoRollClip[index].load() == scene || engine.requestedPianoRollClip[index].load() == scene)
-            publishClip(track, scene);
-    }
+    bool applyMakePlacementUnique(std::uint32_t regionId);
+    void republishIfLive(int track, int scene);
 
     // Edits -----------------------------------------------------------------
     // Live side of SetStepOn, SetStepPitch and SetStepVelocity. CommandEngine owns the history entry.
-    bool setStepOn(int step, bool on) {
-        if (busy || !validStep(step)) return false;
-        doc.steps.on[static_cast<std::size_t>(step)] = on;
-        engine.steps[static_cast<std::size_t>(step)].store(on);
-        return true;
-    }
-    bool setStepPitch(int step, int pitch) {
-        if (busy || !validStep(step) || pitch < 0 || pitch > 127) return false;
-        doc.steps.pitch[static_cast<std::size_t>(step)] = pitch;
-        engine.stepPitches[static_cast<std::size_t>(step)].store(pitch);
-        return true;
-    }
-    bool setStepVelocity(int step, int velocity) {
-        if (busy || !validStep(step) || velocity < 1 || velocity > 127) return false;
-        doc.steps.velocity[static_cast<std::size_t>(step)] = velocity;
-        engine.stepVelocities[static_cast<std::size_t>(step)].store(velocity);
-        return true;
-    }
-    bool hasWarpedAudio() const {
-        return std::any_of(doc.timeline.regions.begin(),doc.timeline.regions.end(),[](const auto& r){return !r.warp.empty();});
-    }
+    bool setStepOn(int step, bool on);
+    bool setStepPitch(int step, int pitch);
+    bool setStepVelocity(int step, int velocity);
+    bool hasWarpedAudio() const;
     // Warped audio is prepared for one tempo, so nothing may change it while a take is being captured.
-    bool tempoLocked() const {
-        return hasWarpedAudio() && (isRecording() || engine.recording.phase.load()!=RecordControls::idle);
-    }
+    bool tempoLocked() const;
     // Why the project's state, as opposed to the edit's arguments, refuses a tempo or time signature command.
-    juce::String tempoEditRefusal(const tempo_edit::Edit& e) const {
-        const bool meter=!tempo_edit::changesTempo(e);
-        const bool map=!meter && e.kind!=tempo_edit::Kind::projectTempo;
-        if(tempoLocked() || (map && isRecording()))return meter?"Stop recording before changing the time signature.":"Stop recording before changing the tempo.";
-        return {};
-    }
+    juce::String tempoEditRefusal(const tempo_edit::Edit& e) const;
     // Why the project's state, as opposed to the edit's arguments, refuses a Song marker, loop or length command.
     // Markers never change playback; the loop and the length do, so they wait like the tempo while warped audio records.
-    juce::String songEditRefusal(const song_edit::Edit& e) const {
-        if(song_edit::changesLoop(e) && tempoLocked() && !song_edit::changesNothing(doc,e))return "Stop recording before changing the loop while the song has warped audio.";
-        if(song_edit::changesLength(e) && tempoLocked() && !song_edit::changesNothing(doc,e))return "Stop recording before changing the song length while the song has warped audio.";
-        return {};
-    }
+    juce::String songEditRefusal(const song_edit::Edit& e) const;
     // Why the project's state refuses a Song clip command: while warped audio records, nothing that plays may change.
     // The take list is the recorder's while it records, so comping and forgetting takes wait for it.
-    juce::String songClipRefusal(const song_clip::Edit& e) const {
-        if(!isRecording() && engine.recording.phase.load()==RecordControls::idle)return {};
-        if(song_clip::takeEdit(e.kind))return e.kind==song_clip::Kind::comp?"Stop recording before comping a take.":"Stop recording before forgetting a take.";
-        if(e.kind==song_clip::Kind::moveSection)return "Stop recording before moving a section and its clips.";
-        timeline::id_stream::Scope asking;   // a split or copy's new ids are the live edit's to take
-        const auto o=song_clip::outcome(doc,e);
-        if(!o.next)return {};
-        const bool warp=hasWarpedAudio() || std::any_of(o.next->regions.begin(),o.next->regions.end(),[](const auto& r){return !r.warp.empty();});
-        if(warp && !o.next->playbackEquals(doc.timeline))return "Stop recording before changing Song clips while the song has warped audio.";
-        return {};
-    }
+    juce::String songClipRefusal(const song_clip::Edit& e) const;
     // Why the project's state refuses an automation lane command: automation plays, so like the loop it waits while
     // warped audio records.
-    juce::String automationRefusal(const automation_edit::Edit& e) const {
-        if(tempoLocked() && !automation_edit::changesNothing(doc,e))return "Stop recording before changing automation while the song has warped audio.";
-        return {};
-    }
+    juce::String automationRefusal(const automation_edit::Edit& e) const;
     // Live side of the automation lane commands. CommandEngine owns the history entry, and its commit plays the result.
-    bool applyAutomationCommand(const automation_edit::Edit& e) {
-        if(busy || automationRefusal(e).isNotEmpty())return false;
-        return automation_edit::apply(doc,e).isEmpty();
-    }
+    bool applyAutomationCommand(const automation_edit::Edit& e);
     // Live side of the Song clip commands. CommandEngine owns the history entry, and its commit plays the result.
-    bool applySongClipCommand(const song_clip::Edit& e) {
-        if(busy || songClipRefusal(e).isNotEmpty())return false;
-        return song_clip::apply(doc,e).isEmpty();
-    }
+    bool applySongClipCommand(const song_clip::Edit& e);
     // Live side of the Song marker and loop commands. CommandEngine owns the history entry, and its commit plays the new loop.
-    bool applySongCommand(const song_edit::Edit& e) {
-        if(busy || songEditRefusal(e).isNotEmpty())return false;
-        return song_edit::apply(doc,e).isEmpty();
-    }
+    bool applySongCommand(const song_edit::Edit& e);
     // Live side of the tempo and time signature commands. CommandEngine owns the history entry.
-    bool applyTempoCommand(const tempo_edit::Edit& e) {
-        if(busy || tempoEditRefusal(e).isNotEmpty() || tempo_edit::refusal(doc,e).isNotEmpty())return false;
-        if(tempo_edit::changesNothing(doc,e))return true;
-        const bool unfreezing=tempo_edit::changesTempo(e) && anyFrozenTrack();
-        if(e.kind==tempo_edit::Kind::projectTempo && hasWarpedAudio()){engine.arrangementPreparing.store(true);engine.playing.store(false);}
-        if(tempo_edit::apply(doc,e).isNotEmpty())return false;
-        engine.bpm.store(doc.bpm);
-        if(unfreezing){
-            pushDocumentToEngine();
-            status("Tracks unfrozen for tempo change.",{});
-            if(onDocumentRestored)onDocumentRestored();
-        }
-        return true;
-    }
+    bool applyTempoCommand(const tempo_edit::Edit& e);
     // While the tempo control is dragged the engine follows it and the project does not change.
     // The drag ends in SetTempo, so frozen tracks are unfrozen and the Undo step made only then.
-    void auditionTempo(int bpm) {
-        if(busy || tempoLocked())return;
-        const int value=juce::jlimit(tempo_edit::minProjectBpm,tempo_edit::maxProjectBpm,bpm);
-        if(value!=doc.bpm && hasWarpedAudio()){engine.arrangementPreparing.store(true);engine.playing.store(false);}
-        engine.bpm.store(value);
-    }
+    void auditionTempo(int bpm);
     // Back to the project's tempo, and transport released if a drag returned to its start.
-    void endTempoAudition() {
-        engine.bpm.store(doc.bpm);
-        if(engine.arrangementPreparing.load() && !warpWorkActive)publishArrangement();
-    }
+    void endTempoAudition();
     // The song's tempo map: its tempo changes after the project tempo.
     timeline::TempoMap songTempo() const noexcept { return {doc.timeline.tempoChanges, static_cast<double>(doc.bpm)}; }
     // Live side of SetLivePreset and SetLaunchQuantization. CommandEngine owns the history entry.
-    bool setLivePreset(int preset) {
-        if (busy || preset < 0 || preset >= presetCount) return false;
-        doc.livePreset = preset;
-        engine.preset.store(preset);
-        return true;
-    }
-    bool setLaunchQuantization(int steps) {
-        if (busy || (steps != 4 && steps != 16)) return false;
-        doc.launchQuantizationSteps = steps;
-        engine.launchQuantizationSteps.store(steps);
-        return true;
-    }
+    bool setLivePreset(int preset);
+    bool setLaunchQuantization(int steps);
 
     // Called by the piano roll as notes change. Editing a clip that is not
     // playing queues it to launch, so changes are heard straight away.
-    void setClipPattern(int track, int scene, const PianoRollPattern& pattern, bool publishToEngine) {
-        if (doc.isValidCell(track, scene) && doc.clip(track, scene).rackClip != 0) return;
-        if (!doc.isValidCell(track, scene) || isTrackFrozen(track)) return;
-        if (take.active && track == take.track && scene == take.scene) return; // the take owns this clip until it ends
-        auto clip = doc.clip(track, scene);
-        // Re-loading a clip into the editor reports identical notes; keep the
-        // existing object so it does not look like an edit.
-        if (samePianoRollPattern(*clip.pattern, pattern)) return;
-        clip.pattern = std::make_shared<const PianoRollPattern>(pattern);
-        doc.setClip(track, scene, clip);
-        republishLinked(track, scene);   // cells linked to this one now play the new notes too
-        if (!publishToEngine || clip.isAudioClip()) return;
-        const auto index = static_cast<std::size_t>(track);
-        engine.requestedPianoRollClip[index].store(scene);
-        if (engine.activePianoRollClip[index].load() == scene) engine.pianoRollNotes[index].publish(pattern);
-        else publishClip(track, scene);
-    }
+    void setClipPattern(int track, int scene, const PianoRollPattern& pattern, bool publishToEngine);
 
     // Why the project's state refuses a clip notes command: the take recording into a clip owns it until it ends.
-    juce::String clipNotesRefusal(const clip_notes::Edit& e) const {
-        if (e.kind == clip_notes::Kind::cell && take.active && e.track == take.track && e.scene == take.scene)
-            return "The take recording into this clip owns its notes until it ends.";
-        return {};
-    }
+    juce::String clipNotesRefusal(const clip_notes::Edit& e) const;
     // Live side of SetClipNotes and SetPlacementClipNotes. CommandEngine owns the history entry. A Session clip that is
     // not playing is queued to launch, so an edit is heard straight away; Song clips playing a placement clip follow it.
-    bool applyClipNotesCommand(const clip_notes::Edit& e) {
-        if (busy || clipNotesRefusal(e).isNotEmpty() || clip_notes::refusal(doc, e).isNotEmpty()) return false;
-        if (clip_notes::changesNothing(doc, e)) return true;
-        if (clip_notes::apply(doc, e).isNotEmpty()) return false;
-        if (e.kind == clip_notes::Kind::placement) { publishArrangement(); return true; }
-        republishLinked(e.track, e.scene);   // cells linked to this one now play the new notes too
-        if (doc.clip(e.track, e.scene).isAudioClip()) return true;
-        const auto index = static_cast<std::size_t>(e.track);
-        engine.requestedPianoRollClip[index].store(e.scene);
-        if (engine.activePianoRollClip[index].load() == e.scene) engine.pianoRollNotes[index].publish(*e.notes);
-        else publishClip(e.track, e.scene);
-        return true;
-    }
+    bool applyClipNotesCommand(const clip_notes::Edit& e);
     // The track whose Song regions play placement clip `clip` (-1 when none does).
-    int placementTrack(std::uint64_t clip) const {
-        for (const auto& r : doc.timeline.regions) if (clip != 0 && r.clip == clip) return r.row;
-        return -1;
-    }
+    int placementTrack(std::uint64_t clip) const;
 
-    bool applyRemoveClipAudioCommand(int track, int scene) {
-        if (!canEditMidiClips() || session_clip::removeAudioRefusal(doc,track,scene).isNotEmpty()) return false;
-        if (!doc.clip(track,scene).isAudioClip()) return true;
-        const auto link = doc.linkOf(track,scene);
-        if (!session_clip::removeAudio(doc,track,scene)) return false;
-        const bool shared = doc.linkOf(track,scene) == link;
-        for (int s = 0; s < doc.sceneCount(); ++s) for (int t = 0; t < doc.trackCount(); ++t)
-            if (((t == track && s == scene) || (shared && doc.linkOf(t,s) == link))
-                && engine.requestedPianoRollClip[static_cast<std::size_t>(t)].load() == s) publishClip(t,s);
-        return true;
-    }
+    bool applyRemoveClipAudioCommand(int track, int scene);
 
     // Files -----------------------------------------------------------------
     // done(true) once the project is safely on disk; done(false) if the user
     // cancelled or the save failed.
-    void save(std::function<void(bool)> done = {}) {
-        if (projectFile.existsAsFile()) writeProject(projectFile, false, std::move(done));
-        else chooseSavePath(false, std::move(done));
-    }
+    void save(std::function<void(bool)> done = {});
 
-    void chooseSavePath(bool portable, std::function<void(bool)> done = {}) {
-        projectFileChooser = std::make_unique<juce::FileChooser>("Save Alien Studio session",
-            projectFile.getParentDirectory().exists()
-                ? projectFile : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
-                    .getChildFile("AlienStudioSession.alienstudio"), "*.alienstudio");
-        std::weak_ptr<int> token = alive;
-        projectFileChooser->launchAsync(juce::FileBrowserComponent::saveMode
-            | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
-            [this, token, portable, done](const juce::FileChooser& chooser) {
-                if (token.lock() == nullptr) return;
-                if (chooser.getResult() != juce::File{}) writeProject(chooser.getResult(), portable, done);
-                else if (done) done(false);
-            });
-    }
+    void chooseSavePath(bool portable, std::function<void(bool)> done = {});
 
-    void chooseProjectToOpen() {
-        projectFileChooser = std::make_unique<juce::FileChooser>("Open Alien Studio session",
-            projectFile.getParentDirectory().exists() ? projectFile : juce::File{}, "*.alienstudio");
-        std::weak_ptr<int> token = alive;
-        projectFileChooser->launchAsync(juce::FileBrowserComponent::openMode
-            | juce::FileBrowserComponent::canSelectFiles,
-            [this, token](const juce::FileChooser& chooser) {
-                if (token.lock() != nullptr && chooser.getResult().existsAsFile())
-                    openProject(chooser.getResult());
-            });
-    }
+    void chooseProjectToOpen();
 
-    void chooseAudioFile(std::function<void(const juce::File&)> chosen) {
-        audioFileChooser = std::make_unique<juce::FileChooser>("Import audio clip", juce::File{}, "*.wav;*.mp3");
-        std::weak_ptr<int> token = alive;
-        audioFileChooser->launchAsync(juce::FileBrowserComponent::openMode
-            | juce::FileBrowserComponent::canSelectFiles,
-            [token, chosen = std::move(chosen)](const juce::FileChooser& chooser) {
-                if (token.lock() != nullptr && chooser.getResult().existsAsFile())
-                    chosen(chooser.getResult());
-            });
-    }
+    void chooseAudioFile(std::function<void(const juce::File&)> chosen);
 
-    void writeProject(juce::File file, bool portable, std::function<void(bool)> done = {}) {
-        if (busy) { if (done) done(false); return; }
-        if (onBeforeSnapshot) onBeforeSnapshot();
-        for (int t = 0; t < doc.trackCount(); ++t) trackSettingsEdited(t);
-        for (int r = 0; r < maxReturns; ++r) returnSettingsEdited(r);
-        for (int b = 0; b < maxBuses; ++b) busSettingsEdited(b);
-        masterGainEdited();
-        const auto project = toProjectData(doc);
+    void writeProject(juce::File file, bool portable, std::function<void(bool)> done = {});
 
-        if (!project.valid()) {
-            const auto reason = describeInvalidSession(doc);
-            status("Could not save: " + reason, reason);
-            if (done) done(false);
-            return;
-        }
-        history.breakCoalescing();
-        const auto savingId = history.currentId();
-        const auto target = file.hasFileExtension("alienstudio") ? file : file.withFileExtension("alienstudio");
-        setBusy(true);
-        status(portable ? ui8("Collecting audio\xe2\x80\xa6") : ui8("Saving project\xe2\x80\xa6"), {});
-        std::weak_ptr<int> token = alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, target, project, portable, savingId, done] {
-            auto saved = std::make_shared<SessionProjectData>();
-            juce::String error;
-            const bool success = writeSessionProjectFile(target, project, portable, *saved, error);
-            juce::MessageManager::callAsync([this, token, target, success, saved, project, error, savingId, done] {
-                if (token.lock() == nullptr) return;
-                setBusy(false);
-                if (!success) { status("Save failed: " + error, error); if (done) done(false); return; }
-                // Relocate every matching reference, including undo/redo and
-                // edits made while saving. Track indices can change during IO.
-                std::map<juce::String, juce::String> relocated;
-                for (int scene = 0; scene < project.sceneCount(); ++scene)
-                    for (int track = 0; track < project.trackCount(); ++track) {
-                        const auto& old = project.clips[scene][track].audioFilePath;
-                        const auto& written = saved->clips[scene][track].audioFilePath;
-                        if (old.isNotEmpty() && written.isNotEmpty())
-                            relocated[old] = resolveProjectAudio(target, written).getFullPathName();
-                    }
-                for (int t = 0; t < project.trackCount(); ++t) for (int pad = 0; pad < drumPadCount; ++pad)
-                    if (project.drumPaths[t][pad].isNotEmpty())
-                        relocated[project.drumPaths[t][pad]] = resolveProjectAudio(target, saved->drumPaths[t][pad]).getFullPathName();
-                std::map<std::string, std::string> relocatedRack;
-                for (int c = 0; c < project.channelRack.channelCount; ++c) {
-                    const auto& old = project.channelRack.info[static_cast<std::size_t>(c)];
-                    if (!old.isFile()) continue;
-                    const auto& written = saved->channelRack.info[static_cast<std::size_t>(c)].sample;
-                    relocatedRack[old.sample] = resolveProjectAudio(target, juce::String::fromUTF8(written.c_str(), static_cast<int>(written.size()))).getFullPathName().toStdString();
-                }
-                for (const auto& [from, to] : relocatedRack)   // the decoded audio follows its new path
-                    if (auto clip = rackAudio.find(from); clip != rackAudio.end() && rackAudio.find(to) == rackAudio.end()) rackAudio[to] = clip->second;
-                auto relocate = [&](ProjectDocument& document) {
-                    for (int c = 0; c < document.channelRack.channelCount; ++c) {
-                        auto& sample = document.channelRack.info[static_cast<std::size_t>(c)].sample;
-                        if (auto found = relocatedRack.find(sample); found != relocatedRack.end()) sample = found->second;
-                    }
-                    for (auto& track : document.tracks) for (auto& path : track.drumPaths)
-                        if (auto found = relocated.find(path); found != relocated.end()) path = found->second;
-                    for (auto& [id, media] : document.media)   // a file moved, not new content
-                        if (auto found = relocated.find(media.filePath); found != relocated.end())
-                            media.filePath = found->second;
-                };
-                relocate(doc);
-                history.relocateMedia(relocate);
-                projectFile = target;
-                savedId = savingId;
-                if (!isDirty()) discardRecovery();
-                status("Saved " + target.getFileName(), target.getFullPathName());
-                historyChanged();
-                if (done) done(true);
-            });
-            return juce::ThreadPoolJob::jobHasFinished;
-        };
-        pool.addJob(std::move(job));
-    }
-
-    void openProject(const juce::File& file, bool recovered = false) {
-        if (busy) return;
-        setBusy(true);
-        status(ui8("Opening project\xe2\x80\xa6"), {});
-        std::weak_ptr<int> token = alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, file, recovered] {
-            auto result = std::make_shared<LoadResult>(loadProjectFile(file));
-            juce::MessageManager::callAsync([this, token, file, result, recovered] {
-                if (token.lock() != nullptr) finishLoad(file, *result, recovered);
-            });
-            return juce::ThreadPoolJob::jobHasFinished;
-        };
-        pool.addJob(std::move(job));
-    }
+    void openProject(const juce::File& file, bool recovered = false);
 
     // Session audio arrives through command::ImportClipAudio: capture the
     // destination, decode off the message thread, then run the command on the result.
-    std::optional<session_audio_import::Plan> prepareAudioImport(const juce::File& file,int track,int scene,bool emptyOnly=false) const {
-        if(!canEditMidiClips())return {};
-        return session_audio_import::prepare(doc,file,track,scene,emptyOnly);
-    }
+    std::optional<session_audio_import::Plan> prepareAudioImport(const juce::File& file,int track,int scene,bool emptyOnly=false) const;
     // The command's live half: no history entry, and refused before any live change.
-    bool applyImportAudioCommand(const session_audio_import::Prepared& prepared) {
-        if(!canEditMidiClips())return false;
-        auto candidate=doc;
-        if(session_audio_import::apply(candidate,prepared).isNotEmpty() || !retain(prepared.decoded.clip))return false;
-        const auto [track,scene]=session_audio_import::resolve(doc,prepared.plan);
-        doc=std::move(candidate);
-        const auto link=doc.linkOf(track,scene);
-        for(int s=0;s<doc.sceneCount();++s)for(int t=0;t<doc.trackCount();++t)
-            if(((t==track && s==scene) || (link && doc.linkOf(t,s)==link))
-                && engine.requestedPianoRollClip[static_cast<std::size_t>(t)].load()==s)publishClip(t,s);
-        return true;
-    }
-    void decodeAudioImport(session_audio_import::Plan plan,std::function<void(const session_audio_import::Prepared&)> done) {
-        setBusy(true);
-        importStatus(ui8("Loading audio\xe2\x80\xa6"),plan.file.getFullPathName());
-        std::weak_ptr<int> token=alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job=[this,token,plan=std::move(plan),done=std::move(done)] {
-            auto prepared=std::make_shared<session_audio_import::Prepared>(session_audio_import::Prepared{plan,importSessionAudioClip(plan.file)});
-            juce::MessageManager::callAsync([this,token,prepared,done] {
-                if(token.lock()){setBusy(false);done(*prepared);}
-            });
-            return juce::ThreadPoolJob::jobHasFinished;
-        };
-        pool.addJob(std::move(job));
-    }
+    bool applyImportAudioCommand(const session_audio_import::Prepared& prepared);
+    void decodeAudioImport(session_audio_import::Plan plan,std::function<void(const session_audio_import::Prepared&)> done);
     // What the person sees once the command has run or been refused.
-    void audioImportFinished(const session_audio_import::Prepared& prepared,const juce::String& refused) {
-        const auto path=prepared.plan.file.getFullPathName();
-        if(refused.isNotEmpty()){importStatus(refused,path);return;}
-        importStatus("Imported "+prepared.plan.file.getFileName(),path);
-        const auto [track,scene]=session_audio_import::resolve(doc,prepared.plan);
-        if(onClipContentChanged)onClipContentChanged(track,scene);
-    }
+    void audioImportFinished(const session_audio_import::Prepared& prepared,const juce::String& refused);
     void reportAudioImportRefusal(const juce::String& why,const juce::File& file) { importStatus(why,file.getFullPathName()); }
 
     // Browser import captures the destination before decoding. Busy state prevents
     // structural edits while the worker runs; recheck the destination before install.
-    bool canImportBrowserSample(int track, int scene, bool song) const {
-        return !busy && !isRecording() && engine.recording.phase.load() == RecordControls::idle
-            && doc.isValidCell(track, scene) && !isTrackFrozen(track) && (song || !doc.cellClip(track, scene));
-    }
+    bool canImportBrowserSample(int track, int scene, bool song) const;
     // A sample bound for the Song (command::importSampleToSong): decodes the file off the message thread and hands
     // the audio to `done`, which runs ImportSongAudio. A sample for a Session cell takes command::importSampleToCell.
-    void decodeSongSample(const juce::File& file, int track, std::function<void(std::shared_ptr<SessionAudioClip>)> done) {
-        if (busy || isRecording() || engine.recording.phase.load() != RecordControls::idle || track < 0 || track >= doc.trackCount() || isTrackFrozen(track)) return;
-        setBusy(true); importStatus("Loading sample...", file.getFullPathName());
-        std::weak_ptr<int> token = alive;
-        pool.addJob([this, token, file, done = std::move(done)] {
-            auto result = std::make_shared<AudioClipImportResult>(importSessionAudioClip(file));
-            juce::MessageManager::callAsync([this, token, file, done, result] {
-                if (!token.lock()) return;
-                setBusy(false);
-                if (!result->clip) { importStatus(result->error, file.getFullPathName()); return; }
-                done(result->clip);
-            });
-        });
-    }
+    void decodeSongSample(const juce::File& file, int track, std::function<void(std::shared_ptr<SessionAudioClip>)> done);
     // Live side of ImportSongAudio. CommandEngine owns the history entry.
-    bool applySongAudioImport(const song_audio_import::Request& request) {
-        if (busy || isRecording() || engine.recording.phase.load() != RecordControls::idle) return false;
-        auto candidate = doc;
-        if (song_audio_import::apply(candidate, request).isNotEmpty()) return false;
-        if (candidate.sceneCount() != doc.sceneCount() && beforeStructureEdit) beforeStructureEdit();
-        if (!retain(request.clip)) return false;
-        doc = std::move(candidate);
-        return true;
-    }
+    bool applySongAudioImport(const song_audio_import::Request& request);
     // What the import said: the refusal, or that the sample is on the Song.
-    void songSampleImported(const juce::File& file, const juce::String& error) {
-        if (error.isNotEmpty()) { importStatus(error, {}); return; }
-        importStatus("Imported " + file.getFileName() + " to Song", file.getFullPathName());
-        if (onDocumentRestored) onDocumentRestored();
-    }
+    void songSampleImported(const juce::File& file, const juce::String& error);
 
-    std::shared_ptr<ArrangementPlayback> captureArrangement() const {
-        auto song = std::make_shared<ArrangementPlayback>();
-        song->timeline = doc.timeline; song->timeline.tempo = doc.bpm;
-        for (int s = 0; s < doc.sceneCount(); ++s) for (int t = 0; t < doc.trackCount(); ++t) {
-            // An offline audio clip stays silent; it must not fall back to playing stray notes.
-            if (!doc.clip(t, s).audioOffline()) song->clips[s][t].pattern = doc.clip(t, s).pattern;   // shared, not copied
-            song->clips[s][t].audio = doc.clip(t, s).audio.get();
-        }
-        for (const auto id : doc.placementClips()) song->placements.push_back({id, {doc.contentOf(alien::library::ClipId{id}).pattern, nullptr}});
-        return song;
-    }
+    std::shared_ptr<ArrangementPlayback> captureArrangement() const;
     // What the engine currently holds. Commits that do not touch the song (mixer,
     // tempo, names, plugin state) must not rebuild, validate and re-send a snapshot.
     // Shared pointers keep every compared clip alive, so an address can never be
@@ -1585,116 +500,18 @@ public:
         std::vector<std::shared_ptr<const SessionAudioClip>> audio;
         std::vector<std::shared_ptr<const PianoRollPattern>> placements;   // by doc.placementClips()
     };
-    bool songDiffersFromPublished() const {
-        if (!published.known || (published.bpm != doc.bpm && std::any_of(doc.timeline.regions.begin(),doc.timeline.regions.end(),[](const auto& r){return !r.warp.empty();})) || published.tracks != doc.trackCount() || published.scenes != doc.sceneCount()
-            || !published.timeline.playbackEquals(doc.timeline)) return true;
-        std::size_t index = 0;
-        for (int s = 0; s < doc.sceneCount(); ++s)
-            for (int t = 0; t < doc.trackCount(); ++t, ++index) {
-                const auto& clip = doc.clip(t, s);
-                if (published.patterns[index] != clip.pattern || published.audio[index] != clip.audio) return true;
-            }
-        const auto ids = doc.placementClips();
-        if (ids.size() != published.placements.size()) return true;
-        for (std::size_t i = 0; i < ids.size(); ++i)
-            if (published.placements[i] != doc.contentOf(alien::library::ClipId{ids[i]}).pattern) return true;
-        return false;
-    }
-    void rememberPublishedSong() {
-        published.known = true; published.bpm = doc.bpm;
-        published.timeline = doc.timeline;
-        published.tracks = doc.trackCount();
-        published.scenes = doc.sceneCount();
-        published.patterns.clear(); published.audio.clear();
-        for (int s = 0; s < doc.sceneCount(); ++s)
-            for (int t = 0; t < doc.trackCount(); ++t) {
-                published.patterns.push_back(doc.clip(t, s).pattern);
-                published.audio.push_back(doc.clip(t, s).audio);
-            }
-        published.placements.clear();
-        for (const auto id : doc.placementClips()) published.placements.push_back(doc.contentOf(alien::library::ClipId{id}).pattern);
-    }
-    void publishArrangement() {
-        if (warpWorkActive) return;
-        if (!songDiffersFromPublished()) { if(!warpWorkActive)engine.arrangementPreparing.store(false); return; }
-        auto song = captureArrangement();
-        const bool warped = std::any_of(song->timeline.regions.begin(), song->timeline.regions.end(), [](const auto& r) { return !r.warp.empty(); });
-        if (!warped) { if (engine.arrangementMailbox.publish(song)) rememberPublishedSong(); engine.arrangementPreparing.store(false); return; }
-        // The document is committed immediately; edits wait while a private cache
-        // is rendered. Never publish mismatched tempo/audio or do DSP in the GUI.
-        engine.arrangementPreparing.store(true); engine.playing.store(false);
-        setBusy(true); warpWorkActive=true; warpCancelled.store(false);
-        status("Preparing warped audio...", "Press Play when ready; Escape cancels preparation.");
-        const auto revision=history.currentId();
-        std::weak_ptr<int> token = alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, song, revision] {
-            juce::String error;
-            bool ok = false;
-            try { ok = prepareArrangementWarps(*song, warpCancelled, error); }
-            catch (...) { error = "Not enough resources to render warped audio."; }
-            juce::MessageManager::callAsync([this, token, song, ok, error, revision] {
-                if (!token.lock()) return;
-                if(history.currentId()!=revision && !warpCancelled.load()) {
-                    warpWorkActive=false;setBusy(false);published.known=false;publishArrangement();return;
-                }
-                // MIDI edits may update a shared clip during a gesture before
-                // its commit. Include those latest notes in the completed song.
-                const auto current=captureArrangement();song->clips=current->clips;song->placements=current->placements;
-                const bool cancelled=warpCancelled.load();
-                const bool ready=ok && !cancelled;
-                const juce::String problem=cancelled?"Warp preparation cancelled; markers kept. Use Rebuild warped audio to retry.":error;
-                if (ready) {
-                    for (const auto& w : song->warped) engine.retainDiskAudioSource(w.owner->streamSource);
-                } else {
-                    // A failed warp is silent, never silently played unstretched.
-                    for (auto& r : song->timeline.regions) if (!r.warp.empty() || std::any_of(song->warped.begin(),song->warped.end(),[&](const auto& w){return w.id==r.id;})) {r.muted = true;r.warp.clear();}
-                }
-                if (!engine.arrangementMailbox.publish(song)) {
-                    warpWorkActive=false;setBusy(false);status("Warp playback snapshot was rejected; Undo or rebuild before playing.",{});return;
-                }
-                rememberPublishedSong();
-                warpWorkActive=false;
-                engine.arrangementPreparing.store(false, std::memory_order_release);
-                setBusy(false);
-                status(ready ? "Warped audio ready" : "Warp render failed: " + problem, problem);
-            });
-            return juce::ThreadPoolJob::jobHasFinished;
-        };
-        pool.addJob(std::move(job));
-    }
+    bool songDiffersFromPublished() const;
+    void rememberPublishedSong();
+    void publishArrangement();
     // Finds transients in a warped clip's audio in the background. `found` gets the new marker list on the
     // message thread (the caller runs SetSongClipWarp with it); nothing is edited here.
     using WarpFound=std::function<void(std::uint32_t,std::vector<timeline::WarpMarker>)>;
-    void detectRegionTransients(std::uint32_t id,WarpFound found) {
-        const auto* r=doc.timeline.find(id);
-        if(busy || isRecording() || engine.recording.phase.load()!=RecordControls::idle || !r || r->warp.empty() || !doc.isValidCell(r->row,r->source))return;
-        const auto audio=doc.clip(r->row,r->source).audio;if(!audio)return;
-        const auto map=r->warp;setBusy(true);warpWorkActive=true;warpCancelled.store(false);status("Detecting transients...","Escape cancels analysis.");
-        std::weak_ptr<int> token=alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job=[this,token,id,audio,map,found=std::move(found)] {
-            juce::String error;std::vector<timeline::WarpMarker> result;
-            try {result=detectWarpTransients(*audio,map,warpCancelled,error);}catch(...){error="Transient analysis failed.";}
-            juce::MessageManager::callAsync([this,token,id,result=std::move(result),error,found] {
-                if(!token.lock())return;warpWorkActive=false;setBusy(false);
-                if(warpCancelled.load()){status("Transient analysis cancelled",{});return;}
-                if(result.size()>2 && error.isEmpty()){if(found)found(id,result);}
-                else status(error.isEmpty()?"No additional transients found":error,{});
-            });return juce::ThreadPoolJob::jobHasFinished;
-        };pool.addJob(std::move(job));
-    }
+    void detectRegionTransients(std::uint32_t id,WarpFound found);
     bool retryWarpPreparation() { if (busy) return false; published.known=false; publishArrangement(); return true; }
     bool cancelWarpPreparation() { if (!warpWorkActive) return false; warpCancelled.store(true); status("Cancelling warp preparation...",{}); return true; }
     // The two markers that fit an unwarped audio clip's source, from where it starts playing to the file's end,
     // to the clip; none when it has no audio left to fit. SetSongClipWarp with them turns warp on.
-    std::optional<std::vector<timeline::WarpMarker>> fittedWarp(std::uint32_t id) const {
-        const auto* r = doc.timeline.find(id);
-        if (!r || r->isPattern() || !r->warp.empty() || !doc.isValidCell(r->row,r->source)) return std::nullopt;
-        const auto audio=doc.clip(r->row,r->source).audio;
-        if (!audio || audio->sampleRate <= 0) return std::nullopt;
-        const double end=static_cast<double>(audio->frames)/audio->sampleRate;
-        if (r->audioOffset >= end || r->offset > timeline::maxLength-r->length) return std::nullopt;
-        return std::vector<timeline::WarpMarker>{{r->offset,r->audioOffset},{r->offset+r->length,end}};
-    }
+    std::optional<std::vector<timeline::WarpMarker>> fittedWarp(std::uint32_t id) const;
     // The Arrangement timeline ------------------------------------------------------
     const alien::timeline::Timeline& timeline() const noexcept { return doc.timeline; }
 
@@ -1703,79 +520,19 @@ public:
     // (edits with the same coalesceKey made in quick succession merge). Playback
     // follows without restarting. Returns whether anything changed.
     bool editTimeline(const juce::String& label, const std::function<bool(alien::timeline::Timeline&)>& edit,
-                      const juce::String& coalesceKey = {}) {
-        if (busy) return false;
-        auto next = doc.timeline;
-        next.tempo = doc.bpm;
-        if (!edit(next)) return false;
-        const bool hasWarp=std::any_of(next.regions.begin(),next.regions.end(),[](const auto& r){return !r.warp.empty();})
-            || std::any_of(doc.timeline.regions.begin(),doc.timeline.regions.end(),[](const auto& r){return !r.warp.empty();});
-        if(hasWarp && (isRecording() || engine.recording.phase.load()!=RecordControls::idle) && !next.playbackEquals(doc.timeline)) return false;
-        for (auto& r : next.regions) {
-            if (r.ownsClip() && doc.library.clip(alien::library::ClipId{r.clip}) == nullptr) return false;
-            if (r.isPattern()) {
-                // Existing references own an ID. Only a newly placed, index-only
-                // region crosses the UI compatibility boundary here.
-                if (r.rackClip != 0) {
-                    r.source = doc.rackPatternForClip(r.rackClip);
-                    if (r.source < 0) return false;
-                } else {
-                    if (const auto* existing = doc.timeline.find(r.id); existing != nullptr && existing->isPattern()) return false;
-                    if (!doc.channelRack.validPattern(r.source)) return false;
-                    r.rackClip = doc.channelRack.clips[static_cast<std::size_t>(r.source)];
-                }
-            }
-        }
-        if (!next.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount) || next == doc.timeline) return false;
-        if(next.frozenOriginals!=doc.timeline.frozenOriginals)return false;
-        // Send automation only for a return that exists.
-        for(const auto& lane:next.automationLanes)
-            if(const int send=automation::sendIndex(lane.parameter);send>=0&&!doc.returns[static_cast<std::size_t>(send)].used)return false;
-        for(int track=0;track<doc.trackCount();++track)if(isTrackFrozen(track)) {
-            std::vector<timeline::Region> before,after;
-            for(const auto& region:doc.timeline.regions)if(region.row==track)before.push_back(region);
-            for(const auto& region:next.regions)if(region.row==track)after.push_back(region);
-            if(before!=after)return false;
-        }
-        if(anyFrozenTrack() && next.lengthBars!=doc.timeline.lengthBars)next.freezeBaseLengthBars=next.lengthBars;
-        doc.timeline = std::move(next);
-        doc.prune();   // a placement clip no region plays any more is gone (undo keeps it)
-        commit(label, -1, -1, coalesceKey);
-        return true;
-    }
+                      const juce::String& coalesceKey = {});
     // How long a clip or pattern naturally lasts on the timeline, in ticks: its loop
     // for MIDI and rack patterns, its running time at the current tempo for audio
     // (rounded up to a sixteenth so it ends on the grid).
-    std::int64_t naturalLength(int row, int source, std::int64_t start = 0) const {
-        return song_clip::naturalLength(doc, row, source, start);
-    }
+    std::int64_t naturalLength(int row, int source, std::int64_t start = 0) const;
     // Places a Session cell or a rack pattern in the Song over what is there, as one undo step at the clip's natural length.
     // It is the PlaceSongClip reducer, recorded under "Place pattern" or "Place clip"; the Song and Session views run the
     // command itself. `idOut` gets the placed clip's id.
-    bool placeRegion(int row, int source, std::int64_t start, std::uint32_t* idOut = nullptr) {
-        song_clip::Edit e;
-        e.kind = song_clip::Kind::place; e.row = row; e.source = source; e.ticks = start;
-        if (busy || songClipRefusal(e).isNotEmpty()) return false;
-        const auto before = doc.timeline;
-        const auto* label = song_clip::placesPattern(doc, row, source) ? "Place pattern" : "Place clip";
-        if (song_clip::apply(doc, e).isNotEmpty() || doc.timeline == before) return false;
-        if (idOut != nullptr) *idOut = song_clip::placedClip(doc, before, doc.timeline, row, source, start);
-        commit(label, -1, -1);
-        return true;
-    }
+    bool placeRegion(int row, int source, std::int64_t start, std::uint32_t* idOut = nullptr);
     // Live side of NewSongClip (see SongPlacementEdit.h): a new, empty MIDI clip for a track on the timeline, in a free
     // Session cell of that track, which is selected. CommandEngine owns the history entry.
-    bool applyNewSongClip(int row, std::int64_t start, std::uint32_t* idOut = nullptr) {
-        if (busy) return false;
-        auto candidate = doc;
-        if (song_placement::newClip(candidate, row, start, idOut).isNotEmpty()) return false;
-        if (candidate.sceneCount() != doc.sceneCount() && beforeStructureEdit) beforeStructureEdit();
-        doc = std::move(candidate);
-        return true;
-    }
-    bool applyHarmonicMidiCommand(const song_placement::HarmonicMidi& edit) {
-        return canEditMidiClips() && song_placement::applyHarmonicMidi(doc, edit).isEmpty();
-    }
+    bool applyNewSongClip(int row, std::int64_t start, std::uint32_t* idOut = nullptr);
+    bool applyHarmonicMidiCommand(const song_placement::HarmonicMidi& edit);
     // A finished Song-view audio take on one track: its file, the loaded (or streamed) audio, and
     // where it goes on the timeline.
     struct RecordedTake {
@@ -1794,287 +551,48 @@ public:
     // a loop recording becomes a take of that cell, and only the active pass is put on the song. When the
     // take list has no room for every pass, the earliest are left out. Nothing changes when any take
     // cannot be placed. Returns how many tracks' takes were placed.
-    int addRecordedTakes(const std::vector<RecordedTake>& takes, const juce::String& label = "Record take") {
-        using namespace alien::timeline;
-        if (busy || takes.empty()) return 0;
-        const auto saved = doc;
-        const auto savedBytes = retainedBytes;
-        const auto savedRetained = retained.size();
-        const auto fail = [&] {
-            doc = saved;
-            while (retained.size() > savedRetained) retained.pop_back();
-            retainedBytes = savedBytes;
-            return 0;
-        };
-        auto next = doc.timeline;
-        next.tempo = doc.bpm;
-        std::vector<std::pair<int, int>> cells;
-        for (const auto& take : takes) {
-            const int row = take.track;
-            if (isTrackFrozen(row) || row < 0 || row >= doc.trackCount() || !take.clip || !take.placement.valid) return fail();
-            const auto usedByTimeline = [&](int scene) {
-                for (const auto& r : next.takes) if (r.row == row && r.source == scene) return true;
-                for (const auto& r : next.regions) if (r.row == row && r.source == scene) return true;
-                return false;
-            };
-            int scene = -1;
-            for (int s = 0; s < doc.sceneCount() && scene < 0; ++s)
-                if (!doc.cellClip(row, s) && !usedByTimeline(s)) scene = s;
-            if (scene < 0) {
-                if (!doc.canAddScene() || !insertScene(doc.sceneCount(), nullptr)) return fail();
-                scene = doc.sceneCount() - 1;
-            }
-            if (!retain(take.clip)) return fail();
-            auto clip = doc.clip(row, scene);
-            clip.audio = take.clip;
-            clip.audioFileName = take.file.getFileName();
-            clip.audioFilePath = take.file.getFullPathName();
-            doc.setClip(row, scene, clip);
-            std::vector<Region> passes;
-            for (const auto& placement : take.passes.empty() ? std::vector<alien::TakePlacement>{take.placement} : take.passes) {
-                Region region;
-                region.row = row; region.source = scene;
-                region.start = placement.start; region.length = placement.length;
-                region.audioOffset = placement.audioOffset;
-                passes.push_back(region);
-            }
-            std::size_t active = take.passes.empty() ? 0 : std::min(take.activePass, passes.size() - 1);
-            const auto room = timeline::maxTakes - std::min(timeline::maxTakes, next.takes.size());
-            if (passes.size() > room && room > 0) {
-                const auto drop = passes.size() - room;
-                passes.erase(passes.begin(), passes.begin() + static_cast<std::ptrdiff_t>(drop));
-                active = active >= drop ? active - drop : passes.size() - 1;
-            }
-            if (!next.recordTakes(std::move(passes), active)) return fail();
-            cells.emplace_back(row, scene);
-        }
-        if (!next.valid(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount)) return fail();
-        doc.timeline = std::move(next);
-        if (!cells.empty()) selectClip(cells.front().first, cells.front().second);
-        commit(label, cells.size() == 1 ? cells.front().first : -1, cells.size() == 1 ? cells.front().second : -1);
-        return static_cast<int>(cells.size());
-    }
-    bool isTrackFrozen(int track) const noexcept {
-        return track>=0 && track<doc.trackCount() && doc.tracks[static_cast<std::size_t>(track)].settings.frozen();
-    }
-    bool anyFrozenTrack() const noexcept {
-        for(const auto& track:doc.tracks) if(track.settings.frozen())return true;
-        return false;
-    }
+    int addRecordedTakes(const std::vector<RecordedTake>& takes, const juce::String& label = "Record take");
+    bool isTrackFrozen(int track) const noexcept;
+    bool anyFrozenTrack() const noexcept;
     std::int64_t freezeEndTick(int track) const noexcept { return freeze_edit::endTick(doc, track); }
-    juce::String freezeRefusal(int track) const {
-        if (!canEditMidiClips()) return "Finish the current operation before freezing.";
-        return freeze_edit::freezeRefusal(doc, track);
-    }
+    juce::String freezeRefusal(int track) const;
 
-    bool applyFreezeTrackCommand(const freeze_edit::Install& edit) {
-        if (!canEditMidiClips()) return false;
-        auto candidate = doc;
-        if (freeze_edit::install(candidate, edit, ToneEngine::audioClipLevel).isNotEmpty() || !retain(edit.audio)) return false;
-        doc = std::move(candidate);
-        pushDocumentToEngine();
-        return true;
-    }
+    bool applyFreezeTrackCommand(const freeze_edit::Install& edit);
     // Live side of UnfreezeTrack (the Song track menu's Unfreeze). CommandEngine owns the history entry.
-    bool applyUnfreezeCommand(int track) {
-        if(!canEditMidiClips())return false;
-        auto candidate=doc;
-        if(freeze_edit::unfreeze(candidate,track).isNotEmpty())return false;
-        doc=std::move(candidate);
-        pushDocumentToEngine();
-        if(onDocumentRestored)onDocumentRestored();
-        return true;
-    }
+    bool applyUnfreezeCommand(int track);
 
-    DrumSliceTarget drumSliceTarget(int track, int pad) const {
-        if (track < 0 || track >= doc.trackCount() || pad < 0 || pad >= drumPadCount) return {};
-        const auto& owner = doc.tracks[track];
-        return {doc.identityScope, owner.id, pad, owner.drumAssets[pad], owner.settings.frozen()};
-    }
+    DrumSliceTarget drumSliceTarget(int track, int pad) const;
     // Drum pad edits (see DrumPadEdit.h) -------------------------------------
     // A sample cannot be sliced during a take, or while the last one is still finishing.
     bool drumSliceOpen() const { return projectScaleOpen(); }
     // Live side of the drum pad commands. CommandEngine owns the history entry.
-    bool applyDrumPadCommand(const drum_pad::Edit& e) {
-        if (busy || ((e.kind == drum_pad::Kind::range || e.kind == drum_pad::Kind::slice) && !drumSliceOpen())) return false;
-        if (e.kind == drum_pad::Kind::clip && !canEditMidiClips()) return false;
-        auto candidate = doc;
-        if (drum_pad::apply(candidate, e).isNotEmpty()) return false;
-        if (e.kind == drum_pad::Kind::load && !retain(e.clip)) return false;
-        // Slice views own no PCM. Keep them alive past any in-flight callback, as with loaded samples;
-        // their source was counted and retained when it was loaded.
-        const auto& was = doc.tracks[static_cast<std::size_t>(e.track)].drumAssets;
-        const auto& now = candidate.tracks[static_cast<std::size_t>(e.track)].drumAssets;
-        for (std::size_t p = 0; p < now.size(); ++p) if (now[p] && now[p]->sliceSource && now[p] != was[p]) retained.push_back(now[p]);
-        doc = std::move(candidate);
-        pushDocumentToEngine();
-        return true;
-    }
+    bool applyDrumPadCommand(const drum_pad::Edit& e);
     // Set by the app (command::routeDrumPadEdits) so the edits below run as commands. Returns why not, or nothing.
     std::function<juce::String(const drum_pad::Edit&, const juce::String&)> drumPadCommands;
     // One drum pad edit as one undo step: through the command engine when the app has routed it, directly otherwise.
-    juce::String commitDrumPad(const drum_pad::Edit& e, const juce::String& label) {
-        if (drumPadCommands) return drumPadCommands(e, label);
-        if (busy) return "The project is busy; try again when it has finished.";
-        auto trial = doc;
-        if (const auto why = drum_pad::apply(trial, e); why.isNotEmpty()) return why;
-        const bool changed = !sameContent(trial, doc);
-        if (!applyDrumPadCommand(e)) return e.kind == drum_pad::Kind::load ? "Session audio storage is full (512 MiB limit)" : "The project could not change the drum pad.";
-        if (changed) commit(label);
-        return {};
-    }
+    juce::String commitDrumPad(const drum_pad::Edit& e, const juce::String& label);
     // The track a deferred drum pad action was aimed at, if the project, the track and the pad's sample are still
     // the ones it saw; -1 otherwise.
-    int drumTargetTrack(const DrumSliceTarget& target) const {
-        if (target.scope != doc.identityScope || !target.asset || target.frozen || target.pad < 0 || target.pad >= drumPadCount) return -1;
-        for (int t = 0; t < doc.trackCount(); ++t)
-            if (doc.tracks[t].id == target.trackId) return !isTrackFrozen(t) && doc.tracks[t].drumAssets[target.pad] == target.asset ? t : -1;
-        return -1;
-    }
-    bool editDrumSlice(const DrumSliceTarget& target, DrumSlice range) {
-        if (busy || !drumSliceOpen() || !range.valid()) return false;
-        const int track = drumTargetTrack(target);
-        if (track < 0) return false;
-        const auto source = target.asset->sliceSource ? target.asset->sliceSource : target.asset;
-        const bool whole = range.whole() || (range.start == 0 && static_cast<std::size_t>(range.end) == source->frames);
-        const auto slices = doc.tracks[track].drumSlices;
-        drum_pad::Edit e; e.kind = drum_pad::Kind::range; e.track = track; e.pad = target.pad; e.range = range;
-        if (commitDrumPad(e, whole ? "Restore whole drum sample" : "Edit drum slice").isNotEmpty()) return false;
-        if (doc.tracks[track].drumSlices != slices && onDocumentRestored) onDocumentRestored();
-        return true;
-    }
-    bool autoSliceDrum(const DrumSliceTarget& target) {
-        if (busy || !drumSliceOpen()) return false;
-        const int track = drumTargetTrack(target);
-        if (track < 0) return false;
-        const auto& owner = doc.tracks[track];
-        if (owner.drumPaths[target.pad].isEmpty()) return false;
-        if (target.asset->streamed() || target.asset->frames / target.asset->sampleRate > 60) {
-            importStatus("Auto slice needs a decoded sample range of at most one minute.", {}); return false;
-        }
-        const auto assets = owner.drumAssets; const auto ranges = owner.drumSlices;
-        const auto paths = owner.drumPaths; const auto instrument = owner.settings.instrument;
-        setBusy(true); importStatus("Finding sample attacks...", {});
-        std::weak_ptr<int> token = alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, target, assets, ranges, paths, instrument] {
-            const auto detected = detectDrumTransientSlices(*target.asset);
-            juce::MessageManager::callAsync([this, token, target, assets, ranges, paths, instrument, detected] {
-                if (!token.lock()) return;
-                setBusy(false);
-                if (target.scope != doc.identityScope || isRecording() || engine.recording.active()) {
-                    importStatus("Auto slice discarded: project or recording state changed.", {}); return;
-                }
-                for (int t = 0; t < doc.trackCount(); ++t) if (doc.tracks[t].id == target.trackId) {
-                    const auto& kit = doc.tracks[t];
-                    if (isTrackFrozen(t) || kit.drumAssets != assets || kit.drumSlices != ranges
-                        || kit.drumPaths != paths || kit.settings.instrument != instrument) break;
-                    if (detected.count < 2) {
-                        importStatus("No useful attack boundaries found. Kit unchanged; try equal slicing or edit ranges.", {}); return;
-                    }
-                    // The detected slices follow one another, inside the range the pad plays.
-                    const auto offset = static_cast<std::int64_t>(target.asset->sliceSource ? target.asset->sliceOffset : 0);
-                    drum_pad::Edit e; e.kind = drum_pad::Kind::slice; e.track = t; e.pad = target.pad;
-                    e.bounds.push_back(offset + detected.ranges[0].start);
-                    for (int p = 0; p < detected.count; ++p) e.bounds.push_back(offset + detected.ranges[p].end);
-                    if (const auto why = commitDrumPad(e, "Auto slice sample to pads"); why.isNotEmpty()) { importStatus(why, {}); return; }
-                    if (onDocumentRestored) onDocumentRestored();
-                    importStatus("Found " + juce::String(detected.count) + " slices. Unused pads cleared; Undo restores the kit.", {});
-                    return;
-                }
-                importStatus("Auto slice discarded: the target kit changed.", {});
-            });
-            return juce::ThreadPoolJob::jobHasFinished;
-        };
-        pool.addJob(std::move(job));
-        return true;
-    }
-    bool sliceDrum(int track, int pad) {
-        if (busy || !drumSliceOpen() || isTrackFrozen(track) || track < 0 || track >= doc.trackCount() || pad < 0 || pad >= drumPadCount) return false;
-        const auto& owner = doc.tracks[track];
-        const auto selected = owner.drumAssets[pad];
-        if (!canSliceDrumSource(selected, owner.drumPaths[pad])) {
-            importStatus("Load a sample with at least eight frames before slicing.", {}); return false;
-        }
-        // Eight equal parts of the range the pad plays.
-        const auto offset = selected->sliceSource ? selected->sliceOffset : std::size_t{};
-        drum_pad::Edit e; e.kind = drum_pad::Kind::slice; e.track = track; e.pad = pad;
-        for (int p = 0; p <= drumPadCount; ++p) e.bounds.push_back(static_cast<std::int64_t>(offset + selected->frames * static_cast<std::size_t>(p) / drumPadCount));
-        if (const auto why = commitDrumPad(e, "Slice sample to 8 pads"); why.isNotEmpty()) { importStatus(why, {}); return false; }
-        if (onDocumentRestored) onDocumentRestored();
-        importStatus("Sample split into eight pads. Undo restores the previous kit.", {});
-        return true;
-    }
-    bool canSliceSessionAudio(int track, int scene) const {
-        if (!doc.isValidCell(track, scene) || !canEditMidiClips() || isTrackFrozen(track)) return false;
-        const auto clip = doc.clip(track, scene);
-        return canSliceDrumSource(clip.audio, clip.audioFilePath);
-    }
+    int drumTargetTrack(const DrumSliceTarget& target) const;
+    bool editDrumSlice(const DrumSliceTarget& target, DrumSlice range);
+    bool autoSliceDrum(const DrumSliceTarget& target);
+    bool sliceDrum(int track, int pad);
+    bool canSliceSessionAudio(int track, int scene) const;
     // What the person sees once a Session clip has become a kit (SliceClipToDrumPads).
-    void sessionAudioSliced() {
-        if (onDocumentRestored) onDocumentRestored();
-        importStatus("Sample split into eight pads. Undo restores the previous kit.", {});
-    }
+    void sessionAudioSliced();
     // The same edit as its own undo step, for callers that are not a view (the Session view runs the command).
-    bool sliceSessionAudio(int track, int scene) {
-        if (!canSliceSessionAudio(track, scene)) return false;
-        drum_pad::Edit e; e.kind = drum_pad::Kind::clip; e.track = track; e.scene = scene;
-        if (commitDrumPad(e, "Slice sample to 8 pads").isNotEmpty()) return false;
-        sessionAudioSliced();
-        return true;
-    }
+    bool sliceSessionAudio(int track, int scene);
 
 private:
-    static bool canSliceDrumSource(const std::shared_ptr<const SessionAudioClip>& audio, const juce::String& path) {
-        return audio && !audio->streamed() && audio->frames >= drumPadCount && path.isNotEmpty();
-    }
+    static bool canSliceDrumSource(const std::shared_ptr<const SessionAudioClip>& audio, const juce::String& path);
 public:
-    void clearDrum(int track, int pad) {
-        drum_pad::Edit e; e.kind = drum_pad::Kind::clear; e.track = track; e.pad = pad;
-        if (drumPadCommands) { drumPadCommands(e, "Clear drum pad"); return; }
-        // Not routed (tests and fixtures): the edit as it always was, an undo step even for an empty pad and
-        // even while a worker is busy.
-        if (track < 0 || track >= doc.trackCount() || isTrackFrozen(track) || drum_pad::apply(doc, e).isNotEmpty()) return;
-        pushDocumentToEngine(); commit("Clear drum pad");
-    }
-    void loadDrum(const juce::File& file, int track, int pad) {
-        if(isTrackFrozen(track)){importStatus("Unfreeze the track before changing its samples.",{});return;}
-        if (busy || track < 0 || track >= doc.trackCount() || pad < 0 || pad >= drumPadCount) return;
-        const auto trackId = doc.tracks[track].id;
-        setBusy(true);
-        std::weak_ptr<int> token = alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, file, trackId, pad] {
-            auto result = std::make_shared<AudioClipImportResult>(decodeSessionAudioClip(file));
-            juce::MessageManager::callAsync([this, token, file, trackId, pad, result] {
-                if (!token.lock()) return;
-                setBusy(false);
-                for (int t = 0; t < doc.trackCount(); ++t) if (doc.tracks[t].id == trackId) {
-                    drum_pad::Edit e; e.kind = drum_pad::Kind::load; e.track = t; e.pad = pad; e.path = file.getFullPathName(); e.clip = result->clip;
-                    if (!result->clip || commitDrumPad(e, "Load drum sample").isNotEmpty()) { importStatus("Could not load drum sample (format or memory limit)", {}); return; }
-                    if (onDocumentRestored) onDocumentRestored();
-                    return;
-                }
-            });
-            return juce::ThreadPoolJob::jobHasFinished;
-        };
-        pool.addJob(std::move(job));
-    }
+    void clearDrum(int track, int pad);
+    void loadDrum(const juce::File& file, int track, int pad);
     // Channel Rack ------------------------------------------------------------
     const rack::Project& channelRack() const noexcept { return doc.channelRack; }
     // Sample assets for a render on another thread (null for synth channels, silent channels or missing files).
     // Synth presets travel in the rack snapshot. Loaded files in `keepAlive` must outlive the render.
-    std::array<const SessionAudioClip*, rack::maxChannels> rackClipsForExport(std::vector<std::shared_ptr<const SessionAudioClip>>& keepAlive) const {
-        std::array<const SessionAudioClip*, rack::maxChannels> clips{};
-        for (int c = 0; c < doc.channelRack.channelCount; ++c) {
-            const auto& info = doc.channelRack.info[static_cast<std::size_t>(c)];
-            if (info.isFile()) {
-                auto asset = rackAsset(info);
-                if (asset == nullptr) continue;
-                clips[static_cast<std::size_t>(c)] = asset.get();
-                keepAlive.push_back(std::move(asset));
-            } else clips[static_cast<std::size_t>(c)] = rackClip(info);
-        }
-        return clips;
-    }
+    std::array<const SessionAudioClip*, rack::maxChannels> rackClipsForExport(std::vector<std::shared_ptr<const SessionAudioClip>>& keepAlive) const;
 
     // Applies `edit` to a copy of the rack. When it changes something valid the
     // copy becomes the rack, the engine plays it, and the change is one undo
@@ -2082,108 +600,23 @@ public:
     // dragged paint stroke or fader is one step). Choosing which pattern is shown
     // is not an edit and is not recorded.
     bool editRack(const juce::String& label, const std::function<bool(rack::Project&)>& edit,
-                  const juce::String& coalesceKey = {}) {
-        auto next = doc.channelRack;
-        if (!edit(next)) return false;
-        freshPluginInstances(next);
-        if (!next.valid() || next == doc.channelRack) return false;
-        for(int c=0;c<next.channelCount;++c)if(isTrackFrozen(next.channels[static_cast<std::size_t>(c)].output))return false;
-        const bool content = !next.sameContent(doc.channelRack);
-        const bool fewerPatterns = next.patternCount < doc.channelRack.patternCount;
-        if (!doc.setRack(std::move(next))) return false;   // the library takes the new content
-        if (fewerPatterns) doc.timeline.prune(doc.trackCount(), doc.sceneCount(), doc.channelRack.patternCount);
-        pushRackToEngine();
-        if (content) commit(label, -1, -1, coalesceKey);
-        notifyRackPlugins();
-        return true;
-    }
+                  const juce::String& coalesceKey = {});
     // Live side of the rack channel commands. CommandEngine owns the history entry.
     // Why the loaded audio refuses slicing a channel: the file must be decoded here, and the slices inside it.
-    juce::String rackSliceRefusal(const rack_channel::Edit& e) const {
-        const bool keys = e.kind == rack_channel::Kind::keys && !e.bounds.empty();
-        if ((e.kind != rack_channel::Kind::slice && !keys) || !doc.channelRack.validChannel(e.channel)) return {};
-        const auto& info = doc.channelRack.info[static_cast<std::size_t>(e.channel)];
-        if (!info.isFile()) return {};   // the reducer says why
-        const auto found = rackAudio.find(info.sample);
-        if (found == rackAudio.end()) return "Load the channel's sample before slicing it.";
-        if (found->second->streamed() || found->second->sliceSource) return "That sample cannot be sliced.";
-        const auto frames = static_cast<std::int64_t>(found->second->frames);
-        if (frames > std::numeric_limits<int>::max()) return "That sample is too long to slice.";
-        if (!e.bounds.empty() && e.bounds.back() > frames) return "The slices run past the end of the sample (" + juce::String(frames) + " frames).";
-        return {};
-    }
+    juce::String rackSliceRefusal(const rack_channel::Edit& e) const;
     // Finds the attacks in a sample channel's audio (its slice, when it plays one) on a worker, then hands `found`
     // the slices' edges in the file's frames, ready for SliceRackChannel (T2-01). As many slices as the rack has room
     // for, 16 at most. Nothing is handed over when there are no useful attacks, or when the project, the channel or
     // the recording state changed meanwhile; the status line says which.
     // `addsChannels` false is for slices that stay on the channel's keys: sixteen at most, whatever room the rack has.
-    bool findRackAttacks(int channel, std::function<void(const std::vector<std::int64_t>&)> found, bool addsChannels = true) {
-        if (busy || isRecording() || engine.recording.active() || !found || !doc.channelRack.validChannel(channel)) return false;
-        const auto info = doc.channelRack.info[static_cast<std::size_t>(channel)];
-        if (!info.isFile() || doc.channelRack.channels[static_cast<std::size_t>(channel)].isInstrument()) return false;
-        const auto asset = rackRangeAsset(info);
-        if (!asset) { importStatus("Load the channel's sample before slicing it.", {}); return false; }
-        if (asset->streamed() || asset->frames / asset->sampleRate > 60) {
-            importStatus("Attack slicing needs a decoded sample range of at most one minute.", {}); return false;
-        }
-        const int room = addsChannels ? std::min(rack_channel::maxSlices, rack::maxChannels - doc.channelRack.channelCount) : rack::maxKeyZones;
-        if (room < 2) { importStatus("The Channel Rack has no room for two more channels.", {}); return false; }
-        const auto scope = doc.identityScope;
-        setBusy(true); importStatus("Finding sample attacks...", {});
-        std::weak_ptr<int> token = alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, channel, info, asset, room, scope, found, addsChannels] {
-            auto bounds = detectAttackBounds(*asset, room);
-            const auto offset = asset->sliceSource ? static_cast<std::int64_t>(asset->sliceOffset) : std::int64_t{};
-            for (auto& edge : bounds) edge += offset;
-            juce::MessageManager::callAsync([this, token, channel, info, asset, scope, found, bounds, addsChannels] {
-                if (!token.lock()) return;
-                setBusy(false);
-                if (scope != doc.identityScope || isRecording() || engine.recording.active()) {
-                    importStatus("Attack slicing discarded: project or recording state changed.", {}); return;
-                }
-                const auto& rack = doc.channelRack;
-                if (!rack.validChannel(channel) || !(rack.info[static_cast<std::size_t>(channel)] == info) || rackRangeAsset(info) != asset
-                    || (addsChannels && rack.channelCount + static_cast<int>(bounds.size()) - 1 > rack::maxChannels)) {
-                    importStatus("Attack slicing discarded: the channel changed.", {}); return;
-                }
-                if (bounds.size() < 3) {
-                    importStatus("No useful attack boundaries found. Channels unchanged; try equal slices.", {}); return;
-                }
-                importStatus("Found " + juce::String(static_cast<int>(bounds.size()) - 1) + " slices at attacks.", {});
-                found(bounds);
-            });
-            return juce::ThreadPoolJob::jobHasFinished;
-        };
-        pool.addJob(std::move(job));
-        return true;
-    }
-    bool applyRackChannelCommand(const rack_channel::Edit& e) {
-        if (rackSliceRefusal(e).isNotEmpty()) return false;
-        if (busy || rack_channel::apply(doc, e).isNotEmpty()) return false;
-        pushRackToEngine();
-        return true;
-    }
+    bool findRackAttacks(int channel, std::function<void(const std::vector<std::int64_t>&)> found, bool addsChannels = true);
+    bool applyRackChannelCommand(const rack_channel::Edit& e);
     // Live side of the rack step and pattern commands. CommandEngine owns the history entry.
-    bool applyRackPatternCommand(const rack_pattern::Edit& e) {
-        if (busy || rack_pattern::apply(doc, e).isNotEmpty()) return false;
-        pushRackToEngine();
-        return true;
-    }
+    bool applyRackPatternCommand(const rack_pattern::Edit& e);
     // Live side of LoadRackSample. The file's decoded audio becomes available as the channel starts naming it.
-    bool applyRackSampleCommand(const rack_channel::Edit& e, const std::shared_ptr<SessionAudioClip>& clip) {
-        if (busy || clip == nullptr || rack_channel::refusal(doc, e).isNotEmpty() || !retain(clip)) return false;
-        if (rack_channel::apply(doc, e).isNotEmpty()) return false;
-        rackAudio[e.description.toStdString()] = clip;
-        pushRackToEngine();
-        return true;
-    }
+    bool applyRackSampleCommand(const rack_channel::Edit& e, const std::shared_ptr<SessionAudioClip>& clip);
     // A new decode of a file the channel already names: no edit and no Undo step, but it is what plays from now on.
-    bool replaceRackSampleAudio(const std::string& path, const std::shared_ptr<SessionAudioClip>& clip) {
-        if (clip == nullptr || !retain(clip)) return false;
-        rackAudio[path] = clip;
-        pushRackToEngine();
-        return true;
-    }
+    bool replaceRackSampleAudio(const std::string& path, const std::shared_ptr<SessionAudioClip>& clip);
     // After a commit: the host rebuilds if which channel holds which plugin has changed.
     void rackChannelsCommitted() { notifyRackPlugins(); }
     // The owner hosts the rack's plugin instruments: told when which channel holds which one has changed
@@ -2191,107 +624,32 @@ public:
     std::function<void()> onRackPluginsChanged;
     // Keeps each rack plugin instrument's current state (from the host, by instance). Like capturing a track's
     // plugins before a save, it is not an undo step of its own.
-    void setRackPluginStates(const std::vector<std::pair<std::uint64_t, juce::String>>& states) {
-        auto next = doc.channelRack;
-        bool changed = false;
-        for (const auto& [instance, state] : states) changed = next.setPluginState(instance, state.toStdString()) || changed;
-        if (!changed || !next.valid() || !doc.setRack(std::move(next))) return;
-        runtimeDirty = true;
-        pushRackToEngine();
-    }
+    void setRackPluginStates(const std::vector<std::pair<std::uint64_t, juce::String>>& states);
     // The rack's plugin instruments in channel order (an empty state where a channel has none).
-    std::vector<PluginState> rackPlugins() const {
-        std::vector<PluginState> plugins;
-        for (int c = 0; c < doc.channelRack.channelCount; ++c) {
-            const auto& info = doc.channelRack.info[static_cast<std::size_t>(c)];
-            PluginState plugin;
-            if (info.hasPlugin()) {
-                plugin.descriptionXml = juce::String::fromUTF8(info.pluginDescription().c_str());
-                plugin.stateBase64 = juce::String::fromUTF8(info.pluginState().c_str());
-                plugin.instanceId = info.pluginInstance();
-            }
-            plugins.push_back(std::move(plugin));
-        }
-        return plugins;
-    }
-    bool selectRackPattern(int index) {
-        if (!doc.channelRack.selectPattern(index)) return false;
-        pushRackToEngine();
-        return true;
-    }
+    std::vector<PluginState> rackPlugins() const;
+    bool selectRackPattern(int index);
     // Resizes the Channel Rack's name column (clamped). Like choosing a pattern it is saved with the project but is
     // not an undo step, and the engine does not need to hear about it.
     bool setRackNameColumnWidth(int width) { return doc.channelRack.setNameColumnWidth(width); }
     // Sounds a channel now, whatever the transport is doing (clicking its name).
-    void previewRackChannel(int channel, float velocity = 1.0f, int pitch = 0, bool held = false) {
-        if (doc.channelRack.validChannel(channel))
-            engine.rackAuditions.push(ToneEngine::rackAuditionEvent(channel, std::clamp(pitch, -rack::channelRootPitch, 127 - rack::channelRootPitch), held), velocity);
-    }
+    void previewRackChannel(int channel, float velocity = 1.0f, int pitch = 0, bool held = false);
     // Rack samples arrive through command::loadRackSample: decode off the message
     // thread, then run LoadRackSample on the result. The project is busy until then.
-    void decodeRackSample(const juce::File& file, std::function<void(const AudioClipImportResult&)> done) {
-        setBusy(true);
-        std::weak_ptr<int> token = alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, file, done = std::move(done)] {
-            auto result = std::make_shared<AudioClipImportResult>(decodeSessionAudioClip(file));
-            juce::MessageManager::callAsync([this, token, result, done] {
-                if (token.lock()) { setBusy(false); done(*result); }
-            });
-            return juce::ThreadPoolJob::jobHasFinished;
-        };
-        pool.addJob(std::move(job));
-    }
+    void decodeRackSample(const juce::File& file, std::function<void(const AudioClipImportResult&)> done);
     // What the person sees once the command has run or been refused.
-    void rackSampleFinished(const juce::File& file, const juce::String& refused) {
-        importStatus(refused.isNotEmpty() ? refused : "Loaded " + file.getFileName(), file.getFullPathName());
-        if (refused.isEmpty() && onDocumentRestored) onDocumentRestored();
-    }
+    void rackSampleFinished(const juce::File& file, const juce::String& refused);
     // True when the channel names a file that is not loaded (moved or deleted).
     // The decoded audio a rack channel plays (its slice of a file, for a sliced channel), or null.
-    const SessionAudioClip* rackChannelAudio(int channel) const {
-        return doc.channelRack.validChannel(channel) ? rackClip(doc.channelRack.info[static_cast<std::size_t>(channel)]) : nullptr;
-    }
-    bool rackChannelOffline(int channel) const {
-        if (!doc.channelRack.validChannel(channel)) return false;
-        const auto& info = doc.channelRack.info[static_cast<std::size_t>(channel)];
-        return info.isFile() && rackAudio.find(info.sample) == rackAudio.end();
-    }
+    const SessionAudioClip* rackChannelAudio(int channel) const;
+    bool rackChannelOffline(int channel) const;
 
     // Test fixtures only: product code uses command::installDecodedAudio. Same checks and reducer as the command.
-    bool installAudio(const juce::File& file, int track, int scene, std::shared_ptr<SessionAudioClip> clip) {
-        const auto plan=prepareAudioImport(file,track,scene);
-        if(!plan)return false;
-        const session_audio_import::Prepared prepared{*plan,{std::move(clip),{}}};
-        if(!applyImportAudioCommand(prepared))return false;
-        commit("Import audio",track,scene);
-        audioImportFinished(prepared,{});
-        return true;
-    }
+    bool installAudio(const juce::File& file, int track, int scene, std::shared_ptr<SessionAudioClip> clip);
     std::size_t availableAudioBytes() const noexcept { return maxSessionAudioBytes - retainedBytes; }
 
     // Audio the project refers to that is not loaded (see MissingMedia), clips
     // first in scene order, then drum pads.
-    std::vector<MissingMedia> missingMedia() const {
-        std::vector<MissingMedia> result;
-        for (int s = 0; s < doc.sceneCount(); ++s)
-            for (int t = 0; t < doc.trackCount(); ++t) {
-                const auto& clip = doc.clip(t, s);
-                if (clip.audioOffline()) result.push_back({false, t, s, clip.audioFilePath, {}});
-            }
-        for (int t = 0; t < doc.trackCount(); ++t)
-            for (int p = 0; p < drumPadCount; ++p) {
-                const auto& track = doc.tracks[static_cast<std::size_t>(t)];
-                if (track.drumPaths[static_cast<std::size_t>(p)].isNotEmpty() && track.drumAssets[static_cast<std::size_t>(p)] == nullptr)
-                    result.push_back({true, t, p, track.drumPaths[static_cast<std::size_t>(p)], {}});
-            }
-        std::set<std::string> listed; // one entry per missing file, however many channels use it
-        for (int c = 0; c < doc.channelRack.channelCount; ++c) {
-            const auto& info = doc.channelRack.info[static_cast<std::size_t>(c)];
-            if (info.isFile() && rackAudio.find(info.sample) == rackAudio.end() && listed.insert(info.sample).second)
-                result.push_back({false, c, 0, juce::String::fromUTF8(info.sample.c_str(), static_cast<int>(info.sample.size())), {}, true});
-        }
-        return result;
-    }
+    std::vector<MissingMedia> missingMedia() const;
 
     struct RelinkTarget {
         MissingMedia item;
@@ -2311,52 +669,7 @@ public:
     // loads what it finds off the message thread, and installs it all as one
     // undoable step. Files that are not found stay offline and keep their saved
     // reference, so nothing is lost by trying.
-    void relinkMissingAudio(const juce::File& folder, RelinkCompletion complete) {
-        if (!canEditMidiClips()) {
-            importStatus("Wait until recording or project work finishes.", {});
-            return;
-        }
-        const auto missing = missingMedia();
-        if (missing.empty()) { importStatus("No audio is missing.", {}); return; }
-        if (!folder.isDirectory()) { importStatus("Choose a folder to search for the missing audio.", {}); return; }
-        auto prepared = std::make_shared<PreparedRelink>();
-        prepared->scope = doc.identityScope;
-        prepared->folder = folder;
-        for (const auto& item : missing) {
-            RelinkTarget target;
-            target.item = item;
-            if (!item.rackChannel) {
-                target.trackId = doc.tracks[static_cast<std::size_t>(item.track)].id;
-                if (!item.drumPad) {
-                    target.sceneId = doc.scenes[static_cast<std::size_t>(item.slot)].id;
-                    target.cell = doc.cellClip(item.track, item.slot);
-                }
-            }
-            prepared->targets.push_back(std::move(target));
-        }
-        setBusy(true);
-        importStatus(ui8("Searching for missing audio\xe2\x80\xa6"), folder.getFullPathName());
-        std::weak_ptr<int> token = alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, prepared, complete = std::move(complete)] {
-            const MediaIndex index(prepared->folder);
-            prepared->truncated = index.wasTruncated();
-            // A source used by several clips is decoded once and shared; decoded audio is immutable.
-            std::map<juce::String, RelinkedAudio> decodedByPath;
-            for (auto& target : prepared->targets) {
-                auto found = decodedByPath.find(target.item.path);
-                if (found == decodedByPath.end())
-                    found = decodedByPath.emplace(target.item.path, decodeFirstCandidate(index.candidates(target.item.path))).first;
-                target.found = found->second;
-            }
-            juce::MessageManager::callAsync([this, token, prepared, complete] {
-                if (token.lock() == nullptr) return;
-                setBusy(false);
-                complete(prepared);
-            });
-            return juce::ThreadPoolJob::jobHasFinished;
-        };
-        pool.addJob(std::move(job));
-    }
+    void relinkMissingAudio(const juce::File& folder, RelinkCompletion complete);
 
 private:
     // The sound a channel plays: a built-in drum sound (generated once and kept
@@ -2367,90 +680,18 @@ private:
     // past the end of its file, or of audio that is streamed, plays nothing.
     // A channel with key zones (T2-01) plays a key map: a clip with no audio of its own that names the slice for each
     // key. Maps are kept like the slice views, one for each file, range and set of zones.
-    std::shared_ptr<const SessionAudioClip> rackAsset(const rack::ChannelInfo& info) const {
-        auto base = rackRangeAsset(info);
-        if (base == nullptr || !info.hasZones()) return base;
-        const auto& file = rackAudio.find(info.sample)->second;
-        for (const auto& made : rackKeyMaps)
-            if (made.file == file && made.base == base && made.zones == *info.zones) return made.map;
-        auto zones = std::make_shared<std::vector<SampleKeyZone>>();
-        for (const auto& z : *info.zones) {
-            rack::ChannelInfo part;
-            part.sample = info.sample; part.sliceStart = z.start; part.sliceEnd = z.end;
-            auto view = z.start == 0 && z.end == static_cast<std::int64_t>(file->frames) ? file : rackRangeAsset(part);
-            if (view == nullptr) return {};   // a zone past the end of its file plays nothing
-            zones->push_back({z.low, z.high, z.root, std::move(view)});
-        }
-        auto map = std::make_shared<SessionAudioClip>();
-        map->sampleRate = base->sampleRate; map->channels = base->channels; map->frames = base->frames;
-        map->waveform = base->waveform; map->waveformCount = base->waveformCount;
-        map->keyZones = std::move(zones);
-        rackKeyMaps.push_back({file, base, *info.zones, map});
-        return map;
-    }
+    std::shared_ptr<const SessionAudioClip> rackAsset(const rack::ChannelInfo& info) const;
     // The audio a channel's sample gives before any key zones: the whole file, or the channel's slice of it.
-    std::shared_ptr<const SessionAudioClip> rackRangeAsset(const rack::ChannelInfo& info) const {
-        if (info.isBuiltin()) return rack::builtinClip(info.builtinId());
-        if (!info.isFile()) return {};
-        const auto found = rackAudio.find(info.sample);
-        if (found == rackAudio.end()) return {};
-        if (info.wholeSample()) return found->second;
-        const auto key = std::make_tuple(info.sample, info.sliceStart, info.sliceEnd);
-        if (const auto view = rackSliceViews.find(key); view != rackSliceViews.end() && view->second->sliceSource == found->second) return view->second;
-        if (info.sliceEnd > static_cast<std::int64_t>(found->second->frames) || info.sliceEnd > std::numeric_limits<int>::max()) return {};
-        auto view = drumSliceView(found->second, {static_cast<int>(info.sliceStart), static_cast<int>(info.sliceEnd)});
-        if (view == nullptr || view == found->second) return {};
-        rackSliceViews[key] = view;
-        retainedSliceViews.push_back(view);   // a replaced view may still be playing
-        return view;
-    }
+    std::shared_ptr<const SessionAudioClip> rackRangeAsset(const rack::ChannelInfo& info) const;
     // Hands the engine the rack and the sound for each channel. Skipped when
     // nothing changed, so unrelated edits do not rebuild the snapshot.
-    static std::uint64_t freshInstanceId() {
-        std::uint64_t id = 0;
-        while (id == 0) id = static_cast<std::uint64_t>(juce::Random::getSystemRandom().nextInt64());
-        return id;
-    }
+    static std::uint64_t freshInstanceId();
     // A duplicated plugin channel is a second instance with the same sound: it gets an identity of its own.
-    static void freshPluginInstances(rack::Project& p) {
-        for (int c = 0; c < p.channelCount; ++c) {
-            const auto& info = p.info[static_cast<std::size_t>(c)];
-            if (!info.hasPlugin()) continue;
-            for (int d = 0; d < c; ++d)
-                if (p.info[static_cast<std::size_t>(d)].pluginInstance() == info.pluginInstance()) { p.renewPluginInstance(c, freshInstanceId()); break; }
-        }
-    }
-    void notifyRackPlugins() {
-        // One number for which channel holds which instrument, rather than a copy of every identity.
-        std::uint64_t now = 1469598103934665603ull;
-        for (int c = 0; c < doc.channelRack.channelCount; ++c)
-            now = (now ^ doc.channelRack.info[static_cast<std::size_t>(c)].pluginInstance()) * 1099511628211ull + static_cast<std::uint64_t>(c);
-        if (now == notifiedRackPlugins) return;
-        notifiedRackPlugins = now;
-        if (onRackPluginsChanged) onRackPluginsChanged();
-    }
+    static void freshPluginInstances(rack::Project& p);
+    void notifyRackPlugins();
     std::uint64_t notifiedRackPlugins{1469598103934665603ull};
-    void pushRackToEngine() {
-        std::array<const SessionAudioClip*, rack::maxChannels> clips{};
-        for (int c = 0; c < doc.channelRack.channelCount; ++c)
-            clips[static_cast<std::size_t>(c)] = rackClip(doc.channelRack.info[static_cast<std::size_t>(c)]);
-        if (rackPublished.known && rackPublished.clips == clips && rackPublished.project == doc.channelRack) return;
-        for (std::size_t c = 0; c < clips.size(); ++c) engine.rackSamples[c].store(clips[c]);
-        // The edit has happened; if its channels' hit queue cannot be reserved, say so. The rack still
-        // plays, and hits beyond the room it has are counted rather than kept (T1-04 D8).
-        if (!engine.prepareRackChannels(doc.channelRack.channelCount))
-            status("Not enough memory for " + juce::String(doc.channelRack.channelCount) + " Channel Rack channels",
-                   "Hits that wait for their time (nudges, ratchets) on channels past " + juce::String(engine.preparedRackChannels())
-                   + " may not play. Close other programs, save, and reopen the project.");
-        engine.rackMailbox.publish(doc.channelRack.snapshot());
-        rackPublished.known = true; rackPublished.clips = clips; rackPublished.project = doc.channelRack;
-    }
-    bool retain(const std::shared_ptr<SessionAudioClip>& clip) {
-        const auto bytes = clip->decodedBytes();
-        if (bytes > maxSessionAudioBytes - retainedBytes) return false;
-        if (clip->streamed() && !engine.retainDiskAudioSource(clip->streamSource)) return false;
-        retained.push_back(clip); retainedBytes += bytes; return true;
-    }
+    void pushRackToEngine();
+    bool retain(const std::shared_ptr<SessionAudioClip>& clip);
     // T1-04 D5. Opening a project used to keep the audio of the one it replaced for the controller's
     // lifetime, so every open over an open project grew memory until maxSessionAudioBytes refused the next.
     // Called once the new project, its history and its published Song are in place: a clip that only
@@ -2464,40 +705,7 @@ private:
     // chain of views and maps goes together with the file under it. A dropped clip something else still
     // owns simply loses the cache's reference, once the engine has let go.
     struct ReplacedAudio { std::vector<std::shared_ptr<const SessionAudioClip>> clips; std::size_t bytes{}; };
-    ReplacedAudio setAsideRetainedAudio(std::vector<std::shared_ptr<const SessionAudioClip>> dropped = {}) {
-        using Clip = const SessionAudioClip*;
-        std::map<Clip, long> listed;                                       // times in `retained` or `dropped`
-        std::map<Clip, const std::shared_ptr<const SessionAudioClip>*> owner;   // one of those, for use_count
-        for (const auto* list : {&retained, &dropped})
-            for (const auto& clip : *list) { ++listed[clip.get()]; owner.emplace(clip.get(), &clip); }
-        // Start from "all of them go" and take back, until nothing changes, any clip with a reference from outside.
-        std::set<Clip> going;
-        for (const auto& [clip, times] : listed) going.insert(clip);
-        for (bool changed = true; changed;) {
-            changed = false;
-            std::map<Clip, long> inner;   // references held by clips that are going
-            for (const auto* clip : going) {
-                if (clip->sliceSource) ++inner[clip->sliceSource.get()];
-                if (clip->keyZones) for (const auto& zone : *clip->keyZones) if (zone.clip) ++inner[zone.clip.get()];
-            }
-            for (auto it = going.begin(); it != going.end();) {
-                const auto found = inner.find(*it);
-                const long internal = listed[*it] + (found == inner.end() ? 0 : found->second);
-                if (owner[*it]->use_count() != internal) { it = going.erase(it); changed = true; } else ++it;
-            }
-        }
-        ReplacedAudio out;
-        std::vector<std::shared_ptr<const SessionAudioClip>> kept;
-        for (auto& clip : retained) {
-            if (!going.contains(clip.get())) { kept.push_back(std::move(clip)); continue; }
-            out.bytes += clip->decodedBytes();
-            out.clips.push_back(std::move(clip));
-        }
-        for (auto& clip : dropped) out.clips.push_back(std::move(clip));
-        out.bytes = std::min(out.bytes, retainedBytes);
-        retained = std::move(kept);
-        return out;
-    }
+    ReplacedAudio setAsideRetainedAudio(std::vector<std::shared_ptr<const SessionAudioClip>> dropped = {});
     // T1-04 D14. Message thread, when a project replaces the open one (after the new one is published and its
     // history reset): the Channel Rack caches keep only what the new project's channels use. Decoded rack
     // files, slice views and key maps used to be kept for the controller's lifetime, so each project opened
@@ -2507,100 +715,22 @@ private:
     // D17: also run by the stopped-transport sweep (releaseUnreachableAudio), with `used` holding every file a
     // channel names in an undo or redo step, so a file the channel was switched away from stays while undo can
     // bring it back and goes once that step is gone.
-    static void addRackFiles(const rack::Project& rackProject, std::set<std::string>& files) {
-        for (int c = 0; c < rackProject.channelCount; ++c)
-            if (const auto& info = rackProject.info[static_cast<std::size_t>(c)]; info.isFile()) files.insert(info.sample);
-    }
-    std::vector<std::shared_ptr<const SessionAudioClip>> forgetUnusedRackAudio(std::set<std::string> used = {}) {
-        addRackFiles(doc.channelRack, used);
-        std::vector<std::shared_ptr<const SessionAudioClip>> dropped;
-        for (auto it = rackAudio.begin(); it != rackAudio.end();) {
-            if (used.contains(it->first)) { ++it; continue; }
-            dropped.push_back(std::move(it->second)); it = rackAudio.erase(it);
-        }
-        const auto current = [&](const std::string& path, const std::shared_ptr<const SessionAudioClip>& file) {
-            const auto found = rackAudio.find(path);
-            return found != rackAudio.end() && found->second == file;
-        };
-        for (auto it = rackSliceViews.begin(); it != rackSliceViews.end();) {
-            if (current(std::get<0>(it->first), it->second->sliceSource)) { ++it; continue; }
-            dropped.push_back(std::move(it->second)); it = rackSliceViews.erase(it);
-        }
-        std::set<const SessionAudioClip*> files;
-        for (const auto& [path, file] : rackAudio) files.insert(file.get());
-        for (auto it = rackKeyMaps.begin(); it != rackKeyMaps.end();) {
-            if (files.contains(it->file.get())) { ++it; continue; }
-            dropped.push_back(std::move(it->map)); it = rackKeyMaps.erase(it);
-        }
-        // Views handed to the engine that no kept cache entry uses any more go the same way (including the zones
-        // of a key map dropped above, which that map still names).
-        std::set<const SessionAudioClip*> cached;
-        for (const auto& [key, view] : rackSliceViews) cached.insert(view.get());
-        for (const auto& made : rackKeyMaps) {
-            cached.insert(made.base.get());
-            if (made.map->keyZones) for (const auto& zone : *made.map->keyZones) cached.insert(zone.clip.get());
-        }
-        for (auto& view : retainedSliceViews) if (!cached.contains(view.get())) dropped.push_back(std::move(view));
-        std::erase(retainedSliceViews, nullptr);
-        return dropped;
-    }
+    static void addRackFiles(const rack::Project& rackProject, std::set<std::string>& files);
+    std::vector<std::shared_ptr<const SessionAudioClip>> forgetUnusedRackAudio(std::set<std::string> used = {});
     // Message thread, after the new project has been published to the engine: asks the callback to let go.
-    void awaitAudioRelease(ReplacedAudio replaced) {
-        if (replaced.clips.empty()) return;
-        for (auto& clip : replaced.clips) replacedAudio.push_back(std::move(clip));
-        replacedBytes += replaced.bytes;
-        replacedFence = engine.audioReleaseRequest.load() + 1;   // covers everything set aside so far
-        engine.audioReleaseRequest.store(replacedFence, std::memory_order_release);
-    }
+    void awaitAudioRelease(ReplacedAudio replaced);
 public:
     // Message thread (the app's timer calls it): says in the status bar how many Channel Rack hits (T1-04 D10)
     // and track-instrument MIDI events (D11) the engine has not been able to play since the last report, at most
     // once a second so a long run of them does not flood it. Returns whether it reported.
-    bool reportDroppedNotes(std::uint32_t nowMs = juce::Time::getMillisecondCounter()) {
-        const auto rack = engine.droppedRackHits(), track = engine.droppedTrackMidi();
-        if (rack <= reportedRackDrops && track <= reportedTrackDrops) return false;
-        if (dropReported && nowMs - dropReportedAt < 1000) return false;
-        const auto newRack = rack - reportedRackDrops, newTrack = track - reportedTrackDrops;
-        juce::String tip;
-        if (newRack > 0) tip << rackDropTip;
-        if (newTrack > 0) tip << (tip.isEmpty() ? "" : "\n") << trackMidiDropTip;
-        status(droppedNotesText(newRack, newTrack), tip);
-        reportedRackDrops = rack; reportedTrackDrops = track; dropReportedAt = nowMs; dropReported = true;
-        return true;
-    }
+    bool reportDroppedNotes(std::uint32_t nowMs = juce::Time::getMillisecondCounter());
     // Message thread (the app's timer calls it): says in the status bar which tracks' streamed audio dropped out or
     // could not be read since the last report (T1-04 D12), at most once a second. Returns whether it reported.
-    bool reportStreamProblems(std::uint32_t nowMs = juce::Time::getMillisecondCounter()) {
-        juce::Array<int> droppedOut, unreadable;
-        for (std::size_t t = 0; t < ToneEngine::sessionTracks; ++t) {
-            if (engine.sessionStreamUnderruns(t) > reportedUnderruns[t]) droppedOut.add(static_cast<int>(t) + 1);
-            if (engine.sessionStreamFailures(t) > reportedStreamFailures[t]) unreadable.add(static_cast<int>(t) + 1);
-        }
-        if (droppedOut.isEmpty() && unreadable.isEmpty()) return false;
-        if (streamReported && nowMs - streamReportedAt < 1000) return false;
-        juce::String tip;
-        if (!droppedOut.isEmpty()) tip << streamDropoutTip;
-        if (!unreadable.isEmpty()) tip << (tip.isEmpty() ? "" : "\n") << streamUnreadableTip;
-        status(streamProblemText(droppedOut, unreadable), tip);
-        markStreamProblemsReported();
-        streamReportedAt = nowMs; streamReported = true;
-        return true;
-    }
+    bool reportStreamProblems(std::uint32_t nowMs = juce::Time::getMillisecondCounter());
     // Message thread (the app's timer calls it). Frees the audio of replaced projects once the engine has
     // answered the request made after the last of them; until then (or with no device running) it waits.
     // Returns the bytes freed.
-    std::size_t releaseReplacedAudio() {
-        // Old Song and Channel Rack snapshots go once the engine has begun a block after leaving them (T1-04 D6).
-        engine.arrangementMailbox.collect();
-        engine.rackMailbox.collect();
-        if (replacedAudio.empty() || warpWorkActive
-            || engine.audioReleaseDone.load(std::memory_order_acquire) < replacedFence) return 0;
-        const auto freed = replacedBytes;
-        replacedAudio.clear();
-        retainedBytes -= std::min(retainedBytes, replacedBytes);
-        replacedBytes = 0;
-        return freed;
-    }
+    std::size_t releaseReplacedAudio();
     // Audio of replaced projects still waiting for the engine (T1-04 D5).
     std::size_t replacedAudioBytes() const noexcept { return replacedBytes; }
     // T1-04 D16. Message thread (the app's timer calls it). D5 frees audio only when a project replaces the open
@@ -2611,37 +741,11 @@ public:
     // but `retained` can reach (not the document, history, clipboard, rack caches, a Song snapshot or a running
     // job) are set aside; the engine is asked to let go (editedAudioRequest), and the next call after it
     // answers frees them. Returns the bytes freed.
-    std::size_t releaseUnreachableAudio(std::uint32_t nowMs = juce::Time::getMillisecondCounter()) {
-        engine.arrangementMailbox.collect();   // old snapshots give up their references first (D6)
-        engine.rackMailbox.collect();
-        if (!unreachableAudio.empty()) {
-            if (engine.editedAudioDone.load(std::memory_order_acquire) < unreachableFence) return 0;
-            const auto freed = unreachableBytes;
-            unreachableAudio.clear();
-            retainedBytes -= std::min(retainedBytes, unreachableBytes);
-            unreachableBytes = 0;
-            return freed;
-        }
-        if (busy || warpWorkActive || isRecording() || engine.playing.load()) return 0;
-        if (unreachableSwept && nowMs - unreachableSweptAt < 1000) return 0;
-        unreachableSwept = true; unreachableSweptAt = nowMs;
-        // D17: rack files no channel names, now or in any undo/redo step, leave the caches first.
-        std::set<std::string> reachableRackFiles;
-        history.forEachDocument([&](const ProjectDocument& state) { addRackFiles(state.channelRack, reachableRackFiles); });
-        auto found = setAsideRetainedAudio(forgetUnusedRackAudio(std::move(reachableRackFiles)));
-        if (found.clips.empty()) return 0;
-        unreachableAudio = std::move(found.clips);
-        unreachableBytes = found.bytes;
-        unreachableFence = engine.editedAudioRequest.load() + 1;
-        engine.editedAudioRequest.store(unreachableFence, std::memory_order_release);
-        return 0;
-    }
+    std::size_t releaseUnreachableAudio(std::uint32_t nowMs = juce::Time::getMillisecondCounter());
     // Audio an edit left unreachable, waiting for the engine (T1-04 D16).
     std::size_t unreachableAudioBytes() const noexcept { return unreachableBytes; }
 private:
-    void registerStream(const std::shared_ptr<SessionAudioClip>& clip) {
-        if (clip && clip->streamed()) engine.retainDiskAudioSource(clip->streamSource);
-    }
+    void registerStream(const std::shared_ptr<SessionAudioClip>& clip);
 public:
     struct RelinkPlan {
         explicit RelinkPlan(const ProjectDocument& document) : after(document) {}
@@ -2655,143 +759,14 @@ public:
         bool memoryFull{};
     };
 
-    RelinkPlan planRelink(const PreparedRelink& prepared) const {
-        RelinkPlan plan(doc);
-        if (doc.identityScope != prepared.scope || !canEditMidiClips()) {
-            plan.error = "The project changed or is recording. Search for missing audio again.";
-            return plan;
-        }
-        auto remaining = availableAudioBytes();
-        std::set<const SessionAudioClip*> counted;
-        const auto reserve = [&](const std::shared_ptr<SessionAudioClip>& clip) {
-            if (counted.contains(clip.get())) return true;
-            const auto bytes = clip->decodedBytes();
-            if (bytes > remaining) return false;
-            remaining -= bytes;
-            counted.insert(clip.get());
-            plan.sources.push_back(clip);
-            return true;
-        };
-        const auto trackIndex = [&plan](std::uint32_t id) {
-            for (int t = 0; t < plan.after.trackCount(); ++t) if (plan.after.tracks[static_cast<std::size_t>(t)].id == id) return t;
-            return -1;
-        };
-        const auto sceneIndex = [&plan](std::uint32_t id) {
-            for (int s = 0; s < plan.after.sceneCount(); ++s) if (plan.after.scenes[static_cast<std::size_t>(s)].id == id) return s;
-            return -1;
-        };
-        for (const auto& want : prepared.targets) {
-            const auto& found = want.found;
-            if (want.item.rackChannel) {
-                if (!found.clip || !found.clip->valid() || found.file == juce::File{}) { plan.stillOffline.addIfNotAlreadyThere(want.item.fileName()); continue; }
-                const auto oldPath = want.item.path.toStdString();
-                bool stillWanted = false; // skip anything the user changed while the search ran
-                for (int c = 0; c < plan.after.channelRack.channelCount; ++c)
-                    stillWanted = stillWanted || (plan.after.channelRack.info[static_cast<std::size_t>(c)].sample == oldPath && rackAudio.find(oldPath) == rackAudio.end());
-                if (!stillWanted) continue;
-                const auto newPath = found.file.getFullPathName().toStdString();
-                if (newPath.size() > static_cast<std::size_t>(rack::maxSampleBytes)) {
-                    plan.stillOffline.addIfNotAlreadyThere(want.item.fileName());
-                    continue;
-                }
-                if (!rackAudio.contains(newPath) && !plan.rackAssets.contains(newPath)) {
-                    if (!reserve(found.clip)) {
-                        plan.memoryFull = true;
-                        plan.stillOffline.addIfNotAlreadyThere(want.item.fileName());
-                        continue;
-                    }
-                    plan.rackAssets.emplace(newPath, found.clip);
-                }
-                for (int c = 0; c < plan.after.channelRack.channelCount; ++c)
-                    if (plan.after.channelRack.info[static_cast<std::size_t>(c)].sample == oldPath) plan.after.channelRack.setSample(c, newPath);
-                ++plan.relinked;
-                continue;
-            }
-            const int track = trackIndex(want.trackId);
-            const int scene = want.item.drumPad ? 0 : sceneIndex(want.sceneId);
-            if (track < 0 || scene < 0 || (want.item.drumPad && (want.item.slot < 0 || want.item.slot >= drumPadCount))) continue; // removed while searching
-            auto& owner = plan.after.tracks[static_cast<std::size_t>(track)];
-            const auto pad = static_cast<std::size_t>(want.item.slot);
-            // Skip anything the user changed while the search ran.
-            const bool unchanged = want.item.drumPad
-                ? owner.drumPaths[pad] == want.item.path && owner.drumAssets[pad] == nullptr
-                : plan.after.cellClip(track, scene) == want.cell && plan.after.clip(track, scene).audioOffline()
-                    && plan.after.clip(track, scene).audioFilePath == want.item.path;
-            if (!unchanged || owner.settings.frozen()) continue;
-            if (!want.item.drumPad && session_audio_import::destinationRefusal(plan.after, track, scene).isNotEmpty())
-                continue;
-            if (!found.clip || !found.clip->valid() || found.file == juce::File{}) { plan.stillOffline.addIfNotAlreadyThere(want.item.fileName()); continue; }
-            const auto drumView = want.item.drumPad ? drumSliceView(found.clip, owner.drumSlices[pad]) : std::shared_ptr<const SessionAudioClip>{};
-            if (want.item.drumPad && !drumView) { plan.stillOffline.addIfNotAlreadyThere(want.item.fileName()); continue; }
-            if (!reserve(found.clip)) {
-                plan.memoryFull = true;
-                plan.stillOffline.addIfNotAlreadyThere(want.item.fileName());
-                continue;
-            }
-            if (want.item.drumPad) {
-                owner.drumAssets[pad] = drumView;
-                plan.drumViews.push_back(drumView);
-                owner.drumPaths[pad] = found.file.getFullPathName();
-            } else {
-                auto clip = plan.after.clip(track, scene);
-                clip.audio = found.clip;
-                clip.audioFilePath = found.file.getFullPathName();
-                clip.audioFileName = found.file.getFileName();
-                plan.after.setClip(track, scene, clip);
-                plan.cells.emplace_back(track, scene);
-            }
-            ++plan.relinked;
-        }
-        return plan;
-    }
+    RelinkPlan planRelink(const PreparedRelink& prepared) const;
 
-    void installRelink(RelinkPlan& plan) {
-        for (const auto& clip : plan.sources) {
-            retainedBytes += clip->decodedBytes();
-            retained.push_back(clip);
-        }
-        retained.insert(retained.end(), plan.drumViews.begin(), plan.drumViews.end());
-        for (auto& [path, clip] : plan.rackAssets) rackAudio.try_emplace(path, std::move(clip));
-        doc = std::move(plan.after);
-        for (const auto& [track, scene] : plan.cells) {
-            republishIfLive(track, scene);
-            republishLinked(track, scene);
-        }
-        pushDocumentToEngine();
-    }
+    void installRelink(RelinkPlan& plan);
 
-    void reportRelink(const PreparedRelink& prepared, const RelinkPlan& plan) {
-        const auto& folder = prepared.folder;
-        if (plan.error.isNotEmpty()) {
-            importStatus(plan.error, folder.getFullPathName());
-            return;
-        }
-        auto text = "Relinked " + juce::String(plan.relinked) + " of " + juce::String(static_cast<int>(prepared.targets.size()))
-                  + " missing audio file" + (prepared.targets.size() == 1 ? "" : "s");
-        if (prepared.truncated) text += " (only the first " + juce::String(static_cast<int>(MediaIndex::maxFilesIndexed)) + " files were searched)";
-        if (plan.memoryFull) text += "; audio memory limit reached";
-        if (!plan.stillOffline.isEmpty()) {
-            text += ". Still offline: ";
-            for (int i = 0; i < plan.stillOffline.size() && i < 3; ++i) text += (i ? ", " : "") + plan.stillOffline[i];
-            if (plan.stillOffline.size() > 3) text += " and " + juce::String(plan.stillOffline.size() - 3) + " more";
-        }
-        importStatus(text, folder.getFullPathName());
-        status(text, folder.getFullPathName());
-    }
+    void reportRelink(const PreparedRelink& prepared, const RelinkPlan& plan);
 
 private:
-    static juce::String describeOffline(const std::vector<MissingMedia>& missing) {
-        juce::String text;
-        for (std::size_t i = 0; i < missing.size() && i < 10; ++i) {
-            const auto& m = missing[i];
-            text += (m.rackChannel ? "Channel Rack, channel " + juce::String(m.track + 1)
-                   : m.drumPad ? "Track " + juce::String(m.track + 1) + ", drum pad " + juce::String(m.slot + 1)
-                               : "Track " + juce::String(m.track + 1) + ", Scene " + juce::String(m.slot + 1))
-                  + ": " + m.fileName() + (m.reason.isNotEmpty() ? " (" + m.reason + ")" : juce::String{}) + "\n";
-        }
-        if (missing.size() > 10) text += "and " + juce::String(static_cast<int>(missing.size()) - 10) + " more\n";
-        return text.trimEnd();
-    }
+    static juce::String describeOffline(const std::vector<MissingMedia>& missing);
 
     struct LoadResult {
         SessionProjectData project;
@@ -2807,224 +782,15 @@ private:
     static bool validStep(int step) noexcept { return step >= 0 && step < 16; }
 
     // Worker thread.
-    static LoadResult loadProjectFile(const juce::File& file) {
-        LoadResult result;
-        if (file.getSize() <= 0 || file.getSize() > maxProjectFileBytes) {
-            result.error = "Project file is empty or exceeds the 128 MiB limit.";
-            return result;
-        }
-        if (!parseSessionProject(file.loadFileAsString(), result.project, result.error)) return result;
-        const int tracks = result.project.trackCount(), scenes = result.project.sceneCount();
-        result.audio.resize(static_cast<std::size_t>(tracks * scenes));
-        std::map<juce::String, AudioClipImportResult> drumSources;
-        std::set<const SessionAudioClip*> drumCounted;
-        for (int s = 0; s < scenes; ++s)
-            for (int t = 0; t < tracks; ++t) {
-                const auto& clip = result.project.clips[static_cast<std::size_t>(s)][static_cast<std::size_t>(t)];
-                if (clip.audioFilePath.isEmpty()) continue;
-                const auto location = resolveProjectAudio(file, clip.audioFilePath);
-                const auto decoded = location == juce::File{} ? AudioClipImportResult{{}, "The saved audio location is not valid."}
-                                                              : importSessionAudioClip(location);
-                if (!decoded.clip) {
-                    // A moved or deleted file must not make the whole project unopenable.
-                    result.missing.push_back({false, t, s, location == juce::File{} ? clip.audioFilePath : location.getFullPathName(), decoded.error});
-                    continue;
-                }
-                const auto bytes = decoded.clip->decodedBytes();
-                if (bytes > maxSessionAudioBytes - result.decodedBytes) {
-                    result.error = "Project audio exceeds the 512 MiB session limit.";
-                    return result;
-                }
-                result.decodedBytes += bytes;
-                result.audio[static_cast<std::size_t>(s * tracks + t)] = decoded.clip;
-                // Kits made from Session clips can reuse their decoded file.
-                if (!decoded.clip->streamed()) {
-                    drumSources.try_emplace(location.getFullPathName(), decoded);
-                    drumCounted.insert(decoded.clip.get());
-                }
-            }
-        result.drums.resize(tracks);
-        const auto drumBudget = maxSessionAudioBytes - result.decodedBytes;
-        std::size_t cachedDrumBytes{};
-        for (int t = 0; t < tracks; ++t) for (int p = 0; p < drumPadCount; ++p) {
-            const auto& path = result.project.drumPaths[t][p];
-            if (path.isEmpty()) continue;
-            const auto location = resolveProjectAudio(file, path);
-            const auto key = location == juce::File{} ? path : location.getFullPathName();
-            auto found = drumSources.find(key);
-            if (found == drumSources.end()) {
-                auto decoded = location == juce::File{} ? AudioClipImportResult{{}, "The saved audio location is not valid."} : decodeSessionAudioClip(location);
-                if (decoded.clip) {
-                    const auto bytes = decoded.clip->decodedBytes();
-                    if (bytes > drumBudget - cachedDrumBytes) { result.error = "Drum audio exceeds memory limit"; return result; }
-                    cachedDrumBytes += bytes;
-                }
-                found = drumSources.emplace(key, std::move(decoded)).first;
-            }
-            const auto& decoded = found->second;
-            auto view = drumSliceView(decoded.clip, result.project.drumSlices[t][p]);
-            if (!view) {
-                result.missing.push_back({true, t, p, key, decoded.clip ? "Saved slice exceeds the source audio." : decoded.error});
-                continue;
-            }
-            if (drumCounted.insert(decoded.clip.get()).second) {
-                const auto bytes = decoded.clip->decodedBytes();
-                if (bytes > maxSessionAudioBytes - result.decodedBytes) { result.error = "Drum audio exceeds memory limit"; return result; }
-                result.decodedBytes += bytes;
-            }
-            result.drums[t][p] = std::move(view);
-        }
-        std::set<std::string> attempted; // a sample used by several channels is decoded once
-        for (int c = 0; c < result.project.channelRack.channelCount; ++c) {
-            const auto& info = result.project.channelRack.info[static_cast<std::size_t>(c)];
-            if (!info.isFile()) continue;
-            const auto stored = juce::String::fromUTF8(info.sample.c_str(), static_cast<int>(info.sample.size()));
-            const auto location = resolveProjectAudio(file, stored);
-            const auto key = (location == juce::File{} ? stored : location.getFullPathName());
-            if (!attempted.insert(key.toStdString()).second) continue;
-            const auto decoded = location == juce::File{} ? AudioClipImportResult{{}, "The saved audio location is not valid."}
-                                                          : decodeSessionAudioClip(location);
-            if (!decoded.clip) { result.missing.push_back({false, c, 0, key, decoded.error, true}); continue; }
-            const auto bytes = decoded.clip->decodedBytes();
-            if (bytes > maxSessionAudioBytes - result.decodedBytes) { result.error = "Channel Rack audio exceeds memory limit"; return result; }
-            result.decodedBytes += bytes; result.rackClips.emplace_back(key.toStdString(), decoded.clip);
-        }
-        return result;
-    }
+    static LoadResult loadProjectFile(const juce::File& file);
 
-    void finishLoad(const juce::File& file, const LoadResult& result, bool recovered) {
-        setBusy(false);
-        if (result.error.isNotEmpty()) { status("Open failed: " + result.error, result.error); return; }
-        releaseReplacedAudio();   // what earlier opens replaced, if the engine has let go of it
-        if (result.decodedBytes > maxSessionAudioBytes - retainedBytes) {
-            status("Open failed: retained audio memory limit reached",
-                   "Close and restart Alien Studio to release audio from older sessions.");
-            return;
-        }
-        // T1-04 D7: the engine's track slots are prepared before anything is replaced, so an open that cannot
-        // have them leaves the open project as it was.
-        if (!prepareEngineTracks(result.project.trackCount(), "Open failed")) return;
-        // T1-04 D8: and so is the Channel Rack's pending-hit queue for its channels.
-        if (!prepareRackChannels(result.project.channelRack.channelCount, "Open failed")) return;
-        abandonRecording();
-        engine.playing.store(false);
-        engine.requestedRackClip.store(rack::RackPlayer::noLaunchRequest);
-        engine.sceneRackClip.store(rack::RackPlayer::noLaunchRequest);
-        for (auto& request : engine.requestedTrackRackClip) request.store(rack::RackPlayer::noLaunchRequest);
-        for (auto& request : engine.sceneTrackRackClip) request.store(rack::RackPlayer::noLaunchRequest);
-        engine.rackPerformMode.store(false);
-        engine.resetRackPlayback.store(true);
-        copiedCell = {};
-        if (copiedContent && copiedContent->rackClip != 0) copiedContent.reset();
-        engine.synchronizedSceneLaunch.store(false);
-        if (beforeDocumentReplaced) beforeDocumentReplaced();
-        // A slot without a launch mailbox never played; stopping it would only create one (T1-04 D3).
-        for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track)
-            if (engine.pianoRollLaunches.reserved(track)) publishStop(track);
-
-        auto loaded = fromProjectData(result.project);
-        for (int s = 0; s < loaded.sceneCount(); ++s)
-            for (int t = 0; t < loaded.trackCount(); ++t) {
-                auto clip = loaded.clip(t, s);
-                if (clip.audioFilePath.isEmpty()) continue;
-                const auto resolved = resolveProjectAudio(file, clip.audioFilePath);
-                if (resolved != juce::File{}) {
-                    clip.audioFilePath = resolved.getFullPathName();
-                    clip.audioFileName = resolved.getFileName();
-                } else {
-                    clip.audioFileName = MissingMedia::fileNameOf(clip.audioFilePath); // keep the saved reference as written
-                }
-                const auto& asset = result.audio[static_cast<std::size_t>(s * loaded.trackCount() + t)];
-                clip.audio = asset;
-                loaded.setClip(t, s, clip);
-                if (asset != nullptr) { registerStream(asset); retained.push_back(asset); }
-            }
-        for (int t = 0; t < loaded.trackCount(); ++t) for (int p = 0; p < drumPadCount; ++p) {
-            auto& track = loaded.tracks[t];
-            track.drumAssets[p] = result.drums[t][p];
-            if (track.drumPaths[p].isNotEmpty()) {
-                const auto resolved = resolveProjectAudio(file, track.drumPaths[p]);
-                if (resolved != juce::File{}) track.drumPaths[p] = resolved.getFullPathName();
-            }
-            if (result.drums[t][p]) retained.push_back(result.drums[t][p]);
-        }
-        for (int c = 0; c < loaded.channelRack.channelCount; ++c) {   // point rack samples at where they were found
-            auto& info = loaded.channelRack.info[static_cast<std::size_t>(c)];
-            if (!info.isFile()) continue;
-            const auto resolved = resolveProjectAudio(file, juce::String::fromUTF8(info.sample.c_str(), static_cast<int>(info.sample.size())));
-            const auto absolute = resolved.getFullPathName().toStdString();
-            if (resolved != juce::File{} && absolute.size() <= static_cast<std::size_t>(rack::maxSampleBytes)) info.sample = absolute;
-        }
-        for (const auto& [path, clip] : result.rackClips) { rackAudio[path] = clip; retained.push_back(clip); }
-        retainedBytes += result.decodedBytes;
-        doc = std::move(loaded);
-        projectFile = recovered ? recoveringFrom : file;
-        pushDocumentToEngine();
-        runtimeDirty = false;
-        history.reset(doc);
-        // The replaced project's audio, and the rack samples only it used (D14), freed once the engine lets go of them.
-        awaitAudioRelease(setAsideRetainedAudio(forgetUnusedRackAudio()));
-        // A recovered session has never been saved by the user.
-        savedId = recovered ? 0 : history.currentId();
-        autosavedId = 0;
-        if (!recovered) discardRecovery();
-        if (onDocumentReplaced) onDocumentReplaced();
-        historyChanged();
-        const auto offline = result.missing.empty() ? juce::String{}
-            : " - " + juce::String(static_cast<int>(result.missing.size())) + " audio file"
-              + (result.missing.size() == 1 ? " is" : "s are") + " offline (use Relink audio on the Session tab)";
-        const auto offlineDetail = describeOffline(result.missing);
-        if (recovered) status("Recovered unsaved work" + (projectFile != juce::File{} ? " for " + projectFile.getFileName() : juce::String{})
-                              + juce::String(juce::CharPointer_UTF8(" \xe2\x80\x94 save to keep it")) + offline, offlineDetail);
-        else status("Opened " + file.getFileName() + offline, result.missing.empty() ? file.getFullPathName() : offlineDetail);
-    }
+    void finishLoad(const juce::File& file, const LoadResult& result, bool recovered);
 
     // Apply an undo/redo state and bring the engine in line with it.
-    void restore(const ProjectDocument& state, const DocumentHistory::Step& step) {
-        const auto previous = doc;
-        bool reordered = previous.trackCount() != state.trackCount() || previous.sceneCount() != state.sceneCount();
-        for (int t = 0; !reordered && t < state.trackCount(); ++t)
-            reordered = previous.tracks[static_cast<std::size_t>(t)].id != state.tracks[static_cast<std::size_t>(t)].id;
-        for (int s = 0; !reordered && s < state.sceneCount(); ++s)
-            reordered = previous.scenes[static_cast<std::size_t>(s)].id != state.scenes[static_cast<std::size_t>(s)].id;
-        doc = state;
-        doc.library.retainIssuedIdsFrom(previous.library);
-        doc.trackRegistry.retainIssuedIdsFrom(previous.trackRegistry);
-        // Keep the user's current selection unless the step names a clip.
-        doc.selectedTrack = step.focusTrack >= 0 ? step.focusTrack : previous.selectedTrack;
-        doc.selectedScene = step.focusScene >= 0 ? step.focusScene : previous.selectedScene;
-        doc.clampSelection();
-        doc.channelRack.selectedPattern = juce::jlimit(0, doc.channelRack.patternCount - 1, previous.channelRack.selectedPattern);
-        doc.channelRack.nameColumnWidth = previous.channelRack.nameColumnWidth;
-        if (reordered) stopEverySlot();
-        pushDocumentToEngine();
-        if (!reordered) {
-            // Live clips pick up restored content; audio changes relaunch.
-            for (int t = 0; t < doc.trackCount(); ++t) {
-                const auto index = static_cast<std::size_t>(t);
-                const int active = engine.activePianoRollClip[index].load();
-                const int requested = engine.requestedPianoRollClip[index].load();
-                if (requested >= 0 && requested < doc.sceneCount() && requested != active) publishClip(t, requested);
-                if (active < 0 || active >= doc.sceneCount() || requested != active) continue;
-                const auto& before = previous.clip(t, active);
-                const auto& after = doc.clip(t, active);
-                if (before.audio != after.audio) publishClip(t, active);
-                else if (!after.isAudioClip() && before.pattern != after.pattern) engine.pianoRollNotes[index].publish(after.notes());
-            }
-        }
-        if (onDocumentRestored) onDocumentRestored();
-        historyChanged();
-    }
+    void restore(const ProjectDocument& state, const DocumentHistory::Step& step);
 
     // Human-readable cause when the document cannot be serialised.
-    static juce::String describeInvalidSession(const ProjectDocument& d) {
-        auto name = oversizedPluginName(d.masterPlugins);
-        for (std::size_t t = 0; name.isEmpty() && t < d.tracks.size(); ++t) name = oversizedPluginName(d.tracks[t].plugins);
-        if (name.isNotEmpty())
-            return "the saved state of " + name + " is too large to store (limit about "
-                + juce::String(maxPluginStateChars / (1024 * 1024) * 3 / 4) + " MB per plugin)";
-        return "session data is invalid";
-    }
+    static juce::String describeInvalidSession(const ProjectDocument& d);
 
     void historyChanged() { if (onHistoryChanged) onHistoryChanged(); }
 
@@ -3032,166 +798,30 @@ private:
     // Makes the target clip the one looping on its track. Overdub leaves a clip
     // that is already playing untouched; replace plays it silent so only the
     // new notes are heard while recording.
-    void prepareClipForTake(int track, int scene, bool replace) {
-        const auto index = static_cast<std::size_t>(track);
-        const bool live = engine.playing.load() && engine.activePianoRollClip[index].load() == scene;
-        if (!replace) {
-            if (!live) publishClip(track, scene);
-            return;
-        }
-        auto silent = doc.clip(track, scene).notes();
-        silent.clear();
-        if (live) {
-            engine.pianoRollNotes[index].publish(silent);
-            return;
-        }
-        engine.requestedPianoRollClip[index].store(scene);
-        SessionClipLaunch launch;
-        launch.pattern = silent;
-        launch.clipIndex = scene;
-        engine.pianoRollLaunches[index].publish(launch);
-    }
+    void prepareClipForTake(int track, int scene, bool replace);
 
     // Make the engine play what the document holds for this clip.
-    void syncLiveClip(int track, int scene) {
-        const auto index = static_cast<std::size_t>(track);
-        if (engine.activePianoRollClip[index].load() == scene) engine.pianoRollNotes[index].publish(doc.clip(track, scene).notes());
-        else republishIfLive(track, scene);
-    }
+    void syncLiveClip(int track, int scene);
 
     // The clip loops with everything recorded so far, so a take can be heard
     // layering up while it is made.
-    void previewTake() {
-        if (!take.active || !doc.isValidCell(take.track, take.scene)) return;
-        if (take.track < 0 || take.track >= static_cast<int>(ToneEngine::sessionTracks)) return;
-        if (take.assembler.notes().size() == take.previewedNotes) return;
-        const auto index = static_cast<std::size_t>(take.track);
-        if (engine.activePianoRollClip[index].load() != take.scene) return;
-        if (doc.clip(take.track, take.scene).isAudioClip()) return;
-        bool truncated = false;
-        engine.pianoRollNotes[index].publish(take.assembler.mergeInto(doc.clip(take.track, take.scene).notes(), take.replace, truncated));
-        take.previewedNotes = take.assembler.notes().size();
-    }
+    void previewTake();
 
-    void finishTake() {
-        RecordingOutcome outcome;
-        outcome.track = take.track; outcome.scene = take.scene; outcome.replaced = take.replace;
-        outcome.droppedEvents = engine.recording.events.droppedCount() - take.droppedAtStart;
-        outcome.noteLimitReached = take.assembler.noteLimitReached();
-        outcome.refused = take.refused && !take.cancelled;
-        const int track = take.track, scene = take.scene;
-        const auto recorded = take.assembler.notes().size();
-        const auto assembler = take.assembler;
-        take.active = false; // before the clip is written: the take no longer owns it
-        auto announce = [&] { if (onRecordingFinished) onRecordingFinished(outcome); };
-
-        if (!doc.isValidCell(track, scene) || doc.clip(track, scene).isAudioClip()) {
-            outcome.discarded = true;
-            announce();
-            return;
-        }
-        if (recorded == 0) { // keep what was there (replace played the clip silent)
-            syncLiveClip(track, scene);
-            announce();
-            return;
-        }
-        const auto& base = doc.clip(track, scene).notes();
-        bool truncated = false;
-        const auto merged = assembler.mergeInto(base, take.replace, truncated);
-        outcome.noteLimitReached = outcome.noteLimitReached || truncated;
-        outcome.notesAdded = static_cast<int>(merged.count) - (take.replace ? 0 : static_cast<int>(base.count));
-        const bool changes = !samePianoRollPattern(base, merged);
-        outcome.error = recordMidiNotes ? recordMidiNotes(track, scene, merged)
-                                        : juce::String("MIDI recording commands are not connected.");
-        if (outcome.error.isNotEmpty()) {
-            outcome.discarded = true;
-            outcome.notesAdded = 0;
-        }
-        if (!changes || outcome.discarded) syncLiveClip(track, scene);
-        announce();
-    }
+    void finishTake();
 
     // T1-04 D7: prepares the engine's slots for `tracks` tracks before an edit or open commits them. When
     // memory runs out it says so and answers false; the caller then changes nothing.
-    bool prepareEngineTracks(int tracks, const juce::String& action) {
-        if (engine.prepareTracks(tracks)) return true;
-        status(action + ": not enough memory for " + juce::String(tracks) + " tracks",
-               "Alien Studio could prepare " + juce::String(engine.preparedTracks())
-               + " tracks. Close other programs or open a project with fewer tracks, then try again.");
-        return false;
-    }
+    bool prepareEngineTracks(int tracks, const juce::String& action);
 
-    bool prepareRackChannels(int channels, const juce::String& action) {
-        if (engine.prepareRackChannels(channels)) return true;
-        status(action + ": not enough memory for " + juce::String(channels) + " Channel Rack channels",
-               "Alien Studio could prepare " + juce::String(engine.preparedRackChannels())
-               + " channels. Close other programs or remove Channel Rack channels, then try again.");
-        return false;
-    }
+    bool prepareRackChannels(int channels, const juce::String& action);
 
-    void publishStop(std::size_t track) {
-        engine.requestedPianoRollClip[track].store(-1);
-        SessionClipLaunch stopped;
-        stopped.pattern.clear();
-        stopped.clipIndex = -1;
-        engine.pianoRollLaunches[track].publish(stopped);
-    }
+    void publishStop(std::size_t track);
 
     // `copyFrom`: a scene to copy. Its clips are copied as independent clips (an edit of one copy
     // does not reach the other), as Duplicate scene always did.
-    bool insertScene(int index, const std::vector<library::ClipId>* copyFrom) {
-        if (busy) return false;
-        if (beforeStructureEdit) beforeStructureEdit();
-        if (!doc.canAddScene() || index < 0 || index > doc.sceneCount()) return false;
-        // Inserting before existing scenes renumbers them.
-        if (index < doc.sceneCount()) stopEverySlot();
-        std::vector<library::ClipId> row(static_cast<std::size_t>(doc.trackCount()));
-        if (copyFrom != nullptr) {
-            const auto saved = doc;
-            auto next = doc.channelRack;
-            std::map<std::uint64_t, int> copies;
-            for (std::size_t t = 0; t < row.size() && t < copyFrom->size(); ++t) {
-                const auto id = (*copyFrom)[t];
-                if (!id) continue;
-                const int p = doc.rackPatternForClip(id.value);
-                if (p < 0) continue;
-                else if (!copies.contains(id.value)) {
-                    const int slot = next.patternCount;
-                    if (!next.addPattern(p)) { doc = saved; return false; }
-                    copies[id.value] = slot;
-                }
-            }
-            if (!copies.empty()) {
-                next.selectedPattern = doc.channelRack.selectedPattern;
-                if (!doc.setRack(std::move(next))) { doc = saved; return false; }
-                for (std::size_t t = 0; t < row.size() && t < copyFrom->size(); ++t)
-                    if (const auto found = copies.find((*copyFrom)[t].value); found != copies.end())
-                        row[t] = library::ClipId{doc.channelRack.clips[static_cast<std::size_t>(found->second)]};
-                pushRackToEngine();
-            }
-            // setRack prunes unused clips: allocate ordinary cell copies only after it finishes.
-            for (std::size_t t = 0; t < row.size() && t < copyFrom->size(); ++t)
-                if (!row[t] && (*copyFrom)[t]) row[t] = doc.library.duplicateClip((*copyFrom)[t]);
-        }
-        const auto name = copyFrom != nullptr ? doc.scenes[static_cast<std::size_t>(index - 1)].name + " copy"
-                                              : doc.nextSceneName();
-        doc.timeline.sceneInserted(index);
-        for(auto& track:doc.tracks)if(track.settings.freezeScene>=index)++track.settings.freezeScene;
-        doc.scenes.insert(doc.scenes.begin() + index, SessionScene{name});
-        doc.cells.insert(doc.cells.begin() + index, row);
-        if (doc.selectedScene >= index && index < doc.sceneCount() - 1) ++doc.selectedScene;
-        return true;
-    }
+    bool insertScene(int index, const std::vector<library::ClipId>* copyFrom);
 
-    void stopEverySlot() {
-        abandonRecording(); // tracks or scenes are being renumbered, so the target is no longer valid
-        engine.synchronizedSceneLaunch.store(false);
-        for (std::size_t track = 0; track < ToneEngine::sessionTracks; ++track) {
-            publishStop(track);
-            engine.requestedTrackRackClip[track].store(0);
-            engine.sceneTrackRackClip[track].store(rack::RackPlayer::noLaunchRequest);
-        }
-    }
+    void stopEverySlot();
 
     void setBusy(bool b) { busy = b; if (onBusyChanged) onBusyChanged(b); }
     void status(const juce::String& text, const juce::String& tip) { if (onProjectStatus) onProjectStatus(text, tip); }
@@ -3219,99 +849,11 @@ private:
     };
     SongTake songTake;
 
-    void stopSongTake() {
-        // Cancelled before the engine saw the request: nothing was recorded.
-        if (engine.recording.startRequested.exchange(false)) { finishSongTake(true); return; }
-        engine.recording.stopRequested.store(true);
-    }
-    void pollSongTake() {
-        bool ended = false, refused = false;
-        for (RecordEvent event; engine.recording.events.pop(event);) {
-            if (event.take != songTake.id) continue;
-            if (event.kind == RecordEventKind::refused) refused = true;
-            if (event.kind == RecordEventKind::end || event.kind == RecordEventKind::refused) { ended = true; break; }
-        }
-        if (ended) finishSongTake(refused);
-    }
+    void stopSongTake();
+    void pollSongTake();
     // The engine has ended the take (or never started it) and no longer touches the sinks. The files are
     // finished and loaded off the message thread; then every take is placed in one undo step.
-    void finishSongTake(bool refused) {
-        auto& capture = *engine.songTake;
-        for (auto& sink : capture.sinks) sink.store(nullptr);
-        engine.recording.audioTake.store(false);
-        const double firstTick = capture.firstTick.load();
-        const auto frames = refused ? 0 : capture.frames.load();
-        const double latency = capture.latencySamples.load() + songTake.offsetMs * songTake.sampleRate / 1000.0;
-        const int ended = capture.ended.load();
-        std::vector<alien::TakePass> passes;
-        const int passCount = refused ? 0 : std::clamp(capture.passes.load(), 1, alien::SongTakeCapture::maxPasses);
-        for (int k = 0; k < passCount; ++k)
-            passes.push_back(k == 0 ? alien::TakePass{0, firstTick}
-                                    : alien::TakePass{capture.passFrame[static_cast<std::size_t>(k)].load(), capture.passTick[static_cast<std::size_t>(k)].load()});
-        auto recordings = std::move(songTake.recordings);
-        const auto finished = songTake;
-        songTake = {};
-        struct Loaded { int track{}; RecordingResult result; AudioClipImportResult audio; };
-        auto loaded = std::make_shared<std::vector<Loaded>>();
-        setBusy(true);
-        std::weak_ptr<int> token = alive;
-        std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, recordings, loaded, finished, firstTick, frames, latency, ended, refused, passes] {
-            for (const auto& [t, recording] : recordings) {
-                Loaded item; item.track = t; item.result = recording->finish();
-                if (item.result.file.existsAsFile() && !finished.abandoned) item.audio = importSessionAudioClip(item.result.file);
-                loaded->push_back(std::move(item));
-            }
-            juce::MessageManager::callAsync([this, token, loaded, finished, firstTick, frames, latency, ended, refused, passes] {
-                if (token.lock() == nullptr) return;
-                setBusy(false);
-                SongTakeOutcome outcome;
-                outcome.refused = refused; outcome.abandoned = finished.abandoned; outcome.ended = ended;
-                std::vector<RecordedTake> takes;
-                for (const auto& item : *loaded) {
-                    if (item.result.error.isNotEmpty() && item.result.writtenFrames > 0) outcome.problems << item.result.error << " ";
-                    if (!item.result.file.existsAsFile()) continue;
-                    ++outcome.recorded;
-                    if (finished.abandoned) { outcome.kept.push_back(item.result.file); continue; }
-                    if (!item.audio.clip) {
-                        outcome.problems << "Could not load " << item.result.file.getFileName() << ": " << item.audio.error << " ";
-                        outcome.kept.push_back(item.result.file);
-                        continue;
-                    }
-                    RecordedTake recorded;
-                    recorded.track = item.track; recorded.file = item.result.file; recorded.clip = item.audio.clip;
-                    const timeline::TempoMap tempo{finished.tempoChanges, static_cast<double>(finished.bpm)};
-                    const auto written = std::min<std::uint64_t>(frames, item.result.writtenFrames);
-                    if (passes.size() > 1) {
-                        // A loop recording: every pass with something in it becomes a take; the last full pass plays.
-                        for (const auto& pass : placePasses(tempo, passes, written, finished.sampleRate, latency,
-                                                            finished.punch ? finished.punchIn : 0, finished.punch ? finished.punchOut : -1,
-                                                            finished.loopStart, finished.loopEnd)) {
-                            if (!pass.placement.valid) continue;
-                            if (pass.complete || recorded.passes.empty()) recorded.activePass = recorded.passes.size();
-                            recorded.passes.push_back(pass.placement);
-                        }
-                        outcome.passes = std::max(outcome.passes, static_cast<int>(recorded.passes.size()));
-                        recorded.placement.valid = !recorded.passes.empty();
-                    } else {
-                        recorded.placement = placeTake(tempo, firstTick, written, finished.sampleRate, latency,
-                                                       finished.punch ? finished.punchIn : 0, finished.punch ? finished.punchOut : -1);
-                    }
-                    if (!recorded.placement.valid) { outcome.kept.push_back(item.result.file); continue; }
-                    takes.push_back(std::move(recorded));
-                }
-                if (!takes.empty()) {
-                    outcome.placed = addRecordedTakes(takes);
-                    if (outcome.placed == 0) {
-                        outcome.problems << "The takes could not be placed on the timeline (no free scene, or the song is full). ";
-                        for (const auto& t : takes) outcome.kept.push_back(t.file);
-                    }
-                }
-                if (onSongTakeFinished) onSongTakeFinished(outcome);
-            });
-            return juce::ThreadPoolJob::jobHasFinished;
-        };
-        pool.addJob(std::move(job));
-    }
+    void finishSongTake(bool refused);
     std::uint32_t lastTakeId{};
     library::ClipId copiedCell{};                  // what Copy remembered, for Paste linked
     std::optional<SessionClip> copiedContent;      // and its content, for Paste (kept if the cell changes)
@@ -3322,12 +864,7 @@ private:
     std::uint32_t dropReportedAt{};
     bool dropReported{};
     // D12: stream underruns and failures already reported, per engine track slot.
-    void markStreamProblemsReported() noexcept {
-        for (std::size_t t = 0; t < ToneEngine::sessionTracks; ++t) {
-            reportedUnderruns[t] = engine.sessionStreamUnderruns(t);
-            reportedStreamFailures[t] = engine.sessionStreamFailures(t);
-        }
-    }
+    void markStreamProblemsReported() noexcept;
     std::array<std::uint64_t, ToneEngine::sessionTracks> reportedUnderruns{}, reportedStreamFailures{};
     std::uint32_t streamReportedAt{};
     bool streamReported{};
