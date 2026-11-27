@@ -45,10 +45,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-      # Release: 3 projects at a time, not 4. Compiling one of the tests that include ProjectController.h
-      # takes about 4 GB in Release, and four of them at once ran the 16 GB runner out of memory
-      # (C1002 "compiler is out of heap space").
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DALIEN_HEAVY_TEST_LANES=2
+      # Release: 3 projects at a time, not 4, and ALIEN_HEAVY_TEST_LANES=2 (Configure) lets at most two of
+      # the tests that include ProjectController.h compile at once. Each needs about 4-6 GB in Release, and
+      # three at once ran the 16 GB runner out of memory (C1002 "compiler is out of heap space").
       - name: Build
         run: cmake --build build --config ${{ matrix.config }} --parallel ${{ matrix.config == 'Release' && 3 || 4 }}
       - name: Test
@@ -72,7 +72,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure 32x64 profile
-        run: cmake -S . -B build-32x64 -G "Visual Studio 17 2022" -A x64 -DALIEN_SESSION_TRACKS=32 -DALIEN_SESSION_SCENES=64
+        run: cmake -S . -B build-32x64 -G "Visual Studio 17 2022" -A x64 -DALIEN_SESSION_TRACKS=32 -DALIEN_SESSION_SCENES=64 -DALIEN_HEAVY_TEST_LANES=2
       - name: Build
         run: cmake --build build-32x64 --config Release --parallel 3
       - name: Test
