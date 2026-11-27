@@ -434,7 +434,7 @@ static void unreachableAudioTests() {
 
     // An undo step that falls off the history: once the deleted clip's last step goes, so does its audio.
     auto deleted = install(4, 0);
-    require(c->clearCell(4, 0), "delete the clip"); c->commit("Delete clip", 4, 0);
+    require(alien::command::CommandEngine(*c).execute(alien::command::DeleteClip{4, 0}).changed, "delete the clip");
     require(c->document().clip(4, 0).audio == nullptr, "the clip is deleted");
     require(sweep() == 0 && !deleted.expired(), "audio an undo can bring back was freed");
     for (int i = 0; i <= static_cast<int>(alien::DocumentHistory::limit); ++i) {

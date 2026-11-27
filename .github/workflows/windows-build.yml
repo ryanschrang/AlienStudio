@@ -1,9 +1,17 @@
 name: Windows build
+# Release artifacts (app, plugin check tool, test plugin) for main. Pull requests are built and tested
+# by windows-ci.yml, which also uploads the app; running this on them as well built Release twice.
 on:
   push:
     branches: [main]
-  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'roadmap-status.html'
   workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: windows-2022
@@ -12,7 +20,7 @@ jobs:
       - name: Configure
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
       - name: Build
-        run: cmake --build build --config Release --parallel 2
+        run: cmake --build build --config Release --parallel 4
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
