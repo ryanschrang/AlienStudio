@@ -2202,7 +2202,7 @@ New tests:
 | Launch every supported scene | `TrackCapacityTests` `everyTrackAndSceneLaunches` (the last scene on every track, the whole synchronized-launch mask) | MIDI controllers map scene buttons 1-4 only (`MidiControllerMappings::sceneCount`, by design) |
 | Duplicate/reorder/delete | E1; `ProjectControllerTests` add/delete/move to the limit | Copy/paste across the last cell is covered only by the ordinary clipboard tests |
 | Audio stress | `TrackCapacityTests` (no allocation with every track playing, slots leaving use, device restart); `RackIntegrationTests --capacity-report` | - |
-| Recording | E1 (MIDI in the last cell); D34/D35 Song takes on every track | An audio take on the last track of a full project through the controller (the engine path is timed at 32 in D38) |
+| Recording | E1 (MIDI in the last cell); E2 (an audio take on the last track of a full project, and one with nowhere to go refused); D34/D35 Song takes on every track | - |
 | Export | `MemoryPeakTests` (stems of every track at the limit, freeze at the scene limit refused before rendering) | - |
 | Windows hardware evidence | D31-D38 on the development laptop (see [DEVICE_TIMING.md](DEVICE_TIMING.md)) | An audio interface (ASIO), other buffer sizes, more than one machine; at 480 frames 32 Surge XT instances overran one callback (D38, #460) |
 | UI | `SessionViewTests`, `TimelineViewTests` pass at 32/64 (C3: the grid and the Song view scroll) | Hands-on use of a 32-track grid and mixer on a Windows display |
@@ -2210,3 +2210,27 @@ New tests:
 What E1 does not decide: which profile to release, and whether the laptop evidence is enough. A
 release changes the constants in `SessionCapacity.h`, the CMake default, the docs that state 16 / 32,
 and project portability (a released 32-track project will not open in an older 16-track build).
+
+## Increment E2: audio takes in a full project
+
+E1's audit left one recording case open: an audio take on the last track of a full project through the
+controller. Writing that test found a real gap. A take goes in a Session cell of its track that is empty
+and named by no region or take; when the track has none, a scene is added. With every scene in use, the
+take was recorded to the end and only then failed to place ("no free scene"), its files kept but nothing
+on the song. `ProjectController::startSongTake` now refuses before anything starts when an armed track
+has no free cell and the project cannot add a scene, naming the track and the scene limit. Another armed
+track with room does not let the take through, so no take is ever half-placed. The cell search is one
+helper (`freeTakeScene`) shared by the refusal and by `addRecordedTakes`, so they cannot disagree.
+
+`SongRecordingTests` `fullProjectTests`, at the compiled maximum (32 tracks / 64 scenes in CI's 32/64
+build):
+
+- every track and scene in use: a take on the last track goes in its first free cell beside the clip
+  already there, adds no scene, and is one undo step;
+- the last track's every cell in use with no scene left: refused with the reason, nothing starts, no
+  file is written and the undo history is unchanged; with track 0 armed as well it is still refused, and
+  once the full track is disarmed track 0 records and is placed;
+- every track in use with room for a scene: a full track's take adds a scene, and undo removes both.
+
+Still open from E1's audit: ASIO and other buffer sizes (`AlienDeviceTiming --buffers` already times
+several), a second machine, the 32 Surge XT overrun, and hands-on use of a 32-track grid.

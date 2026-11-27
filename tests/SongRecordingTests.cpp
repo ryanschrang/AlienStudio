@@ -551,6 +551,94 @@ void controllerTests(const juce::File& root) {
     std::cout << "PASS: controller takes\n";
 }
 
+// T1-04 E2: an audio take on the last track of a project with every track (and every scene) in use.
+void fullProjectTests(const juce::File& root) {
+    const auto noCountIn = [](alien::ProjectController& c) {
+        auto settings = c.document().recording;
+        settings.countInBars = 0;
+        alien::command::CommandEngine(c).execute(alien::command::SetRecordSettings{settings}, "recordSettings");
+    };
+    const auto fillTrack = [](alien::ProjectController& c, int track) {
+        alien::PianoRollPattern notes;
+        notes.add(60, 0.0, 1.0);
+        for (int s = 0; s < c.document().sceneCount(); ++s) c.setClipPattern(track, s, notes, false);
+        c.commit("Fill");
+    };
+    const int last = alien::maxSessionTracks - 1;
+    {
+        ControllerRig rig;   // every track and scene: the take goes in the last track's first free cell
+        auto& c = rig.controller;
+        while (c.addTrack()) {}
+        while (c.addScene()) {}
+        require(c.document().trackCount() == alien::maxSessionTracks && c.document().sceneCount() == alien::maxSessionScenes,
+                "fixture: every track and scene");
+        noCountIn(c);
+        alien::PianoRollPattern notes;
+        notes.add(60, 0.0, 1.0);
+        c.setClipPattern(last, 0, notes, false);
+        c.commit("Add notes");
+        rig.render(256);
+        rig.arm(last);
+        require(c.startSongTake(root.getChildFile("full"), rate, 2).started && c.songTakeTracks() == std::vector<int>({last}),
+                "a take starts on the last track of a full project");
+        rig.render(9600);
+        c.stopRecording(); rig.render(512); rig.waitForFinish();
+        require(rig.outcomes.size() == 1 && rig.outcomes.back().placed == 1 && rig.outcomes.back().problems.isEmpty(), "the take is placed");
+        const alien::timeline::Region* region = nullptr;
+        for (const auto& r : c.timeline().regions) if (!r.isPattern()) region = &r;
+        require(region != nullptr && region->row == last && region->source == 1, "on the last track, in its first free cell");
+        require(c.document().clip(last, 1).audio != nullptr && c.document().clip(last, 0).audio == nullptr
+                && c.document().sceneCount() == alien::maxSessionScenes, "beside the clip already there, with no scene added");
+        require(c.undoLabel() == "Record take" && c.undo() && c.document().clip(last, 1).audio == nullptr && c.redo()
+                && c.document().clip(last, 1).audio != nullptr, "the take is one undo step");
+    }
+    {
+        ControllerRig rig;   // the last track's every cell in use and no scene left: refused before recording
+        auto& c = rig.controller;
+        while (c.addTrack()) {}
+        while (c.addScene()) {}
+        noCountIn(c);
+        fillTrack(c, last);
+        rig.render(256);
+        rig.arm(last);
+        const auto folder = root.getChildFile("no-room");
+        const auto label = c.undoLabel();
+        const auto start = c.startSongTake(folder, rate, 2);
+        require(!start.started && start.reason.contains("no free clip slot") && start.reason.contains(juce::String(alien::maxSessionScenes)),
+                "a take with nowhere to go is refused with the reason");
+        rig.render(4800);
+        require(!c.isRecording() && !rig.engine.recording.active() && !rig.engine.playing.load() && rig.outcomes.empty()
+                && c.undoLabel() == label, "and nothing starts or changes");
+        require(!folder.exists() || folder.findChildFiles(juce::File::findFiles, false).isEmpty(), "no file is written");
+        rig.arm(0);
+        require(!c.startSongTake(folder, rate, 2).started, "another armed track with room does not let the full one through");
+        require(c.setTrackArmed(last, false), "disarm the full track");
+        c.commit("Disarm");
+        require(c.startSongTake(folder, rate, 2).started && c.songTakeTracks() == std::vector<int>({0}), "then the other track records");
+        rig.render(4800);
+        c.stopRecording(); rig.render(512); rig.waitForFinish();
+        require(rig.outcomes.size() == 1 && rig.outcomes.back().placed == 1, "and its take is placed");
+    }
+    {
+        ControllerRig rig;   // every track, room for a scene: a full track's take adds one, as before
+        auto& c = rig.controller;
+        while (c.addTrack()) {}
+        noCountIn(c);
+        fillTrack(c, last);
+        const int scenes = c.document().sceneCount();
+        require(scenes < alien::maxSessionScenes, "fixture: room for a scene");
+        rig.render(256);
+        rig.arm(last);
+        require(c.startSongTake(root.getChildFile("add-scene"), rate, 2).started, "a full track records while a scene can be added");
+        rig.render(4800);
+        c.stopRecording(); rig.render(512); rig.waitForFinish();
+        require(rig.outcomes.size() == 1 && rig.outcomes.back().placed == 1 && c.document().sceneCount() == scenes + 1
+                && c.document().clip(last, scenes).audio != nullptr, "its take goes in a new scene");
+        require(c.undo() && c.document().sceneCount() == scenes, "undo removes the take and the scene together");
+    }
+    std::cout << "PASS: takes in a full project\n";
+}
+
 void settingsTests() {
     namespace rm = alien::recordmenu;
     alien::RecordSettings s;
@@ -578,6 +666,7 @@ int main() {
     captureTests();
     refusalTests();
     controllerTests(root);
+    fullProjectTests(root);
     root.deleteRecursively();
     std::cout << "Song recording tests passed\n";
     return 0;
