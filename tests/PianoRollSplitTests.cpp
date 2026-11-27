@@ -12,6 +12,7 @@ int main() {
     alien::PianoRollPattern pattern;
     const auto a = pattern.add(60, 1, 4, .6f, .7f), b = pattern.add(67, 2, 4, .8f, .9f);
     const auto other = pattern.add(72, 0, 8);
+    pattern.find(a)->velocity=.001f; pattern.find(b)->velocity=.005f;
     const std::array ids{a, b};
     editor.setPattern(pattern);
     editor.setSelection(ids);
@@ -20,6 +21,12 @@ int main() {
     editor.onEditCommitted = [&] { ++commits; };
     editor.splitSelectedNotes();
     const auto split = editor.getPattern();
+    for (std::size_t i=0;i<split.count;++i) {
+        const auto& note=split.notes[i];
+        const auto* original=pattern.find(note.pitch==60?a:note.pitch==67?b:other);
+        require(note.velocity==original->velocity && note.probability==original->probability,
+            "editor split preserves exact low velocity and probability on both fragments");
+    }
     require(commits == 1 && editor.canUndo() && split.count == 5 && editor.getSelectedIds().size() == 4
         && split.find(a)->lengthSteps == 1.5 && split.find(b)->lengthSteps == .5
         && split.find(other)->lengthSteps == 8 && editor.getInsertionStep() == 2.5,

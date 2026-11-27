@@ -535,6 +535,7 @@ static void trackSidechainViewTests(const juce::File& preview) {
         && run(cmd::InsertDevice{alien::RackStage::track,0,1,eq}).changed,"graph FX fixture");
     c.markAsNewBaseline(); captures=0; rebuilds=0;
     alien::TrackMixerPanel panel(c,engine->tracks,engine->returns,engine->masterControls,engine->buses); panel.setSize(960,650);
+    panel.addToDesktop(0); panel.setVisible(true);
     auto& graph = panel.trackSidechainView();
     graph.hasInput = [&](alien::RackStage stage,int track,int fx) { return host.hasSidechainInput(stage == alien::RackStage::master ? alien::PluginRuntime::masterIndex : stage == alien::RackStage::bus ? alien::PluginRuntime::busIndex(track) : stage == alien::RackStage::returnTrack ? alien::PluginRuntime::returnIndex(track) : track,fx); };
     graph.onKeyRequested = [&](alien::RackStage stage,int track,int fx,alien::KeySource from,int source) {
@@ -542,17 +543,35 @@ static void trackSidechainViewTests(const juce::File& preview) {
         panel.refreshSettings(); return result.ok && result.changed;
     };
     panel.showSidechains(true);
+    const auto keyDescription=[&](const juce::String& prefix) {
+        for (auto* child:graph.getChildren()) if (auto* button=dynamic_cast<juce::TextButton*>(child); button && button->getName().startsWith(prefix)) {
+            const auto* handler=button->getAccessibilityHandler();
+            require(handler && handler->getDescription()==button->getDescription() && !handler->getHelp().isEmpty()
+                && button->getTooltip().contains(button->getDescription()),"native accessibility and tooltip expose the selected key");
+            return button->getDescription();
+        }
+        require(false,"effect control exists for key description"); return juce::String{};
+    };
+    require(keyDescription("Track 1 / FX 1")=="Key: Off.","unkeyed effect describes Off");
+    require(keyDescription("Track 1 / FX 2").contains("Sidechain input unavailable"),"unsupported runtime input is explained");
     require(graph.isVisible() && !panel.outputRoutingView().isVisible(),"Mixer sidechains mode replaces output graph");
     const auto request=graph.requestFor(0,0);
     engine->plugins->racks[0].effects[0].processor->getParameters()[0]->setValueNotifyingHost(.78f);
     require(graph.choose(request,1) && captures==1 && rebuilds==1 && c.undoLabel()=="Set sidechain"
         && engine->plugins->racks[0].effects[0].keyIndex==1,"graph uses the command capture/rebuild path and keys the actual effect");
     require(std::abs(engine->plugins->racks[0].effects[0].processor->getParameters()[0]->getValue()-.78f)<.01f,"key change preserves live plugin settings");
+    require(keyDescription("Track 1 / FX 1")=="Key: Track 2 (before FX).","description follows selected pre-FX key");
+    const auto capability=graph.hasInput;
+    graph.hasInput=[](alien::RackStage,int,int) { return false; }; graph.refresh();
+    require(keyDescription("Track 1 / FX 1").contains("Track 2 (before FX)") && keyDescription("Track 1 / FX 1").contains("input unavailable"),"unavailable runtime preserves saved key description");
+    graph.hasInput=capability; graph.refresh();
     require(!graph.choose(request,1) && captures==1 && rebuilds==1,"same key is a no-op without plugin callbacks");
     require(c.undo(),"undo graph key"); rebuild(); panel.refreshSettings();
+    require(keyDescription("Track 1 / FX 1")=="Key: Off.","Undo refreshes accessible key description");
     require(engine->plugins->racks[0].effects[0].keyIndex==-1
         && std::abs(engine->plugins->racks[0].effects[0].processor->getParameters()[0]->getValue()-.78f)<.01f,"Undo removes the key but keeps the captured live setting");
     require(c.redo(),"redo graph key"); rebuild(); panel.refreshSettings();
+    require(keyDescription("Track 1 / FX 1").contains("Track 2 (before FX)"),"Redo refreshes accessible key description");
     require(run(cmd::InsertDevice{alien::RackStage::master,0,0,compressorState()}).changed
         && run(cmd::InsertDevice{alien::RackStage::master,0,1,alien::PluginState(alien::stock::describe(alien::stock::catalog[0]).createXml()->toString(),{})}).changed,"master graph FX fixture");
     panel.refreshSettings();
@@ -587,6 +606,7 @@ static void trackSidechainViewTests(const juce::File& preview) {
         if(child->getName().startsWith("Master / FX 2") && !child->getName().contains("key set in Plugins")) postKeyVisible=true;
     require(postKeyVisible && engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyFrom==alien::KeySource::trackPostFader,
         "refresh keeps an existing post-fader key represented in the graph");
+    require(keyDescription("Master / FX 2").contains("(after fader)"),"description distinguishes post-fader keys");
     require(graph.choose(masterRequest,1) && engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyFrom==alien::KeySource::track,
         "choosing the same track explicitly replaces its post-fader key with a pre-FX key");
     require(graph.choose(masterRequest,-1) && engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyIndex==-1
@@ -684,6 +704,7 @@ static void trackSidechainViewTests(const juce::File& preview) {
         require(graph.choose(target,-1) && engine->plugins->racks[runtime].effects[1].keyIndex==-1
             && graph.choose(target,0,alien::KeySource::bus),"Off clears a bus key and fresh choice restores it");
     }
+    require(keyDescription("Master / FX 2")=="Key: Bus: Drum group.","description names bus source");
     const auto masterReturn=graph.requestFor(0,1,alien::RackStage::master);
     const int returnSourceCaptures=captures;
     require(!graph.choose(request,0,alien::KeySource::returnTrack) && !graph.choose(busRequest,0,alien::KeySource::returnTrack)
@@ -701,6 +722,7 @@ static void trackSidechainViewTests(const juce::File& preview) {
         && graph.choose(masterReturn,0,alien::KeySource::returnTrack),"Off clears return source and fresh choice restores it");
     require(commands.execute(cmd::RenameReturn{0,"Space key"}).changed,"rename key return"); panel.refreshSettings();
     require(graph.choose(masterReturn,1,alien::KeySource::returnTrack) && graph.choose(masterReturn,0,alien::KeySource::returnTrack),"renamed return and return without FX remain valid sources");
+    require(keyDescription("Master / FX 2")=="Key: Return: Space key.","return source rename refreshes accessible description");
     if (preview != juce::File{}) {
         panel.setSize(960,800);
         juce::FileOutputStream out(preview);
@@ -760,6 +782,7 @@ static void trackSidechainViewTests(const juce::File& preview) {
     require(!graph.choose(staleReturnSource,0,alien::KeySource::returnTrack),"reused return source refuses old key menu by persistent identity");
     c.newProject(); rebuild(); panel.rebuild(); require(!graph.choose(fresh,-1) && !graph.choose(freshMaster,-1) && !graph.choose(freshBus,-1) && !graph.choose(freshReturn,-1),"replacement project refuses all stale FX choices");
     panel.showRouting(false); require(!graph.isVisible(),"Strips hides the sidechain view");
+    panel.removeFromDesktop();
 }
 
 int main(int argc, char** argv) {
