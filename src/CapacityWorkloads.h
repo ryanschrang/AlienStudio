@@ -13,8 +13,9 @@ namespace alien::capacity {
 
 // kind: 0 transport only, 1 Session rack occurrences, 3 Song rack lanes, 4 Session MIDI tracks,
 // 5 MIDI with sends to the four returns, 6 Session audio clips, 7 MIDI through the stock EQ and
-// compressor, 8 Session drum tracks, 9 Session audio clips streamed from disk (T1-04 D32).
-// `occurrences` is how many tracks play (or rack occurrences).
+// compressor, 8 Session drum tracks, 9 Session audio clips streamed from disk (T1-04 D32), 10 tracks
+// monitoring a stereo input (T1-04 D33). `occurrences` is how many tracks play (or rack occurrences,
+// or tracks monitoring).
 // deviceOnly: the offline report leaves the row out. It plays blocks back to back, far faster than
 // real time, which no disk stream keeps up with; on a device the callbacks come at playback's pace.
 struct Case { const char* name; int kind, tracks, occurrences; bool deviceOnly = false; };
@@ -27,7 +28,9 @@ inline std::vector<Case> cases(int full) {
         {"16 Session audio clips", 6, 16, 16}, {"16 Session MIDI tracks, stock EQ + compressor", 7, 16, 16},
         {"16 Session drum tracks", 8, 16, 16},
         // T1-04 D32: every track plays its own decoder of one WAV file through the engine's disk-stream worker.
-        {"16 Session audio clips, streamed from disk", 9, 16, 16, true}};
+        {"16 Session audio clips, streamed from disk", 9, 16, 16, true},
+        // T1-04 D33: every track plays the device's first two inputs through its own strip (monitor "always").
+        {"16 tracks monitoring a stereo input", 10, 16, 16}};
     if (full > 16) {
         all.push_back({"Transport, no clips", 0, full, 0});
         all.push_back({"All Session rack occurrences", 1, full, full});
@@ -93,6 +96,8 @@ struct Rig {
 
 inline bool playsMidi(const Case& c) { return c.kind == 4 || c.kind == 5 || c.kind == 7 || c.kind == 8; }
 inline bool playsAudio(const Case& c) { return c.kind == 6 || c.kind == 9; }
+// The row needs input audio: the report hands the callback a test signal, the device tool opens an input.
+inline bool monitorsInput(const Case& c) { return c.kind == 10; }
 
 // Sets the workload up on a prepared rig, short of starting the transport. Returns what failed, or nullptr.
 inline const char* configure(Rig& rig, const Case& c, const Media& media) {
@@ -119,6 +124,12 @@ inline const char* configure(Rig& rig, const Case& c, const Media& media) {
         engine.tracks[static_cast<std::size_t>(t)].instrument.store(1);
         for (int pad = 0; pad < drumPadCount; ++pad)
             engine.drumKits[static_cast<std::size_t>(t)].samples[static_cast<std::size_t>(pad)].store(&media.hit);
+    }
+    // D33: monitoring "always", so the input plays whether the track is armed or not; inputs 1 and 2.
+    if (monitorsInput(c)) for (int t = 0; t < c.occurrences; ++t) {
+        auto& track = engine.tracks[static_cast<std::size_t>(t)];
+        track.input.store(0); track.stereoInput.store(true);
+        track.monitor.store(static_cast<int>(InputMonitor::always));
     }
     if (c.kind == 9) {
         if (!media.streamed || !media.streamed->streamed()) return "capacity streamed clip";
@@ -181,6 +192,10 @@ inline const char* stillPlaying(const Rig& rig, const Case& c) {
     if (playsMidi(c) || playsAudio(c))
         for (int t = 0; t < c.occurrences; ++t)
             if (engine.activePianoRollClip[static_cast<std::size_t>(t)].load() != 0) return "capacity Session clips remain active";
+    // D33: each monitoring track metered input, so the input reached every strip.
+    if (monitorsInput(c))
+        for (int t = 0; t < c.occurrences; ++t)
+            if (!(engine.tracks[static_cast<std::size_t>(t)].inputPeak.load() > 0.0f)) return "capacity input reaches every monitoring track";
     if (engine.plugins->faultCount.load() != 0) return "capacity plugins run without faults";
     return nullptr;
 }
