@@ -2,6 +2,7 @@
 // offline. Every track slot and scene plays, the callback follows the tracks in use, a slot that leaves
 // use (a deleted track, transport stop, device restart) leaves no note sounding, and steady playback at
 // the limits allocates nothing.
+#include "CommandEngine.h"
 #include "ProjectController.h"
 #include "ViewModes.h"
 #include <algorithm>
@@ -194,7 +195,79 @@ static void deviceRestartAtTheLimit() {
         require(peaks[static_cast<std::size_t>(t)] == 0.0f, "a slot that left use during a restart brings nothing back");
 }
 
+// T1-04 E1: structure edits at the compiled limits, through the command route the UI uses. A full grid
+// refuses a new track, a new scene and a scene duplicate with a reason, changing nothing (not even the
+// undo history); a clip moves into and out of the last cell; the last track and scene reorder; deleting the last track and undoing it puts
+// its clip back and the engine follows; save and reopen at the limits keeps the last cell.
+static void structureEditsAtTheLimits() {
+    Engine rig;
+    alien::ProjectController c(*rig.engine);
+    alien::command::CommandEngine commands(c);
+    const auto& d = c.document();
+    const auto saved = [&] { return alien::serializeSessionProject(alien::toProjectData(d)); };
+    while (d.trackCount() < tracks) require(commands.execute(alien::command::CreateTrack{}).ok, "tracks are created up to the limit");
+    while (d.sceneCount() < scenes) require(commands.execute(alien::command::CreateScene{}).ok, "scenes are created up to the limit");
+    require(rig.engine->activeTracks.load() == tracks, "the engine follows every created track");
+
+    const int lastTrack = tracks - 1, lastScene = scenes - 1;
+    c.setClipPattern(lastTrack, lastScene, heldChord(60), false);
+    c.commit("Edit notes", lastTrack, lastScene);
+    const auto full = saved();
+    const auto label = c.undoLabel();
+    for (const alien::command::Command& refused : {alien::command::Command{alien::command::CreateTrack{}},
+                                                   alien::command::Command{alien::command::CreateScene{}},
+                                                   alien::command::Command{alien::command::DuplicateScene{lastScene}},
+                                                   alien::command::Command{alien::command::DuplicateScene{0}}}) {
+        const auto result = commands.execute(refused);
+        require(!result.ok && result.error.isNotEmpty(), "a full grid refuses a new track or scene with a reason");
+        require(saved() == full && c.undoLabel() == label && rig.engine->activeTracks.load() == tracks,
+                "a refused edit at the limits changes nothing, not even the undo history");
+    }
+
+    // The last cell is an ordinary cell: a clip moves out of it and back, and undo follows.
+    require(commands.execute(alien::command::MoveClip{lastTrack, lastScene, 0, lastScene - 1}).ok
+            && d.clip(0, lastScene - 1).notes().count == 3 && d.clip(lastTrack, lastScene).notes().count == 0,
+            "a clip moves out of the last cell");
+    require(c.undo() && saved() == full, "undo puts it back in the last cell");
+    require(c.redo() && d.clip(0, lastScene - 1).notes().count == 3, "redo moves it again");
+    require(c.undo() && saved() == full, "fixture: the clip is back in the last cell");
+
+    // The last track and the last scene move to the front, and back with undo. The first track and scene are
+    // selected, so the selection follows them to second place and, on undo, back to the front.
+    require(commands.execute(alien::command::MoveTrack{lastTrack, 0}).ok && d.clip(0, lastScene).notes().count == 3
+            && d.clip(lastTrack, lastScene).notes().count == 0, "the last track moves to the front with its clip");
+    require(c.undo() && saved() == full && d.selectedTrack == 0, "undo moves it back to the end, and the same track stays selected");
+    require(commands.execute(alien::command::MoveScene{lastScene, 0}).ok && d.clip(lastTrack, 0).notes().count == 3
+            && d.clip(lastTrack, lastScene).notes().count == 0, "the last scene moves to the front with its clip");
+    require(c.undo() && saved() == full && d.selectedScene == 0, "undo moves it back to the end, and the same scene stays selected");
+
+    // Deleting the last track and undoing it: the clip comes back and the engine uses the slot again.
+    require(commands.execute(alien::command::DeleteTrack{lastTrack}).ok && d.trackCount() == tracks - 1
+            && rig.engine->activeTracks.load() == tracks - 1, "the last track is deleted and its slot leaves use");
+    require(c.undo() && saved() == full && rig.engine->activeTracks.load() == tracks, "undo brings the last track and its clip back");
+    require(c.redo() && d.trackCount() == tracks - 1 && rig.engine->activeTracks.load() == tracks - 1, "redo deletes it again");
+    require(c.undo() && saved() == full, "fixture: the full grid again");
+
+    // The restored last track plays its clip from the last scene.
+    rig.engine->patternMode.store(alien::sessionMode);
+    rig.engine->playing.store(true);
+    rig.render(4);
+    c.launchClip(lastTrack, lastScene);
+    float peak = 0.0f;
+    for (int b = 0; b < 2 * blocksPerBar; ++b) { rig.render(1); peak = std::max(peak, rig.engine->tracks[static_cast<std::size_t>(lastTrack)].peak.load()); }
+    require(peak > 0.0f && rig.engine->activePianoRollClip[static_cast<std::size_t>(lastTrack)].load() == lastScene,
+            "the restored last track plays the last scene's clip");
+    rig.engine->playing.store(false);
+    rig.render(4);
+
+    // Save and reopen at the limits.
+    alien::SessionProjectData reopened; juce::String error;
+    require(alien::parseSessionProject(full, reopened, error) && reopened.trackCount() == tracks && reopened.sceneCount() == scenes
+            && alien::serializeSessionProject(reopened) == full, "a full grid saves and reopens unchanged");
+}
+
 int main() {
+    structureEditsAtTheLimits();
     everyTrackAndSceneLaunches();
     slotsLeavingUseFallSilent();
     deviceRestartAtTheLimit();
