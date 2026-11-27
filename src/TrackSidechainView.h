@@ -95,7 +95,12 @@ public:
             if (description.name.isNotEmpty()) label += ": " + description.name;
             auto button = std::make_unique<juce::TextButton>(label);
             button->setName(label); button->setEnabled(effect.capable);
-            button->setTooltip(effect.capable ? "Choose a key or Off. Choices follow the processing order; master FX also accept returns." : "This loaded effect has no sidechain input (or is unavailable)");
+            const auto currentKey = keyDescription(effect);
+            const juce::String help = effect.capable ? "Choose a key or Off. Choices follow the processing order; master FX also accept returns."
+                                                    : "This loaded effect has no sidechain input (or is unavailable).";
+            button->setDescription(currentKey);
+            button->setHelpText(help);
+            button->setTooltip(currentKey + " " + help);
             button->onClick = [this, request=requestFor(effect.track,effect.fx,effect.stage), anchor=button.get()] { showKeys(request,anchor); };
             addAndMakeVisible(*button); buttons.push_back(std::move(button));
         }
@@ -151,6 +156,18 @@ private:
         return stage == RackStage::bus ? TrackRole::bus : stage == RackStage::returnTrack ? TrackRole::returnTrack : TrackRole::session;
     }
     struct Effect { int track{},fx{}; std::uint64_t instance{}; int source{-1}; bool capable{}; juce::String description; RackStage stage{RackStage::track}; KeySource from{KeySource::track}; juce::String ownerName; TrackId owner; bool operator==(const Effect&) const = default; };
+    juce::String keyDescription(const Effect& effect) const {
+        juce::String key = "Off";
+        if (effect.source >= 0) {
+            const auto index = static_cast<std::size_t>(effect.source);
+            key = "unavailable source";
+            if ((effect.from == KeySource::track || effect.from == KeySource::trackPostFader) && index < trackNames.size())
+                key = trackNames[index] + (effect.from == KeySource::track ? " (before FX)" : " (after fader)");
+            else if (effect.from == KeySource::bus && index < busIds.size() && busIds[index]) key = "Bus: " + busNames[index];
+            else if (effect.from == KeySource::returnTrack && index < returnIds.size() && returnIds[index]) key = "Return: " + returnNames[index];
+        }
+        return "Key: " + key + "." + (effect.capable ? juce::String{} : " Sidechain input unavailable.");
+    }
     std::pair<int,int> resolve(const Request& request) const {
         const auto& d = controller.document();
         if (request.scope != d.identityScope || request.instance == 0) return {-1,-1};

@@ -2134,3 +2134,34 @@ allocation count covers the engine's own allocations only: a plugin's DLL alloca
 runtime, which the count does not see. Not covered: other patches and denser notes, instruments
 reporting latency, an audio interface, the 32/64 build, and whether each instance sounded (the output
 was muted and not checked per track).
+
+## Increment D38: the 32/64 candidate timed on a device
+
+Gate 2 asks for hardware timing before a limit is raised, and the only larger profile is the 32-track,
+64-scene candidate (C3). Its device rows at 32 tracks covered only idle tracks, rack occurrences, MIDI,
+audio clips and the stock EQ and compressor: sends, drums, streaming, inputs, recording and both VST3
+rows existed at 16 tracks only.
+
+- **Every per-track row has a full-size twin.** In a build with more than 16 tracks,
+  `alien::capacity::cases()` adds sends to the four returns, drum tracks, streamed clips, input
+  monitoring, recording to a Song take, recording to disk, the VST3 effect and the VST3 instrument at
+  the build's track count, device-only exactly when the 16-track row is. The 16-track rows keep their
+  numbers, so `--workloads` lists stay valid. The offline report and the pairing table (16 tracks, then
+  all) pick the new rows up by kind.
+
+Checks (`RackIntegrationTests`): every 16-track row that gives each track the same work has a 32-track
+twin with the same device-only setting, and the 16-track rows keep their order. In a larger build (CI's
+32/64 build), the VST3 effect and instrument rows run with stand-ins at the full track count: one
+prepared instance per track, no fault, every instrument holding the chord, none holding a note after
+the transport stops. Both profiles pass locally.
+
+On the development laptop, 32/64 build (Windows Audio, 48 kHz, 480 frames, muted, 4 s per row), every
+row without inputs passed with no fault and no late callback; 32 tracks cost 1.7 to 2.0 times what 16
+cost in the same build, as D24 found offline. One callback with 32 Surge XT instances took 10.45 ms,
+over the 10 ms period: at this buffer size the laptop cannot be relied on for 32 instances of a heavy
+synth. 32 Vital instances: p95 6.6 ms (66 %), none over budget
+([DEVICE_TIMING.md](DEVICE_TIMING.md#the-3264-candidate-on-a-device-t1-04-d38)). The user's run of the
+input rows (`--inputs`, the laptop's microphone): 32 tracks monitoring p95 424 us, recording to a Song
+take 425 us, recording to 32 files on disk 493 us (4.2-4.9 % of the period), with no fault, no late or
+over-budget callback, and every disk take writing every frame it recorded. Not covered: other buffer
+sizes, an audio interface. The supported limits stay 16 tracks / 32 scenes.

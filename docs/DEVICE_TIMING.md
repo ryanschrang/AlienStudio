@@ -42,8 +42,9 @@ build-rel/AlienDeviceTiming_artefacts/Release/AlienDeviceTiming.exe --type "Wind
 **The output is muted by default.** The engine renders everything, and then the device is given
 silence, so 16 tracks of test chords do not come out of the speakers. With `--audible` they do.
 
-The default run times all 11 workloads at the device's current buffer size: about 70 seconds. Each
-extra buffer size adds as much again. Only one workload plays at a time.
+The default run times every workload at the device's current buffer size, about 6 seconds each
+(17 in the 16/32 build, 31 in a 32/64 build, D38). Each extra buffer size adds as much again. Only one
+workload plays at a time.
 
 The exit code is 0 when every row was timed, 1 when the device could not be opened or a row failed
 (no callbacks arrived, or the workload stopped playing early), and 2 for unknown options.
@@ -301,3 +302,60 @@ instrument with the patch it loads with:
 about 62 us (Surge XT) and 168 us (Vital) an instance per 480-frame block, with three notes held. Surge
 XT's longest callback (5.6 ms, still inside the 10 ms period) was a single spike. Not shown: other
 patches, more notes, instruments reporting latency, an audio interface, the 32/64 build.
+
+## The 32/64 candidate on a device (T1-04 D38)
+
+A build with more than 16 tracks lists every workload twice: the 16-track rows (numbers unchanged),
+then each row that puts work on every track again at the build's track count. In the 32/64 build those
+are workloads 17-30; 26-28 (monitoring and recording) need `--inputs`.
+
+```powershell
+cmake -S . -B build-32x64 -DALIEN_SESSION_TRACKS=32 -DALIEN_SESSION_SCENES=64
+cmake --build build-32x64 --config Release --target AlienDeviceTiming
+build-32x64/AlienDeviceTiming_artefacts/Release/AlienDeviceTiming.exe --plugin FILE.vst3 --instrument SYNTH.vst3 > device-timing-32.md
+```
+
+First results, development laptop, 32/64 build (Windows Audio, 48 kHz, 480 frames, muted, 4 s per row),
+with the repository's test plugin as the effect and Surge XT and Vital (default patches) as the
+instrument:
+
+| Workload | 16 tracks p50 us | 16 tracks p95 us | 32 tracks p50 us | 32 tracks p95 us | 32 tracks p95 / budget % | Ratio (p50) | Over budget (32) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Transport, no clips | 97.8 | 127.1 | 164.7 | 204.6 | 2.0 | 1.68 | 0 |
+| Session MIDI tracks | 291.1 | 435.5 | 532.5 | 797.9 | 8.0 | 1.83 | 0 |
+| MIDI, sends to 4 returns | 351.5 | 498.0 | 638.9 | 911.1 | 9.1 | 1.82 | 0 |
+| Session audio clips | 194.5 | 238.7 | 340.4 | 402.2 | 4.0 | 1.75 | 0 |
+| MIDI, stock EQ + compressor | 512.3 | 648.3 | 965.7 | 1239.2 | 12.4 | 1.89 | 0 |
+| Session drum tracks | 173.8 | 229.9 | 317.1 | 399.6 | 4.0 | 1.82 | 0 |
+| Audio clips streamed from disk | 219.9 | 277.6 | 427.6 | 501.6 | 5.0 | 1.94 | 0 |
+| MIDI through a VST3 effect (test plugin) | 389.4 | 520.3 | 701.6 | 989.7 | 9.9 | 1.80 | 0 |
+| MIDI playing Surge XT | 1259.9 | 1519.0 | 2445.3 | 2857.2 | 28.6 | 1.94 | **1** |
+| MIDI playing Vital | 2868.6 | 3441.2 | 5859.8 | 6610.3 | 66.1 | 2.04 | 0 |
+
+Every row played without a fault or a late callback, and no stream ran dry. Also at 32 tracks: every
+rack occurrence p50 518 / p95 617 us, and one MIDI track playing among 32 p50 180 / p95 218 us.
+
+- **Cost grows about linearly with tracks.** 32 tracks cost 1.7 to 2.0 times 16 in the same build;
+  the fixed part of a block (the master, returns, the device) keeps idle rows under 2.
+- **One over-budget callback**: 32 Surge XT instances, max 10,455 us against a 10,000 us period. Its
+  p99 was 3.4 ms, so this was a single spike (Surge XT also spiked to 5.2 ms at 16 tracks), but on this
+  laptop at 480 frames 32 instances of it can drop out.
+- **Vital at 32 tracks** used two thirds of the period at p95; its longest gap between callbacks was
+  13 ms (1.3 periods, under the 1.5-period "late" mark).
+- The 16-track rows of the 32/64 build cost about what the 16/32 build's do (D36, D37 above), as C1 found
+  offline.
+
+The input rows at 32 tracks, run by the user with `--inputs` (the laptop's microphone array, two
+channels, 5 s per row); the 16-track figures are the 16/32 build's from D33-D35 above, a different run:
+
+| Workload | 16 tracks p50 us | 32 tracks p50 us | 32 tracks p95 us | 32 tracks max us | 32 tracks p95 / budget % | Ratio (p50) | Over budget | Late |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Monitoring a stereo input | 193 | 328.8 | 423.5 | 542.9 | 4.2 | 1.70 | 0 | 0 |
+| Recording to a Song take | 198 | 349.6 | 424.5 | 626.5 | 4.2 | 1.77 | 0 | 0 |
+| Recording to disk (32 files) | 190 | 347.2 | 493.1 | 736.2 | 4.9 | 1.83 | 0 | 0 |
+
+No take overran its queue, every disk take wrote every frame it recorded, and the driver counted no
+xruns.
+
+Not shown: other buffer sizes, an audio interface, real effects that do work, allocations inside
+plugins (see D37).
