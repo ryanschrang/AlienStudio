@@ -2002,5 +2002,10 @@ Offline, two report runs on the development laptop (Release, 48 kHz), p50 in us:
 
 Both runs rendered identical output energy for the monitoring row. Monitoring 16 inputs costs less
 than playing 16 in-memory clips and about half again as much as 16 idle tracks; p95 varied by up to
-1.7x between the runs, so only p50 is quoted. Not covered: a device with a real input (see
-[DEVICE_TIMING.md](DEVICE_TIMING.md#input-monitoring-t1-04-d33)), recording a take, the 32/64 build.
+1.7x between the runs, so only p50 is quoted.
+
+On a device (the development laptop, Windows Audio, 48 kHz, 480 frames, its built-in microphone array
+as the input, [DEVICE_TIMING.md](DEVICE_TIMING.md#input-monitoring-t1-04-d33)): p50 193 us and p95
+259 us (2.6 % of the buffer period) against 115 and 164 us for 16 idle tracks, with no late or
+over-budget callback, no xrun and no callback allocation; every track metered input. Not covered: an
+audio interface, recording a take, the 32/64 build.

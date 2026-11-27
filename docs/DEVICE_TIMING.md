@@ -163,5 +163,16 @@ effects and fader as the app does.
 - **The offline report times it too**, with a 330 Hz test signal on both inputs, since nothing about it
   depends on real time.
 
-Not measured on a device yet: the development laptop's only input is its built-in microphone, and this
-increment was not run against it.
+First result, on the development laptop: Windows Audio, 48 kHz, 480 frames, output muted, input the
+built-in microphone array (2 channels), 4 s per row.
+
+| Workload | p50 us | p95 us | p99 us | max us | p95 / budget % | Over budget | Late | Xruns | Allocations |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Transport, no clips, 16 tracks | 115.0 | 163.6 | 196.9 | 222.9 | 1.6 | 0 | 0 | 0 | 0 |
+| 16 tracks monitoring a stereo input | 193.3 | 259.1 | 350.4 | 407.5 | 2.6 | 0 | 0 | 0 | 0 |
+
+Every track metered input (the row passed), no callback was late or over budget, and the audio thread
+allocated nothing. Monitoring 16 inputs cost about 1.7 times an idle 16-track callback at p50, close to
+the offline ratio (about 1.5). With an input open, Windows Audio reported an xrun count (0) where the
+output-only runs above report none. One run on one laptop with its built-in microphone; not an audio
+interface, and not representative hardware.
