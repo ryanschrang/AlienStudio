@@ -2074,4 +2074,9 @@ are writing, the row passes; the take holds the blocks it was given; every take 
 recorded written; 16 WAV files are left and nothing partial; no recovery journal is left; the folder
 is removed. D32's check now allows exactly the streamed and disk-recording rows to be device-only.
 
-Not covered: a device (needs `--inputs`), a slow or nearly full drive, the 32/64 build.
+On a device (the development laptop, Windows Audio, 48 kHz, 480 frames, its built-in microphone array,
+internal SSD, [DEVICE_TIMING.md](DEVICE_TIMING.md#recording-a-take-to-disk-t1-04-d35)): p50 190 us and p95
+224 us (2.2 % of the period), against 200 and 241 us recording into queues alone in the same run, so
+writing 16 files cost the callback nothing measurable; no writer fell behind, every take finished
+complete, no late or over-budget callback, no xrun, no callback allocation. Not covered: a slow or
+nearly full drive, an audio interface, the 32/64 build.
