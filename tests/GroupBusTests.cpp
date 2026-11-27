@@ -106,6 +106,24 @@ static void busLevels() {
     require(approx(rig.settled().first, 0.3f), "and so does a track whose bus is deleted");
 }
 
+// T1-04 D27: a bus with nothing in it whose fader has stopped gliding is skipped. Its meter still goes dark,
+// and a fader moved while it is silent still glides to its new level before the bus is heard again.
+static void silentBusSkip() {
+    Rig rig;
+    rig.route(0, 0);
+    require(approx(rig.settled().first, 0.3f) && rig.bus(0).peak.load() > 0.19f, "the bus carries its track");
+    rig.track(0).output.store(-1);
+    require(approx(rig.settled().first, 0.3f) && rig.bus(0).peak.load() == 0.0f, "an emptied bus meters silence");
+    rig.bus(0).gain.store(0.5f);
+    rig.render(12);
+    rig.track(0).output.store(0);
+    rig.render(1);
+    require(approx(rig.left[0], 0.2f) && approx(rig.left[1023], 0.2f), "a fader moved while the bus was silent has finished gliding");
+    rig.bus(0).gain.store(1.0f);
+    rig.render(1);
+    require(rig.left[0] < 0.21f && rig.left[1023] > rig.left[0], "a fader moved while the bus plays glides from where it was");
+}
+
 static void soloAcrossBuses() {
     Rig rig;
     rig.route(0, 0);
@@ -532,6 +550,7 @@ static void outputRoutingViewChecks(const juce::File& preview) {
 int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI juce;
     busLevels();
+    silentBusSkip();
     soloAcrossBuses();
     busDelayCompensation();
     realTimeSafety();

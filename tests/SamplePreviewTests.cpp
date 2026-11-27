@@ -5,8 +5,14 @@
 // Deterministically model a seek while the GUI request grows a slot, before it
 // can publish. No test hooks or sleeps are needed in the preview implementation.
 static alien::SamplePreview* cancelDuringAllocation{};
+static alien::SamplePreview* stopDuringAllocation{};
+static bool panicDuringAllocation{};
 void* operator new(std::size_t size) {
     if (auto* preview = cancelDuringAllocation) { cancelDuringAllocation = nullptr; preview->cancelAligned(); }
+    if (auto* preview = stopDuringAllocation) {
+        stopDuringAllocation = nullptr;
+        if (panicDuringAllocation) preview->beginBlock(true); else preview->stop();
+    }
     if (auto* memory = std::malloc(size == 0 ? 1 : size)) return memory;
     throw std::bad_alloc();
 }
@@ -96,6 +102,20 @@ int main() {
         require(!inflight.waitingForBeat(), "the fresh epoch can align to the new beat");
         for (int i = 0; i < 300; ++i) inflight.nextSample();
         require(inflight.nextSample()[0] > .39f, "fresh post-seek playback remains audible");
+    }
+    for (const bool aligned : {false,true}) for (const bool panic : {false,true}) {
+        alien::SamplePreview inflight; inflight.prepare(48000);
+        stopDuringAllocation = &inflight; panicDuringAllocation = panic;
+        const bool accepted = inflight.request(audio.data(),nullptr,4800,48000,aligned);
+        require(!stopDuringAllocation,"Stop/panic interrupts the producer before publication");
+        inflight.beginBlock();
+        for (int i=0;i<400;++i)
+            require(inflight.nextSample(true,0,step)[0]==0 && !inflight.waitingForBeat(),"a canceled in-flight audition stays silent");
+        require(!accepted,"the canceled request reports that it was not queued");
+        require(inflight.request(audio.data(),nullptr,4800,48000,aligned),"a fresh request after Stop/panic is accepted");
+        inflight.beginBlock(); inflight.nextSample(true,0,step);
+        for (int i=0;i<300;++i) inflight.nextSample();
+        require(inflight.nextSample()[0]>.39f,"fresh playback works after in-flight cancellation");
     }
     std::cout << "SamplePreviewTests passed\n";
 }

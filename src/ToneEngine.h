@@ -878,6 +878,13 @@ private:
             busMixers[index].setTarget(strip, soloState.any);
             float peak = 0.0f;
             auto& buffer = plugins->buses[index];
+            // T1-04 D27: a bus with nothing in it this block, after its FX and alignment, whose fader has
+            // finished gliding, would only add zeros to the master and meter nothing. Its key is still silence.
+            if (!stemCapture && busMixers[index].settled() && silentBlock(buffer, samples)) {
+                plugins->silentBusKey(index, samples);
+                buses[index].peak.store(0.0f, std::memory_order_relaxed);
+                continue;
+            }
             for (int i = 0; i < samples; ++i) {
                 float l = buffer.getSample(0, i), r = buffer.getSample(1, i);
                 busMixers[index].process(l, r);
@@ -891,6 +898,13 @@ private:
             }
             buses[index].peak.store(peak, std::memory_order_relaxed);
         }
+    }
+    static bool silentBlock(const juce::AudioBuffer<float>& buffer, int samples) noexcept {
+        for (int c = 0; c < 2; ++c) {
+            const float* data = buffer.getReadPointer(c);
+            for (int i = 0; i < samples; ++i) if (data[i] != 0.0f) return false;
+        }
+        return true;
     }
     void cancelRackRequests() noexcept {
         requestedRackClip.store(alien::rack::RackPlayer::noLaunchRequest);
