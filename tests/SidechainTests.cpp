@@ -684,7 +684,25 @@ static void trackSidechainViewTests(const juce::File& preview) {
         require(graph.choose(target,-1) && engine->plugins->racks[runtime].effects[1].keyIndex==-1
             && graph.choose(target,0,alien::KeySource::bus),"Off clears a bus key and fresh choice restores it");
     }
+    const auto masterReturn=graph.requestFor(0,1,alien::RackStage::master);
+    const int returnSourceCaptures=captures;
+    require(!graph.choose(request,0,alien::KeySource::returnTrack) && !graph.choose(busRequest,0,alien::KeySource::returnTrack)
+        && !graph.choose(returnRequest,0,alien::KeySource::returnTrack) && captures==returnSourceCaptures,
+        "earlier rack stages reject return keys before capture");
+    require(graph.choose(masterReturn,0,alien::KeySource::returnTrack)
+        && engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyFrom==alien::KeySource::returnTrack
+        && engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyIndex==0,"master graph selects actual return key");
+    require(!graph.choose(masterReturn,0,alien::KeySource::returnTrack),"same return key is a no-op");
+    require(c.undo(),"undo return source"); rebuild(); panel.refreshSettings();
+    require(engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyFrom==alien::KeySource::bus,"Undo restores previous bus source");
+    require(c.redo(),"redo return source"); rebuild(); panel.refreshSettings();
+    require(engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyFrom==alien::KeySource::returnTrack,"Redo restores return stage");
+    require(graph.choose(masterReturn,-1) && engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyIndex==-1
+        && graph.choose(masterReturn,0,alien::KeySource::returnTrack),"Off clears return source and fresh choice restores it");
+    require(commands.execute(cmd::RenameReturn{0,"Space key"}).changed,"rename key return"); panel.refreshSettings();
+    require(graph.choose(masterReturn,1,alien::KeySource::returnTrack) && graph.choose(masterReturn,0,alien::KeySource::returnTrack),"renamed return and return without FX remain valid sources");
     if (preview != juce::File{}) {
+        panel.setSize(960,800);
         juce::FileOutputStream out(preview);
         require(out.openedOk() && out.setPosition(0) && out.truncate().wasOk()
             && juce::PNGImageFormat().writeImageToStream(panel.createComponentSnapshot(panel.getLocalBounds()),out),"render sidechain graph");
@@ -731,12 +749,15 @@ static void trackSidechainViewTests(const juce::File& preview) {
     require(!graph.choose(returnBus,0,alien::KeySource::bus),"reused bus source refuses old key menu by persistent identity");
     require(!graph.choose(returnRequest,2),"deleted return key source refuses stale choice");
     const auto retiredReturnEffect=c.document().returns[0].plugins.effects[1];
+    const auto staleReturnSource=graph.requestFor(0,1,alien::RackStage::master);
+    require(graph.choose(staleReturnSource,0,alien::KeySource::returnTrack),"return source identity fixture");
     const auto oldReturn=c.document().trackId(alien::TrackRole::returnTrack,0);
     require(commands.execute(cmd::DeleteReturn{0}).changed && !graph.choose(returnRequest,-1)
         && commands.execute(cmd::CreateReturn{}).changed && c.document().trackId(alien::TrackRole::returnTrack,0)!=oldReturn
         && run(cmd::InsertDevice{alien::RackStage::returnTrack,0,0,retiredReturnEffect}).changed && !graph.choose(returnRequest,-1),
         "reused return slot refuses stale menu even with the original saved effect identity");
     const auto freshReturn=graph.requestFor(0,0,alien::RackStage::returnTrack);
+    require(!graph.choose(staleReturnSource,0,alien::KeySource::returnTrack),"reused return source refuses old key menu by persistent identity");
     c.newProject(); rebuild(); panel.rebuild(); require(!graph.choose(fresh,-1) && !graph.choose(freshMaster,-1) && !graph.choose(freshBus,-1) && !graph.choose(freshReturn,-1),"replacement project refuses all stale FX choices");
     panel.showRouting(false); require(!graph.isVisible(),"Strips hides the sidechain view");
 }
