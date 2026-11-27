@@ -35,7 +35,7 @@ build-rel/AlienDeviceTiming_artefacts/Release/AlienDeviceTiming.exe --type "Wind
 | `--warmup S` | Seconds played before recording starts (default 1) |
 | `--workloads 0,1,...` | Which workloads, by number; an unknown option prints the numbered list |
 | `--audible` | Send the rendered audio to the device |
-| `--inputs` | Also open the first two inputs of the type's default input device, for the input-monitoring and recording workloads (D33, D34, below); without it those workloads are skipped |
+| `--inputs` | Also open the first two inputs of the type's default input device, for the input-monitoring and recording workloads (D33-D35, below); without it those workloads are skipped |
 
 **The output is muted by default.** The engine renders everything, and then the device is given
 silence, so 16 tracks of test chords do not come out of the speakers. With `--audible` they do.
@@ -82,8 +82,7 @@ size only once.
   engine's work. A long gap without a long callback points at the system, not the engine.
 - No plugins except the stock EQ and compressor. Streaming from disk is covered since D32 (below),
   from one file on whatever drive holds the temporary folder. Input monitoring (D33) and recording
-  (D34) are covered only with `--inputs`; without it the device is opened with no inputs. Recording
-  is timed up to the take's queues; writing them to disk is not part of it.
+  (D34, D35) are covered only with `--inputs`; without it the device is opened with no inputs.
 
 ## First results (the development PC, not representative hardware)
 
@@ -207,3 +206,37 @@ Recording cost about the same as monitoring (p50 4 % more, p95 3 %), no callback
 budget, and the audio thread allocated nothing. The longest gap between callbacks was 12.5 ms against
 a 10 ms period, without a late callback (under 1.5 periods); the system's scheduling, not the
 callback, which took at most 0.3 ms. One run on one laptop with its built-in microphone.
+
+## Recording a take to disk (T1-04 D35)
+
+Workload 14, "16 tracks recording a stereo input to disk", is workload 13 with each track's take
+written to a WAV file as it records, by the app's own recording writer (`DiskRecording`: one queue and
+one writer thread per take, with a recovery journal, as the app records). So the callback is timed
+while 16 files are being written.
+
+- **It needs `--inputs`**, and is skipped without it.
+- **The takes go into a folder in the temporary folder** ("AlienDeviceTiming takes"), with their
+  recovery journals in a "Recovery" folder inside it, never the app's own recovery folder. The folder
+  and everything in it are removed when the tool ends. At 48 kHz the 16 takes come to about 4.4 MiB per
+  second recorded (24-bit stereo WAV, as the app writes them).
+- **The row fails if a writer fell behind** (its queue filled and ended the take), if a track recorded
+  or wrote nothing, if the take stopped, or if, once the device has stopped calling the engine, a take
+  does not finish with everything it recorded written.
+- **The offline report leaves this row out**: a writer cannot keep up with blocks played faster than
+  real time.
+
+First result, on the development laptop: Windows Audio, 48 kHz, 480 frames, output muted, input the
+built-in microphone array (2 channels), 4 s per row, the temporary folder on the laptop's system drive.
+
+| Workload | p50 us | p95 us | p99 us | max us | p95 / budget % | Over budget | Late | Xruns | Allocations |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Transport, no clips, 16 tracks | 119.9 | 156.1 | 187.1 | 276.8 | 1.6 | 0 | 0 | 0 | 0 |
+| 16 tracks recording a stereo input to a Song take (queues only) | 199.5 | 241.0 | 261.7 | 402.2 | 2.4 | 0 | 0 | 0 | 0 |
+| 16 tracks recording a stereo input to disk | 189.7 | 223.7 | 262.3 | 356.5 | 2.2 | 0 | 0 | 0 | 0 |
+
+The row passed: no writer fell behind, and every take finished with all it recorded written. Writing
+16 files did not make the callback slower than recording into queues alone (the two rows are within
+the spread between runs), which fits the design: the callback only fills each take's queue, and the
+16 writer threads do the disk work. No callback was late or over budget, and the audio thread
+allocated nothing. The folder was removed afterwards. One run on one laptop, on its system drive; a
+slow or busy drive is where a writer could fall behind.

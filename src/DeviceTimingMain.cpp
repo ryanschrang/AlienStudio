@@ -218,6 +218,14 @@ int main(int argc, char* argv[]) {
         media.streamed = writeStreamedClip(streamedFile->getFile(), options->warmup + 3.0 + options->seconds + 2.0, error);
         if (!media.streamed) { std::cerr << "streamed workload: " << error << '\n'; return 1; }
     }
+    // T1-04 D35: the folder the disk-recording row writes its takes (and their recovery journals) into,
+    // in the temporary folder and removed, with everything in it, when the tool ends.
+    struct RemovedAtExit { juce::File folder; ~RemovedAtExit() { if (folder != juce::File()) folder.deleteRecursively(); } } recordings;
+    if (std::any_of(chosen.begin(), chosen.end(), [&](int i) { return cases[static_cast<std::size_t>(i)].kind == 12; })) {
+        recordings.folder = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("AlienDeviceTiming takes", {}, false);
+        if (!recordings.folder.createDirectory().wasOk()) { std::cerr << "cannot create " << recordings.folder.getFullPathName() << '\n'; return 1; }
+        media.recordingFolder = recordings.folder;
+    }
 
     std::cout << "# Shared playback callback on an audio device\n\n"
         << "| Setting | Value |\n| --- | --- |\n"
@@ -283,6 +291,8 @@ int main(int argc, char* argv[]) {
             const char* stopped = alien::capacity::stillPlaying(*rig, c);
             manager.removeAudioCallback(&timed);
             timed.engine = nullptr;
+            // D35: with no callback left to race the writers, the disk takes are finished and checked.
+            const char* unfinished = rig->finishDiskTakes();
             const auto s = recorder.summarise(periodUs);
             std::cout << "| " << c.name << " | " << c.tracks << " | " << actual << " | " << s.callbacks << " | " << s.p50 << " | " << s.p95
                 << " | " << s.p99 << " | " << s.max << " | " << s.p95BudgetPercent() << " | " << s.overBudget << " | " << s.late << " | "
@@ -291,6 +301,7 @@ int main(int argc, char* argv[]) {
             if (s.dropped != 0) std::cerr << c.name << ": " << s.dropped << " callbacks arrived with the recorder full\n";
             if (s.callbacks == 0) { std::cerr << c.name << ": no callbacks arrived\n"; ++failures; }
             if (stopped != nullptr) { std::cerr << c.name << ": " << stopped << '\n'; ++failures; }
+            if (unfinished != nullptr) { std::cerr << c.name << ": " << unfinished << '\n'; ++failures; }
         }
     }
     manager.closeAudioDevice();
