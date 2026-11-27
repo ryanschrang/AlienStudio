@@ -71,7 +71,7 @@ private:
 };
 
 struct Options {
-    bool list{}, audible{};
+    bool list{}, audible{}, inputs{};
     juce::String type, device;
     double rate{};
     std::vector<int> buffers;
@@ -95,6 +95,7 @@ std::optional<Options> parse(int argc, char* argv[]) {
         const auto value = [&]() -> std::optional<std::string> { if (i + 1 >= argc) return std::nullopt; return std::string(argv[++i]); };
         if (arg == "--list") o.list = true;
         else if (arg == "--audible") o.audible = true;
+        else if (arg == "--inputs") o.inputs = true;
         else if (arg == "--type") { const auto v = value(); if (!v) return std::nullopt; o.type = *v; }
         else if (arg == "--device") { const auto v = value(); if (!v) return std::nullopt; o.device = *v; }
         else if (arg == "--rate") { const auto v = value(); if (!v) return std::nullopt; o.rate = std::atof(v->c_str()); if (o.rate <= 0) return std::nullopt; }
@@ -110,7 +111,7 @@ std::optional<Options> parse(int argc, char* argv[]) {
 
 void usage(const std::vector<alien::capacity::Case>& cases) {
     std::cerr << "usage: AlienDeviceTiming [--list] [--type NAME] [--device NAME] [--rate HZ] [--buffers 64,128,...]\n"
-                 "                         [--seconds S] [--warmup S] [--workloads 0,1,...] [--audible]\n"
+                 "                         [--seconds S] [--warmup S] [--workloads 0,1,...] [--audible] [--inputs]\n"
                  "  --list       list the device types and output devices, then exit\n"
                  "  --type       device type, e.g. \"Windows Audio\" or \"ASIO\" (default: the system default)\n"
                  "  --device     output device name (default: the type's default)\n"
@@ -119,7 +120,10 @@ void usage(const std::vector<alien::capacity::Case>& cases) {
                  "  --seconds    seconds recorded per workload and buffer size (default 5)\n"
                  "  --warmup     seconds played before recording starts (default 1)\n"
                  "  --workloads  which workloads, by number (default: all)\n"
-                 "  --audible    send the rendered audio to the device (default: the device plays silence)\n\nWorkloads:\n";
+                 "  --audible    send the rendered audio to the device (default: the device plays silence)\n"
+                 "  --inputs     also open the type's default input device (two channels), for the input-monitoring\n"
+                 "               workload; without it that workload is skipped. With --audible as well, the input is\n"
+                 "               played back out loud: a microphone next to the speakers will feed back\n\nWorkloads:\n";
     for (std::size_t i = 0; i < cases.size(); ++i) std::cerr << "  " << i << "  " << cases[i].name << " (" << cases[i].tracks << " tracks in use)\n";
 }
 
@@ -177,7 +181,7 @@ int main(int argc, char* argv[]) {
 
     juce::AudioDeviceManager manager;
     if (options->list) { listDevices(manager); return 0; }
-    if (const auto error = manager.initialise(0, 2, nullptr, true); error.isNotEmpty()) { std::cerr << "cannot open audio: " << error << '\n'; return 1; }
+    if (const auto error = manager.initialise(options->inputs ? 2 : 0, 2, nullptr, true); error.isNotEmpty()) { std::cerr << "cannot open audio: " << error << '\n'; return 1; }
     if (options->type.isNotEmpty()) {
         manager.setCurrentAudioDeviceType(options->type, true);
         if (manager.getCurrentAudioDeviceType() != options->type) { std::cerr << "no device type \"" << options->type << "\" (try --list)\n"; return 1; }
@@ -185,7 +189,9 @@ int main(int argc, char* argv[]) {
     auto setup = manager.getAudioDeviceSetup();
     if (options->device.isNotEmpty()) setup.outputDeviceName = options->device;
     if (options->rate > 0) setup.sampleRate = options->rate;
-    setup.inputDeviceName = {}; setup.useDefaultInputChannels = false; setup.inputChannels.clear();
+    // T1-04 D33: inputs only when asked for (--inputs), the first two of the type's default input device.
+    if (options->inputs) { setup.useDefaultInputChannels = false; setup.inputChannels.clear(); setup.inputChannels.setRange(0, 2, true); }
+    else { setup.inputDeviceName = {}; setup.useDefaultInputChannels = false; setup.inputChannels.clear(); }
     if (const auto error = manager.setAudioDeviceSetup(setup, true); error.isNotEmpty()) { std::cerr << "cannot open the device: " << error << '\n'; return 1; }
     auto* device = manager.getCurrentAudioDevice();
     if (device == nullptr) { std::cerr << "no output device is open (try --list)\n"; return 1; }
@@ -216,6 +222,8 @@ int main(int argc, char* argv[]) {
         << "| OS | " << juce::SystemStats::getOperatingSystemName() << " |\n"
         << "| Build | " << alien::maxSessionTracks << " tracks / " << alien::maxSessionScenes << " scenes compiled |\n"
         << "| Output | " << (options->audible ? "audible" : "muted (rendered, then silenced)") << " |\n"
+        << "| Input | " << (options->inputs ? manager.getAudioDeviceSetup().inputDeviceName + ", " + juce::String(device->getActiveInputChannels().countNumberOfSetBits()) + " channels open"
+                                             : juce::String("none (input-monitoring rows need --inputs)")) << " |\n"
         << "| Recorded | " << options->seconds << " s per row, after " << options->warmup << " s of warm-up |\n\n"
         << "Durations are the engine's whole callback, timed inside the device callback. Late: a callback that\n"
         << "started more than 1.5 buffer periods after the one before. Over budget: one that took longer than a\n"
@@ -248,6 +256,7 @@ int main(int argc, char* argv[]) {
         timed.audible = options->audible;
         for (const int index : chosen) {
             const auto& c = cases[static_cast<std::size_t>(index)];
+            if (alien::capacity::monitorsInput(c) && !options->inputs) { std::cerr << c.name << ": skipped (needs --inputs)\n"; continue; }
             auto rig = std::make_unique<alien::capacity::Rig>(rate);
             if (const char* failed = alien::capacity::configure(*rig, c, media)) { std::cerr << c.name << ": " << failed << '\n'; ++failures; continue; }
             timed.engine = &rig->engine;

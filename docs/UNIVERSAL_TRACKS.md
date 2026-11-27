@@ -1973,3 +1973,34 @@ on the development laptop, 16 streams cost the callback about 7-13 % more than t
 memory (p95 2.8 % of a 480-frame buffer at 48 kHz, 2.7 % of 256 frames at 44.1 kHz in exclusive
 mode), with no underrun and no callback allocation. One file on one drive; not representative
 hardware.
+
+## Increment D33: input monitoring timed
+
+Gate 2 also lists recording and monitoring among the work to time, and neither the capacity report nor
+the device tool played any input: the report passed the callback no inputs, and the tool opened the
+device without any.
+
+- **An input-monitoring workload.** `src/CapacityWorkloads.h` gains kind 10, "16 tracks monitoring a
+  stereo input": every track monitors inputs 1 and 2 with the monitor mode "always", unarmed, so the
+  input plays through each track's strip. The row fails if a track metered no input.
+- **The offline report times it** with a 330 Hz test signal on two inputs (only this row is given
+  inputs), so it is deterministic and in every capacity report from now on.
+- **The device tool opens an input only with `--inputs`** (the first two channels of the type's default
+  input device), and skips the row otherwise.
+
+Checks (`RackIntegrationTests`): every track is set to monitor inputs 1-2 without being armed; with the
+test signal all 16 strips meter input and the output is heard; with no input the row is silent and
+fails as "capacity input reaches every monitoring track".
+
+Offline, two report runs on the development laptop (Release, 48 kHz), p50 in us:
+
+| 16 tracks | 64 frames | 256 frames | 1,024 frames |
+| --- | ---: | ---: | ---: |
+| Idle (transport, no clips), second run | 13.7 | 48.8 | 176.1 |
+| Monitoring a stereo input, both runs | 20.3, 25.2 | 68.8, 72.6 | 268.9, 297.6 |
+| In-memory audio clips, second run | 30.0 | 102.7 | 411.6 |
+
+Both runs rendered identical output energy for the monitoring row. Monitoring 16 inputs costs less
+than playing 16 in-memory clips and about half again as much as 16 idle tracks; p95 varied by up to
+1.7x between the runs, so only p50 is quoted. Not covered: a device with a real input (see
+[DEVICE_TIMING.md](DEVICE_TIMING.md#input-monitoring-t1-04-d33)), recording a take, the 32/64 build.

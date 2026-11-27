@@ -736,6 +736,50 @@ static void streamedCapacityWorkload() {
             "a stream that cannot be read is silent, and fails the row as a read failure");
 }
 
+// T1-04 D33: the test signal the report plays into the input-monitoring row, on inputs 1 and 2.
+struct CapacityInput {
+    std::array<float, 1024> left{}, right{};
+    CapacityInput() {
+        for (std::size_t i = 0; i < left.size(); ++i) {
+            left[i] = 0.05f * static_cast<float>(std::sin(2.0 * 3.141592653589793 * 330.0 * static_cast<double>(i) / 48000.0));
+            right[i] = -left[i];
+        }
+    }
+    const float* channels[2]{left.data(), right.data()};
+};
+
+static void inputMonitoringCapacityWorkload() {
+    const auto cases = alien::capacity::cases(16);
+    const auto monitoring = std::find_if(cases.begin(), cases.end(), [](const alien::capacity::Case& c) { return alien::capacity::monitorsInput(c); });
+    require(monitoring != cases.end() && !monitoring->deviceOnly && monitoring->occurrences == 16,
+            "the input-monitoring row is timed offline too, with 16 tracks monitoring");
+    const alien::capacity::Media media;
+    const CapacityInput input;
+    const auto play = [&](bool withInput, double& energy) {
+        auto rig = std::make_unique<alien::capacity::Rig>();
+        require(alien::capacity::configure(*rig, *monitoring, media) == nullptr, "the input-monitoring row is set up");
+        for (int t = 0; t < 16; ++t) {
+            const auto& track = rig->engine.tracks[static_cast<std::size_t>(t)];
+            require(track.monitor.load() == static_cast<int>(alien::InputMonitor::always) && !track.armed.load()
+                    && track.input.load() == 0 && track.stereoInput.load(), "every track monitors inputs 1-2 without being armed");
+        }
+        require(alien::capacity::started(*rig, *monitoring), "monitoring has nothing to wait for");
+        rig->engine.playing.store(true);
+        std::array<float, 256> left{}, right{}; float* outputs[]{left.data(), right.data()};
+        energy = 0;
+        for (int block = 0; block < 64; ++block) {
+            rig->engine.audioDeviceIOCallbackWithContext(withInput ? input.channels : nullptr, withInput ? 2 : 0, outputs, 2, 256, {});
+            for (int n = 0; n < 256; ++n) energy += left[n] * left[n] + right[n] * right[n];
+        }
+        return alien::capacity::stillPlaying(*rig, *monitoring);
+    };
+    double energy = 0;
+    require(play(true, energy) == nullptr && energy > 0, "16 tracks play their input through their strips");
+    const char* missing = play(false, energy);
+    require(missing != nullptr && std::string_view(missing) == "capacity input reaches every monitoring track" && energy == 0,
+            "without an input the row is silent and fails");
+}
+
 static void capacityReport(int rounds) {
     const int full = alien::maxSessionTracks;
     {
@@ -766,6 +810,8 @@ static void capacityReport(int rounds) {
         << "T1-04 D22 rows: loaded versus playing (one playing track among all in use), sends at 0.5 to returns A-D,\n"
         << "in-memory Session audio clips (one shared 8 s mono clip, no streaming), and the stock EQ and compressor\n"
         << "on every playing track's FX rack (prepared before timing).\n"
+        << "T1-04 D33 row: every track monitors inputs 1-2 (monitor \"always\", not armed), fed a 330 Hz test signal.\n"
+        << "Streamed audio (D32) is timed only on a device, by AlienDeviceTiming.\n"
         << "Times include the whole callback; p95/max are observations, not real-time guarantees.\n"
         << "Output energy is the sum of squared output samples over the measured blocks, printed exactly, so two\n"
         << "builds can be shown to render the same audio (T1-04 D23).\n\n"
@@ -785,7 +831,12 @@ static void capacityReport(int rounds) {
         if (const char* failed = alien::capacity::configure(*rig, c, media)) require(false, failed);
         rig->engine.playing.store(true);
         std::array<float, 1024> left{}, right{}; float* outputs[]{left.data(), right.data()};
-        const auto callback = [&] { rig->engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, frames, {}); };
+        // D33: the input-monitoring row is given a test signal on two inputs; every other row none.
+        static const CapacityInput input;
+        const bool inputs = alien::capacity::monitorsInput(c);
+        const auto callback = [&] {
+            rig->engine.audioDeviceIOCallbackWithContext(inputs ? input.channels : nullptr, inputs ? 2 : 0, outputs, 2, frames, {});
+        };
         for (int n = 0; n < 32; ++n) callback();
         auto& times = run.times; auto& energy = run.energy; const auto before = allocationCount;
         for (auto& elapsed : times) {
@@ -869,6 +920,7 @@ int main(int argc, char** argv) {
 
     capacityHelpers();
     streamedCapacityWorkload();
+    inputMonitoringCapacityWorkload();
 
     performLaunches();
     overlappingPerformCallback();

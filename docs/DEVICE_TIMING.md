@@ -35,6 +35,7 @@ build-rel/AlienDeviceTiming_artefacts/Release/AlienDeviceTiming.exe --type "Wind
 | `--warmup S` | Seconds played before recording starts (default 1) |
 | `--workloads 0,1,...` | Which workloads, by number; an unknown option prints the numbered list |
 | `--audible` | Send the rendered audio to the device |
+| `--inputs` | Also open the first two inputs of the type's default input device, for the input-monitoring workload (D33, below); without it that workload is skipped |
 
 **The output is muted by default.** The engine renders everything, and then the device is given
 silence, so 16 tracks of test chords do not come out of the speakers. With `--audible` they do.
@@ -79,9 +80,9 @@ size only once.
   guarantee, and not a track count anyone can rely on.
 - Long gaps and late callbacks include the driver's and Windows' own scheduling, not only the
   engine's work. A long gap without a long callback points at the system, not the engine.
-- No plugins except the stock EQ and compressor, and no recording or input monitoring (the device is
-  opened with no inputs). Streaming from disk is covered since D32 (below), from one file on whatever
-  drive holds the temporary folder.
+- No plugins except the stock EQ and compressor, and no recording. Streaming from disk is covered
+  since D32 (below), from one file on whatever drive holds the temporary folder. Input monitoring is
+  covered since D33 (below), only with `--inputs`; without it the device is opened with no inputs.
 
 ## First results (the development PC, not representative hardware)
 
@@ -145,3 +146,22 @@ What it does not show: a slow, busy or nearly full drive; other files being read
 more than one file; MP3 sources; rates other than 44.1 and 48 kHz; the 32/64 build. Idle rows ran
 at lower absolute times than in the D31 table above, on the same laptop and settings; one run per row
 is not enough to say why.
+
+## Input monitoring (T1-04 D33)
+
+Workload 12, "16 tracks monitoring a stereo input", sets every track to monitor inputs 1 and 2 with
+the monitor mode "always" (so no track is armed), which plays the input through each track's own
+effects and fader as the app does.
+
+- **It needs `--inputs`.** The tool opens no input device unless asked: on most PCs the default input
+  is a microphone. With `--inputs` it opens the first two channels of the device type's default input;
+  without it the row is skipped with a note on stderr and nothing is counted as failed.
+- **With `--audible` as well, the input is played out loud.** A microphone near the speakers will feed
+  back; use headphones, or leave the output muted (the default).
+- **The row fails if any track metered no input**, which is also what happens when the input device
+  has fewer than two channels or delivers only silence.
+- **The offline report times it too**, with a 330 Hz test signal on both inputs, since nothing about it
+  depends on real time.
+
+Not measured on a device yet: the development laptop's only input is its built-in microphone, and this
+increment was not run against it.
