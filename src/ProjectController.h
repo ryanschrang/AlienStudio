@@ -1144,11 +1144,6 @@ public:
         if (present) republishIfLive(track, scene);
         return true;
     }
-    // Empties one cell. Content other cells share stays theirs; Song regions on the cell fall silent.
-    bool clearCell(int track, int scene) {
-        return doc.isValidCell(track, scene) && doc.cellClip(track, scene)
-            && applyDeleteClipCommand(track, scene);
-    }
     // Whether a Song placement shares what it plays with something else: another placement of the same
     // cell or placement clip, or a linked cell.
     bool placementShared(std::uint32_t regionId) const { return song_placement::shared(doc, regionId); }

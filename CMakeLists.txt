@@ -594,3 +594,49 @@ if(BUILD_TESTING)
     add_executable(TrackCapacityReport tools/TrackCapacityReport.cpp)
     target_include_directories(TrackCapacityReport PRIVATE src)
 endif()
+
+# Build speed. JUCE's modules are source libraries: every executable that links one compiles its own
+# copy of the module's code, so a Release build compiled JUCE once per test executable (most of a
+# 4-hour CI build). The test executables now share one copy, AlienJuceShared, compiled once per
+# configuration with the settings the tests use. Its interface hands each test the same include
+# paths and definitions the modules gave it, without their sources.
+#
+# Left alone, with their own copy: targets made by juce_add_* (the app, tools, test plugin), and
+# targets built with VST3 hosting (JUCE_PLUGINHOST_VST3 changes how JUCE itself compiles).
+# Set ALIEN_SHARED_JUCE=OFF to build every test with its own copy, as before.
+option(ALIEN_SHARED_JUCE "Compile JUCE once for all test executables" ON)
+if(BUILD_TESTING AND ALIEN_SHARED_JUCE)
+    add_library(AlienJuceShared STATIC)
+    target_link_libraries(AlienJuceShared PRIVATE
+        juce::juce_audio_basics juce::juce_audio_devices juce::juce_audio_formats juce::juce_audio_processors
+        juce::juce_audio_utils juce::juce_gui_basics juce::juce_gui_extra)
+    target_compile_definitions(AlienJuceShared
+        PUBLIC JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1
+        INTERFACE $<TARGET_PROPERTY:AlienJuceShared,COMPILE_DEFINITIONS>)
+    target_include_directories(AlienJuceShared INTERFACE $<TARGET_PROPERTY:AlienJuceShared,INCLUDE_DIRECTORIES>)
+    target_compile_options(AlienJuceShared INTERFACE $<TARGET_PROPERTY:AlienJuceShared,COMPILE_OPTIONS>)
+    target_link_libraries(AlienJuceShared INTERFACE Threads::Threads ${CMAKE_DL_LIBS})
+
+    get_property(alien_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    set(alien_shared_count 0)
+    foreach(target IN LISTS alien_targets)
+        get_target_property(type ${target} TYPE)
+        get_target_property(juce_made ${target} JUCE_PRODUCT_NAME)
+        get_target_property(definitions ${target} COMPILE_DEFINITIONS)
+        get_target_property(libraries ${target} LINK_LIBRARIES)
+        if(NOT type STREQUAL "EXECUTABLE" OR juce_made OR NOT libraries)
+            continue()
+        endif()
+        if(definitions AND "${definitions}" MATCHES "JUCE_PLUGINHOST_VST3")
+            continue()
+        endif()
+        set(kept ${libraries})
+        list(FILTER kept EXCLUDE REGEX "^juce::juce_")
+        if(kept STREQUAL libraries)
+            continue()   # links no JUCE module
+        endif()
+        set_property(TARGET ${target} PROPERTY LINK_LIBRARIES ${kept} AlienJuceShared)
+        math(EXPR alien_shared_count "${alien_shared_count} + 1")
+    endforeach()
+    message(STATUS "AlienJuceShared: ${alien_shared_count} test executables share one compiled JUCE")
+endif()
