@@ -15,14 +15,21 @@ concurrency:
 jobs:
   build:
     runs-on: windows-2022
+    # Upper bound for a hung job instead of GitHub's 6 hours; see windows-ci.yml.
+    timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned to the commit their v4 tag pointed at when pinned (version in the comment).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: JUCE source
+        id: juce
+        uses: ./.github/actions/juce-source
       - name: Configure
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DALIEN_HEAVY_TEST_LANES=2
+        timeout-minutes: 20
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DALIEN_HEAVY_TEST_LANES=2 "-DFETCHCONTENT_SOURCE_DIR_JUCE=${{ steps.juce.outputs.dir }}"
       - name: Build
         run: cmake --build build --config Release --parallel 3
       - name: Upload executable
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: AlienStudio-Windows
           path: |
@@ -30,7 +37,7 @@ jobs:
             build/AlienStudio_artefacts/Release/Starter Pack/
           if-no-files-found: error
       - name: Upload plugin check tool
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: AlienPluginCheck-Windows
           path: build/AlienPluginCheck_artefacts/Release/*.exe
@@ -38,7 +45,7 @@ jobs:
       # A VST3 that misbehaves on purpose, for testing Alien Studio's plugin containment. It is not a real
       # plugin and is never installed by the build; copy it into a VST3 folder only to try containment by hand.
       - name: Upload test plugin
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: AlienTestPlugin-Windows
           path: build/AlienTestPlugin_artefacts/Release/VST3

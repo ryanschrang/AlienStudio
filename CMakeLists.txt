@@ -699,32 +699,3 @@ if(BUILD_TESTING AND ALIEN_HEAVY_TEST_LANES GREATER 0)
     endforeach()
     message(STATUS "Heavy tests: ${alien_chained} chained into ${ALIEN_HEAVY_TEST_LANES} build lanes")
 endif()
-
-# Compile-memory limit for CI. Each test that includes ProjectController.h needs about 4-6 GB to compile
-# in Release, and three of them at once ran the 16 GB GitHub runner out of memory (C1002 "compiler is
-# out of heap space"). Setting ALIEN_HEAVY_TEST_LANES=N chains these tests into N build-order lanes, so
-# at most N of them compile at the same time whatever --parallel is; other targets still build
-# alongside. It only orders the build: nothing is linked differently and every test still runs.
-# 0 (the default) leaves the order alone, so building one test locally doesn't build the others first.
-set(ALIEN_HEAVY_TEST_LANES 0 CACHE STRING "At most this many ProjectController tests compile at once (0 = no limit)")
-if(BUILD_TESTING AND ALIEN_HEAVY_TEST_LANES GREATER 0)
-    set(alien_heavy_tests
-        ChannelRackViewTests CommandEngineTests FlexibleReturnTests GroupBusTests MemoryPeakTests
-        MidiRecordingTests MixerRoutingTests PluginAutomationPlaybackTests ProjectControllerTests
-        RackPluginInstrumentTests RackProjectTests SessionViewTests SidechainTests SongRecordingTests
-        TimelineViewTests TrackCapacityTests)
-    set(alien_lane 0)
-    set(alien_chained 0)
-    foreach(target IN LISTS alien_heavy_tests)
-        if(NOT TARGET ${target})
-            continue()
-        endif()
-        if(DEFINED alien_lane_last_${alien_lane})
-            add_dependencies(${target} ${alien_lane_last_${alien_lane}})
-        endif()
-        set(alien_lane_last_${alien_lane} ${target})
-        math(EXPR alien_chained "${alien_chained} + 1")
-        math(EXPR alien_lane "(${alien_lane} + 1) % ${ALIEN_HEAVY_TEST_LANES}")
-    endforeach()
-    message(STATUS "Heavy tests: ${alien_chained} chained into ${ALIEN_HEAVY_TEST_LANES} build lanes")
-endif()
