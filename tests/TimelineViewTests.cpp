@@ -2109,7 +2109,7 @@ static void takeLaneChecks() {
     require(showItem != nullptr && !showItem->enabled, "the track menu cannot show the lanes of a track without takes");
 
     // Two single passes on track 3, from two recorded files (scenes 0 and 1); the later one plays.
-    require(rig->alien::command::installDecodedAudio(controller,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("timeline-view-take-2.wav"), 2, 1, toneClip(4, 0.8f)).ok,
+    require(alien::command::installDecodedAudio(rig->controller,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("timeline-view-take-2.wav"), 2, 1, toneClip(4, 0.8f)).ok,
             "install a second take's audio");
     for (const int scene : {0, 1})
         require(rig->controller.editTimeline("Take fixture", [=](tl::Timeline& t) {
@@ -2243,7 +2243,7 @@ static void loopPassLaneChecks() {
     rig->sources();
     c.setSnap(Snap::sixteenth);
     // One loop recording of three one-bar passes from one 6-second file; the last pass plays.
-    require(rig->alien::command::installDecodedAudio(controller,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("timeline-view-loop-take.wav"), 1, 0, toneClip(6, 0.6f)).ok,
+    require(alien::command::installDecodedAudio(rig->controller,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("timeline-view-loop-take.wav"), 1, 0, toneClip(6, 0.6f)).ok,
             "install the loop recording");
     tl::Ids ids;
     require(rig->controller.editTimeline("Loop take fixture", [&](tl::Timeline& t) {
