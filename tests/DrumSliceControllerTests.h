@@ -38,7 +38,8 @@ static void drumSliceControllerTests() {
         }
         c.undo(); require(c.document().tracks[0].drumAssets[0] == whole && !c.document().tracks[0].drumAssets[1], "one Undo restores entire previous kit");
         c.redo(); require(c.document().tracks[0].drumAssets == kit.drumAssets && c.document().tracks[0].drumSlices == kit.drumSlices, "Redo restores slices and shared identities");
-        c.clearDrum(0, 1); require(c.document().tracks[0].drumSlices[1].whole() && !c.document().tracks[0].drumAssets[1], "clearing pad clears boundaries"); c.undo();
+        require(alien::command::CommandEngine(c).execute(alien::command::ClearDrumPad{0,1}).changed
+            && c.document().tracks[0].drumSlices[1].whole() && !c.document().tracks[0].drumAssets[1], "clearing pad clears boundaries"); c.undo();
         c.loadDrum(wav, 0, 1); wait(c); require(c.document().tracks[0].drumSlices[1].whole() && !c.document().tracks[0].drumAssets[1]->sliceSource, "loading new sample resets boundaries"); c.undo();
         const auto sliceWav = root.getChildFile("slice.wav");
         require(alien::writeClipWav(sliceWav, *kit.drumAssets[7], cancel, error), "slice can be written without copying source PCM");

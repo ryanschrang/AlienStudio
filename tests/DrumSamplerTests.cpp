@@ -110,6 +110,28 @@ int main() {
     sampler.setSample(0,&clip); for(int i=0;i<40;++i) sampler.noteOn(36,1);
     check(sampler.nextSample()[0]==4.0f,"bounded 16 voice stealing");
     sampler.prepare(44100); check(sampler.nextSample()[0]==0,"device restart silence");
+    check(sampler.voicesInUse()==0,"a stopped sampler visits no voices");
     check(allocations==before,"sampler DSP allocated");
+    {   // T1-04 D28: a hit held above a finished one still sounds, and a finished top shrinks the span.
+        alien::SessionAudioClip longClip;
+        longClip.sampleRate=48000; longClip.frames=64; longClip.channels=1; longClip.left.assign(64,1.0f); longClip.buildWaveform();
+        alien::DrumSampler drums; drums.prepare(48000); drums.setSample(0,&clip); drums.setSample(1,&longClip);
+        drums.noteOn(36,1); drums.noteOn(37,1);   // short hit in slot 0, long one in slot 1
+        check(drums.voicesInUse()==2,"two hits visit two voices");
+        for(int i=0;i<10;++i) drums.nextSample();
+        check(std::abs(drums.nextSample()[0]-0.25f)<1e-6f,"a hit held above a finished one sounds");
+        check(drums.voicesInUse()==2,"a hit held above a finished one keeps its voice visited");
+        drums.noteOn(36,1);   // takes the freed slot below
+        check(drums.voicesInUse()==2,"a new hit reuses the freed slot below");
+        check(std::abs(drums.nextSample()[0]-0.5f)<1e-6f,"the reused slot and the held hit both sound");
+        for(int i=0;i<80;++i) drums.nextSample();
+        check(drums.nextSample()[0]==0 && drums.voicesInUse()==0,"when every hit has finished no voice is visited");
+        drums.noteOn(37,1); drums.stop();
+        check(drums.nextSample()[0]==0 && drums.voicesInUse()==0,"a stopped hit is not visited again");
+        drums.noteOn(37,1); drums.setSample(1,nullptr);
+        check(drums.nextSample()[0]==0 && drums.voicesInUse()==0,"a removed pad's hit is not visited again");
+        drums.noteOn(36,1);
+        check(std::abs(drums.nextSample()[0]-0.25f)<1e-6f && drums.voicesInUse()==1,"after silence a new hit sounds alone");
+    }
     std::cout<<"Drum sampler timing, velocity, choke, lifecycle and allocation passed\n";
 }

@@ -1,6 +1,6 @@
 #pragma once
 // ClearDrumPad, SetDrumPadSlice, LoadDrumSample, SliceDrumPad and SliceClipToDrumPads: a track's eight drum pads. The Drums page reaches
-// them through ProjectController's drum methods, which routeDrumPadEdits sends through the command engine.
+// clear directly; asynchronous/range methods use routeDrumPadEdits for command submission.
 static void drumPadCommandChecks() {
     auto engine = std::make_unique<ToneEngine>();
     alien::ProjectController c(*engine);
@@ -64,12 +64,35 @@ static void drumPadCommandChecks() {
     }
 
     // Clearing a pad.
-    const auto cleared = commands.execute(cmd::ClearDrumPad{0, 1});
-    require(cleared.ok && cleared.changed && c.undoLabel() == "Clear drum pad" && !kit().drumAssets[1] && kit().drumPaths[1].isEmpty() && kit().drumSlices[1].whole()
-            && kit().drumAssets[0] && engine->drumKits[0].samples[1].load() == nullptr, "ClearDrumPad empties one pad");
+    const std::vector<cmd::Command> clearAndMix{cmd::ClearDrumPad{0,1},cmd::SetTrackPan{0,.27}};
+    const auto clearPreview=commands.preview(clearAndMix);
+    require(clearPreview.ok && clearPreview.changed && alien::sameContent(threePads,c.document())
+        && engine->drumKits[0].samples[1].load()==threePads.tracks[0].drumAssets[1].get(),"clear/mixer Preview leaves live kit intact");
+    const auto cleared = commands.batch(clearAndMix,"Clear pad and mix");
+    require(cleared.ok && cleared.changed && c.undoLabel() == "Clear pad and mix" && !kit().drumAssets[1] && kit().drumPaths[1].isEmpty() && kit().drumSlices[1].whole()
+            && kit().drumAssets[0] && engine->drumKits[0].samples[1].load() == nullptr && engine->tracks[0].pan.load()==.27f
+            && alien::sameContent(clearPreview.after,c.document()), "ClearDrumPad/mixer batch matches Preview and publishes kit and mix");
     const auto again = commands.execute(cmd::ClearDrumPad{0, 1});
     require(again.ok && !again.changed && !commands.execute(cmd::ClearDrumPad{0, -1}).ok, "an empty pad is a no-op, and a pad that is not there is refused");
-    require(c.undo() && alien::sameContent(threePads, c.document()), "and Undo brings the pad back");
+    require(c.undo() && alien::sameContent(threePads, c.document())
+        && engine->drumKits[0].samples[1].load()==threePads.tracks[0].drumAssets[1].get()
+        && engine->tracks[0].pan.load()==static_cast<float>(threePads.tracks[0].settings.pan), "one Undo brings the pad and live mix back");
+    const auto redo=historyOf(c);
+    require(commands.execute(cmd::ClearDrumPad{0,7}).ok && historyOf(c)==redo,"empty-pad clear preserves redo");
+    const auto late=commands.batch({clearAndMix[0],clearAndMix[1],cmd::ClearDrumPad{0,99}},"Invalid clear");
+    c.setExternalBusy(true); const auto busyBatch=commands.batch(clearAndMix,"Busy clear"); c.setExternalBusy(false);
+    require(!late.ok && late.failedCommand==2 && !busyBatch.ok && historyOf(c)==redo && alien::sameContent(threePads,c.document())
+        && engine->drumKits[0].samples[1].load()==threePads.tracks[0].drumAssets[1].get()
+        && engine->tracks[0].pan.load()==static_cast<float>(threePads.tracks[0].settings.pan),"refused batches preserve redo, pad publication and live mix");
+    require(c.redo() && alien::sameContent(clearPreview.after,c.document()) && engine->drumKits[0].samples[1].load()==nullptr
+        && engine->tracks[0].pan.load()==.27f && c.undo(),"one Redo restores the pad/mixer transaction");
+    for(const auto phase : {alien::RecordControls::countIn,alien::RecordControls::recording}) {
+        engine->recording.phase.store(phase);
+        const auto allowed=commands.batch(clearAndMix,"Live clear");
+        engine->recording.phase.store(alien::RecordControls::idle);
+        require(allowed.changed && engine->drumKits[0].samples[1].load()==nullptr && engine->tracks[0].pan.load()==.27f
+            && c.undo() && alien::sameContent(threePads,c.document()),"clear/mixer commands preserve count-in/recording compatibility and one-step Undo");
+    }
 
     // A take and a busy project refuse.
     engine->recording.phase.store(alien::RecordControls::countIn);
@@ -87,7 +110,7 @@ static void drumPadCommandChecks() {
     require(c.sliceDrum(0, 1) && c.undoLabel() == "Slice sample to 8 pads" && kit().drumSlices[0] == alien::DrumSlice{20, 20 + 30 / 8} && kit().drumSlices[7].end == 50 && kit().drumPaths[7] == path,
             "the routed equal slice cuts the pad's own range to eight pads");
     require(c.editDrumSlice(c.drumSliceTarget(0, 0), {0, 5}) && c.undoLabel() == "Edit drum slice" && kit().drumSlices[0] == alien::DrumSlice{0, 5}, "the routed range edit keeps its Undo name");
-    c.clearDrum(0, 7);
+    require(commands.execute(cmd::ClearDrumPad{0,7}).changed,"clear the routed slice through its named command");
     require(c.undoLabel() == "Clear drum pad" && !kit().drumAssets[7] && c.undo() && c.undo() && c.undo() && alien::sameContent(threePads, c.document()), "and the routed edits are one Undo step each");
 
     // A Session clip's audio cut to its track's eight pads: the kit is replaced and the clip stays.

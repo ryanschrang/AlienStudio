@@ -60,13 +60,16 @@ private:
     void componentVisibilityChanged(juce::Component& component) override {
         if (!component.isVisible() && ownsTyping(component)) { release(); target = nullptr; hadFocusTarget = false; }
     }
+    void componentEnablementChanged(juce::Component& component) override {
+        if (!component.isEnabled() && ownsTyping(component)) { release(); target = nullptr; hadFocusTarget = false; }
+    }
     void componentBeingDeleted(juce::Component& component) override {
         if (&component == &root) { release(); target = nullptr; hadFocusTarget = false; }
         else removeAuxiliaryRoot(component);
     }
     bool accepts(juce::Component* c) const {
-        if(c==nullptr||!c->isShowing()||c->isCurrentlyBlockedByAnotherModalComponent())return false;
-        bool owned=c==&root||c==root.getTopLevelComponent()||root.isParentOf(c);
+        if(c==nullptr||!c->isEnabled()||!c->isShowing()||c->isCurrentlyBlockedByAnotherModalComponent())return false;
+        bool owned=root.isEnabled()&&(c==&root||c==root.getTopLevelComponent()||root.isParentOf(c));
         for(const auto& window:auxiliaryRoots)
             if(window&&(c==window.getComponent()||window->isParentOf(c)))owned=true;
         if(!owned)return false;
