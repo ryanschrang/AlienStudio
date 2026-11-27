@@ -37,6 +37,7 @@ build-rel/AlienDeviceTiming_artefacts/Release/AlienDeviceTiming.exe --type "Wind
 | `--audible` | Send the rendered audio to the device |
 | `--inputs` | Also open the first two inputs of the type's default input device, for the input-monitoring and recording workloads (D33-D35, below); without it those workloads are skipped |
 | `--plugin FILE.vst3` | A VST3 effect to put on every playing track, for the VST3 workload (D36, below); without it that workload is skipped |
+| `--instrument FILE.vst3` | A VST3 instrument to play every playing track's MIDI, for the VST3 instrument workload (D37, below); without it that workload is skipped |
 
 **The output is muted by default.** The engine renders everything, and then the device is given
 silence, so 16 tracks of test chords do not come out of the speakers. With `--audible` they do.
@@ -81,8 +82,8 @@ size only once.
   guarantee, and not a track count anyone can rely on.
 - Long gaps and late callbacks include the driver's and Windows' own scheduling, not only the
   engine's work. A long gap without a long callback points at the system, not the engine.
-- Outside plugins only with `--plugin` (D36, below), one VST3 at a time, loaded in the tool's own
-  process with none of the app's crash protection. Streaming from disk is covered since D32 (below),
+- Outside plugins only with `--plugin` and `--instrument` (D36, D37, below), one effect and one
+  instrument at a time, loaded in the tool's own process with none of the app's crash protection. Streaming from disk is covered since D32 (below),
   from one file on whatever drive holds the temporary folder. Input monitoring (D33) and recording
   (D34, D35) are covered only with `--inputs`; without it the device is opened with no inputs.
 
@@ -266,7 +267,37 @@ the repository's own test plugin (`Alien Test Plugin`, a simple gain/tone/mix ef
 | 16 Session MIDI tracks through a VST3 effect | 402.0 | 576.7 | 645.0 | 760.7 | 5.8 | 0 | 0 | 0 |
 
 16 instances of the test plugin added about 93 us a callback at p50 over the same tracks without it,
-about 6 us an instance per 480-frame block, and no plugin faulted. The test plugin does almost
+about 6 us an instance per 480-frame block, and no plugin faulted. The zero allocations are the tool's
+own: the plugin's DLL allocates through its own runtime, which the count does not see (D37). The test plugin does almost
 nothing, so this is the cost of hosting a VST3 (its bus and parameter handling), not of a real effect.
 Not shown: real third-party plugins, instruments, plugins reporting latency, more than one plugin per
 track.
+
+## A VST3 instrument on every track (T1-04 D37)
+
+Workload 16, "16 Session MIDI tracks playing a VST3 instrument", is workload 5 with an outside instrument
+in place of the built-in synth: one instance of the VST3 given with `--instrument` in each playing
+track's instrument slot, playing that track's Session clip (a held three-note chord).
+
+- **It needs `--instrument FILE.vst3`**, and is skipped without it. The tool loads the first plugin in
+  the file that says it is an instrument, and refuses a file with none.
+- **The plugin runs inside the tool's process**, as with `--plugin`: no crash containment.
+- **Callback allocations count the tool's own allocations only.** A plugin's DLL allocates through its
+  own C runtime, which the count does not see, so 0 here says nothing about the plugin.
+- **The row fails if any plugin faulted**, as every row does. It does not check that each instance
+  sounded.
+
+First results, on the development laptop (Windows Audio, 48 kHz, 480 frames, muted, 4 s per row), each
+instrument with the patch it loads with:
+
+| Workload | p50 us | p95 us | p99 us | max us | p95 / budget % | Over budget | Late |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Transport, no clips, 16 tracks | 101.6 | 163.9 | 203.9 | 212.8 | 1.6 | 0 | 0 |
+| 16 Session MIDI tracks (built-in synth) | 290.1 | 431.4 | 509.9 | 547.3 | 4.3 | 0 | 0 |
+| 16 tracks playing Surge XT | 1277.5 | 1586.2 | 1862.9 | 5600.8 | 15.9 | 0 | 0 |
+| 16 tracks playing Vital | 2981.7 | 3609.0 | 4117.8 | 4383.9 | 36.1 | 0 | 0 |
+
+16 instances of a real synth cost 4 to 10 times the built-in synth's whole callback on the same tracks:
+about 62 us (Surge XT) and 168 us (Vital) an instance per 480-frame block, with three notes held. Surge
+XT's longest callback (5.6 ms, still inside the 10 ms period) was a single spike. Not shown: other
+patches, more notes, instruments reporting latency, an audio interface, the 32/64 build.

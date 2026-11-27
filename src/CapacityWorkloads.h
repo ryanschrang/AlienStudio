@@ -18,7 +18,8 @@ namespace alien::capacity {
 // compressor, 8 Session drum tracks, 9 Session audio clips streamed from disk (T1-04 D32), 10 tracks
 // monitoring a stereo input (T1-04 D33), 11 tracks recording a stereo input to a Song take (T1-04
 // D34), 12 the same take written to disk by the app's recording writer (T1-04 D35), 13 MIDI through a
-// VST3 effect on every playing track (T1-04 D36). `occurrences` is how many tracks play (or rack
+// VST3 effect on every playing track (T1-04 D36), 14 MIDI played by a VST3 instrument on every playing
+// track (T1-04 D37). `occurrences` is how many tracks play (or rack
 // occurrences, or tracks monitoring or recording).
 // deviceOnly: the offline report leaves the row out. It plays blocks back to back, far faster than
 // real time, which no disk stream keeps up with; on a device the callbacks come at playback's pace.
@@ -42,7 +43,10 @@ inline std::vector<Case> cases(int full) {
         {"16 tracks recording a stereo input to disk", 12, 16, 16, true},
         // T1-04 D36: a third-party plugin, one instance per playing track. Device only: the offline report's
         // build does not host VST3, and the tool is given the plugin to load (--plugin).
-        {"16 Session MIDI tracks through a VST3 effect", 13, 16, 16, true}};
+        {"16 Session MIDI tracks through a VST3 effect", 13, 16, 16, true},
+        // T1-04 D37: the tracks' MIDI played by an outside instrument, one instance per track, in place of the
+        // built-in synth. Device only, as for the effect (--instrument).
+        {"16 Session MIDI tracks playing a VST3 instrument", 14, 16, 16, true}};
     if (full > 16) {
         all.push_back({"Transport, no clips", 0, full, 0});
         all.push_back({"All Session rack occurrences", 1, full, full});
@@ -68,6 +72,9 @@ struct Media {
     // VST3 for it), or nothing. Called on the control thread, before the row starts.
     std::function<std::unique_ptr<juce::AudioProcessor>()> makeEffect;
     juce::String effectName;
+    // D37: makes one instance of the instrument kind 14 gives each playing track, or nothing. As makeEffect.
+    std::function<std::unique_ptr<juce::AudioProcessor>()> makeInstrument;
+    juce::String instrumentName;
     Media() {
         // One decoded clip shared by every audio row, long enough to play through warm-up and measurement at 1,024 frames.
         audio.sampleRate = 48000; audio.channels = 1; audio.frames = 8 * 48000;
@@ -141,7 +148,7 @@ struct Rig {
     }
 };
 
-inline bool playsMidi(const Case& c) { return c.kind == 4 || c.kind == 5 || c.kind == 7 || c.kind == 8 || c.kind == 13; }
+inline bool playsMidi(const Case& c) { return c.kind == 4 || c.kind == 5 || c.kind == 7 || c.kind == 8 || c.kind == 13 || c.kind == 14; }
 inline bool playsAudio(const Case& c) { return c.kind == 6 || c.kind == 9; }
 // The row needs input audio: the report hands the callback a test signal, the device tool opens an input.
 // A recording track is armed, so it monitors too (monitor "automatic").
@@ -251,6 +258,22 @@ inline const char* configure(Rig& rig, const Case& c, const Media& media) {
             plugins.prepareSlot(slot, t, 0);
             if (!slot.prepared) return "capacity VST3 effect prepared";
             plugins.racks[static_cast<std::size_t>(t)].effectCount = 1;
+        }
+        plugins.reserveAlignment();
+    }
+    // D37: each playing track's instrument slot, assigned as a project's plugin instrument is: the track's
+    // notes go to the plugin (on MIDI channel 2, as a clip's do) instead of the built-in synth.
+    if (c.kind == 14) {
+        if (!media.makeInstrument) return "capacity VST3 instrument";
+        auto& plugins = *engine.plugins;
+        for (int t = 0; t < c.occurrences; ++t) {
+            auto& rack = plugins.racks[static_cast<std::size_t>(t)];
+            rack.instrument.processor = media.makeInstrument();
+            if (!rack.instrument.processor) return "capacity VST3 instrument instance";
+            rack.instrument.name = media.instrumentName;
+            plugins.prepareSlot(rack.instrument, t, -1);
+            if (!rack.instrument.prepared) return "capacity VST3 instrument prepared";
+            rack.instrumentAssigned = true;
         }
         plugins.reserveAlignment();
     }

@@ -2100,7 +2100,37 @@ device, a missing `--plugin` file is refused before any row runs.
 On the development laptop (Windows Audio, 48 kHz, 480 frames, muted), with the repository's test
 plugin (a simple gain/tone/mix effect): p50 402 us and p95 577 us (5.8 % of the period), against 309 and 503 us for the same
 16 MIDI tracks without it and 545 and 746 us with the stock EQ and compressor; no fault, no late or
-over-budget callback, no callback allocation
+over-budget callback, no callback allocation by the engine (the plugin's own DLL is not counted, D37)
 ([DEVICE_TIMING.md](DEVICE_TIMING.md#a-vst3-effect-on-every-track-t1-04-d36)). That is the cost of
 hosting 16 VST3 instances, not of a real effect. Not covered: real third-party plugins, instruments,
 latency, the 32/64 build.
+
+## Increment D37: a VST3 instrument timed on a device
+
+D36 timed an outside effect; gate 2's plugins also include instruments, which do most of a track's work
+when one is loaded, and nothing had timed one.
+
+- **A VST3 instrument workload.** `src/CapacityWorkloads.h` gains kind 14, "16 Session MIDI tracks
+  playing a VST3 instrument": each playing track's instrument slot holds its own instance of an outside
+  instrument, made by `Media::makeInstrument`, prepared like any slot and assigned as a project's plugin
+  instrument is. The track's Session clip then plays the plugin (on MIDI channel 2, as clips do) in
+  place of the built-in synth. Device only, as for the effect.
+- **`AlienDeviceTiming --instrument FILE.vst3`** loads the first type in the file that says it is an
+  instrument, with the loader `--plugin` uses. Without the option the row is skipped; a missing file, or
+  one with no instrument in it, is refused before any row runs.
+
+Checks (`RackIntegrationTests`, with a stand-in instrument that sounds while it holds a note): the row
+is device-only and refuses to run without an instrument; one instance is made for each playing track
+and prepared in its instrument slot, with no effect; 16 tracks play through it with no fault, each
+instance given the clip's chord and holding it; stopping the transport leaves no instance holding a
+note, and they fall silent; an instrument that cannot be made refuses the row.
+
+On the development laptop (Windows Audio, 48 kHz, 480 frames, muted, 4 s per row), 16 instances of
+each instrument with its default patch, playing a held three-note chord: Surge XT p50 1,278 us and p95
+1,586 us (15.9 % of the period); Vital p50 2,982 us and p95 3,609 us (36.1 %); the built-in synth on the
+same tracks p50 290 us and p95 431 us. No fault, no late or over-budget callback
+([DEVICE_TIMING.md](DEVICE_TIMING.md#a-vst3-instrument-on-every-track-t1-04-d37)). The callback
+allocation count covers the engine's own allocations only: a plugin's DLL allocates through its own
+runtime, which the count does not see. Not covered: other patches and denser notes, instruments
+reporting latency, an audio interface, the 32/64 build, and whether each instance sounded (the output
+was muted and not checked per track).
