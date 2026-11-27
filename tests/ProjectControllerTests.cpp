@@ -238,7 +238,7 @@ static void recoveryAndPortableRegressionTests() {
     auto clip=std::make_shared<alien::SessionAudioClip>();clip->sampleRate=8000;clip->channels=1;clip->frames=80;clip->left.assign(80,0.1f);clip->buildWaveform();
     const auto original=root.getChildFile("Original.wav");std::atomic<bool> cancel{false};juce::String error;
     require(alien::writeClipWav(original,*clip,cancel,error),"create source WAV");
-    require(c.installAudio(original,0,0,clip),"install source audio");
+    require(alien::command::installDecodedAudio(c,original,0,0,clip).ok,"install source audio");
     alien::command::CommandEngine(c).execute(alien::command::SetTempo{140});
     bool done=false,ok=false;const auto portable=root.getChildFile("Portable.alienstudio");
     c.writeProject(portable,true,[&](bool result){ok=result;done=true;});
@@ -410,7 +410,7 @@ static void missingAudioTests() {
     {
         ToneEngine engine; alien::ProjectController c(engine);
         alien::command::routeDrumPadEdits(c);
-        require(c.installAudio(loop, 1, 2, makeClip(0.2f)), "install clip");
+        require(alien::command::installDecodedAudio(c,loop, 1, 2, makeClip(0.2f)).ok, "install clip");
         c.loadDrum(kick, 2, 3); waitIdle(c);
         require(c.document().tracks[2].drumAssets[3] != nullptr, "drum pad loaded");
         c.setClipPattern(0, 0, patternWith(65), false); alien::command::CommandEngine(c).execute(alien::command::SetTempo{133});
@@ -520,7 +520,7 @@ static void timelineIntegrationTests() {
         const auto wav = root.getChildFile("tempo.wav");
         require(alien::writeClipWav(wav, *makeClip(8000, 10400), cancel, error), "write a 1.3 second sample");
         ToneEngine engine; alien::ProjectController c(engine); c.pushDocumentToEngine();
-        require(c.installAudio(wav, 1, 0, makeClip(8000, 10400)), "install the audio");
+        require(alien::command::installDecodedAudio(c,wav, 1, 0, makeClip(8000, 10400)).ok, "install the audio");
         alien::command::CommandEngine(c).execute(alien::command::SetTempo{100});
         require(c.naturalLength(1, 0) == 9 * ticksPerStep, "1.3 seconds at 100 BPM is 2080 ticks, rounded up to 9 sixteenths");
         std::uint32_t id = 0;
@@ -563,7 +563,7 @@ static void timelineIntegrationTests() {
             ToneEngine engine; alien::ProjectController c(engine);
             c.setClipPattern(0, 0, patternWith(65), false);
             c.setClipPattern(1, 1, patternWith(67), false);
-            require(c.installAudio(wav, 0, 0, makeClip(8000, 80)), "install the audio on a clip that has notes");
+            require(alien::command::installDecodedAudio(c,wav, 0, 0, makeClip(8000, 80)).ok, "install the audio on a clip that has notes");
             c.commit("Edit");
             bool done = false, ok = false;
             c.writeProject(song, false, [&](bool r) { ok = r; done = true; });
@@ -679,7 +679,7 @@ static void clipLibraryOwnershipTests() {
     auto audio = std::make_shared<alien::SessionAudioClip>();
     audio->sampleRate = 8000; audio->channels = 1; audio->frames = 800; audio->left.assign(800, 0.25f); audio->buildWaveform();
     const auto file = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("clip-library-test.wav");
-    require(c.installAudio(file, 2, 0, audio) && d.clip(2, 0).audio == audio && d.clip(2, 0).audioFilePath == file.getFullPathName()
+    require(alien::command::installDecodedAudio(c,file, 2, 0, audio).ok && d.clip(2, 0).audio == audio && d.clip(2, 0).audioFilePath == file.getFullPathName()
             && d.media.size() == 1, "imported audio is a media entry its clip plays");
     require(alien::command::CommandEngine(c).execute(alien::command::RemoveClipAudio{2, 0}).changed && d.media.empty() && !d.clip(2, 0).isAudioClip(), "removing it drops the media entry");
     // Saving writes each cell's content; opening gives every non-empty cell its own clip.

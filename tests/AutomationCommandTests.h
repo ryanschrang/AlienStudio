@@ -107,7 +107,7 @@ static void automationCommandChecks() {
         auto audio = std::make_shared<alien::SessionAudioClip>();
         audio->sampleRate = 8000; audio->channels = 1; audio->frames = 32000;
         audio->left.assign(32000, .2f); audio->buildWaveform();
-        require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("automation-command-fixture.wav"), 2, 0, audio), "audio fixture");
+        require(alien::command::installDecodedAudio(c,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("automation-command-fixture.wav"), 2, 0, audio).ok, "audio fixture");
         require(c.editTimeline("Place clip", [](tl::Timeline& t) { return t.placeBars(2, 0, 0, 2); }), "place an audio clip");
         std::uint32_t id = 0;
         for (const auto& r : song.regions) if (r.row == 2) id = r.id;

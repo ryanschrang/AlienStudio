@@ -9,7 +9,7 @@ static void deleteClipCommandChecks() {
     auto audio = std::make_shared<alien::SessionAudioClip>();
     audio->sampleRate = 8000; audio->channels = 1; audio->frames = 80;
     audio->left.assign(80, .2f); audio->buildWaveform();
-    require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("delete-fixture.wav"), 2, 0, audio), "audio delete fixture");
+    require(alien::command::installDecodedAudio(c,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("delete-fixture.wav"), 2, 0, audio).ok, "audio delete fixture");
     const auto rackId = c.document().channelRack.clips[0];
     require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{3, 0, rackId}).changed, "rack delete fixture");
     require(commands.execute(cmd::CreateClip{0, 1}).changed, "explicit empty MIDI fixture");

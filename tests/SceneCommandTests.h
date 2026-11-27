@@ -3,7 +3,7 @@ static void sceneCommandChecks() {
     ToneEngine engine; alien::ProjectController c(engine); cmd::CommandEngine commands(c); c.pushDocumentToEngine();
     c.setClipPattern(0, 0, patternWith(64), false); c.commit("Fixture");
     auto audio = std::make_shared<alien::SessionAudioClip>(); audio->sampleRate = 8000; audio->channels = 1; audio->frames = 80; audio->left.assign(80, .2f); audio->buildWaveform();
-    require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("scene-copy-fixture.wav"), 1, 0, audio), "audio scene fixture");
+    require(alien::command::installDecodedAudio(c,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("scene-copy-fixture.wav"), 1, 0, audio).ok, "audio scene fixture");
     const auto before = c.document(); const auto history = historyOf(c);
     const auto identity = alien::newObjectId();
     const std::vector<cmd::Command> edits{cmd::CreateScene{}, cmd::DuplicateScene{0}, cmd::RenameScene{1, "  Copy  "}, cmd::MoveScene{1, 4}, cmd::DeleteScene{2}};

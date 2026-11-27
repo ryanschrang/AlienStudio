@@ -638,8 +638,6 @@ public:
     const SessionAudioClip* rackChannelAudio(int channel) const;
     bool rackChannelOffline(int channel) const;
 
-    // Test fixtures only: product code uses command::installDecodedAudio. Same checks and reducer as the command.
-    bool installAudio(const juce::File& file, int track, int scene, std::shared_ptr<SessionAudioClip> clip);
     std::size_t availableAudioBytes() const noexcept { return maxSessionAudioBytes - retainedBytes; }
 
     // Audio the project refers to that is not loaded (see MissingMedia), clips

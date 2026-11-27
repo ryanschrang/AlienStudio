@@ -4,7 +4,7 @@ static void removeClipAudioChecks() {
     auto audio = std::make_shared<alien::SessionAudioClip>(); audio->sampleRate=8000; audio->channels=1; audio->frames=80;
     audio->left.assign(80,.2f); audio->buildWaveform();
     const auto file=juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("remove-command.wav");
-    require(c.installAudio(file,0,0,audio),"remove audio fixture"); c.setClipPattern(0,0,patternWith(65),false);
+    require(alien::command::installDecodedAudio(c,file,0,0,audio).ok,"remove audio fixture"); c.setClipPattern(0,0,patternWith(65),false);
     require(c.copyCell(0,0) && alien::command::CommandEngine(c).execute(alien::command::PasteLinkedClip{1, 0}).changed,"linked note/audio fixture"); c.markAsNewBaseline();
     const auto before=c.document(); const auto history=historyOf(c);
     const std::vector<cmd::Command> edits{cmd::RemoveClipAudio{0,0},cmd::SetTrackPan{0,.27}};
@@ -39,7 +39,7 @@ static void removeClipAudioChecks() {
     require(cmd::refusal(frozen,cmd::RemoveClipAudio{0,0}).isNotEmpty(),"frozen linked notes/audio cannot be mutated indirectly");
     auto offline=before; alien::SessionClip missing; missing.audioFilePath="missing-remove.wav"; offline.setClip(2,2,missing);
     require(cmd::applyTo(offline,cmd::RemoveClipAudio{2,2}).isEmpty() && !offline.cellClip(2,2),"offline audio removal clears default empty cell without file access");
-    require(c.installAudio(file,2,0,audio) && c.copyCell(2,0) && alien::command::CommandEngine(c).execute(alien::command::PasteLinkedClip{3, 0}).changed,"audio-only linked fixture");
+    require(alien::command::installDecodedAudio(c,file,2,0,audio).ok && c.copyCell(2,0) && alien::command::CommandEngine(c).execute(alien::command::PasteLinkedClip{3, 0}).changed,"audio-only linked fixture");
     require(commands.execute(cmd::RemoveClipAudio{2,0}).changed && !c.document().cellClip(2,0) && c.document().clip(3,0).audio==audio,
         "default empty remainder clears only selected cell, preserving linked audio");
     c.setExternalBusy(true); require(!commands.execute(cmd::RemoveClipAudio{3,0}).ok,"busy removal refuses"); c.setExternalBusy(false);

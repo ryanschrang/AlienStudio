@@ -14,7 +14,7 @@ static void songPlaceCommandChecks() {
     auto audio = std::make_shared<alien::SessionAudioClip>();
     audio->sampleRate = 8000; audio->channels = 1; audio->frames = 32000;   // 4 s: two bars at 120 BPM
     audio->left.assign(32000, .2f); audio->buildWaveform();
-    require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("place-command-fixture.wav"), 2, 0, audio), "audio place fixture");
+    require(alien::command::installDecodedAudio(c,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("place-command-fixture.wav"), 2, 0, audio).ok, "audio place fixture");
     const auto source = c.channelRack().clips[0];
     require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{1, 1, source}).changed, "a Session cell holding a rack clip");
     c.markAsNewBaseline();

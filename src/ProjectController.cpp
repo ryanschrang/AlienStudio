@@ -1935,15 +1935,6 @@ bool ProjectController::rackChannelOffline(int channel) const {
     return info.isFile() && rackAudio.find(info.sample) == rackAudio.end();
 }
 
-bool ProjectController::installAudio(const juce::File& file, int track, int scene, std::shared_ptr<SessionAudioClip> clip) {
-    const auto plan=prepareAudioImport(file,track,scene);
-    if(!plan)return false;
-    const session_audio_import::Prepared prepared{*plan,{std::move(clip),{}}};
-    if(!applyImportAudioCommand(prepared))return false;
-    commit("Import audio",track,scene);
-    audioImportFinished(prepared,{});
-    return true;
-}
 
 std::vector<MissingMedia> ProjectController::missingMedia() const {
     std::vector<MissingMedia> result;

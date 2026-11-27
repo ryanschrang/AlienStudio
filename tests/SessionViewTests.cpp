@@ -1,3 +1,4 @@
+#include "CommandEngine.h"
 // The Session (clip launcher) page driven through its real controls: the FL Studio-style layout (a row per
 // track with its header at the left, a column per scene with its launch button on top, Stop all in the
 // corner), launching, the per-track Stop, the header's light/knobs/solo that are the Mixer's own controls,
@@ -1009,7 +1010,7 @@ static void sliceSessionAudioMenu() {
         auto audio = std::make_shared<SessionAudioClip>();
         audio->sampleRate = 8000; audio->channels = 1; audio->frames = 80;
         audio->left.assign(80, sample); audio->buildWaveform();
-        require(c.installAudio(path, 0, 0, audio), "install Session slice menu fixture");
+        require(alien::command::installDecodedAudio(c,path, 0, 0, audio).ok, "install Session slice menu fixture");
         return audio;
     };
     install(.2f);
@@ -1260,7 +1261,7 @@ static void removeAudioCommandButton() {
     for(auto* child:rig.view.getChildren())if(child->getName()=="Remove audio from selected Session clip")remove=dynamic_cast<juce::Button*>(child);
     require(remove!=nullptr,"Remove audio button exists");
     auto audio=std::make_shared<SessionAudioClip>();audio->sampleRate=8000;audio->channels=1;audio->frames=80;audio->left.assign(80,.2f);audio->buildWaveform();
-    require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("remove-button.wav"),0,0,audio),"remove button fixture");
+    require(alien::command::installDecodedAudio(c,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("remove-button.wav"),0,0,audio).ok,"remove button fixture");
     c.selectClip(0,0);c.markAsNewBaseline();rig.view.refreshSelectedClip();int refresh=0;
     rig.view.onCellContentChanged=[&]{++refresh;};clickButton(*remove);
     require(!c.document().clip(0,0).isAudioClip() && c.undoLabel()=="Remove audio" && refresh==1 && !remove->isEnabled(),"remove button uses command and refresh-only notification");
@@ -1290,7 +1291,7 @@ static void allTypeDuplicateMenu() {
     rig.view.onCellContentChanged = [&] { ++notifications; };
     auto audio = std::make_shared<SessionAudioClip>(); audio->sampleRate = 8000; audio->channels = 1;
     audio->frames = 80; audio->left.assign(80,.2f); audio->buildWaveform();
-    require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("menu-duplicate.wav"),0,0,audio), "audio menu fixture");
+    require(alien::command::installDecodedAudio(c,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("menu-duplicate.wav"),0,0,audio).ok, "audio menu fixture");
     c.selectClip(0,0); c.markAsNewBaseline(); rig.view.showLinkMenu(); choose(7);
     require(c.document().clip(0,1).audio == audio && c.document().selectedScene == 1 && c.undoLabel() == "Duplicate clip" && notifications == 1,
         "audio duplicate menu uses one command and selects independent destination");
