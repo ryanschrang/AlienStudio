@@ -7,19 +7,19 @@
 #include <utility>
 
 namespace alien {
-// Track, bus and master FX share the existing sidechain command. This increment
+// Track, bus, return and master FX share the existing sidechain command. This increment
 // offers pre-FX track keys; other key stages remain editable in Plugins.
 class TrackSidechainView final : public juce::Component {
 public:
-    explicit TrackSidechainView(ProjectController& c) : controller(c) { setName("Track, bus and master FX sidechains"); }
+    explicit TrackSidechainView(ProjectController& c) : controller(c) { setName("FX sidechains"); }
     std::function<bool(RackStage,int,int)> hasInput;
     std::function<bool(RackStage,int,int,int)> onKeyRequested;
     struct Request { std::uint32_t scope{}; TrackId destination; std::uint64_t instance{}; std::vector<TrackId> sources; RackStage stage{RackStage::track}; };
     Request requestFor(int track, int fx, RackStage stage = RackStage::track) const {
         const auto& d = controller.document();
-        Request request{d.identityScope,d.trackId(stage == RackStage::bus ? TrackRole::bus : TrackRole::session,track)};
+        Request request{d.identityScope,d.trackId(ownerRole(stage),track)};
         request.stage = stage;
-        if (stage == RackStage::track || stage == RackStage::bus || stage == RackStage::master)
+        if (stage == RackStage::track || stage == RackStage::bus || stage == RackStage::returnTrack || stage == RackStage::master)
             if (const auto* rack = sidechain_edit::rackOf(d,stage,track); rack && fx >= 0 && fx < static_cast<int>(rack->effects.size()))
                 request.instance = rack->effects[static_cast<std::size_t>(fx)].instanceId;
         for (int t = 0; t < d.trackCount(); ++t) request.sources.push_back(d.trackId(TrackRole::session,t));
@@ -59,6 +59,15 @@ public:
                     bus.name,d.trackId(TrackRole::bus,b)});
             }
         }
+        for (int r = 0; r < maxReturns; ++r) if (d.returns[static_cast<std::size_t>(r)].used) {
+            const auto& ret = d.returns[static_cast<std::size_t>(r)];
+            for (int fx = 0; fx < static_cast<int>(ret.plugins.effects.size()); ++fx) {
+                const auto& effect = ret.plugins.effects[static_cast<std::size_t>(fx)];
+                if (effect.descriptionXml.isNotEmpty()) next.push_back({r,fx,effect.instanceId,effect.sidechain,
+                    hasInput && hasInput(RackStage::returnTrack,r,fx),effect.descriptionXml,RackStage::returnTrack,effect.sidechainFrom,
+                    ret.name,d.trackId(TrackRole::returnTrack,r)});
+            }
+        }
         for (int fx = 0; fx < static_cast<int>(d.masterPlugins.effects.size()); ++fx) {
             const auto& effect = d.masterPlugins.effects[static_cast<std::size_t>(fx)];
             if (effect.descriptionXml.isNotEmpty()) next.push_back({0,fx,effect.instanceId,effect.sidechain,
@@ -70,7 +79,7 @@ public:
         for (const auto& effect : effects) {
             juce::PluginDescription description;
             if (const auto xml = juce::parseXML(effect.description)) description.loadFromXml(*xml);
-            auto label = (effect.stage == RackStage::master ? juce::String("Master") : effect.stage == RackStage::bus ? "Bus: " + effect.ownerName : trackNames[static_cast<std::size_t>(effect.track)]) + " / FX " + juce::String(effect.fx + 1);
+            auto label = (effect.stage == RackStage::master ? juce::String("Master") : effect.stage == RackStage::bus ? "Bus: " + effect.ownerName : effect.stage == RackStage::returnTrack ? "Return: " + effect.ownerName : trackNames[static_cast<std::size_t>(effect.track)]) + " / FX " + juce::String(effect.fx + 1);
             if (description.name.isNotEmpty()) label += ": " + description.name;
             if (effect.source >= 0 && effect.from != KeySource::track) label += " (key set in Plugins)";
             auto button = std::make_unique<juce::TextButton>(label);
@@ -88,8 +97,8 @@ public:
     void paint(juce::Graphics& g) override {
         g.fillAll(ui::colours::surface); g.setFont(ui::font(12)); g.setColour(ui::colours::textFaint);
         g.drawText("Key tracks (before FX)",24,10,200,24,juce::Justification::centredLeft);
-        g.drawText("Track / bus / master FX (choose key)",getWidth()-300,10,276,24,juce::Justification::centredLeft);
-        if (effects.empty()) g.drawFittedText("Add a track, bus or master effect in Plugins to choose its sidechain here.",{getWidth()-300,44,276,70},juce::Justification::centred,3);
+        g.drawText("Effects (click to choose track key)",getWidth()-300,10,276,24,juce::Justification::centredLeft);
+        if (effects.empty()) g.drawFittedText("Add an effect in Plugins to choose its sidechain here.",{getWidth()-300,44,276,70},juce::Justification::centred,3);
         for (std::size_t i = 0; i < trackNames.size(); ++i) {
             const juce::Rectangle<int> bounds{24,44+static_cast<int>(i)*52,160,34};
             g.setColour(ui::colours::raised); g.fillRoundedRectangle(bounds.toFloat(),5);
@@ -105,12 +114,15 @@ public:
         }
     }
 private:
+    static TrackRole ownerRole(RackStage stage) {
+        return stage == RackStage::bus ? TrackRole::bus : stage == RackStage::returnTrack ? TrackRole::returnTrack : TrackRole::session;
+    }
     struct Effect { int track{},fx{}; std::uint64_t instance{}; int source{-1}; bool capable{}; juce::String description; RackStage stage{RackStage::track}; KeySource from{KeySource::track}; juce::String ownerName; TrackId owner; bool operator==(const Effect&) const = default; };
     std::pair<int,int> resolve(const Request& request) const {
         const auto& d = controller.document();
         if (request.scope != d.identityScope || request.instance == 0) return {-1,-1};
-        if (request.stage != RackStage::track && request.stage != RackStage::bus && request.stage != RackStage::master) return {-1,-1};
-        const int track = request.stage == RackStage::master ? 0 : d.trackSlot(request.destination,request.stage == RackStage::bus ? TrackRole::bus : TrackRole::session);
+        if (request.stage != RackStage::track && request.stage != RackStage::bus && request.stage != RackStage::returnTrack && request.stage != RackStage::master) return {-1,-1};
+        const int track = request.stage == RackStage::master ? 0 : d.trackSlot(request.destination,ownerRole(request.stage));
         if (track < 0) return {-1,-1};
         const auto* rack = sidechain_edit::rackOf(d,request.stage,track);
         if (rack == nullptr) return {-1,-1};
