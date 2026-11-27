@@ -1496,18 +1496,6 @@ std::int64_t ProjectController::naturalLength(int row, int source, std::int64_t 
     return song_clip::naturalLength(doc, row, source, start);
 }
 
-bool ProjectController::placeRegion(int row, int source, std::int64_t start, std::uint32_t* idOut) {
-    song_clip::Edit e;
-    e.kind = song_clip::Kind::place; e.row = row; e.source = source; e.ticks = start;
-    if (busy || songClipRefusal(e).isNotEmpty()) return false;
-    const auto before = doc.timeline;
-    const auto* label = song_clip::placesPattern(doc, row, source) ? "Place pattern" : "Place clip";
-    if (song_clip::apply(doc, e).isNotEmpty() || doc.timeline == before) return false;
-    if (idOut != nullptr) *idOut = song_clip::placedClip(doc, before, doc.timeline, row, source, start);
-    commit(label, -1, -1);
-    return true;
-}
-
 bool ProjectController::applyNewSongClip(int row, std::int64_t start, std::uint32_t* idOut) {
     if (busy) return false;
     auto candidate = doc;
@@ -1947,15 +1935,6 @@ bool ProjectController::rackChannelOffline(int channel) const {
     return info.isFile() && rackAudio.find(info.sample) == rackAudio.end();
 }
 
-bool ProjectController::installAudio(const juce::File& file, int track, int scene, std::shared_ptr<SessionAudioClip> clip) {
-    const auto plan=prepareAudioImport(file,track,scene);
-    if(!plan)return false;
-    const session_audio_import::Prepared prepared{*plan,{std::move(clip),{}}};
-    if(!applyImportAudioCommand(prepared))return false;
-    commit("Import audio",track,scene);
-    audioImportFinished(prepared,{});
-    return true;
-}
 
 std::vector<MissingMedia> ProjectController::missingMedia() const {
     std::vector<MissingMedia> result;

@@ -1,3 +1,4 @@
+#include "PlaceSongClipFixture.h"
 #pragma once
 static void deleteClipCommandChecks() {
     auto engine = std::make_unique<ToneEngine>();
@@ -8,11 +9,11 @@ static void deleteClipCommandChecks() {
     auto audio = std::make_shared<alien::SessionAudioClip>();
     audio->sampleRate = 8000; audio->channels = 1; audio->frames = 80;
     audio->left.assign(80, .2f); audio->buildWaveform();
-    require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("delete-fixture.wav"), 2, 0, audio), "audio delete fixture");
+    require(alien::command::installDecodedAudio(c,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("delete-fixture.wav"), 2, 0, audio).ok, "audio delete fixture");
     const auto rackId = c.document().channelRack.clips[0];
     require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{3, 0, rackId}).changed, "rack delete fixture");
     require(commands.execute(cmd::CreateClip{0, 1}).changed, "explicit empty MIDI fixture");
-    require(c.placeRegion(0, 0, 0), "Song cell placement fixture");
+    require(alien::test::placeSongClip(c,0, 0, 0), "Song cell placement fixture");
     c.selectClip(2, 2); c.markAsNewBaseline();
     const auto before = c.document(); const auto history = historyOf(c);
     const auto audioId = before.cellClip(2, 0);

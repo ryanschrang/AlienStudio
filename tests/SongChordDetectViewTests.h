@@ -1,3 +1,4 @@
+#include "PlaceSongClipFixture.h"
 #pragma once
 // Song region menu > Detect chords into the chord track (CONV-03), through the real menu and project history.
 static void chordDetectViewChecks() {
@@ -13,7 +14,7 @@ static void chordDetectViewChecks() {
     hold(0, {36, 60, 64, 67}); hold(16, {45, 60, 64, 69}); hold(32, {41, 60, 65, 69}); hold(48, {43, 59, 62, 65, 67});
     rig.controller.setClipPattern(0, 0, progression, false);
     std::uint32_t region = 0;
-    require(rig.controller.placeRegion(0, 0, 0, &region), "place the progression on the Song");
+    require(alien::test::placeSongClip(rig.controller,0, 0, 0, &region), "place the progression on the Song");
     require(rig.reg(region).start == 0 && rig.reg(region).length == 4 * bar, "the placed region is as long as its four-bar clip");
     // Chords already on the track: E major inside the clip's span, D minor across its right edge.
     require(rig.controller.editTimeline("Chords", [](tl::Timeline& t) {

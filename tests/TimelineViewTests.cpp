@@ -1,3 +1,5 @@
+#include "CommandEngine.h"
+#include "PlaceSongClipFixture.h"
 // The Arrangement timeline screen driven through its real mouse and key handlers:
 // geometry, snapping, placing clips and patterns, selection and marquee, moving,
 // trimming, copy/paste/duplicate/group, keyboard shortcuts, zoom and scroll, the
@@ -161,15 +163,15 @@ struct Rig {
         audio->left.resize(32000);
         for (std::size_t i = 0; i < audio->left.size(); ++i) audio->left[i] = 0.4f * std::sin(static_cast<float>(i) * 0.2f);
         audio->buildWaveform();
-        require(controller.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("timeline-view-test.wav"), 2, 0, audio), "install the audio clip");
+        require(alien::command::installDecodedAudio(controller,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("timeline-view-test.wav"), 2, 0, audio).ok, "install the audio clip");
         controller.editRack("Beat", [](rack::Project& p) { p.setStepOn(0, 0, 0, true); p.setStepOn(0, 1, 4, true); p.setStepOn(0, 2, 8, true); return true; });
         view.refresh();
     }
     // a: track 1, bar 1 (one bar). b: track 2, bar 2 (two bars). au: track 3, bar 1 (two bars of audio). p: pattern lane 1, bar 3 (one bar).
     void song() {
         sources();
-        require(controller.placeRegion(0, 0, 0, &id.a) && controller.placeRegion(1, 1, bar, &id.b)
-                && controller.placeRegion(2, 0, 0, &id.au) && controller.placeRegion(tl::rackRowBase, 0, 2 * bar, &id.p), "place the song");
+        require(alien::test::placeSongClip(controller,0, 0, 0, &id.a) && alien::test::placeSongClip(controller,1, 1, bar, &id.b)
+                && alien::test::placeSongClip(controller,2, 0, 0, &id.au) && alien::test::placeSongClip(controller,tl::rackRowBase, 0, 2 * bar, &id.p), "place the song");
         view.refresh();
         c.setSnap(Snap::sixteenth);
     }
@@ -566,8 +568,8 @@ static void clipListChecks() {
     const auto& audio = bin.row(bin.indexOf({Item::Kind::clip, 2, 0}));
     require(one.left.contains("Track 1") && one.left.contains("Scene 1") && one.right == "3 notes" && two.right == "2 notes" && audio.right == "audio", "each row says whose clip it is and what is in it");
     require(bin.row(1).placed == 1 && one.placed == 1 && two.placed == 1 && audio.placed == 1, "rows show how many times the Song already holds them");
-    rig.controller.placeRegion(0, 0, 10 * bar);
-    rig.controller.placeRegion(tl::rackRowBase + 1, 0, 10 * bar);
+    alien::test::placeSongClip(rig.controller,0, 0, 10 * bar);
+    alien::test::placeSongClip(rig.controller,tl::rackRowBase + 1, 0, 10 * bar);
     rig.view.refresh();
     require(bin.row(bin.indexOf({Item::Kind::clip, 0, 0})).placed == 2 && bin.row(1).placed == 2, "and the counts follow the Song");
     require(bin.row(bin.indexOf({Item::Kind::clip, 2, 0})).placed == 1, "other rows are unaffected");
@@ -1050,7 +1052,7 @@ static void audioSlipDragChecks() {
 
     // Mixed selections slip audio only, including several placements of the same source.
     std::uint32_t other{};
-    require(rig.controller.placeRegion(2, 0, 4 * bar, &other), "place another audio occurrence");
+    require(alien::test::placeSongClip(rig.controller,2, 0, 4 * bar, &other), "place another audio occurrence");
     rig.view.refresh();
     c.setSelection({rig.id.a, audio, other, rig.id.p});
     const auto mixed = rig.t();
@@ -1125,7 +1127,7 @@ static void fadeChecks() {
 
     // Crossfading the audio clip into a copy placed right after it.
     std::uint32_t next{};
-    require(rig.controller.placeRegion(2, 0, 2 * tl::ticksPerBar, &next), "place a second audio clip touching the first");
+    require(alien::test::placeSongClip(rig.controller,2, 0, 2 * tl::ticksPerBar, &next), "place a second audio clip touching the first");
     rig.view.refresh();
     const auto touching = rig.t();
     c.setSelection({next});
@@ -2107,7 +2109,7 @@ static void takeLaneChecks() {
     require(showItem != nullptr && !showItem->enabled, "the track menu cannot show the lanes of a track without takes");
 
     // Two single passes on track 3, from two recorded files (scenes 0 and 1); the later one plays.
-    require(rig->controller.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("timeline-view-take-2.wav"), 2, 1, toneClip(4, 0.8f)),
+    require(alien::command::installDecodedAudio(rig->controller,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("timeline-view-take-2.wav"), 2, 1, toneClip(4, 0.8f)).ok,
             "install a second take's audio");
     for (const int scene : {0, 1})
         require(rig->controller.editTimeline("Take fixture", [=](tl::Timeline& t) {
@@ -2241,7 +2243,7 @@ static void loopPassLaneChecks() {
     rig->sources();
     c.setSnap(Snap::sixteenth);
     // One loop recording of three one-bar passes from one 6-second file; the last pass plays.
-    require(rig->controller.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("timeline-view-loop-take.wav"), 1, 0, toneClip(6, 0.6f)),
+    require(alien::command::installDecodedAudio(rig->controller,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("timeline-view-loop-take.wav"), 1, 0, toneClip(6, 0.6f)).ok,
             "install the loop recording");
     tl::Ids ids;
     require(rig->controller.editTimeline("Loop take fixture", [&](tl::Timeline& t) {
@@ -2343,7 +2345,7 @@ static void placementClipChecks() {
     std::vector<std::uint32_t> openedRegions;
     rig.c.onOpenPlacement = [&](std::uint32_t region) { openedRegions.push_back(region); };
     std::uint32_t second = 0;
-    require(rig.controller.placeRegion(0, 0, 4 * bar, &second), "a second placement of clip a");
+    require(alien::test::placeSongClip(rig.controller,0, 0, 4 * bar, &second), "a second placement of clip a");
     rig.view.refresh();
     const auto scenes = rig.controller.document().sceneCount();
     require(rig.c.makePlacementUnique(second), "Make this placement unique");

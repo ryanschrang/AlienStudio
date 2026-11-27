@@ -1,3 +1,4 @@
+#include "PlaceSongClipFixture.h"
 #pragma once
 static void moveClipCommandChecks() {
     auto engine = std::make_unique<ToneEngine>(); alien::ProjectController c(*engine); cmd::CommandEngine commands(c);
@@ -5,7 +6,7 @@ static void moveClipCommandChecks() {
     require(c.copyCell(0, 0) && alien::command::CommandEngine(c).execute(alien::command::PasteLinkedClip{1, 0}).changed, "move link fixture");
     auto audio = std::make_shared<alien::SessionAudioClip>(); audio->sampleRate = 8000; audio->channels = 1;
     audio->frames = 80; audio->left.assign(80, .2f); audio->buildWaveform();
-    require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("move-audio.wav"), 2, 0, audio), "move audio fixture");
+    require(alien::command::installDecodedAudio(c,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("move-audio.wav"), 2, 0, audio).ok, "move audio fixture");
     require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{3, 0, c.channelRack().clips[0]}).changed, "move rack fixture");
     c.selectClip(1, 3); c.markAsNewBaseline();
     const auto before = c.document(); const auto history = historyOf(c); const auto sourceId = before.cellClip(0, 0);
@@ -37,7 +38,7 @@ static void moveClipCommandChecks() {
     require(!commands.batch({cmd::MoveClip{0,0,0,1},cmd::MoveClip{0,1,1,0}}, "Bad move").ok && alien::sameContent(before,c.document()), "invalid later move prevents a prefix move");
     auto frozen = before; frozen.tracks[0].settings.freezeScene = 0;
     require(cmd::refusal(frozen,cmd::MoveClip{0,0,1,1}).isNotEmpty() && cmd::refusal(frozen,cmd::MoveClip{1,0,0,1}).isNotEmpty(), "frozen source and destination tracks refuse");
-    require(c.placeRegion(0,0,0), "Song-bound move fixture");
+    require(alien::test::placeSongClip(c,0,0,0), "Song-bound move fixture");
     const auto song = c.document();
     require(!commands.execute(cmd::MoveClip{0,0,0,1}).ok && alien::sameContent(song,c.document()), "Song cell source cannot move silently");
     auto destination = before; auto region = song.timeline.regions[0]; region.row = 0; region.source = 1;

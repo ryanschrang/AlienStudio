@@ -1,3 +1,4 @@
+#include "PlaceSongClipFixture.h"
 #pragma once
 static void rackCommandChecks() {
     auto engine = std::make_unique<ToneEngine>(); alien::ProjectController c(*engine); cmd::CommandEngine commands(c);
@@ -23,7 +24,7 @@ static void rackCommandChecks() {
         && alien::sameContent(before,c.document()) && historyOf(c) == redo, "invalid later assignment prevents prefix pattern creation");
     require(!commands.execute(cmd::AssignRackClip{0,0,newId}).ok, "deleted/undone rack source cannot resolve by another slot");
     const auto source = before.channelRack.clips[0];
-    require(c.placeRegion(0,0,0), "Song reference fixture"); const auto song = c.document();
+    require(alien::test::placeSongClip(c,0,0,0), "Song reference fixture"); const auto song = c.document();
     require(!commands.execute(cmd::AssignRackClip{0,0,source}).ok && alien::sameContent(song,c.document()), "Song cell reference refuses assignment before mutation");
     auto frozen = before; frozen.tracks[0].settings.freezeScene = 0;
     require(cmd::refusal(frozen,cmd::AssignRackClip{0,0,source}).isNotEmpty(), "frozen assignment refuses");

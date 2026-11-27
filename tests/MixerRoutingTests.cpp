@@ -1,3 +1,4 @@
+#include "PlaceSongClipFixture.h"
 // Return tracks and sends: pre/post-fader sends, mute and solo, return level/pan/mute and FX,
 // delay compensation through the returns, no allocation while mixing, the project format,
 // undo, and the mixer and plugin panels.
@@ -231,6 +232,13 @@ static void undoAndPanels() {
     alien::TrackMixerPanel panel(c, engine.tracks, engine.returns, engine.masterControls, engine.buses);
     panel.setSize(1400, 640);
     int sendCommands = 0, returnEdits = 0;
+    // triggerClick() delivers the click through the message queue, so keep dispatching until it has landed
+    // (up to 2 s) rather than for a fixed 20 ms, which a loaded CI runner can miss.
+    const auto dispatchUntil = [](auto&& landed) {
+        for (int waited = 0; !landed() && waited < 2000; waited += 10)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+        return landed();
+    };
     panel.onTrackMixCommandExecuted = [&](int) { ++sendCommands; };
     panel.onStripCommandExecuted = [&] { ++returnEdits; };
     auto* strip = panel.trackStrip(0);
@@ -239,8 +247,8 @@ static void undoAndPanels() {
     require(approx(engine.tracks[0].send[2].load(), 0.5f) && approx(c.document().tracks[0].settings.send[2], 0.5f) && sendCommands == 1 && c.undoLabel() == "Set send level",
             "turning a send knob runs the named command, not the legacy edit");
     strip->sendMode(2).triggerClick();
-    juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
-    require(engine.tracks[0].sendPre[2].load() && c.document().tracks[0].settings.sendPre[2] && c.undoLabel() == "Set send mode", "its switch makes it pre-fader");
+    require(dispatchUntil([&] { return engine.tracks[0].sendPre[2].load() && c.document().tracks[0].settings.sendPre[2] && c.undoLabel() == "Set send mode"; }),
+            "its switch makes it pre-fader");
     {   // One drag of a send knob is one undo step, and Undo reaches the knob.
         const auto label = c.undoLabel();
         strip->sendKnob(3).onDragStart();
@@ -260,8 +268,7 @@ static void undoAndPanels() {
     returnB.balance().setValue(-50.0, juce::sendNotificationSync);
     require(approx(engine.returns[1].pan.load(), -0.5f) && c.undoLabel() == "Set return pan", "its knob sets that return's balance");
     returnB.muteButton().triggerClick();
-    juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
-    require(engine.returns[1].mute.load() && c.undoLabel() == "Set return mute", "its button mutes that return");
+    require(dispatchUntil([&] { return engine.returns[1].mute.load() && c.undoLabel() == "Set return mute"; }), "its button mutes that return");
     {   // A refused edit leaves the document alone and puts the control back.
         const auto steady = c.document();
         c.setExternalBusy(true);
@@ -348,7 +355,7 @@ static void freezeWorkflow() {
     alien::PianoRollPattern notes;notes.loopSteps=16;notes.add(60,0,16,1);
     c.setClipPattern(0,0,notes,false);c.commit("Notes");
     require(c.editTimeline("Length",[](alien::timeline::Timeline& t){return t.setLengthBars(1);}),"short freeze song");
-    require(c.placeRegion(0,0,0),"freeze source region");
+    require(alien::test::placeSongClip(c,0,0,0),"freeze source region");
     auto project = alien::toProjectData(c.document());
     project.plugins[0].effects.push_back({"<PLUGIN name=\"Original FX\"/>", {}, false});
     const auto instance = project.plugins[0].effects[0].instanceId;
@@ -487,7 +494,7 @@ static void freezeAudioAndSuspension() {
     require(approx(probe.getSample(0,200),2.4f) && approx(probe.getSample(1,200),2.4f),"cache includes FX but ignores fader/pan and preserves values above full scale");
     reader.reset();auto imported=alien::importSessionAudioClip(file);require(imported.clip!=nullptr,"import frozen WAV");
     auto live=std::make_unique<ToneEngine>();live->prepare(48000);alien::ProjectController c(*live);c.pushDocumentToEngine();
-    c.setClipPattern(0,0,notes,false);c.commit("Notes");require(c.placeRegion(0,0,0),"place original notes");
+    c.setClipPattern(0,0,notes,false);c.commit("Notes");require(alien::test::placeSongClip(c,0,0,0),"place original notes");
     auto& liveRack=live->plugins->racks[0];liveRack.instrumentAssigned=true;
     auto instrument=std::make_unique<TestProcessor>(true);auto* instrumentRaw=instrument.get();liveRack.instrument.processor=std::move(instrument);
     auto effect=std::make_unique<TestProcessor>(false,12.0f,4);auto* effectRaw=effect.get();liveRack.effects[0].processor=std::move(effect);liveRack.effectCount=1;

@@ -128,7 +128,7 @@ static void drumPadCommandChecks() {
     auto loop = std::make_shared<alien::SessionAudioClip>();
     loop->sampleRate = 8000; loop->channels = 1; loop->frames = 80;
     loop->left.assign(80, 0.2f); loop->buildWaveform();
-    require(c.installAudio(juce::File("C:/kit/loop.wav"), 1, 0, loop), "fixture: a Session clip with audio");
+    require(alien::command::installDecodedAudio(c,juce::File("C:/kit/loop.wav"), 1, 0, loop).ok, "fixture: a Session clip with audio");
     const auto withLoop = c.document();
     const auto loopBytes = c.availableAudioBytes();
     const cmd::SliceClipToDrumPads toPads{1, 0};

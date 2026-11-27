@@ -1048,7 +1048,7 @@ void refusalAndGuardTests() {
         rig.engine.patternMode.store(1);
         auto clip = std::make_shared<alien::SessionAudioClip>();
         clip->sampleRate = 8000; clip->channels = 1; clip->frames = 80; clip->left.assign(80, 0.1f); clip->buildWaveform();
-        require(c.installAudio(juce::File("/tmp/not-there.wav"), 1, 2, clip), "fixture: an audio clip");
+        require(alien::command::installDecodedAudio(c,juce::File("/tmp/not-there.wav"), 1, 2, clip).ok, "fixture: an audio clip");
         c.selectClip(1, 2);
         r = c.startRecording();
         require(!r.started && r.reason.contains("audio") && !c.isRecording() && !rig.engine.recording.active(), "a clip that holds audio cannot be recorded into");

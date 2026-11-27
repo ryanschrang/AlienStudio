@@ -1,3 +1,4 @@
+#include "PlaceSongClipFixture.h"
 #pragma once
 // PasteSongClips: pasting copied Song clips, which brings back a placement clip that was cut (or edited since it was
 // copied) as part of its own Undo step. TimelineViewTests drives the real Ctrl+V and Paste menu, which run this command.
@@ -13,7 +14,7 @@ static void songPasteCommandChecks() {
     c.setClipPattern(0, 0, patternWith(60), false); c.commit("Notes", 0, 0);
     std::uint32_t a = 0, other = 0;
     // Only a shared placement can be made unique, so the cell is placed twice.
-    require(c.placeRegion(0, 0, 0, &a) && c.placeRegion(0, 0, 8 * bar, &other) && alien::command::CommandEngine(c).execute(alien::command::MakeSongClipUnique{a}).changed, "a placement clip to copy");
+    require(alien::test::placeSongClip(c,0, 0, 0, &a) && alien::test::placeSongClip(c,0, 0, 8 * bar, &other) && alien::command::CommandEngine(c).execute(alien::command::MakeSongClipUnique{a}).changed, "a placement clip to copy");
     const auto clipOf = [&](std::uint32_t id) { return song.find(id)->clip; };
     const auto original = clipOf(a);
     require(original != 0 && d.library.clip(alien::library::ClipId{original}) != nullptr, "the region plays a clip of its own");
@@ -81,7 +82,7 @@ static void songPasteCommandChecks() {
     // A paste over the middle of a longer clip cuts it in two; the cut-off part is new too, but only the paste is named.
     {
         std::uint32_t wide = 0;
-        require(c.placeRegion(1, 0, 32 * bar, &wide) && commands.execute(cmd::TrimSongClipEnd{wide, 40 * bar}).changed, "a long clip");
+        require(alien::test::placeSongClip(c,1, 0, 32 * bar, &wide) && commands.execute(cmd::TrimSongClipEnd{wide, 40 * bar}).changed, "a long clip");
         auto small = std::make_shared<alien::song_clip::Pasted>();
         small->clips = song.copy({wide});
         small->clips.regions[0].length = bar;
@@ -93,7 +94,7 @@ static void songPasteCommandChecks() {
 
     // Rack patterns move by `lanes`.
     std::uint32_t pattern = 0;
-    require(c.placeRegion(tl::rackRowBase, 0, 0, &pattern), "a rack pattern to copy");
+    require(alien::test::placeSongClip(c,tl::rackRowBase, 0, 0, &pattern), "a rack pattern to copy");
     const auto patterns = copyOf({pattern});
     const auto lane = step({patterns, 8 * bar, 2}, "a pattern paste");
     require(song.find(lane[0])->row == tl::rackRowBase + 2, "a pattern pastes `lanes` lanes down");

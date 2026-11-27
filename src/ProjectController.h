@@ -525,10 +525,6 @@ public:
     // for MIDI and rack patterns, its running time at the current tempo for audio
     // (rounded up to a sixteenth so it ends on the grid).
     std::int64_t naturalLength(int row, int source, std::int64_t start = 0) const;
-    // Places a Session cell or a rack pattern in the Song over what is there, as one undo step at the clip's natural length.
-    // It is the PlaceSongClip reducer, recorded under "Place pattern" or "Place clip"; the Song and Session views run the
-    // command itself. `idOut` gets the placed clip's id.
-    bool placeRegion(int row, int source, std::int64_t start, std::uint32_t* idOut = nullptr);
     // Live side of NewSongClip (see SongPlacementEdit.h): a new, empty MIDI clip for a track on the timeline, in a free
     // Session cell of that track, which is selected. CommandEngine owns the history entry.
     bool applyNewSongClip(int row, std::int64_t start, std::uint32_t* idOut = nullptr);
@@ -642,8 +638,6 @@ public:
     const SessionAudioClip* rackChannelAudio(int channel) const;
     bool rackChannelOffline(int channel) const;
 
-    // Test fixtures only: product code uses command::installDecodedAudio. Same checks and reducer as the command.
-    bool installAudio(const juce::File& file, int track, int scene, std::shared_ptr<SessionAudioClip> clip);
     std::size_t availableAudioBytes() const noexcept { return maxSessionAudioBytes - retainedBytes; }
 
     // Audio the project refers to that is not loaded (see MissingMedia), clips

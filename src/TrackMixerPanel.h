@@ -848,7 +848,7 @@ public:
         routingShown = shown;
         routingButton.setButtonText(shown ? "Strips" : "Routing");
         sidechainButton.setButtonText(sidechainsShown ? "Show routing" : "Sidechains");
-        help.setText(shown ? (sidechainsShown ? "FX sidechains: click for a pre-FX track key. Other key stages stay in Plugins."
+        help.setText(shown ? (sidechainsShown ? "FX sidechains: click for pre-FX or post-fader track keys. Track FX accept pre-FX only. Return/master FX accept buses; master FX also accept returns."
                           : routingGraph.showsSends() ? "Sends: click a track for level and pre/post-fader choices."
                                                                      : "Outputs: click a track to route it. Show sends for return connections.")
                            : "Mixer strips: instruments, levels, sends and outputs. Bus and return FX are set in Plugins.", juce::dontSendNotification);

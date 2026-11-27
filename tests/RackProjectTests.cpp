@@ -1,3 +1,4 @@
+#include "PlaceSongClipFixture.h"
 // The Channel Rack inside the project: file format version 7, undo and redo,
 // track deletes and moves, saving (plain and portable), reopening, missing
 // samples and relinking. No audio device or window is needed.
@@ -727,7 +728,7 @@ static void savedBindingPlayback() {
             return p.addPattern(0) && p.setStepField(1, 0, 0, StepField::velocity, 40);
         }), "two audible independent rack sources");
         require(alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{0, 0, c.channelRack().clips[0]}).changed && alien::command::CommandEngine(c).execute(alien::command::AssignRackClip{1, 0, c.channelRack().clips[1]}).changed
-            && c.placeRegion(0, 0, 0) && c.placeRegion(alien::timeline::rackRowBase + 1, 1, 0),
+            && alien::test::placeSongClip(c,0, 0, 0) && alien::test::placeSongClip(c,alien::timeline::rackRowBase + 1, 1, 0),
             "save overlapping distinct Session and Song references");
         const auto json = alien::serializeSessionProject(alien::toProjectData(c.document()));
         auto legacy = juce::JSON::parse(json); legacy.getDynamicObject()->setProperty("version", 27);
