@@ -1,3 +1,4 @@
+#include "PlaceSongClipFixture.h"
 // Return tracks and sends: pre/post-fader sends, mute and solo, return level/pan/mute and FX,
 // delay compensation through the returns, no allocation while mixing, the project format,
 // undo, and the mixer and plugin panels.
@@ -354,7 +355,7 @@ static void freezeWorkflow() {
     alien::PianoRollPattern notes;notes.loopSteps=16;notes.add(60,0,16,1);
     c.setClipPattern(0,0,notes,false);c.commit("Notes");
     require(c.editTimeline("Length",[](alien::timeline::Timeline& t){return t.setLengthBars(1);}),"short freeze song");
-    require(c.placeRegion(0,0,0),"freeze source region");
+    require(alien::test::placeSongClip(c,0,0,0),"freeze source region");
     auto project = alien::toProjectData(c.document());
     project.plugins[0].effects.push_back({"<PLUGIN name=\"Original FX\"/>", {}, false});
     const auto instance = project.plugins[0].effects[0].instanceId;
@@ -493,7 +494,7 @@ static void freezeAudioAndSuspension() {
     require(approx(probe.getSample(0,200),2.4f) && approx(probe.getSample(1,200),2.4f),"cache includes FX but ignores fader/pan and preserves values above full scale");
     reader.reset();auto imported=alien::importSessionAudioClip(file);require(imported.clip!=nullptr,"import frozen WAV");
     auto live=std::make_unique<ToneEngine>();live->prepare(48000);alien::ProjectController c(*live);c.pushDocumentToEngine();
-    c.setClipPattern(0,0,notes,false);c.commit("Notes");require(c.placeRegion(0,0,0),"place original notes");
+    c.setClipPattern(0,0,notes,false);c.commit("Notes");require(alien::test::placeSongClip(c,0,0,0),"place original notes");
     auto& liveRack=live->plugins->racks[0];liveRack.instrumentAssigned=true;
     auto instrument=std::make_unique<TestProcessor>(true);auto* instrumentRaw=instrument.get();liveRack.instrument.processor=std::move(instrument);
     auto effect=std::make_unique<TestProcessor>(false,12.0f,4);auto* effectRaw=effect.get();liveRack.effects[0].processor=std::move(effect);liveRack.effectCount=1;

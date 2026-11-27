@@ -1,3 +1,4 @@
+#include "PlaceSongClipFixture.h"
 #include "CommandEngine.h"
 #include "StockEffects.h"
 #include "AudioFileWrite.h"
@@ -305,7 +306,7 @@ static void arrangementPublishTests() {
     c.commit("No-op");
     require(published() == base + 1, "a commit with no change does not publish");
 
-    require(c.placeRegion(0, 0, 0), "place a clip on the timeline");
+    require(alien::test::placeSongClip(c,0, 0, 0), "place a clip on the timeline");
     require(published() == base + 2, "changing the timeline publishes once");
 
     require(c.undo() && published() == base + 3, "undoing the timeline change republishes");
@@ -501,17 +502,17 @@ static void timelineIntegrationTests() {
         ToneEngine engine; alien::ProjectController c(engine); c.pushDocumentToEngine();
         alien::command::importAudioFile(c, wav, 0, 0);
         require(c.isBusy(), "an import is under way");
-        require(!c.placeRegion(0, 0, 0) && c.timeline().regions.empty(), "the timeline cannot be edited while a file is loading");
+        require(!alien::test::placeSongClip(c,0, 0, 0) && c.timeline().regions.empty(), "the timeline cannot be edited while a file is loading");
         waitIdle(c);
-        require(c.placeRegion(0, 0, 0) && c.timeline().regions.size() == 1, "and can be once it has finished");
+        require(alien::test::placeSongClip(c,0, 0, 0) && c.timeline().regions.size() == 1, "and can be once it has finished");
     }
     {   // Only what the project has can be placed, and an edit that changes nothing is not an edit.
         ToneEngine engine; alien::ProjectController c(engine); c.pushDocumentToEngine();
         const auto label = c.undoLabel();
         require(c.document().trackCount() == 4 && c.document().sceneCount() == 4 && c.channelRack().patternCount == 1, "a new project's size");
-        require(!c.placeRegion(5, 0, 0), "no clip on a track the project does not have");
-        require(!c.placeRegion(0, 9, 0), "no clip from a scene the project does not have");
-        require(!c.placeRegion(rackRowBase, 3, 0), "no pattern the rack does not have");
+        require(!alien::test::placeSongClip(c,5, 0, 0), "no clip on a track the project does not have");
+        require(!alien::test::placeSongClip(c,0, 9, 0), "no clip from a scene the project does not have");
+        require(!alien::test::placeSongClip(c,rackRowBase, 3, 0), "no pattern the rack does not have");
         require(c.timeline().regions.empty() && c.undoLabel() == label, "and nothing was recorded");
         require(!c.editTimeline("Nothing", [](Timeline&) { return true; }), "an edit that leaves the timeline as it was reports no change");
     }
@@ -523,7 +524,7 @@ static void timelineIntegrationTests() {
         alien::command::CommandEngine(c).execute(alien::command::SetTempo{100});
         require(c.naturalLength(1, 0) == 9 * ticksPerStep, "1.3 seconds at 100 BPM is 2080 ticks, rounded up to 9 sixteenths");
         std::uint32_t id = 0;
-        require(c.placeRegion(1, 0, 0, &id) && c.timeline().find(id) != nullptr && c.timeline().find(id)->length == 9 * ticksPerStep, "a placed audio clip has that length");
+        require(alien::test::placeSongClip(c,1, 0, 0, &id) && c.timeline().find(id) != nullptr && c.timeline().find(id)->length == 9 * ticksPerStep, "a placed audio clip has that length");
         require(c.editTimeline("Trim", [&](Timeline& t) { return t.trimStart(id, 480); }), "trim the front");
         closeTo(c.timeline().find(id)->audioOffset, 0.3, "480 ticks at 100 BPM is 0.3 seconds of the audio");
         require(c.naturalLength(rackRowBase, 0) == 16 * ticksPerStep, "a rack pattern lasts its length in steps");
@@ -531,9 +532,9 @@ static void timelineIntegrationTests() {
     {   // Clips stay attached to their track, scene and pattern as those are moved, added and deleted.
         ToneEngine engine; alien::ProjectController c(engine); c.pushDocumentToEngine();
         std::uint32_t a = 0, b = 0, p0 = 0, p1 = 0, p2 = 0;
-        require(c.placeRegion(2, 1, 0, &a) && c.placeRegion(3, 2, ticksPerBar, &b), "two clips");
+        require(alien::test::placeSongClip(c,2, 1, 0, &a) && alien::test::placeSongClip(c,3, 2, ticksPerBar, &b), "two clips");
         require(c.editRack("Two more patterns", [](alien::rack::Project& p) { return p.addPattern() && p.addPattern(); }), "three patterns");
-        require(c.placeRegion(rackRowBase, 0, 0, &p0) && c.placeRegion(rackRowBase + 1, 1, 0, &p1) && c.placeRegion(rackRowBase + 2, 2, 0, &p2), "three patterns on three lanes");
+        require(alien::test::placeSongClip(c,rackRowBase, 0, 0, &p0) && alien::test::placeSongClip(c,rackRowBase + 1, 1, 0, &p1) && alien::test::placeSongClip(c,rackRowBase + 2, 2, 0, &p2), "three patterns on three lanes");
         auto rowOf = [&](std::uint32_t id) { const auto* r = c.timeline().find(id); return r != nullptr ? r->row : -1; };
         auto sourceOf = [&](std::uint32_t id) { const auto* r = c.timeline().find(id); return r != nullptr ? r->source : -1; };
 
@@ -763,7 +764,7 @@ static void placementUniqueTests() {
     using alien::timeline::ticksPerBar;
     c.setClipPattern(0, 0, patternWith(60), false); c.commit("Notes", 0, 0);
     std::uint32_t first = 0, second = 0;
-    require(c.placeRegion(0, 0, 0, &first) && c.placeRegion(0, 0, 4 * ticksPerBar, &second), "two placements of one cell");
+    require(alien::test::placeSongClip(c,0, 0, 0, &first) && alien::test::placeSongClip(c,0, 0, 4 * ticksPerBar, &second), "two placements of one cell");
     require(c.placementShared(first) && c.placementShared(second), "they share what they play");
     const auto scenes = d.sceneCount();
     const auto clips = d.library.clipCount();
@@ -792,7 +793,7 @@ static void placementClipTests() {
     using alien::timeline::ticksPerBar;
     c.setClipPattern(1, 0, patternWith(48), false); c.commit("Notes", 1, 0);
     std::uint32_t a = 0, b = 0;
-    require(c.placeRegion(1, 0, 0, &a) && c.placeRegion(1, 0, 2 * ticksPerBar, &b) && alien::command::CommandEngine(c).execute(alien::command::MakeSongClipUnique{a}).changed, "a placement clip");
+    require(alien::test::placeSongClip(c,1, 0, 0, &a) && alien::test::placeSongClip(c,1, 0, 2 * ticksPerBar, &b) && alien::command::CommandEngine(c).execute(alien::command::MakeSongClipUnique{a}).changed, "a placement clip");
     const auto clip = d.timeline.find(a)->clip;
     const auto cell = d.cellClip(1, 0);
     require(!alien::command::CommandEngine(c).execute(alien::command::SetPlacementClipNotes{0, std::make_shared<const alien::PianoRollPattern>(patternWith(70))}).ok
@@ -839,7 +840,7 @@ static void placementClipFileTests() {
     using alien::timeline::ticksPerBar;
     c.setClipPattern(0, 0, patternWith(60), false); c.commit("Notes", 0, 0);
     std::uint32_t a = 0, b = 0;
-    require(c.placeRegion(0, 0, 0, &a) && c.placeRegion(0, 0, ticksPerBar, &b) && alien::command::CommandEngine(c).execute(alien::command::MakeSongClipUnique{a}).changed, "a placement clip");
+    require(alien::test::placeSongClip(c,0, 0, 0, &a) && alien::test::placeSongClip(c,0, 0, ticksPerBar, &b) && alien::command::CommandEngine(c).execute(alien::command::MakeSongClipUnique{a}).changed, "a placement clip");
     require(c.editTimeline("Duplicate", [&](alien::timeline::Timeline& t) { return t.duplicate({a}); }), "and a copy of it");
     require(alien::command::CommandEngine(c).execute(alien::command::SetPlacementClipNotes{d.timeline.find(a)->clip, std::make_shared<const alien::PianoRollPattern>(patternWith(66))}).changed,
         "with notes of its own through the command");
@@ -976,7 +977,7 @@ static void savedRackBindingTests() {
     c.launchClip(0, 2); require(engine.requestedTrackRackClip[0].load() == 0, "ordinary launch on the rack's anchor row stops that instance");
     c.launchScene(2); require(engine.sceneTrackRackClip[0].load() == 0, "a scene without a rack assignment queues synchronized rack stop");
     std::uint32_t region{};
-    require(c.placeRegion(0, 0, 0, &region) && d.timeline.find(region)->isPattern() && d.timeline.find(region)->rackClip == source,
+    require(alien::test::placeSongClip(c,0, 0, 0, &region) && d.timeline.find(region)->isPattern() && d.timeline.find(region)->rackClip == source,
             "placing a rack cell creates an explicit rack-lane Song reference");
     require(c.editTimeline("Edit with stale rack cache", [&](auto& song) {
         auto* r = song.find(region); r->source = -1; r->gain = 0.7f; return true;
@@ -1074,7 +1075,7 @@ static void universalTrackIdentityTests() {
     const auto busId = d.trackId(TrackRole::bus, bus);
     require(c.setTrackOutput(2, bus), "route Session stage through group"); c.commit("Route group");
     c.setClipPattern(2, 0, patternWith(64), false);
-    require(c.placeRegion(2, 0, 0), "Song region retains its universal track owner");
+    require(alien::test::placeSongClip(c,2, 0, 0), "Song region retains its universal track owner");
     c.commit("Prepare identity fixture");
     const auto json = alien::serializeSessionProject(alien::toProjectData(d));
     alien::SessionProjectData parsed; juce::String error;

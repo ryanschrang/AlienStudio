@@ -1,6 +1,7 @@
+#include "PlaceSongClipFixture.h"
 #pragma once
 // PlaceSongClip: putting a Session cell or a rack pattern in the Song. TimelineViewTests drives the real double-click
-// and drop placements, and ProjectControllerTests the controller's placeRegion, which shares this reducer.
+// and drop placements, and ProjectControllerTests command-based placement fixtures.
 static void songPlaceCommandChecks() {
     namespace tl = alien::timeline;
     auto engine = std::make_unique<ToneEngine>();
@@ -77,7 +78,7 @@ static void songPlaceCommandChecks() {
 
         c.setExternalBusy(true);
         const auto busy = commands.execute(cmd::PlaceSongClip{0, 0, 0});
-        const bool controllerBusy = c.placeRegion(0, 0, 0);
+        const bool controllerBusy = alien::test::placeSongClip(c,0, 0, 0);
         c.setExternalBusy(false);
         require(!busy.ok && busy.error.contains("busy") && !controllerBusy && alien::sameContent(before, c.document()), "a busy project refuses a placement");
 
@@ -87,16 +88,32 @@ static void songPlaceCommandChecks() {
         require(cmd::applyTo(frozen, cmd::PlaceSongClip{1, 0, 0}).isEmpty(), "another track still does");
     }
 
-    // The controller's placeRegion is the same edit, under the same Undo names, and says which clip it placed.
+    // The command fixture reads placement IDs without a second mutation/history route.
     {
         const auto before = c.document();
         std::uint32_t id = 0;
-        require(c.placeRegion(2, 1, 12 * bar, &id) && c.undoLabel() == "Place clip" && found(id) != nullptr && found(id)->start == 12 * bar, "placeRegion places a clip");
-        require(c.undo() && alien::sameContent(before, c.document()), "placeRegion is one Undo step");
-        require(c.placeRegion(1, 1, 12 * bar, &id) && c.undoLabel() == "Place pattern" && found(id)->row == tl::rackRowBase, "placeRegion places a cell's rack pattern");
+        require(alien::test::placeSongClip(c,2, 1, 12 * bar, &id) && c.undoLabel() == "Place clip" && found(id) != nullptr && found(id)->start == 12 * bar, "command fixture places a clip");
+        require(c.undo() && alien::sameContent(before, c.document()), "command placement is one Undo step");
+        require(alien::test::placeSongClip(c,1, 1, 12 * bar, &id) && c.undoLabel() == "Place pattern" && found(id)->row == tl::rackRowBase, "command fixture places a cell's rack pattern");
         require(c.undo(), "undo the pattern");
     }
 
+    // Placement and mixer edits share one transaction, including late refusal.
+    {
+        const auto before=c.document(); const auto history=historyOf(c);
+        const std::vector<cmd::Command> edits{cmd::PlaceSongClip{0,0,16*bar},cmd::SetTrackPan{0,.31}};
+        const auto prediction=commands.preview(edits);
+        require(prediction.ok && prediction.changed && alien::sameContent(before,c.document()) && historyOf(c)==history,"placement/mixer Preview is pure");
+        require(commands.batch(edits,"Place and mix").changed && alien::sameContent(prediction.after,c.document())
+            && engine->tracks[0].pan.load()==.31f && c.captureArrangement()->timeline==prediction.after.timeline,"placement batch matches Preview and publishes mix and Song snapshot");
+        require(c.undo() && alien::sameContent(before,c.document()) && engine->tracks[0].pan.load()==static_cast<float>(before.tracks[0].settings.pan),"one Undo restores placement and mix");
+        const auto redo=historyOf(c);
+        const auto late=commands.batch({edits[0],edits[1],cmd::PlaceSongClip{99,0,0}},"Bad placement");
+        c.setExternalBusy(true); const auto busy=commands.batch(edits,"Busy placement"); c.setExternalBusy(false);
+        require(!late.ok && late.failedCommand==2 && !busy.ok && historyOf(c)==redo && alien::sameContent(before,c.document())
+            && engine->tracks[0].pan.load()==static_cast<float>(before.tracks[0].settings.pan),"late/busy placement refusal preserves redo and live mix");
+        require(c.redo() && alien::sameContent(prediction.after,c.document()) && c.undo(),"one Redo restores accepted placement transaction");
+    }
     // Script form.
     juce::String error;
     for (const auto& command : std::vector<cmd::Command>{cmd::PlaceSongClip{3, 2, 960}, cmd::PlaceSongClip{tl::rackRowBase + 2, 1, 0, 480}}) {
