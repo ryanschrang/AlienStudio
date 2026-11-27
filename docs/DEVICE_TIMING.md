@@ -79,8 +79,9 @@ size only once.
   guarantee, and not a track count anyone can rely on.
 - Long gaps and late callbacks include the driver's and Windows' own scheduling, not only the
   engine's work. A long gap without a long callback points at the system, not the engine.
-- No plugins except the stock EQ and compressor, no streaming from disk, and no recording or input
-  monitoring (the device is opened with no inputs).
+- No plugins except the stock EQ and compressor, and no recording or input monitoring (the device is
+  opened with no inputs). Streaming from disk is covered since D32 (below), from one file on whatever
+  drive holds the temporary folder.
 
 ## First results (the development PC, not representative hardware)
 
@@ -101,3 +102,46 @@ exclusive mode took 256 but not 128. Per frame, 16 idle tracks cost about a thir
 (about 0.53 us per frame) than in the offline report on the same machine (about 0.39 us per frame
 at 256 and 1,024 frames, D28). The device callback runs on a different thread from the report's,
 which the laptop's power management may treat differently; this was not investigated.
+
+## Audio streamed from disk (T1-04 D32)
+
+Workload 11, "16 Session audio clips, streamed from disk", plays the way a long import does: every one
+of the 16 tracks launches a Session clip that streams from a WAV file, each through its own decoder,
+fed by the engine's disk-stream worker while the device plays.
+
+- **The file** is written by the tool before the first row, into the temporary folder: a quiet
+  220 Hz stereo tone, 16-bit, 48 kHz, as long as the warm-up, the recording and 5 s to spare
+  (8 s, about 1.5 MiB, with the defaults). It is removed when the tool ends. On a device running at
+  another rate it is resampled as it plays, as an import would be.
+- **Recording waits for the clips.** A streamed clip starts once its first audio has been read, so
+  after the warm-up the tool waits (up to 3 s) until every clip in the row is playing. Every row
+  does this; for the others it is already true.
+- **The row fails if a stream ran dry or could not be read** on any track (the engine's per-track
+  underrun and failure counts, D12), since the clip then played silence where it has audio.
+- **The offline report leaves this row out.** It plays blocks back to back, far faster than real
+  time, which no disk stream keeps up with; only a device paces callbacks as playback does.
+
+First results, same laptop as above, muted, 4 s per row:
+
+| Device type | Rate | Buffer | Workload | p50 us | p95 us | max us | p95 / budget % | Late | Allocations |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Windows Audio | 48 kHz | 480 | Transport, no clips, 16 tracks | 109.8 | 168.6 | 273.2 | 1.7 | 0 | 0 |
+| Windows Audio | 48 kHz | 480 | 16 Session audio clips (in memory) | 204.2 | 264.8 | 336.7 | 2.6 | 0 | 0 |
+| Windows Audio | 48 kHz | 480 | 16 Session audio clips, streamed from disk | 219.1 | 278.4 | 328.0 | 2.8 | 0 | 0 |
+| Windows Audio (Exclusive Mode) | 44.1 kHz | 256 | Transport, no clips, 16 tracks | 61.7 | 101.1 | 203.9 | 1.7 | 0 | 0 |
+| Windows Audio (Exclusive Mode) | 44.1 kHz | 256 | 16 Session audio clips (in memory) | 105.4 | 135.3 | 277.0 | 2.3 | 0 | 0 |
+| Windows Audio (Exclusive Mode) | 44.1 kHz | 256 | 16 Session audio clips, streamed from disk | 118.8 | 159.5 | 249.5 | 2.7 | 0 | 0 |
+
+No stream ran dry or failed, and the audio thread allocated nothing, in either run.
+
+What this shows, on this machine only:
+- **Streaming costs the callback a little more than playing the same clips from memory**: about
+  7-13 % at p50 (219 vs 204 us at 480 frames, 119 vs 105 us at 256), since each sample is read from a
+  voice's ring instead of from the decoded clip. Reading and decoding the file happens on the worker,
+  not in the callback.
+- **16 concurrent streams kept up** at 256 frames in exclusive mode, the smaller of the two buffers.
+
+What it does not show: a slow, busy or nearly full drive; other files being read at the same time;
+more than one file; MP3 sources; rates other than 44.1 and 48 kHz; the 32/64 build. Idle rows ran
+at lower absolute times than in the D31 table above, on the same laptop and settings; one run per row
+is not enough to say why.

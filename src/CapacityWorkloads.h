@@ -13,8 +13,11 @@ namespace alien::capacity {
 
 // kind: 0 transport only, 1 Session rack occurrences, 3 Song rack lanes, 4 Session MIDI tracks,
 // 5 MIDI with sends to the four returns, 6 Session audio clips, 7 MIDI through the stock EQ and
-// compressor, 8 Session drum tracks. `occurrences` is how many tracks play (or rack occurrences).
-struct Case { const char* name; int kind, tracks, occurrences; };
+// compressor, 8 Session drum tracks, 9 Session audio clips streamed from disk (T1-04 D32).
+// `occurrences` is how many tracks play (or rack occurrences).
+// deviceOnly: the offline report leaves the row out. It plays blocks back to back, far faster than
+// real time, which no disk stream keeps up with; on a device the callbacks come at playback's pace.
+struct Case { const char* name; int kind, tracks, occurrences; bool deviceOnly = false; };
 
 inline std::vector<Case> cases(int full) {
     std::vector<Case> all{{"Transport, no clips", 0, 1, 0}, {"Transport, no clips", 0, 16, 0}, {"1 Session rack occurrence", 1, 16, 1},
@@ -22,7 +25,9 @@ inline std::vector<Case> cases(int full) {
         // T1-04 D22: loaded versus playing tracks, sends and returns, audio clips and plugins (measurement gates 2 and 3).
         {"1 Session MIDI track playing", 4, 16, 1}, {"16 Session MIDI tracks, sends to 4 returns", 5, 16, 16},
         {"16 Session audio clips", 6, 16, 16}, {"16 Session MIDI tracks, stock EQ + compressor", 7, 16, 16},
-        {"16 Session drum tracks", 8, 16, 16}};
+        {"16 Session drum tracks", 8, 16, 16},
+        // T1-04 D32: every track plays its own decoder of one WAV file through the engine's disk-stream worker.
+        {"16 Session audio clips, streamed from disk", 9, 16, 16, true}};
     if (full > 16) {
         all.push_back({"Transport, no clips", 0, full, 0});
         all.push_back({"All Session rack occurrences", 1, full, full});
@@ -38,6 +43,9 @@ inline std::vector<Case> cases(int full) {
 struct Media {
     SessionAudioClip audio, hit;
     PianoRollPattern beat, chord;
+    // The streamed clip of kind 9, made by whoever runs that row (the device tool writes a WAV file for
+    // it); empty otherwise. It must be long enough to play through warm-up and recording.
+    std::shared_ptr<const SessionAudioClip> streamed;
     Media() {
         // One decoded clip shared by every audio row, long enough to play through warm-up and measurement at 1,024 frames.
         audio.sampleRate = 48000; audio.channels = 1; audio.frames = 8 * 48000;
@@ -84,6 +92,7 @@ struct Rig {
 };
 
 inline bool playsMidi(const Case& c) { return c.kind == 4 || c.kind == 5 || c.kind == 7 || c.kind == 8; }
+inline bool playsAudio(const Case& c) { return c.kind == 6 || c.kind == 9; }
 
 // Sets the workload up on a prepared rig, short of starting the transport. Returns what failed, or nullptr.
 inline const char* configure(Rig& rig, const Case& c, const Media& media) {
@@ -111,9 +120,15 @@ inline const char* configure(Rig& rig, const Case& c, const Media& media) {
         for (int pad = 0; pad < drumPadCount; ++pad)
             engine.drumKits[static_cast<std::size_t>(t)].samples[static_cast<std::size_t>(pad)].store(&media.hit);
     }
-    if (midi || c.kind == 6) for (int t = 0; t < c.occurrences; ++t) {
+    if (c.kind == 9) {
+        if (!media.streamed || !media.streamed->streamed()) return "capacity streamed clip";
+        // As the controller does: the engine's stream service holds the source before any clip names it.
+        if (engine.retainDiskAudioSource(media.streamed->streamSource) != media.streamed->streamSource.get()) return "capacity stream source retained";
+    }
+    if (midi || playsAudio(c)) for (int t = 0; t < c.occurrences; ++t) {
         SessionClipLaunch launch; launch.clipIndex = 0;
-        if (midi) launch.pattern = c.kind == 8 ? media.beat : media.chord; else launch.audio = &media.audio;
+        if (midi) launch.pattern = c.kind == 8 ? media.beat : media.chord;
+        else launch.audio = c.kind == 9 ? media.streamed.get() : &media.audio;
         if (!engine.pianoRollLaunches[static_cast<std::size_t>(t)].publish(launch)) return "capacity Session launch";
     }
     if (c.kind == 5) for (int t = 0; t < c.occurrences; ++t)
@@ -136,6 +151,18 @@ inline const char* configure(Rig& rig, const Case& c, const Media& media) {
     return nullptr;
 }
 
+// Whether everything the row plays has started: the device tool waits for this before it records,
+// because a streamed clip starts only once its first audio has been read (D32).
+inline bool started(const Rig& rig, const Case& c) {
+    const auto& engine = rig.engine;
+    for (int t = 0; t < c.occurrences; ++t) {
+        const auto track = static_cast<std::size_t>(t);
+        if (c.kind == 1 && engine.activeTrackRackClip[track].load() != 101) return false;
+        if ((playsMidi(c) || playsAudio(c)) && engine.activePianoRollClip[track].load() != 0) return false;
+    }
+    return true;
+}
+
 // After the measured blocks: everything the row names is still playing and no plugin failed (D22).
 // Returns what failed, or nullptr.
 inline const char* stillPlaying(const Rig& rig, const Case& c) {
@@ -143,7 +170,15 @@ inline const char* stillPlaying(const Rig& rig, const Case& c) {
     if (c.kind == 1)
         for (int t = 0; t < c.occurrences; ++t)
             if (engine.activeTrackRackClip[static_cast<std::size_t>(t)].load() != 101) return "capacity occurrences remain active";
-    if (playsMidi(c) || c.kind == 6)
+    // D32: a stream that ran dry played silence where the clip has audio, so the row did not play what it
+    // names. Checked before the clips are, so that a stream that could not be read is named as the cause.
+    if (c.kind == 9)
+        for (int t = 0; t < c.occurrences; ++t) {
+            const auto track = static_cast<std::size_t>(t);
+            if (engine.sessionStreamFailures(track) != 0) return "capacity streams are read without failures";
+            if (engine.sessionStreamUnderruns(track) != 0) return "capacity streams never run dry";
+        }
+    if (playsMidi(c) || playsAudio(c))
         for (int t = 0; t < c.occurrences; ++t)
             if (engine.activePianoRollClip[static_cast<std::size_t>(t)].load() != 0) return "capacity Session clips remain active";
     if (engine.plugins->faultCount.load() != 0) return "capacity plugins run without faults";

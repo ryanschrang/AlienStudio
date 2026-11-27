@@ -1941,3 +1941,35 @@ Not covered: a physical device, the 32/64 build. During this run `SongFlowTests`
 window-layout check ("unmaximizing returns to the recovered normal bounds"), three times in a row;
 it opens and maximizes a real window on the desktop, and this change touches no UI code, but the
 old build was not run against it to confirm.
+
+## Increment D32: audio streamed from disk timed on a device
+
+Measurement gate 2 asks for callback time "with notes, audio, sends/returns and plugins" on real
+hardware. The device tool (D31, [DEVICE_TIMING.md](DEVICE_TIMING.md)) played only clips held in
+memory, so a project's longest clips, the ones streamed from disk, were never timed.
+
+- **A streamed workload.** `src/CapacityWorkloads.h` gains kind 9, "16 Session audio clips, streamed
+  from disk": the engine's stream service retains the source, as the controller does, and every
+  track launches a Session clip that streams from it through its own voice.
+- **It runs on a device only** (`Case::deviceOnly`). The offline capacity report plays blocks back to
+  back, far faster than real time, which no disk stream keeps up with, so it leaves the row out;
+  every other row is unchanged.
+- **The row fails if any stream ran dry or could not be read**, using the per-track counts D12
+  added. Those are checked before the clips are, so a failed read is named as the cause.
+- **Recording starts once the row is playing** (`capacity::started`): a streamed clip starts once
+  its first audio has been read.
+- **The tool writes the file it plays**: a quiet stereo tone, 16-bit, 48 kHz, in the temporary
+  folder, long enough for the run, and removed at the end.
+
+Checks (`RackIntegrationTests`, with streams served on the calling thread as a render does, so the
+result does not depend on scheduling):
+- the streamed row is the only device-only row, and refuses to run without a streamed clip;
+- 16 streamed clips start, are heard, and finish the row with no underrun or failure;
+- a stream that cannot be read plays silence and fails the row as a read failure (the engine
+  still launches the clip and counts the failure, as D12 reports it).
+
+First device results are in [DEVICE_TIMING.md](DEVICE_TIMING.md#audio-streamed-from-disk-t1-04-d32):
+on the development laptop, 16 streams cost the callback about 7-13 % more than the same clips in
+memory (p95 2.8 % of a 480-frame buffer at 48 kHz, 2.7 % of 256 frames at 44.1 kHz in exclusive
+mode), with no underrun and no callback allocation. One file on one drive; not representative
+hardware.

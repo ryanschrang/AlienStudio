@@ -672,6 +672,70 @@ static void capacityHelpers() {
     require(capacityReportRounds(3, missing) == -1 && capacityReportRounds(4, other) == -1, "bad report options are refused");
 }
 
+// T1-04 D32: the streamed workload the device tool times. Here the engine's streams are served on the
+// calling thread, as a render's are, so the result does not depend on how the worker is scheduled.
+struct CapacityStreamFile final : alien::DiskAudioFile {
+    explicit CapacityStreamFile(bool readable) : DiskAudioFile(48000, 1, 4 * 48000), readable(readable) {}
+    struct Reader final : alien::DiskAudioReader {
+        explicit Reader(bool readable) : readable(readable) {}
+        bool read(std::int64_t start, float* left, float*, int count) override {
+            if (!readable || start < 0) return false;
+            for (int i = 0; i < count; ++i) left[i] = 0.1f;   // what the in-memory capacity clip holds
+            return true;
+        }
+        bool readable;
+    };
+    std::unique_ptr<alien::DiskAudioReader> open() const override { return std::make_unique<Reader>(readable); }
+    bool readable;
+};
+
+static void streamedCapacityWorkload() {
+    const auto cases = alien::capacity::cases(16);
+    const auto streamed = std::find_if(cases.begin(), cases.end(), [](const alien::capacity::Case& c) { return c.kind == 9; });
+    require(streamed != cases.end() && streamed->deviceOnly && streamed->tracks == 16 && streamed->occurrences == 16,
+            "the streamed workload is a device-only row where 16 tracks play");
+    require(std::count_if(cases.begin(), cases.end(), [](const alien::capacity::Case& c) { return c.deviceOnly; }) == 1,
+            "every other row is still timed offline");
+    alien::capacity::Media media;
+    {
+        alien::capacity::Rig rig;
+        require(alien::capacity::configure(rig, *streamed, media) != nullptr, "the streamed row refuses to run without a streamed clip");
+    }
+    const auto play = [&](bool readable, double& energy, bool& started) {
+        auto clip = std::make_shared<alien::SessionAudioClip>();
+        auto file = std::make_shared<CapacityStreamFile>(readable);
+        clip->sampleRate = file->sampleRate; clip->channels = file->channels;
+        clip->frames = static_cast<std::size_t>(file->frames); clip->streamSource = file;
+        require(clip->valid() && clip->streamed() && clip->decodedBytes() == 0, "the capacity stream is a streamed clip");
+        media.streamed = clip;
+        auto rig = std::make_unique<alien::capacity::Rig>();
+        rig->engine.renderStreamsDeterministically();
+        require(alien::capacity::configure(*rig, *streamed, media) == nullptr, "the streamed row is set up");
+        require(!alien::capacity::started(*rig, *streamed), "nothing has started before the transport runs");
+        rig->engine.playing.store(true);
+        std::array<float, 256> left{}, right{}; float* outputs[]{left.data(), right.data()};
+        energy = 0;
+        for (int block = 0; block < 375; ++block) {   // 2 s at 48 kHz
+            rig->engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 256, {});
+            for (int n = 0; n < 256; ++n) energy += left[n] * left[n] + right[n] * right[n];
+        }
+        started = alien::capacity::started(*rig, *streamed);
+        const char* result = alien::capacity::stillPlaying(*rig, *streamed);
+        rig.reset();
+        media.streamed.reset();
+        return result;
+    };
+    double energy = 0;
+    bool started = false;
+    const char* result = play(true, energy, started);
+    require(started && result == nullptr && energy > 0, "16 streamed clips start and play through without running dry");
+    result = play(false, energy, started);
+    // The engine still launches a clip whose stream fails (it plays silence and counts the failure, D12),
+    // so the row is refused by the failure count, not by a clip that never started.
+    require(started && energy == 0 && result != nullptr && std::string_view(result) == "capacity streams are read without failures",
+            "a stream that cannot be read is silent, and fails the row as a read failure");
+}
+
 static void capacityReport(int rounds) {
     const int full = alien::maxSessionTracks;
     {
@@ -709,7 +773,9 @@ static void capacityReport(int rounds) {
         << "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n" << std::fixed << std::setprecision(2);
     // T1-04 D31: the workloads live in CapacityWorkloads.h, shared with the real-device timing tool.
     using Case = alien::capacity::Case;
-    const auto cases = alien::capacity::cases(full);
+    auto cases = alien::capacity::cases(full);
+    // T1-04 D32: a row only a device can pace (the disk stream) is timed by AlienDeviceTiming alone.
+    std::erase_if(cases, [](const Case& c) { return c.deviceOnly; });
     const alien::capacity::Media media;
     require(media.valid(), "capacity audio clip and drum hit");
     struct Run { std::array<double, 256> times{}; std::size_t allocations = 0; double energy = 0; };
@@ -802,6 +868,7 @@ int main(int argc, char** argv) {
     }
 
     capacityHelpers();
+    streamedCapacityWorkload();
 
     performLaunches();
     overlappingPerformCallback();

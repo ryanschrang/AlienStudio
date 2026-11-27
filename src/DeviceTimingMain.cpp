@@ -8,8 +8,12 @@
 // tool is what measures it against a device's real deadlines.
 #include "CallbackTiming.h"
 #include "CapacityWorkloads.h"
+#include "DiskAudioFile.h"
 #include <juce_audio_devices/juce_audio_devices.h>
+#include <juce_audio_formats/juce_audio_formats.h>
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -121,6 +125,39 @@ void usage(const std::vector<alien::capacity::Case>& cases) {
 
 void wait(double seconds) { juce::MessageManager::getInstance()->runDispatchLoopUntil(static_cast<int>(seconds * 1000.0)); }
 
+// T1-04 D32: the streamed workload plays a real file from disk. Writes `seconds` of a quiet stereo tone
+// as 16-bit, 48 kHz WAV, a block at a time, and returns it as a clip that streams from that file, as a
+// long import would.
+std::shared_ptr<const alien::SessionAudioClip> writeStreamedClip(const juce::File& file, double seconds, juce::String& error) {
+    constexpr double rate = 48000.0;
+    constexpr int block = 512;
+    const auto frames = static_cast<std::int64_t>(seconds * rate);
+    {
+        std::unique_ptr<juce::OutputStream> stream = file.createOutputStream();
+        if (!stream) { error = "cannot create " + file.getFullPathName(); return {}; }
+        juce::WavAudioFormat format;
+        auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}.withSampleRate(rate).withNumChannels(2).withBitsPerSample(16));
+        if (!writer) { error = "cannot write WAV to " + file.getFullPathName(); return {}; }
+        std::array<float, block> left{}, right{};
+        for (std::int64_t done = 0; done < frames; done += block) {
+            const int count = static_cast<int>(std::min<std::int64_t>(block, frames - done));
+            for (int i = 0; i < count; ++i)
+                left[static_cast<std::size_t>(i)] = right[static_cast<std::size_t>(i)] =
+                    0.1f * static_cast<float>(std::sin(2.0 * juce::MathConstants<double>::pi * 220.0 * static_cast<double>(done + i) / rate));
+            const float* data[]{left.data(), right.data()};
+            if (!writer->writeFromFloatArrays(data, 2, count)) { error = "cannot write " + file.getFullPathName(); return {}; }
+        }
+        if (!writer->flush()) { error = "cannot finish " + file.getFullPathName(); return {}; }
+    }
+    auto source = alien::JuceDiskAudioFile::inspect(file, error);
+    if (!source) return {};
+    auto clip = std::make_shared<alien::SessionAudioClip>();
+    clip->sampleRate = source->sampleRate; clip->channels = source->channels;
+    clip->frames = static_cast<std::size_t>(source->frames); clip->streamSource = std::move(source);
+    if (!clip->valid() || !clip->streamed()) { error = "the streamed clip is not valid"; return {}; }
+    return clip;
+}
+
 void listDevices(juce::AudioDeviceManager& manager) {
     for (auto* type : manager.getAvailableDeviceTypes()) {
         type->scanForDevices();
@@ -155,10 +192,19 @@ int main(int argc, char* argv[]) {
     auto buffers = options->buffers;
     if (buffers.empty()) buffers.push_back(device->getCurrentBufferSizeSamples());
 
-    const alien::capacity::Media media;
+    alien::capacity::Media media;
     if (!media.valid()) { std::cerr << "workload media could not be built\n"; return 1; }
     std::vector<int> chosen = options->workloads;
     if (chosen.empty()) for (std::size_t i = 0; i < cases.size(); ++i) chosen.push_back(static_cast<int>(i));
+    // T1-04 D32: the file the streamed row plays, in the temporary folder, removed when the tool ends.
+    // It lasts through warm-up, up to 3 s waiting for the clips to start, and recording, with 2 s to spare.
+    std::optional<juce::TemporaryFile> streamedFile;
+    if (std::any_of(chosen.begin(), chosen.end(), [&](int i) { return cases[static_cast<std::size_t>(i)].kind == 9; })) {
+        streamedFile.emplace(".wav");
+        juce::String error;
+        media.streamed = writeStreamedClip(streamedFile->getFile(), options->warmup + 3.0 + options->seconds + 2.0, error);
+        if (!media.streamed) { std::cerr << "streamed workload: " << error << '\n'; return 1; }
+    }
 
     std::cout << "# Shared playback callback on an audio device\n\n"
         << "| Setting | Value |\n| --- | --- |\n"
@@ -208,6 +254,8 @@ int main(int argc, char* argv[]) {
             manager.addAudioCallback(&timed);   // prepares the engine at the device's rate, as the app does
             rig->engine.playing.store(true);
             wait(options->warmup);
+            // Record only once the row is playing: a streamed clip starts when its first audio is read (D32).
+            for (int waited = 0; !alien::capacity::started(*rig, c) && waited < 3000; waited += 10) wait(0.01);
             const int xrunsBefore = device->getXRunCount();
             callbackAllocations.store(0); countingAllocations.store(true);
             recorder.arm();
