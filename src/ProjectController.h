@@ -1912,16 +1912,10 @@ public:
     }
     // Set by the app (command::routeDrumPadEdits) so the edits below run as commands. Returns why not, or nothing.
     std::function<juce::String(const drum_pad::Edit&, const juce::String&)> drumPadCommands;
-    // One drum pad edit as one undo step: through the command engine when the app has routed it, directly otherwise.
+    // Prepared edits must use the command engine for validation, publication and history.
     juce::String commitDrumPad(const drum_pad::Edit& e, const juce::String& label) {
         if (drumPadCommands) return drumPadCommands(e, label);
-        if (busy) return "The project is busy; try again when it has finished.";
-        auto trial = doc;
-        if (const auto why = drum_pad::apply(trial, e); why.isNotEmpty()) return why;
-        const bool changed = !sameContent(trial, doc);
-        if (!applyDrumPadCommand(e)) return e.kind == drum_pad::Kind::load ? "Session audio storage is full (512 MiB limit)" : "The project could not change the drum pad.";
-        if (changed) commit(label);
-        return {};
+        return "Drum pad command route is not configured.";
     }
     // The track a deferred drum pad action was aimed at, if the project, the track and the pad's sample are still
     // the ones it saw; -1 otherwise.

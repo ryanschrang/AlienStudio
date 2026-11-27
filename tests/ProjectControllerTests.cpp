@@ -408,6 +408,7 @@ static void missingAudioTests() {
 
     {
         ToneEngine engine; alien::ProjectController c(engine);
+        alien::command::routeDrumPadEdits(c);
         require(c.installAudio(loop, 1, 2, makeClip(0.2f)), "install clip");
         c.loadDrum(kick, 2, 3); waitIdle(c);
         require(c.document().tracks[2].drumAssets[3] != nullptr, "drum pad loaded");
