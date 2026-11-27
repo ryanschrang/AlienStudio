@@ -173,11 +173,19 @@ public:
             sum += v.filtered * v.envelope.next() * v.velocity;
         }
         while (span > 0 && !voices[span - 1].active()) --span;
-        modulationPhase += 5.0/sampleRate;
-        if(modulationPhase>=1.0) modulationPhase-=1.0;
+        advanceModulation();
         return static_cast<float>(sum * voiceMixScale);
     }
+    // True when no voice can be sounding: nextSample() would return 0 (T1-04 D30).
+    bool silent() const noexcept { return span == 0; }
+    // What nextSample() does when silent(): only the vibrato clock moves on, so a note played later
+    // hears the same vibrato as if every silent sample had been rendered (T1-04 D30).
+    void skipSilentSample() noexcept { advanceModulation(); }
 private:
+    void advanceModulation() noexcept {
+        modulationPhase += 5.0/sampleRate;
+        if(modulationPhase>=1.0) modulationPhase-=1.0;
+    }
     static double blep(double t, double dt) noexcept {
         if (t < dt) { t /= dt; return t + t - t * t - 1; }
         if (t > 1 - dt) { t = (t - 1) / dt; return t * t + t + t + 1; }
