@@ -35,7 +35,7 @@ build-rel/AlienDeviceTiming_artefacts/Release/AlienDeviceTiming.exe --type "Wind
 | `--warmup S` | Seconds played before recording starts (default 1) |
 | `--workloads 0,1,...` | Which workloads, by number; an unknown option prints the numbered list |
 | `--audible` | Send the rendered audio to the device |
-| `--inputs` | Also open the first two inputs of the type's default input device, for the input-monitoring and recording workloads (D33, D34, below); without it those workloads are skipped |
+| `--inputs` | Also open the first two inputs of the type's default input device, for the input-monitoring and recording workloads (D33-D35, below); without it those workloads are skipped |
 
 **The output is muted by default.** The engine renders everything, and then the device is given
 silence, so 16 tracks of test chords do not come out of the speakers. With `--audible` they do.
@@ -82,8 +82,7 @@ size only once.
   engine's work. A long gap without a long callback points at the system, not the engine.
 - No plugins except the stock EQ and compressor. Streaming from disk is covered since D32 (below),
   from one file on whatever drive holds the temporary folder. Input monitoring (D33) and recording
-  (D34) are covered only with `--inputs`; without it the device is opened with no inputs. Recording
-  is timed up to the take's queues; writing them to disk is not part of it.
+  (D34, D35) are covered only with `--inputs`; without it the device is opened with no inputs.
 
 ## First results (the development PC, not representative hardware)
 
@@ -207,3 +206,23 @@ Recording cost about the same as monitoring (p50 4 % more, p95 3 %), no callback
 budget, and the audio thread allocated nothing. The longest gap between callbacks was 12.5 ms against
 a 10 ms period, without a late callback (under 1.5 periods); the system's scheduling, not the
 callback, which took at most 0.3 ms. One run on one laptop with its built-in microphone.
+
+## Recording a take to disk (T1-04 D35)
+
+Workload 14, "16 tracks recording a stereo input to disk", is workload 13 with each track's take
+written to a WAV file as it records, by the app's own recording writer (`DiskRecording`: one queue and
+one writer thread per take, with a recovery journal, as the app records). So the callback is timed
+while 16 files are being written.
+
+- **It needs `--inputs`**, and is skipped without it.
+- **The takes go into a folder in the temporary folder** ("AlienDeviceTiming takes"), with their
+  recovery journals in a "Recovery" folder inside it, never the app's own recovery folder. The folder
+  and everything in it are removed when the tool ends. At 48 kHz the 16 takes come to about 4.4 MiB per
+  second recorded (24-bit stereo WAV, as the app writes them).
+- **The row fails if a writer fell behind** (its queue filled and ended the take), if a track recorded
+  or wrote nothing, if the take stopped, or if, once the device has stopped calling the engine, a take
+  does not finish with everything it recorded written.
+- **The offline report leaves this row out**: a writer cannot keep up with blocks played faster than
+  real time.
+
+Not measured on a device yet: run it with `--inputs` (muted, or with headphones).

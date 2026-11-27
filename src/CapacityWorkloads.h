@@ -2,6 +2,7 @@
 // The playback workloads of the capacity report (T1-04 D22-D24), shared by the offline report in
 // RackIntegrationTests and the real-device timing tool (AlienDeviceTiming, T1-04 D31), so both time
 // exactly the same work. Everything here runs on the control thread, before or between callbacks.
+#include "DiskRecording.h"
 #include "StockEffects.h"
 #include "ToneEngine.h"
 #include "RackSounds.h"
@@ -15,7 +16,8 @@ namespace alien::capacity {
 // 5 MIDI with sends to the four returns, 6 Session audio clips, 7 MIDI through the stock EQ and
 // compressor, 8 Session drum tracks, 9 Session audio clips streamed from disk (T1-04 D32), 10 tracks
 // monitoring a stereo input (T1-04 D33), 11 tracks recording a stereo input to a Song take (T1-04
-// D34). `occurrences` is how many tracks play (or rack occurrences, or tracks monitoring or recording).
+// D34), 12 the same take written to disk by the app's recording writer (T1-04 D35). `occurrences` is
+// how many tracks play (or rack occurrences, or tracks monitoring or recording).
 // deviceOnly: the offline report leaves the row out. It plays blocks back to back, far faster than
 // real time, which no disk stream keeps up with; on a device the callbacks come at playback's pace.
 struct Case { const char* name; int kind, tracks, occurrences; bool deviceOnly = false; };
@@ -32,7 +34,10 @@ inline std::vector<Case> cases(int full) {
         // T1-04 D33: every track plays the device's first two inputs through its own strip (monitor "always").
         {"16 tracks monitoring a stereo input", 10, 16, 16},
         // T1-04 D34: a Song-view audio take on every track, armed (so also monitored), each into its own queue.
-        {"16 tracks recording a stereo input to a Song take", 11, 16, 16}};
+        {"16 tracks recording a stereo input to a Song take", 11, 16, 16},
+        // T1-04 D35: that take written to 16 WAV files as it records, one writer thread per track, as the app
+        // records. Device only: a writer cannot keep up with blocks played faster than real time.
+        {"16 tracks recording a stereo input to disk", 12, 16, 16, true}};
     if (full > 16) {
         all.push_back({"Transport, no clips", 0, full, 0});
         all.push_back({"All Session rack occurrences", 1, full, full});
@@ -51,6 +56,9 @@ struct Media {
     // The streamed clip of kind 9, made by whoever runs that row (the device tool writes a WAV file for
     // it); empty otherwise. It must be long enough to play through warm-up and recording.
     std::shared_ptr<const SessionAudioClip> streamed;
+    // The folder kind 12 records into (its takes, and their recovery journals in a "Recovery" folder
+    // inside it, never the app's own); empty otherwise. Whoever runs the row creates and removes it.
+    juce::File recordingFolder;
     Media() {
         // One decoded clip shared by every audio row, long enough to play through warm-up and measurement at 1,024 frames.
         audio.sampleRate = 48000; audio.channels = 1; audio.frames = 8 * 48000;
@@ -71,6 +79,8 @@ struct Rig {
     // D34: the queues a Song take records into, one per armed track. Declared before the engine so they
     // outlive it: its take holds pointers to them.
     std::vector<std::unique_ptr<RecordingQueue>> takes;
+    // D35: the takes kind 12 writes to disk, one writer thread each. Also before the engine.
+    std::vector<std::shared_ptr<DiskRecording>> diskTakes;
     ToneEngine engine;
     rack::Project project = rack::Project::createDefault();
     std::vector<std::shared_ptr<const SessionAudioClip>> keepAlive;
@@ -88,6 +98,21 @@ struct Rig {
     void drainTakes() {
         for (auto& take : takes)
             while (take->drain([](const float* const*, int, int) { return true; }, 1 << 16)) {}
+    }
+    // D35: stops the disk takes and finishes their files. Only once no callback can run (the engine is
+    // detached from the device): the writer must not race the callback's last append. Returns what
+    // failed, or nullptr when every take wrote all it recorded.
+    const char* finishDiskTakes() {
+        const char* failed = nullptr;
+        for (auto& take : diskTakes) {
+            const auto recorded = take->frames.load();
+            const auto result = take->finish();
+            if (failed == nullptr) {
+                if (result.error.isNotEmpty() || result.interrupted) failed = "capacity disk takes finish without errors";
+                else if (recorded == 0 || result.writtenFrames != recorded) failed = "capacity disk takes write every frame recorded";
+            }
+        }
+        return failed;
     }
     // Message-thread side of the hand-off: clips first, then the snapshot.
     void publish() {
@@ -111,7 +136,8 @@ inline bool playsMidi(const Case& c) { return c.kind == 4 || c.kind == 5 || c.ki
 inline bool playsAudio(const Case& c) { return c.kind == 6 || c.kind == 9; }
 // The row needs input audio: the report hands the callback a test signal, the device tool opens an input.
 // A recording track is armed, so it monitors too (monitor "automatic").
-inline bool monitorsInput(const Case& c) { return c.kind == 10 || c.kind == 11; }
+inline bool monitorsInput(const Case& c) { return c.kind == 10 || c.kind == 11 || c.kind == 12; }
+inline bool records(const Case& c) { return c.kind == 11 || c.kind == 12; }
 
 // Sets the workload up on a prepared rig, short of starting the transport. Returns what failed, or nullptr.
 inline const char* configure(Rig& rig, const Case& c, const Media& media) {
@@ -141,7 +167,9 @@ inline const char* configure(Rig& rig, const Case& c, const Media& media) {
     }
     // D34: a Song-view audio take with no count-in, as the Record button makes with the song playing;
     // begin() asks for it. The song is empty and 512 bars long (17 min at 120 BPM), longer than any run.
-    if (c.kind == 11) {
+    // D35: the same take, each track's sink the app's DiskRecording, writing a WAV file as it records.
+    if (c.kind == 12 && !media.recordingFolder.isDirectory()) return "capacity recording folder";
+    if (records(c)) {
         auto song = std::make_shared<ArrangementPlayback>(); song->timeline.setLengthBars(512);
         if (!engine.arrangementMailbox.publish(song)) return "capacity Song publication";
         engine.patternMode.store(songMode);
@@ -149,8 +177,19 @@ inline const char* configure(Rig& rig, const Case& c, const Media& media) {
             auto& track = engine.tracks[static_cast<std::size_t>(t)];
             track.input.store(0); track.stereoInput.store(true); track.armed.store(true);
             track.monitor.store(static_cast<int>(InputMonitor::automatic));
-            rig.takes.push_back(std::make_unique<RecordingQueue>(rig.sampleRate, 2));
-            engine.songTake->sinks[static_cast<std::size_t>(t)].store(rig.takes.back().get());
+            AudioCaptureSink* sink = nullptr;
+            if (c.kind == 11) {
+                rig.takes.push_back(std::make_unique<RecordingQueue>(rig.sampleRate, 2));
+                sink = rig.takes.back().get();
+            } else {
+                juce::String error;
+                auto take = DiskRecording::start(media.recordingFolder.getNonexistentChildFile("Track " + juce::String(t + 1), ".wav", false),
+                                                 rig.sampleRate, 2, error, media.recordingFolder.getChildFile("Recovery"));
+                if (!take) return "capacity disk take started";
+                rig.diskTakes.push_back(take);
+                sink = take.get();
+            }
+            engine.songTake->sinks[static_cast<std::size_t>(t)].store(sink);
         }
         RecordSettings settings; settings.countInBars = 0;
         engine.recording.apply(settings);
@@ -199,7 +238,7 @@ inline const char* configure(Rig& rig, const Case& c, const Media& media) {
 // a take that was asked for but had not begun, as a device change does in the app (D34).
 inline void begin(Rig& rig, const Case& c) {
     auto& engine = rig.engine;
-    if (c.kind == 11) {
+    if (records(c)) {
         engine.recording.stopRequested.store(false);
         engine.recording.startRequested.store(true);
     }
@@ -210,7 +249,7 @@ inline void begin(Rig& rig, const Case& c) {
 // because a streamed clip starts only once its first audio has been read (D32).
 inline bool started(const Rig& rig, const Case& c) {
     const auto& engine = rig.engine;
-    if (c.kind == 11 && engine.recording.phase.load() != RecordControls::recording) return false;
+    if (records(c) && engine.recording.phase.load() != RecordControls::recording) return false;
     for (int t = 0; t < c.occurrences; ++t) {
         const auto track = static_cast<std::size_t>(t);
         if (c.kind == 1 && engine.activeTrackRackClip[track].load() != 101) return false;
@@ -244,9 +283,15 @@ inline const char* stillPlaying(const Rig& rig, const Case& c) {
             if (take->overrun.load()) return "capacity takes never overrun their queues";
             if (take->frames.load() == 0) return "capacity takes record every armed track";
         }
-        if (engine.recording.phase.load() != RecordControls::recording
-            || engine.songTake->ended.load() != SongTakeCapture::notEnded) return "capacity take is still recording";
     }
+    // D35: every disk take is taking input and its writer is keeping up (a full queue ends the take).
+    if (c.kind == 12)
+        for (const auto& take : rig.diskTakes) {
+            if (take->done.load()) return "capacity disk takes never fall behind";
+            if (take->frames.load() == 0 || take->writtenFrames.load() == 0) return "capacity disk takes record and write every armed track";
+        }
+    if (records(c) && (engine.recording.phase.load() != RecordControls::recording
+                       || engine.songTake->ended.load() != SongTakeCapture::notEnded)) return "capacity take is still recording";
     // D33: each monitoring track metered input, so the input reached every strip.
     if (monitorsInput(c))
         for (int t = 0; t < c.occurrences; ++t)

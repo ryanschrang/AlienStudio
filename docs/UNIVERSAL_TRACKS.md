@@ -2051,3 +2051,27 @@ On a device (the development laptop, Windows Audio, 48 kHz, 480 frames, its buil
 p95 233 us (2.3 % of the period) against 190 and 227 us monitoring and 111 and 147 us idle, with every
 track recording, no overrun, no late or over-budget callback, no xrun and no callback allocation. Not
 covered: an audio interface, writing the take to disk, punch-in/out and loop passes, the 32/64 build.
+
+## Increment D35: recording a take to disk timed
+
+D34 timed a take going into its queues and dropped the audio, so the callback was never timed while
+the app's recording writer was saving files, which is how a take is recorded.
+
+- **A disk-recording workload.** `src/CapacityWorkloads.h` gains kind 12, "16 tracks recording a
+  stereo input to disk": the D34 take, with each track's sink the app's `DiskRecording` (one writer
+  thread per take, a recovery journal, a WAV file) instead of a bare queue. `Media::recordingFolder`
+  says where the takes go, with their journals in a "Recovery" folder inside it, not the app's own.
+- **Device only**, like the streamed row: a writer cannot keep up offline.
+- **The row fails** if a writer fell behind (a full queue ends that take), a track recorded or wrote
+  nothing, or the take stopped; and `Rig::finishDiskTakes()`, called once no callback can run, fails it
+  if a take does not finish with every recorded frame written.
+- **`AlienDeviceTiming`** creates the folder in the temporary folder when the row is chosen, finishes
+  the takes after detaching the engine, and removes the folder at exit.
+
+Checks (`RackIntegrationTests`, offline, 200 blocks so no writer can fall behind): the row is
+device-only and refuses to run without a folder; every track records to its own file; once the writers
+are writing, the row passes; the take holds the blocks it was given; every take finishes with all it
+recorded written; 16 WAV files are left and nothing partial; no recovery journal is left; the folder
+is removed. D32's check now allows exactly the streamed and disk-recording rows to be device-only.
+
+Not covered: a device (needs `--inputs`), a slow or nearly full drive, the 32/64 build.

@@ -694,8 +694,9 @@ static void streamedCapacityWorkload() {
     const auto streamed = std::find_if(cases.begin(), cases.end(), [](const alien::capacity::Case& c) { return c.kind == 9; });
     require(streamed != cases.end() && streamed->deviceOnly && streamed->tracks == 16 && streamed->occurrences == 16,
             "the streamed workload is a device-only row where 16 tracks play");
-    require(std::count_if(cases.begin(), cases.end(), [](const alien::capacity::Case& c) { return c.deviceOnly; }) == 1,
-            "every other row is still timed offline");
+    // D35 adds the disk-recording row, which a writer cannot keep up with offline either.
+    for (const auto& c : cases)
+        require(c.deviceOnly == (c.kind == 9 || c.kind == 12), "only the streamed and disk-recording rows are device-only");
     alien::capacity::Media media;
     {
         alien::capacity::Rig rig;
@@ -824,6 +825,46 @@ static void recordingCapacityWorkload() {
     require(overran != nullptr && std::string_view(overran) == "capacity takes never overrun their queues"
             && recorded == alien::RecordingQueue::defaultCapacity,
             "a queue nobody empties fills up, and the row fails as an overrun");
+}
+
+// T1-04 D35: the disk-recording row, which the device tool times. Here it records 200 blocks (well
+// inside a take's queue, so the writers cannot fall behind however fast the blocks run) and checks that
+// the app's recording writer turns them into 16 finished files.
+static void diskRecordingCapacityWorkload() {
+    const auto cases = alien::capacity::cases(16);
+    const auto disk = std::find_if(cases.begin(), cases.end(), [](const alien::capacity::Case& c) { return c.kind == 12; });
+    require(disk != cases.end() && disk->deviceOnly && alien::capacity::records(*disk) && alien::capacity::monitorsInput(*disk),
+            "the disk-recording row is a device-only recording row");
+    alien::capacity::Media media;
+    {
+        alien::capacity::Rig rig;
+        require(alien::capacity::configure(rig, *disk, media) != nullptr, "the disk-recording row needs a folder to record into");
+    }
+    const auto folder = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("RackIntegrationTests takes", {}, false);
+    require(folder.createDirectory().wasOk(), "a folder for the takes");
+    media.recordingFolder = folder;
+    const CapacityInput input;
+    {
+        auto rig = std::make_unique<alien::capacity::Rig>();
+        require(alien::capacity::configure(*rig, *disk, media) == nullptr && rig->diskTakes.size() == 16 && rig->takes.empty(),
+                "every track records to its own file");
+        alien::capacity::begin(*rig, *disk);
+        std::array<float, 256> left{}, right{}; float* outputs[]{left.data(), right.data()};
+        for (int block = 0; block < 200; ++block) rig->engine.audioDeviceIOCallbackWithContext(input.channels, 2, outputs, 2, 256, {});
+        const auto writing = [&] {
+            return std::all_of(rig->diskTakes.begin(), rig->diskTakes.end(), [](const auto& t) { return t->writtenFrames.load() > 0; });
+        };
+        for (int waited = 0; !writing() && waited < 2000; ++waited) juce::Thread::sleep(1);
+        require(alien::capacity::stillPlaying(*rig, *disk) == nullptr, "16 tracks record while their writers keep up");
+        const auto recorded = rig->diskTakes.front()->frames.load();
+        require(recorded >= 199u * 256u && recorded <= 200u * 256u, "the take holds the blocks it was given");
+        require(rig->finishDiskTakes() == nullptr, "every take is finished with all it recorded written");
+    }
+    const auto files = folder.findChildFiles(juce::File::findFiles, false, "*.wav");
+    require(files.size() == 16, "16 WAV files are left, and nothing partial");
+    for (const auto& file : files) require(file.getSize() > 44, "each file holds its take");
+    require(alien::RecordingFile::unfinished(folder.getChildFile("Recovery")).isEmpty(), "no recovery journal is left behind");
+    require(folder.deleteRecursively(), "the takes are removed");
 }
 
 static void capacityReport(int rounds) {
@@ -973,6 +1014,7 @@ int main(int argc, char** argv) {
     streamedCapacityWorkload();
     inputMonitoringCapacityWorkload();
     recordingCapacityWorkload();
+    diskRecordingCapacityWorkload();
 
     performLaunches();
     overlappingPerformCallback();
