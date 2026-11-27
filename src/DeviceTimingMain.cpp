@@ -73,7 +73,7 @@ private:
 
 struct Options {
     bool list{}, audible{}, inputs{};
-    juce::String type, device, plugin;
+    juce::String type, device, plugin, instrument;
     double rate{};
     std::vector<int> buffers;
     double seconds{5.0}, warmup{1.0};
@@ -98,6 +98,7 @@ std::optional<Options> parse(int argc, char* argv[]) {
         else if (arg == "--audible") o.audible = true;
         else if (arg == "--inputs") o.inputs = true;
         else if (arg == "--plugin") { const auto v = value(); if (!v) return std::nullopt; o.plugin = *v; }
+        else if (arg == "--instrument") { const auto v = value(); if (!v) return std::nullopt; o.instrument = *v; }
         else if (arg == "--type") { const auto v = value(); if (!v) return std::nullopt; o.type = *v; }
         else if (arg == "--device") { const auto v = value(); if (!v) return std::nullopt; o.device = *v; }
         else if (arg == "--rate") { const auto v = value(); if (!v) return std::nullopt; o.rate = std::atof(v->c_str()); if (o.rate <= 0) return std::nullopt; }
@@ -114,7 +115,7 @@ std::optional<Options> parse(int argc, char* argv[]) {
 void usage(const std::vector<alien::capacity::Case>& cases) {
     std::cerr << "usage: AlienDeviceTiming [--list] [--type NAME] [--device NAME] [--rate HZ] [--buffers 64,128,...]\n"
                  "                         [--seconds S] [--warmup S] [--workloads 0,1,...] [--audible] [--inputs]\n"
-                 "                         [--plugin FILE.vst3]\n"
+                 "                         [--plugin FILE.vst3] [--instrument FILE.vst3]\n"
                  "  --list       list the device types and output devices, then exit\n"
                  "  --type       device type, e.g. \"Windows Audio\" or \"ASIO\" (default: the system default)\n"
                  "  --device     output device name (default: the type's default)\n"
@@ -128,7 +129,9 @@ void usage(const std::vector<alien::capacity::Case>& cases) {
                  "               workload; without it that workload is skipped. With --audible as well, the input is\n"
                  "               played back out loud: a microphone next to the speakers will feed back\n"
                  "  --plugin     a VST3 effect to put on every playing track, for the VST3 workload; without it\n"
-                 "               that workload is skipped. It is loaded in this process, with no crash protection\n\nWorkloads:\n";
+                 "               that workload is skipped. It is loaded in this process, with no crash protection\n"
+                 "  --instrument a VST3 instrument to play every playing track's MIDI, for the VST3 instrument\n"
+                 "               workload; without it that workload is skipped. Loaded as --plugin is\n\nWorkloads:\n";
     for (std::size_t i = 0; i < cases.size(); ++i) std::cerr << "  " << i << "  " << cases[i].name << " (" << cases[i].tracks << " tracks in use)\n";
 }
 
@@ -223,24 +226,35 @@ int main(int argc, char* argv[]) {
         media.streamed = writeStreamedClip(streamedFile->getFile(), options->warmup + 3.0 + options->seconds + 2.0, error);
         if (!media.streamed) { std::cerr << "streamed workload: " << error << '\n'; return 1; }
     }
-    // T1-04 D36: the VST3 the plugin row puts on every playing track, one instance each. The format and
-    // the description outlive every rig, so every instance is gone before they are.
+    // T1-04 D36/D37: the VST3s the plugin rows put on every playing track, one instance each: an effect
+    // (--plugin) and an instrument (--instrument). The format and the descriptions outlive every rig, so
+    // every instance is gone before they are.
     juce::VST3PluginFormat vst3;
-    juce::OwnedArray<juce::PluginDescription> effectTypes;
-    if (options->plugin.isNotEmpty()) {
-        const juce::File file(juce::File::getCurrentWorkingDirectory().getChildFile(options->plugin));
-        if (!file.exists()) { std::cerr << "no plugin at " << file.getFullPathName() << '\n'; return 1; }
-        vst3.findAllTypesForFile(effectTypes, file.getFullPathName());
-        if (effectTypes.isEmpty()) { std::cerr << "no VST3 plugin found in " << file.getFullPathName() << '\n'; return 1; }
-        const auto& type = *effectTypes[0];
-        media.effectName = type.name;
-        media.makeEffect = [&vst3, &type]() -> std::unique_ptr<juce::AudioProcessor> {
+    juce::OwnedArray<juce::PluginDescription> effectTypes, instrumentTypes;
+    const auto loadVst3 = [&vst3](const juce::String& path, bool instrument, juce::OwnedArray<juce::PluginDescription>& types,
+                                  juce::String& name, std::function<std::unique_ptr<juce::AudioProcessor>()>& make) {
+        const juce::File file(juce::File::getCurrentWorkingDirectory().getChildFile(path));
+        if (!file.exists()) { std::cerr << "no plugin at " << file.getFullPathName() << '\n'; return false; }
+        vst3.findAllTypesForFile(types, file.getFullPathName());
+        // An effect is the file's first plugin; an instrument the first that says it is one.
+        const juce::PluginDescription* chosen = nullptr;
+        for (const auto* type : types) if (!instrument || type->isInstrument) { chosen = type; break; }
+        if (chosen == nullptr) {
+            std::cerr << "no VST3 " << (instrument ? "instrument" : "plugin") << " found in " << file.getFullPathName() << '\n';
+            return false;
+        }
+        name = chosen->name;
+        make = [&vst3, chosen]() -> std::unique_ptr<juce::AudioProcessor> {
             juce::String error;
-            auto instance = vst3.createInstanceFromDescription(type, 48000.0, alien::PluginRuntime::blockSize, error);
-            if (!instance) std::cerr << type.name << ": " << error << '\n';
+            auto instance = vst3.createInstanceFromDescription(*chosen, 48000.0, alien::PluginRuntime::blockSize, error);
+            if (!instance) std::cerr << chosen->name << ": " << error << '\n';
             return instance;   // prepared again at the device's rate when its slot is
         };
-    }
+        return true;
+    };
+    if (options->plugin.isNotEmpty() && !loadVst3(options->plugin, false, effectTypes, media.effectName, media.makeEffect)) return 1;
+    if (options->instrument.isNotEmpty()
+        && !loadVst3(options->instrument, true, instrumentTypes, media.instrumentName, media.makeInstrument)) return 1;
     // T1-04 D35: the folder the disk-recording row writes its takes (and their recovery journals) into,
     // in the temporary folder and removed, with everything in it, when the tool ends.
     struct RemovedAtExit { juce::File folder; ~RemovedAtExit() { if (folder != juce::File()) folder.deleteRecursively(); } } recordings;
@@ -263,6 +277,8 @@ int main(int argc, char* argv[]) {
         << "| Input | " << (options->inputs ? manager.getAudioDeviceSetup().inputDeviceName + ", " + juce::String(device->getActiveInputChannels().countNumberOfSetBits()) + " channels open"
                                              : juce::String("none (input-monitoring rows need --inputs)")) << " |\n"
         << "| Plugin | " << (media.makeEffect ? media.effectName + " (" + options->plugin + ")" : juce::String("none (the VST3 row needs --plugin)")) << " |\n"
+        << "| Instrument | " << (media.makeInstrument ? media.instrumentName + " (" + options->instrument + ")"
+                                                       : juce::String("none (the VST3 instrument row needs --instrument)")) << " |\n"
         << "| Recorded | " << options->seconds << " s per row, after " << options->warmup << " s of warm-up |\n\n"
         << "Durations are the engine's whole callback, timed inside the device callback. Late: a callback that\n"
         << "started more than 1.5 buffer periods after the one before. Over budget: one that took longer than a\n"
@@ -297,6 +313,7 @@ int main(int argc, char* argv[]) {
             const auto& c = cases[static_cast<std::size_t>(index)];
             if (alien::capacity::monitorsInput(c) && !options->inputs) { std::cerr << c.name << ": skipped (needs --inputs)\n"; continue; }
             if (c.kind == 13 && !media.makeEffect) { std::cerr << c.name << ": skipped (needs --plugin)\n"; continue; }
+            if (c.kind == 14 && !media.makeInstrument) { std::cerr << c.name << ": skipped (needs --instrument)\n"; continue; }
             auto rig = std::make_unique<alien::capacity::Rig>(rate);
             if (const char* failed = alien::capacity::configure(*rig, c, media)) { std::cerr << c.name << ": " << failed << '\n'; ++failures; continue; }
             timed.engine = &rig->engine;

@@ -697,7 +697,7 @@ static void streamedCapacityWorkload() {
     // D35 adds the disk-recording row, which a writer cannot keep up with offline either, and D36 the VST3
     // row, which this build cannot host.
     for (const auto& c : cases)
-        require(c.deviceOnly == (c.kind == 9 || c.kind == 12 || c.kind == 13), "only the streamed, disk-recording and VST3 rows are device-only");
+        require(c.deviceOnly == (c.kind == 9 || c.kind == 12 || c.kind == 13 || c.kind == 14), "only the streamed, disk-recording and VST3 rows are device-only");
     alien::capacity::Media media;
     {
         alien::capacity::Rig rig;
@@ -903,6 +903,90 @@ static void pluginEffectCapacityWorkload() {
     require(alien::capacity::configure(refused, *row, media) != nullptr, "a plugin that cannot be made refuses the row");
 }
 
+// T1-04 D37: stands in for the VST3 instrument the device tool loads. It sounds while it holds a note, and
+// counts the notes it was given and the ones it still holds, so a note left on after the transport stops shows.
+struct StandInInstrument final : juce::AudioProcessor {
+    StandInInstrument() : juce::AudioProcessor(BusesProperties().withOutput("Out", juce::AudioChannelSet::stereo())) {}
+    const juce::String getName() const override { return "Stand-in instrument"; }
+    void prepareToPlay(double, int) override {}
+    void releaseResources() override {}
+    bool isBusesLayoutSupported(const BusesLayout&) const override { return true; }
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) override {
+        for (const auto meta : midi) {
+            const auto m = meta.getMessage();
+            if (m.isNoteOn()) { held[static_cast<std::size_t>(m.getNoteNumber())] = true; ++noteOns; }
+            else if (m.isNoteOff()) held[static_cast<std::size_t>(m.getNoteNumber())] = false;
+            else if (m.isAllNotesOff() || m.isAllSoundOff()) held.fill(false);
+        }
+        const float level = holding() > 0 ? 0.05f : 0.0f;
+        for (int c = 0; c < buffer.getNumChannels(); ++c) juce::FloatVectorOperations::fill(buffer.getWritePointer(c), level, buffer.getNumSamples());
+    }
+    int holding() const { return static_cast<int>(std::count(held.begin(), held.end(), true)); }
+    double getTailLengthSeconds() const override { return 0; }
+    bool acceptsMidi() const override { return true; }
+    bool producesMidi() const override { return false; }
+    juce::AudioProcessorEditor* createEditor() override { return nullptr; }
+    bool hasEditor() const override { return false; }
+    int getNumPrograms() override { return 1; }
+    int getCurrentProgram() override { return 0; }
+    void setCurrentProgram(int) override {}
+    const juce::String getProgramName(int) override { return {}; }
+    void changeProgramName(int, const juce::String&) override {}
+    void getStateInformation(juce::MemoryBlock&) override {}
+    void setStateInformation(const void*, int) override {}
+    std::array<bool, 128> held{};
+    int noteOns{};
+};
+
+static void pluginInstrumentCapacityWorkload() {
+    const auto cases = alien::capacity::cases(16);
+    const auto row = std::find_if(cases.begin(), cases.end(), [](const alien::capacity::Case& c) { return c.kind == 14; });
+    require(row != cases.end() && row->deviceOnly && alien::capacity::playsMidi(*row) && row->occurrences == 16,
+            "the VST3 instrument row is a device-only row of 16 MIDI tracks");
+    alien::capacity::Media media;
+    {
+        alien::capacity::Rig rig;
+        require(alien::capacity::configure(rig, *row, media) != nullptr, "the VST3 instrument row needs a plugin to load");
+    }
+    std::vector<StandInInstrument*> made;
+    media.instrumentName = "Stand-in instrument";
+    media.makeInstrument = [&made]() -> std::unique_ptr<juce::AudioProcessor> {
+        auto instance = std::make_unique<StandInInstrument>(); made.push_back(instance.get()); return instance;
+    };
+    auto rig = std::make_unique<alien::capacity::Rig>();
+    require(alien::capacity::configure(*rig, *row, media) == nullptr && made.size() == 16, "one instrument is made for each playing track");
+    for (int t = 0; t < 16; ++t) {
+        const auto& rack = rig->engine.plugins->racks[static_cast<std::size_t>(t)];
+        require(rack.instrumentAssigned && rack.instrument.prepared && rack.instrument.processor.get() == made[static_cast<std::size_t>(t)]
+                    && rack.instrument.name == "Stand-in instrument" && rack.effectCount == 0,
+                "each playing track plays its own prepared instrument, with no effect");
+    }
+    alien::capacity::begin(*rig, *row);
+    std::array<float, 256> left{}, right{}; float* outputs[]{left.data(), right.data()};
+    const auto render = [&](int blocks) {
+        double energy = 0;
+        for (int block = 0; block < blocks; ++block) {
+            rig->engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 256, {});
+            for (int n = 0; n < 256; ++n) energy += left[n] * left[n] + right[n] * right[n];
+        }
+        return energy;
+    };
+    const double playing = render(64);
+    require(playing > 0 && alien::capacity::stillPlaying(*rig, *row) == nullptr, "16 tracks play their instrument without a fault");
+    for (const auto* instrument : made)
+        require(instrument->noteOns >= 3 && instrument->holding() == 3, "every instrument is given the clip's chord and holds it");
+    // The built-in synth is not played as well: the instrument is all a track sounds.
+    rig->engine.playing.store(false);
+    const double stopped = render(32);
+    for (const auto* instrument : made) require(instrument->holding() == 0, "stopping the transport leaves no instrument holding a note");
+    require(stopped < playing * 0.01, "stopped instruments fall silent");
+    made.clear();
+    rig.reset();
+    media.makeInstrument = [] { return std::unique_ptr<juce::AudioProcessor>(); };
+    alien::capacity::Rig refused;
+    require(alien::capacity::configure(refused, *row, media) != nullptr, "an instrument that cannot be made refuses the row");
+}
+
 static void capacityReport(int rounds) {
     const int full = alien::maxSessionTracks;
     {
@@ -1052,6 +1136,7 @@ int main(int argc, char** argv) {
     recordingCapacityWorkload();
     diskRecordingCapacityWorkload();
     pluginEffectCapacityWorkload();
+    pluginInstrumentCapacityWorkload();
 
     performLaunches();
     overlappingPerformCallback();
