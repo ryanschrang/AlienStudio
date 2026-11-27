@@ -892,6 +892,39 @@ static void detachedWindowLifecycleChecks() {
     root.removeFromDesktop();
 }
 
+static void disabledHostNoteChecks() {
+    juce::Component shell, root, floating;
+    shell.addAndMakeVisible(root); root.setBounds(0,0,300,150); root.setWantsKeyboardFocus(true);
+    for (auto* host : {&shell,&floating}) {
+        host->setBounds(10,10,300,150); host->setWantsKeyboardFocus(true); host->addToDesktop(0); host->setVisible(true);
+    }
+    juce::MidiKeyboardState notes; std::set<int> held; Counter count; notes.addListener(&count);
+    {
+        TypingPianoRouter router(root,notes,[&](int k) { return held.count(k)!=0; });
+        router.addAuxiliaryRoot(floating);
+        const auto focus=[](juce::Component& host) { host.getPeer()->handleFocusGain(); host.grabKeyboardFocus(); pump(); };
+        const auto press=[&](juce::Component& host) { held.insert('A'); host.getPeer()->handleKeyPress(juce::KeyPress('a',{},'a')); };
+        const auto lift=[&](juce::Component& host) { held.clear(); host.getPeer()->handleKeyUpOrDown(false); };
+        for (auto* host : {&root,&floating}) {
+            focus(*host); press(*host); require(notes.isNoteOn(2,60),"enabled host starts a typing note");
+            const int offs=count.offs;
+            host->setEnabled(false);
+            require(!notes.isNoteOn(2,60) && count.offs==offs+1,"disabling the source host releases its note before focus dispatch");
+            pump(); lift(*host); press(*host); require(!notes.isNoteOn(2,60),"disabled host refuses a fresh typing press");
+            host->setEnabled(true); focus(*host); press(*host);
+            require(!notes.isNoteOn(2,60),"re-enabling cannot restart a key held through disabling");
+            lift(*host); press(*host); require(notes.isNoteOn(2,60),"fresh press after re-enable starts a note");
+            auto& other=host==&root?floating:root;
+            other.setEnabled(false); require(notes.isNoteOn(2,60),"disabling an unrelated host preserves the source note");
+            other.setEnabled(true); lift(*host);
+            require(count.ons==count.offs,"disable lifecycle balances note-ons and note-offs");
+        }
+    }
+    floating.setEnabled(false); // surviving host must no longer call a destroyed router
+    notes.removeListener(&count);
+    floating.removeFromDesktop(); shell.removeFromDesktop();
+}
+
 static void noFocusTypingFallbackChecks() {
     juce::Component window;
     window.setBounds(10,10,300,150); window.setWantsKeyboardFocus(false); window.addToDesktop(0); window.setVisible(true);
@@ -942,6 +975,7 @@ static void deletedFocusNoteChecks() {
 
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
+    disabledHostNoteChecks();
     noFocusTypingFallbackChecks();
     deletedFocusNoteChecks();
     detachedWindowLifecycleChecks();

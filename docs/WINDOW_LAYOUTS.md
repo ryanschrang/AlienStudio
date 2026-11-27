@@ -53,6 +53,8 @@ Typing-piano notes are owned by the window that started them. Hiding or destroyi
 
 When a focused control is destroyed inside a surviving window, its safe focus pointer may clear before desktop focus dispatch. The router still releases held typing notes on that dispatch; two null focus pointers are not treated as unchanged when an earlier focus target was observed. Native-origin typing that never had a focused JUCE control still supports chords and normal key-up release. Focus recovery does not retrigger a key held through deletion, and deleting an unfocused control leaves the current note alone (claim #405).
 
+Disabling a registered main or detached typing host releases its notes synchronously, before desktop focus dispatch. Disabled targets refuse typing. Re-enabling requires a held key to be lifted before it can start a fresh note, and disabling an unrelated host preserves the source window's notes. This uses the existing message-thread component listener; no audio callback is changed (claim #421).
+
 ## Verification
 
 SongFlowTests covers schema round trips, damaged-state refusal, negative monitor
