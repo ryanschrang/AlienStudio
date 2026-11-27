@@ -211,6 +211,9 @@ inline ProcessingResult processSplit(PianoRollPattern& pattern, const PianoRollS
         const auto id = edited.add(note.pitch, pattern.fromTicks(cursor), pattern.fromTicks(end - cursor),
                                    note.velocity, note.probability);
         if (id == 0 || !selected.add(id)) return result(ProcessingStatus::capacityExceeded, pattern, selection);
+        // Splitting changes time, not expression. add() applies the editor's
+        // creation minimum, but valid saved/external velocities may be lower.
+        edited.find(id)->velocity = note.velocity;
     }
     return commit(pattern, edited, selected);
 }
