@@ -1889,3 +1889,55 @@ quoted.
 
 Not covered: a physical device, the 32/64 build, and projects with mixer automation lanes or open
 sends on silent tracks (those tracks take the full path, as before).
+
+## Increment D30: silent tracks skip their per-sample render
+
+No project format change; the supported limits stay 16 tracks and 32 scenes. The rendered audio is
+unchanged.
+
+After D29 the callback was timed phase by phase again (temporary timers, not part of the change).
+With 16 silent tracks the per-sample track loop took about 8 us of a 64-frame block, against 0.8 us
+with one track; every stage after it now takes about 1 us or less. In that loop each track asked its
+synth and drum sampler for a sample and wrote the result into its lane, even with nothing sounding.
+
+`PluginRuntime::begin` already clears every track's lane at the start of the block. A frozen track,
+or one whose synth has no voice that can be sounding (`SynthEngine::silent`, from the D26 span) and
+whose drum sampler has none either (D28), now leaves its zeros as they are. Its synth's vibrato
+clock still moves on (`SynthEngine::skipSilentSample`, the same step `nextSample` takes), so a
+note played later hears the same vibrato as if every silent sample had been rendered. A track
+starts rendering again on the sample a note reaches it.
+
+### Same audio
+
+The capacity report run with the old and new code renders the same output energy on all 33 rows,
+with zero callback allocations. `SynthEngineTests` adds a synth that skips 3,001 silent samples
+next to one that renders them, both with full modulation: the next note must come out sample for
+sample the same. Mutation check: with `skipSilentSample` not moving the vibrato clock, the test
+fails ("a note after skipped silent samples hears the same vibrato as after rendered ones").
+
+### Measurements
+
+Same machine and method as D29 (old and new builds alternated, three runs each, `--repeat 3`; median
+of the three runs, plus one pair in the opposite order). **The gain is small and only clear for idle
+tracks.**
+
+| Workload, 16 tracks unless stated | Block frames | p50 us, before | p50 us, D30 | Opposite order |
+| --- | ---: | ---: | ---: | ---: |
+| Transport, no clips, 1 track | 64 | 8.1 | 8.5 (+5 %) | -1 % |
+| Transport, no clips | 64 | 24.0 | 22.2 (-8 %) | -15 % |
+| One track plays MIDI | 64 | 26.7 | 24.6 (-8 %) | -11 % |
+| One rack occurrence | 64 | 29.2 | 28.4 (-3 %) | -12 % |
+| Every track plays MIDI | 64 | 63.7 | 61.9 (-3 %) | -4 % |
+
+- **A silent loaded track now costs about 0.9 us per 64-frame block** (was 1.1).
+- Rows where every track plays stayed within about 5 % either way, and changed sign between run
+  orders; they are not quoted as a change. Two rows moved far more in one order than the other
+  (audio clips -3 % and -37 %, stock EQ and compressor +3 % and -4 % at very different absolute
+  levels), which reads as machine noise.
+- What a silent track costs is now small next to the fixed cost of a block, so further gains for
+  idle tracks will be small too.
+
+Not covered: a physical device, the 32/64 build. During this run `SongFlowTests` failed its
+window-layout check ("unmaximizing returns to the recovered normal bounds"), three times in a row;
+it opens and maximizes a real window on the desktop, and this change touches no UI code, but the
+old build was not run against it to confirm.

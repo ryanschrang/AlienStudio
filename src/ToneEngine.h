@@ -696,10 +696,20 @@ private:
             const float value = synth.nextSample();
             plugins->live.setSample(0,i,value); plugins->live.setSample(1,i,value);
             for (std::size_t track = 0; track < blockTracks; ++track) {
-                const float voice = plugins->racks[track].frozen ? 0.0f : trackSynths[track].nextSample();
-                const auto drum = plugins->racks[track].frozen ? std::array<float,2>{} : drumSamplers[track].nextSample();
-                plugins->tracks[track].setSample(0,i,voice + drum[0]);
-                plugins->tracks[track].setSample(1,i,voice + drum[1]);
+                // T1-04 D30: plugins->begin() cleared every track's lane, so a frozen track, or one whose synth
+                // and drum sampler have nothing sounding, leaves its zeros as they are. Its synth's vibrato clock
+                // still moves on, as nextSample() would have moved it.
+                if (!plugins->racks[track].frozen) {
+                    auto& voices = trackSynths[track];
+                    auto& drums = drumSamplers[track];
+                    if (voices.silent() && drums.voicesInUse() == 0) voices.skipSilentSample();
+                    else {
+                        const float voice = voices.nextSample();
+                        const auto drum = drums.nextSample();
+                        plugins->tracks[track].setSample(0,i,voice + drum[0]);
+                        plugins->tracks[track].setSample(1,i,voice + drum[1]);
+                    }
+                }
                 // D23: a track with no clip and no crossfade tail playing has nothing to fade or mix.
                 // D28: its clip lane was cleared at the start of the block, so it is left as it is (a lane
                 // nothing was written to is also skipped when it is added to the track below).

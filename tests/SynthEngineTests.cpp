@@ -181,6 +181,23 @@ int main() {
         s.allSoundOff(5); s.allSoundOff(0);
         require(s.activeVoices() == 0 && energy(s, 64) == 0, "a per-channel reset silences its voices");
     }
+    {
+        // T1-04 D30: a track whose synth has nothing sounding skips nextSample() and only moves its vibrato
+        // clock on. A note played after that must sound exactly as if every silent sample had been rendered.
+        const Patch quick{Waveform::sine, 0, 0, 1, .001, 20000};
+        SynthEngine rendered, skipped;
+        for (auto* s : {&rendered, &skipped}) { s->prepare(48000); s->setPatch(quick); s->setModulation(0, 127); }
+        require(rendered.silent() && skipped.silent(), "a synth with no note is silent");
+        rendered.noteOn(60, 1); skipped.noteOn(60, 1); rendered.noteOff(60); skipped.noteOff(60);
+        for (int n = 0; n < 480; ++n) { rendered.nextSample(); skipped.nextSample(); }
+        require(rendered.silent() && skipped.silent(), "a finished note leaves the synth silent");
+        for (int n = 0; n < 3001; ++n) { require(rendered.nextSample() == 0.0f, "a silent synth renders zeros"); skipped.skipSilentSample(); }
+        rendered.noteOn(64, 1); skipped.noteOn(64, 1);
+        require(!rendered.silent() && !skipped.silent(), "a new note ends the silence");
+        bool same = true; double sum = 0;
+        for (int n = 0; n < 4800; ++n) { const float a = rendered.nextSample(), b = skipped.nextSample(); same = same && a == b; sum += a * a; }
+        require(same && sum > 0, "a note after skipped silent samples hears the same vibrato as after rendered ones");
+    }
     synth.noteOn(60, 1); synth.prepare(96000);
     require(synth.activeVoices() == 0, "device restart clears notes");
     const auto before = allocations;
