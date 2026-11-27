@@ -2080,3 +2080,27 @@ system drive, [DEVICE_TIMING.md](DEVICE_TIMING.md#recording-a-take-to-disk-t1-04
 writing 16 files cost the callback nothing measurable; no writer fell behind, every take finished
 complete, no late or over-budget callback, no xrun, no callback allocation. Not covered: a slow or
 nearly full drive, an audio interface, the 32/64 build.
+
+## Increment D36: a VST3 effect timed on a device
+
+Gate 2 names plugins, and every plugin the timing tools ran was a stock effect compiled into the app.
+
+- **A VST3 workload.** `src/CapacityWorkloads.h` gains kind 13, "16 Session MIDI tracks through a VST3
+  effect": one instance of an outside plugin in each playing track's first FX slot, made by
+  `Media::makeEffect` and prepared like any slot. Device only: the offline report's build hosts no VST3.
+- **`AlienDeviceTiming --plugin FILE.vst3`** loads the plugin's first type with JUCE's VST3 format and
+  makes one instance a track; the tool is now built with `JUCE_PLUGINHOST_VST3`. Without the option the
+  row is skipped. The plugin runs in the tool's process, without the app's crash containment.
+
+Checks (`RackIntegrationTests`, with the stock EQ standing in for the plugin): the row is device-only
+and refuses to run without a plugin; one instance is made for each playing track and prepared in its
+first slot; 16 tracks play through it with no fault; a plugin that cannot be made refuses the row. On a
+device, a missing `--plugin` file is refused before any row runs.
+
+On the development laptop (Windows Audio, 48 kHz, 480 frames, muted), with the repository's test
+plugin (a simple gain/tone/mix effect): p50 402 us and p95 577 us (5.8 % of the period), against 309 and 503 us for the same
+16 MIDI tracks without it and 545 and 746 us with the stock EQ and compressor; no fault, no late or
+over-budget callback, no callback allocation
+([DEVICE_TIMING.md](DEVICE_TIMING.md#a-vst3-effect-on-every-track-t1-04-d36)). That is the cost of
+hosting 16 VST3 instances, not of a real effect. Not covered: real third-party plugins, instruments,
+latency, the 32/64 build.

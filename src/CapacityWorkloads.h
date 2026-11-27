@@ -7,6 +7,7 @@
 #include "ToneEngine.h"
 #include "RackSounds.h"
 #include "ViewModes.h"
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -16,8 +17,9 @@ namespace alien::capacity {
 // 5 MIDI with sends to the four returns, 6 Session audio clips, 7 MIDI through the stock EQ and
 // compressor, 8 Session drum tracks, 9 Session audio clips streamed from disk (T1-04 D32), 10 tracks
 // monitoring a stereo input (T1-04 D33), 11 tracks recording a stereo input to a Song take (T1-04
-// D34), 12 the same take written to disk by the app's recording writer (T1-04 D35). `occurrences` is
-// how many tracks play (or rack occurrences, or tracks monitoring or recording).
+// D34), 12 the same take written to disk by the app's recording writer (T1-04 D35), 13 MIDI through a
+// VST3 effect on every playing track (T1-04 D36). `occurrences` is how many tracks play (or rack
+// occurrences, or tracks monitoring or recording).
 // deviceOnly: the offline report leaves the row out. It plays blocks back to back, far faster than
 // real time, which no disk stream keeps up with; on a device the callbacks come at playback's pace.
 struct Case { const char* name; int kind, tracks, occurrences; bool deviceOnly = false; };
@@ -37,7 +39,10 @@ inline std::vector<Case> cases(int full) {
         {"16 tracks recording a stereo input to a Song take", 11, 16, 16},
         // T1-04 D35: that take written to 16 WAV files as it records, one writer thread per track, as the app
         // records. Device only: a writer cannot keep up with blocks played faster than real time.
-        {"16 tracks recording a stereo input to disk", 12, 16, 16, true}};
+        {"16 tracks recording a stereo input to disk", 12, 16, 16, true},
+        // T1-04 D36: a third-party plugin, one instance per playing track. Device only: the offline report's
+        // build does not host VST3, and the tool is given the plugin to load (--plugin).
+        {"16 Session MIDI tracks through a VST3 effect", 13, 16, 16, true}};
     if (full > 16) {
         all.push_back({"Transport, no clips", 0, full, 0});
         all.push_back({"All Session rack occurrences", 1, full, full});
@@ -59,6 +64,10 @@ struct Media {
     // The folder kind 12 records into (its takes, and their recovery journals in a "Recovery" folder
     // inside it, never the app's own); empty otherwise. Whoever runs the row creates and removes it.
     juce::File recordingFolder;
+    // D36: makes one instance of the effect kind 13 puts on each playing track (the device tool loads a
+    // VST3 for it), or nothing. Called on the control thread, before the row starts.
+    std::function<std::unique_ptr<juce::AudioProcessor>()> makeEffect;
+    juce::String effectName;
     Media() {
         // One decoded clip shared by every audio row, long enough to play through warm-up and measurement at 1,024 frames.
         audio.sampleRate = 48000; audio.channels = 1; audio.frames = 8 * 48000;
@@ -132,7 +141,7 @@ struct Rig {
     }
 };
 
-inline bool playsMidi(const Case& c) { return c.kind == 4 || c.kind == 5 || c.kind == 7 || c.kind == 8; }
+inline bool playsMidi(const Case& c) { return c.kind == 4 || c.kind == 5 || c.kind == 7 || c.kind == 8 || c.kind == 13; }
 inline bool playsAudio(const Case& c) { return c.kind == 6 || c.kind == 9; }
 // The row needs input audio: the report hands the callback a test signal, the device tool opens an input.
 // A recording track is armed, so it monitors too (monitor "automatic").
@@ -227,6 +236,21 @@ inline const char* configure(Rig& rig, const Case& c, const Media& media) {
                 if (!slot.prepared) return "capacity stock effect prepared";
             }
             rack.effectCount = 2;
+        }
+        plugins.reserveAlignment();
+    }
+    // D36: as kind 7, but one instance of an outside plugin in each playing track's first FX slot.
+    if (c.kind == 13) {
+        if (!media.makeEffect) return "capacity VST3 effect";
+        auto& plugins = *engine.plugins;
+        for (int t = 0; t < c.occurrences; ++t) {
+            auto& slot = plugins.racks[static_cast<std::size_t>(t)].effects[0];
+            slot.processor = media.makeEffect();
+            if (!slot.processor) return "capacity VST3 effect instance";
+            slot.name = media.effectName;
+            plugins.prepareSlot(slot, t, 0);
+            if (!slot.prepared) return "capacity VST3 effect prepared";
+            plugins.racks[static_cast<std::size_t>(t)].effectCount = 1;
         }
         plugins.reserveAlignment();
     }
