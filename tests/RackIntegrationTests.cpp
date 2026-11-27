@@ -1,6 +1,7 @@
 // The Channel Rack inside the real ToneEngine audio callback, rendered offline:
 // pattern mode, the other modes staying silent, stopping, track routing through
 // the Session mixer strip, previews, live snapshot swaps, and no heap use.
+#include "CapacityWorkloads.h"
 #include "StockEffects.h"
 #include "ToneEngine.h"
 #include "RackSounds.h"
@@ -706,82 +707,16 @@ static void capacityReport(int rounds) {
         << "builds can be shown to render the same audio (T1-04 D23).\n\n"
         << "| Workload | Tracks in use | Block frames | p50 us | p95 us | max us | p95 / block budget % | Callback allocations | Output energy |\n"
         << "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n" << std::fixed << std::setprecision(2);
-    struct Case { const char* name; int kind, tracks, occurrences; };
-    std::vector<Case> cases{{"Transport, no clips", 0, 1, 0}, {"Transport, no clips", 0, 16, 0}, {"1 Session rack occurrence", 1, 16, 1},
-        {"16 Session rack occurrences", 1, 16, 16}, {"4 Song rack occurrences", 3, 16, 0}, {"16 Session MIDI tracks", 4, 16, 16},
-        // T1-04 D22: loaded versus playing tracks, sends and returns, audio clips and plugins (measurement gates 2 and 3).
-        {"1 Session MIDI track playing", 4, 16, 1}, {"16 Session MIDI tracks, sends to 4 returns", 5, 16, 16},
-        {"16 Session audio clips", 6, 16, 16}, {"16 Session MIDI tracks, stock EQ + compressor", 7, 16, 16},
-        {"16 Session drum tracks", 8, 16, 16}};
-    if (full > 16) {
-        cases.push_back({"Transport, no clips", 0, full, 0});
-        cases.push_back({"All Session rack occurrences", 1, full, full});
-        cases.push_back({"All Session MIDI tracks", 4, full, full});
-        cases.push_back({"1 Session MIDI track playing", 4, full, 1});
-        cases.push_back({"All Session audio clips", 6, full, full});
-        cases.push_back({"All Session MIDI tracks, stock EQ + compressor", 7, full, full});
-    }
-    // One decoded clip shared by every audio row, long enough to play through warm-up and measurement at 1,024 frames.
-    alien::SessionAudioClip audio; audio.sampleRate = 48000; audio.channels = 1; audio.frames = 8 * 48000;
-    audio.left.assign(audio.frames, 0.1f); audio.buildWaveform();
-    require(audio.valid(), "capacity audio clip");
-    // D23: a quarter-second drum hit, so hits on four pads a beat apart overlap in the sampler's voices.
-    alien::SessionAudioClip hit; hit.sampleRate = 48000; hit.channels = 1; hit.frames = 12000;
-    hit.left.assign(hit.frames, 0.2f); hit.buildWaveform();
-    require(hit.valid(), "capacity drum hit");
-    alien::PianoRollPattern beat; beat.loopSteps = 16;
-    for (int n = 0; n < 4; ++n) beat.add(alien::drumBaseNote + 2 * n, 4 * n, 1);
+    // T1-04 D31: the workloads live in CapacityWorkloads.h, shared with the real-device timing tool.
+    using Case = alien::capacity::Case;
+    const auto cases = alien::capacity::cases(full);
+    const alien::capacity::Media media;
+    require(media.valid(), "capacity audio clip and drum hit");
     struct Run { std::array<double, 256> times{}; std::size_t allocations = 0; double energy = 0; };
     const auto measure = [&](const Case& c, int frames) {
         Run run;
-        auto rig = std::make_unique<Rig>();
-        rig->engine.setActiveTracks(c.tracks);
-        rig->project.clips[0] = 101;
-        rig->project.setInstrumentPreset(0, 9);
-        alien::PianoRollPattern chord; chord.loopSteps = 16;
-        for (int pitch : {60, 64, 67}) chord.add(pitch, 0, 16);
-        require(rig->project.setChannelNotes(0, 0, chord), "capacity source notes");
-        rig->publish(); rig->engine.patternMode.store(alien::sessionMode);
-        const int instances = c.kind == 1 ? c.occurrences : 0;
-        for (int t = 0; t < instances; ++t) rig->engine.requestedTrackRackClip[static_cast<std::size_t>(t)].store(101);
-        if (c.kind == 3) {
-            auto song = std::make_shared<alien::ArrangementPlayback>(); song->timeline.setLengthBars(64);
-            for (int lane = 0; lane < alien::timeline::rackLanes; ++lane) {
-                alien::timeline::Region r; r.row = alien::timeline::rackRowBase + lane;
-                r.source = 0; r.rackClip = 101; r.length = 64 * alien::timeline::ticksPerBar;
-                require(song->timeline.place(r), "capacity Song placement");
-            }
-            require(rig->engine.arrangementMailbox.publish(song), "capacity Song publication");
-            rig->engine.patternMode.store(alien::songMode);
-        }
-        const bool midi = c.kind == 4 || c.kind == 5 || c.kind == 7 || c.kind == 8;
-        if (c.kind == 8) for (int t = 0; t < c.occurrences; ++t) {
-            rig->engine.tracks[static_cast<std::size_t>(t)].instrument.store(1);
-            for (int pad = 0; pad < alien::drumPadCount; ++pad)
-                rig->engine.drumKits[static_cast<std::size_t>(t)].samples[static_cast<std::size_t>(pad)].store(&hit);
-        }
-        if (midi || c.kind == 6) for (int t = 0; t < c.occurrences; ++t) {
-            alien::SessionClipLaunch launch; launch.clipIndex = 0;
-            if (midi) launch.pattern = c.kind == 8 ? beat : chord; else launch.audio = &audio;
-            require(rig->engine.pianoRollLaunches[static_cast<std::size_t>(t)].publish(launch), "capacity Session launch");
-        }
-        if (c.kind == 5) for (int t = 0; t < c.occurrences; ++t)
-            for (int r = 0; r < 4; ++r) rig->engine.tracks[static_cast<std::size_t>(t)].send[static_cast<std::size_t>(r)].store(0.5f);
-        if (c.kind == 7) {
-            auto& plugins = *rig->engine.plugins;
-            for (int t = 0; t < c.occurrences; ++t) {
-                auto& rack = plugins.racks[static_cast<std::size_t>(t)];
-                for (std::size_t i = 0; i < 2; ++i) {
-                    auto& slot = rack.effects[i];
-                    slot.processor = alien::stock::create(alien::stock::catalog[i].id);
-                    slot.name = alien::stock::catalog[i].name;
-                    plugins.prepareSlot(slot, t, static_cast<int>(i));
-                    require(slot.prepared, "capacity stock effect prepared");
-                }
-                rack.effectCount = 2;
-            }
-            plugins.reserveAlignment();
-        }
+        auto rig = std::make_unique<alien::capacity::Rig>();
+        if (const char* failed = alien::capacity::configure(*rig, c, media)) require(false, failed);
         rig->engine.playing.store(true);
         std::array<float, 1024> left{}, right{}; float* outputs[]{left.data(), right.data()};
         const auto callback = [&] { rig->engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, frames, {}); };
@@ -798,12 +733,7 @@ static void capacityReport(int rounds) {
         const auto allocations = run.allocations = allocationCount - before;
         require(allocations == 0, "capacity callbacks allocate nothing");
         require(c.kind == 0 || energy > 0, "capacity workload is audible");
-        for (int t = 0; t < instances; ++t)
-            require(rig->engine.activeTrackRackClip[static_cast<std::size_t>(t)].load() == 101, "capacity occurrences remain active");
-        // D22: every launched Session clip is still playing at the end, and no plugin failed, so each row measures what it names.
-        if (midi || c.kind == 6) for (int t = 0; t < c.occurrences; ++t)
-            require(rig->engine.activePianoRollClip[static_cast<std::size_t>(t)].load() == 0, "capacity Session clips remain active");
-        require(rig->engine.plugins->faultCount.load() == 0, "capacity plugins run without faults");
+        if (const char* failed = alien::capacity::stillPlaying(*rig, c)) require(false, failed);
         std::sort(times.begin(), times.end());
         return run;
     };
