@@ -2160,6 +2160,8 @@ row without inputs passed with no fault and no late callback; 32 tracks cost 1.7
 cost in the same build, as D24 found offline. One callback with 32 Surge XT instances took 10.45 ms,
 over the 10 ms period: at this buffer size the laptop cannot be relied on for 32 instances of a heavy
 synth. 32 Vital instances: p95 6.6 ms (66 %), none over budget
-([DEVICE_TIMING.md](DEVICE_TIMING.md#the-3264-candidate-on-a-device-t1-04-d38)). Not covered: the input
-rows (monitoring and recording at 32 tracks need `--inputs`, so the user's run), other buffer sizes, an
-audio interface. The supported limits stay 16 tracks / 32 scenes.
+([DEVICE_TIMING.md](DEVICE_TIMING.md#the-3264-candidate-on-a-device-t1-04-d38)). The user's run of the
+input rows (`--inputs`, the laptop's microphone): 32 tracks monitoring p95 424 us, recording to a Song
+take 425 us, recording to 32 files on disk 493 us (4.2-4.9 % of the period), with no fault, no late or
+over-budget callback, and every disk take writing every frame it recorded. Not covered: other buffer
+sizes, an audio interface. The supported limits stay 16 tracks / 32 scenes.

@@ -345,5 +345,17 @@ rack occurrence p50 518 / p95 617 us, and one MIDI track playing among 32 p50 18
 - The 16-track rows of the 32/64 build cost about what the 16/32 build's do (D36, D37 above), as C1 found
   offline.
 
-Not shown: the input rows at 32 tracks, other buffer sizes, an audio interface, real effects that do
-work, allocations inside plugins (see D37).
+The input rows at 32 tracks, run by the user with `--inputs` (the laptop's microphone array, two
+channels, 5 s per row); the 16-track figures are the 16/32 build's from D33-D35 above, a different run:
+
+| Workload | 16 tracks p50 us | 32 tracks p50 us | 32 tracks p95 us | 32 tracks max us | 32 tracks p95 / budget % | Ratio (p50) | Over budget | Late |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Monitoring a stereo input | 193 | 328.8 | 423.5 | 542.9 | 4.2 | 1.70 | 0 | 0 |
+| Recording to a Song take | 198 | 349.6 | 424.5 | 626.5 | 4.2 | 1.77 | 0 | 0 |
+| Recording to disk (32 files) | 190 | 347.2 | 493.1 | 736.2 | 4.9 | 1.83 | 0 | 0 |
+
+No take overran its queue, every disk take wrote every frame it recorded, and the driver counted no
+xruns.
+
+Not shown: other buffer sizes, an audio interface, real effects that do work, allocations inside
+plugins (see D37).
