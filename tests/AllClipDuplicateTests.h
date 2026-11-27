@@ -1,3 +1,4 @@
+#include "PlaceSongClipFixture.h"
 #pragma once
 static void allClipDuplicateChecks() {
     auto engine = std::make_unique<ToneEngine>(); alien::ProjectController c(*engine); cmd::CommandEngine commands(c);
@@ -35,7 +36,7 @@ static void allClipDuplicateChecks() {
         && cmd::applyTo(almostFull,cmd::DuplicateClip{2,1,2,2}).isNotEmpty(), "sequential rack copies account for remaining capacity");
     auto frozen = before; frozen.tracks[1].settings.freezeScene = 0;
     require(cmd::refusal(frozen,cmd::DuplicateClip{1,0,1,1}).isNotEmpty() && cmd::refusal(frozen,cmd::DuplicateClip{1,0,3,1}).isEmpty(), "frozen destination refuses while read-only source duplication is allowed");
-    require(c.placeRegion(3,1,0), "empty Song cell reference fixture");
+    require(alien::test::placeSongClip(c,3,1,0), "empty Song cell reference fixture");
     const auto protectedDoc = c.document();
     require(!commands.execute(cmd::DuplicateClip{2,0,3,1}).ok && alien::sameContent(protectedDoc,c.document()), "rack copy refuses Song-bound destination before live mutation");
     c.setExternalBusy(true); require(!commands.execute(cmd::DuplicateClip{1,0,1,1}).ok, "busy all-type duplicate refuses"); c.setExternalBusy(false);

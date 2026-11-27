@@ -1,3 +1,4 @@
+#include "PlaceSongClipFixture.h"
 #include "CommandEngine.h"
 #include "WavExport.h"
 #include "AudioFileWrite.h"
@@ -207,8 +208,8 @@ static void projectPeakTests(bool report) {
             require(commands.execute(alien::command::SetSongLength{songBars}).ok, "song length");
             for (int t = 0; t < alien::maxSessionTracks; ++t) {
                 const int source = t >= alien::maxSessionTracks - audioTracks ? 1 : 0;
-                require(c->placeRegion(t, source, 0), "place a Song clip");
-                require(c->placeRegion(t, source, 4 * alien::timeline::ticksPerBar), "place a second Song clip");
+                require(alien::test::placeSongClip(*c,t, source, 0), "place a Song clip");
+                require(alien::test::placeSongClip(*c,t, source, 4 * alien::timeline::ticksPerBar), "place a second Song clip");
             }
             c->pushDocumentToEngine();
         }));

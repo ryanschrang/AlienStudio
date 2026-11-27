@@ -1,3 +1,4 @@
+#include "PlaceSongClipFixture.h"
 #pragma once
 // NewSongClip (a new, empty clip on a Song lane) and MakeSongClipUnique (a Song clip gets its own copy of what it
 // plays). TimelineViewTests drives the real double-click and menu item, which run these commands.
@@ -34,7 +35,7 @@ static void songPlacementCommandChecks() {
     // A MIDI cell placed twice: one placement gets a placement clip, and the other keeps the cell.
     c.setClipPattern(0, 0, patternWith(60), false); c.commit("Notes", 0, 0);
     std::uint32_t a = 0, b = 0;
-    require(c.placeRegion(0, 0, 0, &a) && c.placeRegion(0, 0, 8 * bar, &b), "fixture: a cell placed twice");
+    require(alien::test::placeSongClip(c,0, 0, 0, &a) && alien::test::placeSongClip(c,0, 0, 8 * bar, &b), "fixture: a cell placed twice");
     const auto shared = c.document();
     const cmd::MakeSongClipUnique unique{a};
     const auto uniquePreview = commands.preview(cmd::Command{unique});
@@ -50,7 +51,7 @@ static void songPlacementCommandChecks() {
 
     // A pattern placement gets a rack pattern of its own, and the engine's rack follows.
     std::uint32_t p = 0;
-    require(c.placeRegion(tl::rackRowBase, 0, 0, &p), "fixture: a pattern on the Song");
+    require(alien::test::placeSongClip(c,tl::rackRowBase, 0, 0, &p), "fixture: a pattern on the Song");
     const int patterns = c.channelRack().patternCount;
     const auto source = song.find(p)->rackClip;
     const auto forked = commands.execute(cmd::MakeSongClipUnique{p});

@@ -1,3 +1,4 @@
+#include "PlaceSongClipFixture.h"
 #pragma once
 static void clipboardClipCommandChecks() {
     auto engine = std::make_unique<ToneEngine>(); alien::ProjectController c(*engine); cmd::CommandEngine commands(c);
@@ -54,7 +55,7 @@ static void clipboardClipCommandChecks() {
     auto full = c.document(); auto bank = full.channelRack; while (bank.addPattern(0)) {}
     require(full.setRack(std::move(bank)), "rack capacity fixture"); const auto fullBefore = full; const auto clipboard = c.clipClipboard();
     require(cmd::applyTo(full, cmd::PasteClip{3, 2}, &clipboard).isNotEmpty() && alien::sameContent(full, fullBefore), "full rack copy refuses without partial source allocation");
-    c.setClipPattern(3, 0, patternWith(50), false); require(c.placeRegion(3, 0, 0), "Song cell rack refusal fixture");
+    c.setClipPattern(3, 0, patternWith(50), false); require(alien::test::placeSongClip(c,3, 0, 0), "Song cell rack refusal fixture");
     const auto protectedCell = c.document();
     require(!commands.execute(cmd::PasteClip{3, 0}).ok && alien::sameContent(protectedCell, c.document()), "rack copy cannot replace a Song cell source and leaves no orphan pattern");
     c.setExternalBusy(true); require(!commands.execute(cmd::PasteClip{3, 2}).ok, "busy paste refuses"); c.setExternalBusy(false);
