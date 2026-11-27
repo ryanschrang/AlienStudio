@@ -537,8 +537,8 @@ static void trackSidechainViewTests(const juce::File& preview) {
     alien::TrackMixerPanel panel(c,engine->tracks,engine->returns,engine->masterControls,engine->buses); panel.setSize(960,650);
     auto& graph = panel.trackSidechainView();
     graph.hasInput = [&](alien::RackStage stage,int track,int fx) { return host.hasSidechainInput(stage == alien::RackStage::master ? alien::PluginRuntime::masterIndex : stage == alien::RackStage::bus ? alien::PluginRuntime::busIndex(track) : stage == alien::RackStage::returnTrack ? alien::PluginRuntime::returnIndex(track) : track,fx); };
-    graph.onKeyRequested = [&](alien::RackStage stage,int track,int fx,int source) {
-        const auto result=run(cmd::SetSidechain{stage,track,fx,alien::KeySource::track,source});
+    graph.onKeyRequested = [&](alien::RackStage stage,int track,int fx,alien::KeySource from,int source) {
+        const auto result=run(cmd::SetSidechain{stage,track,fx,from,source});
         panel.refreshSettings(); return result.ok && result.changed;
     };
     panel.showSidechains(true);
@@ -582,11 +582,11 @@ static void trackSidechainViewTests(const juce::File& preview) {
     require(masterNode,"master effect has a visible graph node");
     require(run(cmd::SetSidechain{alien::RackStage::master,0,1,alien::KeySource::trackPostFader,1}).changed,"existing post-fader master key fixture");
     panel.refreshSettings();
-    bool otherKeyLabel=false;
+    bool postKeyVisible=false;
     for (auto* child:graph.getChildren())
-        if(child->getName().startsWith("Master / FX 2") && child->getName().contains("key set in Plugins")) otherKeyLabel=true;
-    require(otherKeyLabel && engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyFrom==alien::KeySource::trackPostFader,
-        "refresh labels an existing other-stage key without changing it");
+        if(child->getName().startsWith("Master / FX 2") && !child->getName().contains("key set in Plugins")) postKeyVisible=true;
+    require(postKeyVisible && engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyFrom==alien::KeySource::trackPostFader,
+        "refresh keeps an existing post-fader key represented in the graph");
     require(graph.choose(masterRequest,1) && engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyFrom==alien::KeySource::track,
         "choosing the same track explicitly replaces its post-fader key with a pre-FX key");
     require(graph.choose(masterRequest,-1) && engine->plugins->racks[alien::PluginRuntime::masterIndex].effects[1].keyIndex==-1
@@ -652,6 +652,21 @@ static void trackSidechainViewTests(const juce::File& preview) {
     bool returnNode=false;
     for (auto* child:graph.getChildren()) if(child->getName().startsWith("Return: Drum space / FX 2")) returnNode=true;
     require(returnNode,"return rename refreshes visible graph node");
+    const int prePostCaptures=captures;
+    require(!graph.choose(request,1,alien::KeySource::trackPostFader) && !graph.choose(masterRequest,1,alien::KeySource::bus)
+        && captures==prePostCaptures,"track FX post-fader and unsupported graph key stages refuse before capture");
+    for (const auto& target : {masterRequest,busRequest,returnRequest}) {
+        const int runtime=target.stage==alien::RackStage::master ? alien::PluginRuntime::masterIndex
+            : target.stage==alien::RackStage::bus ? alien::PluginRuntime::busIndex(0) : alien::PluginRuntime::returnIndex(0);
+        require(graph.choose(target,2,alien::KeySource::trackPostFader)
+            && engine->plugins->racks[runtime].effects[1].keyFrom==alien::KeySource::trackPostFader
+            && engine->plugins->racks[runtime].effects[1].keyIndex==2,"graph selects actual post-fader track keys for every later rack stage");
+        require(!graph.choose(target,2,alien::KeySource::trackPostFader),"same post-fader key is a no-op");
+        require(c.undo(),"undo post-fader key"); rebuild(); panel.refreshSettings();
+        require(engine->plugins->racks[runtime].effects[1].keyFrom==alien::KeySource::track,"Undo restores the pre-FX key stage");
+        require(c.redo(),"redo post-fader key"); rebuild(); panel.refreshSettings();
+        require(engine->plugins->racks[runtime].effects[1].keyFrom==alien::KeySource::trackPostFader,"Redo restores the post-fader stage");
+    }
     if (preview != juce::File{}) {
         juce::FileOutputStream out(preview);
         require(out.openedOk() && out.setPosition(0) && out.truncate().wasOk()

@@ -174,8 +174,8 @@ public:
         pluginPanel.hasSidechainInput = [this](int rack,int slot) { return pluginHost.hasSidechainInput(rack,slot); };
         pluginPanel.onSidechain = [this](int slot,alien::KeySource from,int source) { setSidechain(slot,from,source); };
         mixerPanel.trackSidechainView().hasInput = [this](alien::RackStage stage,int track,int fx) { return pluginHost.hasSidechainInput(stage == alien::RackStage::master ? alien::PluginRuntime::masterIndex : stage == alien::RackStage::bus ? alien::PluginRuntime::busIndex(track) : stage == alien::RackStage::returnTrack ? alien::PluginRuntime::returnIndex(track) : track,fx); };
-        mixerPanel.trackSidechainView().onKeyRequested = [this](alien::RackStage stage,int track,int fx,int source) {
-            const bool changed = runPluginCommand(alien::command::SetSidechain{stage,track,fx,alien::KeySource::track,source});
+        mixerPanel.trackSidechainView().onKeyRequested = [this](alien::RackStage stage,int track,int fx,alien::KeySource from,int source) {
+            const bool changed = runPluginCommand(alien::command::SetSidechain{stage,track,fx,from,source});
             mixerPanel.refreshSettings(); return changed;
         };
         if (auto xml = juce::parseXML(pluginListFile())) knownPlugins.recreateFromXml(*xml);
