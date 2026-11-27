@@ -701,10 +701,9 @@ private:
                 plugins->tracks[track].setSample(0,i,voice + drum[0]);
                 plugins->tracks[track].setSample(1,i,voice + drum[1]);
                 // D23: a track with no clip and no crossfade tail playing has nothing to fade or mix.
-                if (playNow && (modeNow == 1 || modeNow == 2) && !audioPlayers[track].isPlaying() && !tails[track].active) {
-                    clipBuffers[track].setSample(0,i,0.0f);
-                    clipBuffers[track].setSample(1,i,0.0f);
-                } else if (playNow && (modeNow == 1 || modeNow == 2)) {
+                // D28: its clip lane was cleared at the start of the block, so it is left as it is (a lane
+                // nothing was written to is also skipped when it is added to the track below).
+                if (playNow && (modeNow == 1 || modeNow == 2) && (audioPlayers[track].isPlaying() || tails[track].active)) {
                     const auto sample = audioPlayers[track].nextSample();
                     const auto& lane = trackLanes[track];
                     const double into = std::max(0.0, timelineTick - static_cast<double>(lane.start));
@@ -754,13 +753,24 @@ private:
                 laneAutomated[static_cast<std::size_t>(lane.track)] = true;
                 if (alien::automation::sendIndex(lane.parameter) >= 0) sending[static_cast<std::size_t>(lane.track)] = true;
             }
+        // T1-04 D29: a track whose block is all zeros, with its fader settled, no automation lane and no
+        // send gliding or open, would only add zeros to its bus or the master and meter nothing. It is left
+        // out of the per-sample mix; its post-fader key is silence, as the loop would have written.
+        std::array<std::size_t, sessionTracks> mixedTracks{};
+        std::size_t mixedCount = 0;
+        for (std::size_t t = 0; t < blockTracks; ++t) {
+            if (!stemCapture && !laneAutomated[t] && !sending[t] && trackMixers[t].settled()
+                && silentBlock(plugins->tracks[t], samples)) plugins->silentPostFaderKey(t, samples);
+            else mixedTracks[mixedCount++] = t;
+        }
         for (int i = 0; i < samples; ++i) {
             float left = plugins->live.getSample(0,i), right = plugins->live.getSample(1,i);
             if (stemCapture) {
                 stemCapture->buses[alien::StemCapture::directBus].setSample(0,i,left);
                 stemCapture->buses[alien::StemCapture::directBus].setSample(1,i,right);
             }
-            for (std::size_t t = 0; t < blockTracks; ++t) {
+            for (std::size_t m = 0; m < mixedCount; ++m) {
+                const std::size_t t = mixedTracks[m];
                 float l = plugins->tracks[t].getSample(0,i), r = plugins->tracks[t].getSample(1,i);
                 const float preLeft = l, preRight = r;
                 const alien::TrackSettings* current = &blockSettings[t];
