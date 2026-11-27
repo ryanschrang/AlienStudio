@@ -2,10 +2,25 @@ name: Windows C++ CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'roadmap-status.html'
   pull_request:
+    # labeled: adding the "capacity" label starts the run that includes the 32/64 build.
+    types: [opened, synchronize, reopened, labeled]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'roadmap-status.html'
   workflow_dispatch:
 permissions:
   contents: read
+# A newer push to the same pull request (or to main) cancels the run it supersedes: only the latest
+# commit's result matters, and a superseded run would otherwise hold runners for hours.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   fault-guard:
     runs-on: windows-2022
@@ -32,7 +47,7 @@ jobs:
       - name: Configure
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
       - name: Build
-        run: cmake --build build --config ${{ matrix.config }} --parallel 2
+        run: cmake --build build --config ${{ matrix.config }} --parallel 4
       - name: Test
         run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure --no-tests=error
       - name: Upload Windows Release
@@ -46,20 +61,23 @@ jobs:
           if-no-files-found: error
   # T1-04 C3: the 32-track, 64-scene candidate profile builds and passes every test. It is not the
   # supported release profile (src/SessionCapacity.h); no artifact is uploaded from it.
+  # It is a second full Release build, so it runs on main and on request, and on a pull request only
+  # when the pull request has the "capacity" label (for changes to track or scene limits).
   capacity-candidate:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'capacity')
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - name: Configure 32x64 profile
         run: cmake -S . -B build-32x64 -G "Visual Studio 17 2022" -A x64 -DALIEN_SESSION_TRACKS=32 -DALIEN_SESSION_SCENES=64
       - name: Build
-        run: cmake --build build-32x64 --config Release --parallel 2
+        run: cmake --build build-32x64 --config Release --parallel 4
       - name: Test
         run: ctest --test-dir build-32x64 -C Release --output-on-failure --no-tests=error
       - name: Configure 16x32 comparison profile
         run: cmake -S . -B build-16x32 -G "Visual Studio 17 2022" -A x64 -DALIEN_SESSION_TRACKS=16 -DALIEN_SESSION_SCENES=32
       - name: Build 16x32 capacity reports
-        run: cmake --build build-16x32 --config Release --target TrackCapacityReport RackIntegrationTests --parallel 2
+        run: cmake --build build-16x32 --config Release --target TrackCapacityReport RackIntegrationTests --parallel 4
       - name: Compare capacity profiles on this runner
         shell: pwsh
         run: |
