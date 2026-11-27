@@ -193,4 +193,17 @@ fixed-size lock-free queue the app's recording thread empties to disk.
   nothing, or if the take stopped before the row ended.
 - **The offline report times it too**, with the same 330 Hz test signal as workload 12.
 
-Not measured on a device yet: run it with `--inputs` (muted, or with headphones).
+First result, on the development laptop: Windows Audio, 48 kHz, 480 frames, output muted, input the
+built-in microphone array (2 channels), 4 s per row.
+
+| Workload | p50 us | p95 us | p99 us | max us | p95 / budget % | Over budget | Late | Xruns | Allocations |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Transport, no clips, 16 tracks | 111.2 | 146.6 | 197.2 | 236.3 | 1.5 | 0 | 0 | 0 | 0 |
+| 16 tracks monitoring a stereo input | 190.0 | 226.8 | 265.1 | 358.0 | 2.3 | 0 | 0 | 0 | 0 |
+| 16 tracks recording a stereo input to a Song take | 197.8 | 233.1 | 258.9 | 299.6 | 2.3 | 0 | 0 | 0 | 0 |
+
+The row passed: every track recorded, no queue overran and the take was still recording at the end.
+Recording cost about the same as monitoring (p50 4 % more, p95 3 %), no callback was late or over
+budget, and the audio thread allocated nothing. The longest gap between callbacks was 12.5 ms against
+a 10 ms period, without a late callback (under 1.5 periods); the system's scheduling, not the
+callback, which took at most 0.3 ms. One run on one laptop with its built-in microphone.

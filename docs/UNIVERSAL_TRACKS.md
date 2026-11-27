@@ -2046,5 +2046,8 @@ Recording renders exactly the output of monitoring (identical output energy: an 
 "automatic" monitoring plays the same input) and costs about the same: within the spread between runs,
 so putting 16 stereo inputs into their queues adds little to the callback. Monitoring ran slower in
 these runs than in D33's (269-298 us at 1,024 frames), on the same laptop; the runs vary that much.
-Not covered: a device (needs `--inputs`), writing the take to disk, punch-in/out and loop passes, the
-32/64 build.
+On a device (the development laptop, Windows Audio, 48 kHz, 480 frames, its built-in microphone array,
+[DEVICE_TIMING.md](DEVICE_TIMING.md#recording-a-take-t1-04-d34)), after the `begin()` fix: p50 198 us and
+p95 233 us (2.3 % of the period) against 190 and 227 us monitoring and 111 and 147 us idle, with every
+track recording, no overrun, no late or over-budget callback, no xrun and no callback allocation. Not
+covered: an audio interface, writing the take to disk, punch-in/out and loop passes, the 32/64 build.
