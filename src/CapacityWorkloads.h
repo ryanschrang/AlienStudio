@@ -54,6 +54,16 @@ inline std::vector<Case> cases(int full) {
         all.push_back({"1 Session MIDI track playing", 4, full, 1});
         all.push_back({"All Session audio clips", 6, full, full});
         all.push_back({"All Session MIDI tracks, stock EQ + compressor", 7, full, full});
+        // T1-04 D38: every other row at the compiled maximum too, so a larger build can be timed on a device
+        // doing all the work its 16-track rows do (sends, drums, streaming, inputs, recording, VST3).
+        all.push_back({"All Session MIDI tracks, sends to 4 returns", 5, full, full});
+        all.push_back({"All Session drum tracks", 8, full, full});
+        all.push_back({"All Session audio clips, streamed from disk", 9, full, full, true});
+        all.push_back({"All tracks monitoring a stereo input", 10, full, full});
+        all.push_back({"All tracks recording a stereo input to a Song take", 11, full, full});
+        all.push_back({"All tracks recording a stereo input to disk", 12, full, full, true});
+        all.push_back({"All Session MIDI tracks through a VST3 effect", 13, full, full, true});
+        all.push_back({"All Session MIDI tracks playing a VST3 instrument", 14, full, full, true});
     }
     return all;
 }

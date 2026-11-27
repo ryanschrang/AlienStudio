@@ -870,11 +870,12 @@ static void diskRecordingCapacityWorkload() {
 
 // T1-04 D36: the VST3 row's wiring, with the stock EQ standing in for the plugin the device tool loads
 // (this build hosts no VST3): one instance per playing track, prepared, playing, and no fault.
-static void pluginEffectCapacityWorkload() {
-    const auto cases = alien::capacity::cases(16);
-    const auto row = std::find_if(cases.begin(), cases.end(), [](const alien::capacity::Case& c) { return c.kind == 13; });
-    require(row != cases.end() && row->deviceOnly && alien::capacity::playsMidi(*row) && row->occurrences == 16,
-            "the VST3 row is a device-only row of 16 MIDI tracks");
+// `tracks`: 16, or (D38) the compiled maximum, whose full-size row plays every track.
+static void pluginEffectCapacityWorkload(int tracks) {
+    const auto cases = alien::capacity::cases(alien::maxSessionTracks);
+    const auto row = std::find_if(cases.begin(), cases.end(), [tracks](const alien::capacity::Case& c) { return c.kind == 13 && c.tracks == tracks; });
+    require(row != cases.end() && row->deviceOnly && alien::capacity::playsMidi(*row) && row->occurrences == tracks,
+            "the VST3 row is a device-only row on which every track plays MIDI");
     alien::capacity::Media media;
     {
         alien::capacity::Rig rig;
@@ -884,8 +885,8 @@ static void pluginEffectCapacityWorkload() {
     media.effectName = "Stand-in effect";
     media.makeEffect = [&made]() -> std::unique_ptr<juce::AudioProcessor> { ++made; return alien::stock::create(alien::stock::catalog[0].id); };
     auto rig = std::make_unique<alien::capacity::Rig>();
-    require(alien::capacity::configure(*rig, *row, media) == nullptr && made == 16, "one instance is made for each playing track");
-    for (int t = 0; t < 16; ++t) {
+    require(alien::capacity::configure(*rig, *row, media) == nullptr && made == tracks, "one instance is made for each playing track");
+    for (int t = 0; t < tracks; ++t) {
         const auto& rack = rig->engine.plugins->racks[static_cast<std::size_t>(t)];
         require(rack.effectCount == 1 && rack.effects[0].processor && rack.effects[0].prepared && rack.effects[0].name == "Stand-in effect",
                 "each playing track has its own prepared instance in its first FX slot");
@@ -897,7 +898,7 @@ static void pluginEffectCapacityWorkload() {
         rig->engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 256, {});
         for (int n = 0; n < 256; ++n) energy += left[n] * left[n] + right[n] * right[n];
     }
-    require(energy > 0 && alien::capacity::stillPlaying(*rig, *row) == nullptr, "16 tracks play through their effect without a fault");
+    require(energy > 0 && alien::capacity::stillPlaying(*rig, *row) == nullptr, "every track plays through its effect without a fault");
     media.makeEffect = [] { return std::unique_ptr<juce::AudioProcessor>(); };
     alien::capacity::Rig refused;
     require(alien::capacity::configure(refused, *row, media) != nullptr, "a plugin that cannot be made refuses the row");
@@ -938,11 +939,11 @@ struct StandInInstrument final : juce::AudioProcessor {
     int noteOns{};
 };
 
-static void pluginInstrumentCapacityWorkload() {
-    const auto cases = alien::capacity::cases(16);
-    const auto row = std::find_if(cases.begin(), cases.end(), [](const alien::capacity::Case& c) { return c.kind == 14; });
-    require(row != cases.end() && row->deviceOnly && alien::capacity::playsMidi(*row) && row->occurrences == 16,
-            "the VST3 instrument row is a device-only row of 16 MIDI tracks");
+static void pluginInstrumentCapacityWorkload(int tracks) {
+    const auto cases = alien::capacity::cases(alien::maxSessionTracks);
+    const auto row = std::find_if(cases.begin(), cases.end(), [tracks](const alien::capacity::Case& c) { return c.kind == 14 && c.tracks == tracks; });
+    require(row != cases.end() && row->deviceOnly && alien::capacity::playsMidi(*row) && row->occurrences == tracks,
+            "the VST3 instrument row is a device-only row on which every track plays MIDI");
     alien::capacity::Media media;
     {
         alien::capacity::Rig rig;
@@ -954,8 +955,9 @@ static void pluginInstrumentCapacityWorkload() {
         auto instance = std::make_unique<StandInInstrument>(); made.push_back(instance.get()); return instance;
     };
     auto rig = std::make_unique<alien::capacity::Rig>();
-    require(alien::capacity::configure(*rig, *row, media) == nullptr && made.size() == 16, "one instrument is made for each playing track");
-    for (int t = 0; t < 16; ++t) {
+    require(alien::capacity::configure(*rig, *row, media) == nullptr && made.size() == static_cast<std::size_t>(tracks),
+            "one instrument is made for each playing track");
+    for (int t = 0; t < tracks; ++t) {
         const auto& rack = rig->engine.plugins->racks[static_cast<std::size_t>(t)];
         require(rack.instrumentAssigned && rack.instrument.prepared && rack.instrument.processor.get() == made[static_cast<std::size_t>(t)]
                     && rack.instrument.name == "Stand-in instrument" && rack.effectCount == 0,
@@ -972,7 +974,7 @@ static void pluginInstrumentCapacityWorkload() {
         return energy;
     };
     const double playing = render(64);
-    require(playing > 0 && alien::capacity::stillPlaying(*rig, *row) == nullptr, "16 tracks play their instrument without a fault");
+    require(playing > 0 && alien::capacity::stillPlaying(*rig, *row) == nullptr, "every track plays its instrument without a fault");
     for (const auto* instrument : made)
         require(instrument->noteOns >= 3 && instrument->holding() == 3, "every instrument is given the clip's chord and holds it");
     // The built-in synth is not played as well: the instrument is all a track sounds.
@@ -985,6 +987,25 @@ static void pluginInstrumentCapacityWorkload() {
     media.makeInstrument = [] { return std::unique_ptr<juce::AudioProcessor>(); };
     alien::capacity::Rig refused;
     require(alien::capacity::configure(refused, *row, media) != nullptr, "an instrument that cannot be made refuses the row");
+}
+
+// T1-04 D38: in a build with more than 16 tracks, every row that gives each of its 16 tracks the same
+// work has a row giving all of the build's tracks that work, device-only exactly when the 16-track row is,
+// so a larger build is timed on a device doing everything the 16-track rows do. Checked for a 32-track
+// list whatever the build, since the list does not depend on it.
+static void fullSizeCapacityRows() {
+    const auto small = alien::capacity::cases(16), big = alien::capacity::cases(32);
+    require(big.size() > small.size(), "a 32-track list has full-size rows");
+    for (const auto& s : small) {
+        if (s.tracks != 16 || s.occurrences != 16) continue;   // fixed amounts of work (one track, four Song lanes)
+        const auto twin = std::find_if(big.begin(), big.end(), [&](const alien::capacity::Case& b) {
+            return b.kind == s.kind && b.tracks == 32 && b.occurrences == 32;
+        });
+        require(twin != big.end(), "every per-track row has a full-size row");
+        require(twin->deviceOnly == s.deviceOnly, "a full-size row is device-only exactly when its 16-track row is");
+    }
+    for (std::size_t i = 0; i < small.size(); ++i)
+        require(std::string(big[i].name) == small[i].name, "the 16-track rows keep their numbers in a larger build");
 }
 
 static void capacityReport(int rounds) {
@@ -1135,8 +1156,14 @@ int main(int argc, char** argv) {
     inputMonitoringCapacityWorkload();
     recordingCapacityWorkload();
     diskRecordingCapacityWorkload();
-    pluginEffectCapacityWorkload();
-    pluginInstrumentCapacityWorkload();
+    pluginEffectCapacityWorkload(16);
+    pluginInstrumentCapacityWorkload(16);
+    fullSizeCapacityRows();
+    // D38: the plugin rows at the compiled maximum, in a larger build (CI's 32/64 build).
+    if (alien::maxSessionTracks > 16) {
+        pluginEffectCapacityWorkload(alien::maxSessionTracks);
+        pluginInstrumentCapacityWorkload(alien::maxSessionTracks);
+    }
 
     performLaunches();
     overlappingPerformCallback();
