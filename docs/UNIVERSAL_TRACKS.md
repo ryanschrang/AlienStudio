@@ -2009,3 +2009,37 @@ as the input, [DEVICE_TIMING.md](DEVICE_TIMING.md#input-monitoring-t1-04-d33)): 
 259 us (2.6 % of the buffer period) against 115 and 164 us for 16 idle tracks, with no late or
 over-budget callback, no xrun and no callback allocation; every track metered input. Not covered: an
 audio interface, recording a take, the 32/64 build.
+
+## Increment D34: recording a take timed
+
+D33 timed monitoring; gate 2 names recording as well, and nothing timed a take being captured.
+
+- **A recording workload.** `src/CapacityWorkloads.h` gains kind 11, "16 tracks recording a stereo input
+  to a Song take": an empty 512-bar song (17 min at 120 BPM) in the Song view, every track armed on
+  inputs 1-2 with monitor "automatic", a `RecordingQueue` per track as its take sink, and a take started
+  with no count-in, as the Record button does with the song playing.
+- **The rig owns the queues** (`Rig::takes`, declared before the engine so they outlive it) and empties
+  them with `Rig::drainTakes()`, the queues' only consumer, as the app's recording thread is. The report
+  calls it between callbacks, outside the timing; the device tool every 10 ms while the device plays.
+  Nothing is written to disk: the disk side is the recording thread's work, not the callback's.
+- **The row fails** if a queue overran, a track recorded nothing, or the take stopped.
+
+Checks (`RackIntegrationTests`): every track is armed on inputs 1-2 and records into its own queue; the
+take starts in the first callback; with the queues emptied, all 16 tracks record the same frames, all
+of 1,200 blocks (6.4 s, more than a queue holds) less at most part of the first; with nobody emptying
+them the queues fill at their 262,144 frames and the row fails as an overrun.
+
+Offline, two report runs on the development laptop (Release, 48 kHz), p50 in us:
+
+| 16 tracks | 64 frames | 256 frames | 1,024 frames |
+| --- | ---: | ---: | ---: |
+| Idle (transport, no clips) | 15.4, 15.4 | 44.2, 49.4 | 176.7, 181.9 |
+| Monitoring a stereo input (D33) | 25.2, 23.4 | 79.4, 85.6 | 324.7, 325.9 |
+| Recording a stereo input to a Song take | 24.3, 26.4 | 83.4, 85.5 | 326.0, 348.9 |
+
+Recording renders exactly the output of monitoring (identical output energy: an armed track with
+"automatic" monitoring plays the same input) and costs about the same: within the spread between runs,
+so putting 16 stereo inputs into their queues adds little to the callback. Monitoring ran slower in
+these runs than in D33's (269-298 us at 1,024 frames), on the same laptop; the runs vary that much.
+Not covered: a device (needs `--inputs`), writing the take to disk, punch-in/out and loop passes, the
+32/64 build.

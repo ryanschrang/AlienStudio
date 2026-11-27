@@ -35,7 +35,7 @@ build-rel/AlienDeviceTiming_artefacts/Release/AlienDeviceTiming.exe --type "Wind
 | `--warmup S` | Seconds played before recording starts (default 1) |
 | `--workloads 0,1,...` | Which workloads, by number; an unknown option prints the numbered list |
 | `--audible` | Send the rendered audio to the device |
-| `--inputs` | Also open the first two inputs of the type's default input device, for the input-monitoring workload (D33, below); without it that workload is skipped |
+| `--inputs` | Also open the first two inputs of the type's default input device, for the input-monitoring and recording workloads (D33, D34, below); without it those workloads are skipped |
 
 **The output is muted by default.** The engine renders everything, and then the device is given
 silence, so 16 tracks of test chords do not come out of the speakers. With `--audible` they do.
@@ -80,9 +80,10 @@ size only once.
   guarantee, and not a track count anyone can rely on.
 - Long gaps and late callbacks include the driver's and Windows' own scheduling, not only the
   engine's work. A long gap without a long callback points at the system, not the engine.
-- No plugins except the stock EQ and compressor, and no recording. Streaming from disk is covered
-  since D32 (below), from one file on whatever drive holds the temporary folder. Input monitoring is
-  covered since D33 (below), only with `--inputs`; without it the device is opened with no inputs.
+- No plugins except the stock EQ and compressor. Streaming from disk is covered since D32 (below),
+  from one file on whatever drive holds the temporary folder. Input monitoring (D33) and recording
+  (D34) are covered only with `--inputs`; without it the device is opened with no inputs. Recording
+  is timed up to the take's queues; writing them to disk is not part of it.
 
 ## First results (the development PC, not representative hardware)
 
@@ -176,3 +177,20 @@ allocated nothing. Monitoring 16 inputs cost about 1.7 times an idle 16-track ca
 the offline ratio (about 1.5). With an input open, Windows Audio reported an xrun count (0) where the
 output-only runs above report none. One run on one laptop with its built-in microphone; not an audio
 interface, and not representative hardware.
+
+## Recording a take (T1-04 D34)
+
+Workload 13, "16 tracks recording a stereo input to a Song take", records the way the Record button
+does in the Song view with the song playing: every track is armed on inputs 1 and 2 (monitor
+"automatic", so each also plays its input), and the take's audio goes into one queue per track, the
+fixed-size lock-free queue the app's recording thread empties to disk.
+
+- **It needs `--inputs`**, like workload 12, and is skipped without it.
+- **The queues are emptied every 10 ms** on the tool's main thread, while the device plays, and the
+  audio is dropped: what is timed is the callback putting the input into the queues, not the disk.
+  A queue holds about 5.5 s at 48 kHz, so a run of any length never fills one.
+- **The row fails if a queue overran** (the take would have been cut short), if any track recorded
+  nothing, or if the take stopped before the row ended.
+- **The offline report times it too**, with the same 330 Hz test signal as workload 12.
+
+Not measured on a device yet: run it with `--inputs` (muted, or with headphones).
