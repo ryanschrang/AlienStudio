@@ -1775,3 +1775,117 @@ figure is given.
 Not covered: a physical device, the 32/64 build, latent third-party plugins (a real delay takes the
 compare-instead-of-divide path, covered by the existing delay tests but not timed), and a project
 that routes tracks to group buses (the skip only applies to empty buses).
+
+## Increment D28: the drum sampler visits only voices that can be playing
+
+No project format change; the supported limits stay 16 tracks and 32 scenes. The rendered audio is
+unchanged.
+
+D27 left the per-sample loop over the tracks as most of what a silent track costs. Most of that
+loop was each track's drum sampler, whatever the track's instrument:
+
+- **`DrumSampler::nextSample`** checked all 16 of its voices every sample to find the playing ones.
+  Each voice holds a whole audio player, so 16 tracks touched about 40 KB of voice state per sample
+  even with no drum playing anywhere. The sampler now keeps `span`, as the synth does since D26:
+  every voice from that index on is idle. A hit raises it to just past the voice it takes, and each
+  sample shrinks it past voices that have finished or were stopped (a stop, a choke, a pad's sample
+  replaced or removed, a device restart). A track that plays no drums visits no voice. Playing
+  voices are summed in the same order as before.
+- **A track's clip lane** was written with zeros, sample by sample, while no clip or crossfade tail
+  played on it. The lane is cleared at the start of each block, so it is now left as it is; a lane
+  nothing was written to is also skipped when it is added to its track.
+
+### Same audio
+
+The capacity report run with the old and new code renders the same output energy on all 33 rows,
+with zero callback allocations. `DrumSamplerTests` adds a long hit held above a short one that has
+finished (it still sounds and is still visited), a new hit that reuses the freed slot below, and
+checks that no voice is visited once every hit has finished, after a stop, or after its pad's
+sample is removed. Mutation check: shrinking the span by testing the first voice instead of the
+last makes the test fail ("a hit held above a finished one sounds").
+
+### Measurements
+
+Same machine and method as D27 (old and new builds alternated, three runs each, `--repeat 3`;
+median of the three runs). The machine ran faster than during D27, so the "before" figures here are
+lower than D27's "after" ones; compare the columns of this table only. One more pair run in the
+opposite order (new first) gave the same direction on every 64-frame row, with larger gains on some
+(for example 16 MIDI tracks -23 %, 4 Song rack occurrences -28 %).
+
+| Workload, 16 tracks unless stated | Block frames | p50 us, before | p50 us, D28 | p95 us, before | p95 us, D28 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Transport, no clips, 1 track | 64 | 9.5 | 8.4 (-12 %) | 9.9 | 8.8 (-11 %) |
+| Transport, no clips | 64 | 48.8 | 30.3 (-38 %) | 51.3 | 32.5 (-37 %) |
+| Transport, no clips | 1,024 | 670 | 395 (-41 %) | 797 | 417 (-48 %) |
+| One rack occurrence | 64 | 52.8 | 33.8 (-36 %) | 61.3 | 35.5 (-42 %) |
+| A rack occurrence on every track | 64 | 99.2 | 78.5 (-21 %) | 107.8 | 86.5 (-20 %) |
+| One track plays MIDI | 64 | 39.7 | 30.7 (-23 %) | 45.3 | 32.1 (-29 %) |
+| Every track plays MIDI | 64 | 58.2 | 52.2 (-10 %) | 78.1 | 63.2 (-19 %) |
+| Every track plays an audio clip | 64 | 47.2 | 38.5 (-18 %) | 51.8 | 43.8 (-15 %) |
+| Every track plays drums | 64 | 40.8 | 36.2 (-11 %) | 46.0 | 39.5 (-14 %) |
+| Every track plays MIDI through a stock EQ and compressor | 64 | 105.0 | 95.9 (-9 %) | 128.6 | 109.2 (-15 %) |
+
+- **A silent loaded track now costs about 1.5 us per 64-frame block** (was 2.6 in this run; the 1
+  and 16 idle-track rows, divided by 15).
+- The sends-to-4-returns row's p95 at 64 frames rose 2 % in one order while its p50 fell 6 %; the
+  reverse pair showed it 17 % faster.
+
+Not covered: a physical device, the 32/64 build, and drum kits with more than a few voices sounding
+at once (the span then covers up to all 16 voices, as before).
+
+## Increment D29: silent tracks are left out of the mixer's sample loop
+
+No project format change; the supported limits stay 16 tracks and 32 scenes. The rendered audio is
+unchanged.
+
+After D28 most of what a silent track still cost was its mixer strip: every sample, each track's
+fader and pan, post-fader sidechain key, meter, bus or master sum and send check ran even when the
+track's block was all zeros. Before that loop, each track is now checked once per block. A track is
+left out of it when all of these hold:
+
+- its block is all zeros after its instrument, FX and alignment, input monitoring and clip lane;
+- its fader has finished gliding (`TrackMixer::settled`, D27), so leaving it out does not hold a
+  glide back;
+- no mixer automation lane is enabled on it;
+- no send is open or still gliding to 0;
+- no stem export or freeze is running.
+
+Such a track would only have added zeros and metered 0. Its post-fader sidechain key is filled with
+silence (`PluginRuntime::silentPostFaderKey`), as the loop would have left it. The other tracks are
+mixed in the same order as before.
+
+### Same audio
+
+The capacity report run with the old and new code renders the same output energy on all 33 rows,
+with zero callback allocations. `GroupBusTests` adds a track that falls silent while another plays
+(it meters 0 and the other is still heard), a fader moved while the track is silent that has
+finished gliding when it plays again, a fader moved while it plays that still glides, and a silent
+track routed to a bus that adds nothing to it and is heard through it again once it plays.
+Mutation check: skipping a track whose fader is still gliding makes the test fail ("a fader moved
+while the track was silent has finished gliding").
+
+### Measurements
+
+Same machine and method as D28 (old and new builds alternated, three runs each, `--repeat 3`; median
+of the three runs, plus one pair in the opposite order). Rows where every track plays have no
+silent track to leave out and stayed within noise. Two of them moved a lot between run orders
+(stock EQ and compressor +2 % one way, -34 % the other; drums -30 % and -1 %), so they are not
+quoted.
+
+| Workload, 16 tracks unless stated | Block frames | p50 us, before | p50 us, D29 | Opposite order |
+| --- | ---: | ---: | ---: | ---: |
+| Transport, no clips, 1 track | 64 | 8.5 | 8.3 (-2 %) | -1 % |
+| Transport, no clips | 64 | 31.1 | 24.8 (-20 %) | -21 % |
+| One rack occurrence | 64 | 34.4 | 30.0 (-13 %) | -14 % |
+| Four Song rack occurrences | 64 | 41.4 | 36.1 (-13 %) | -18 % |
+| One track plays MIDI | 64 | 33.5 | 28.1 (-16 %) | -10 % |
+| Every track plays MIDI | 64 | 64.7 | 64.2 (-1 %) | +1 % |
+| Every track plays an audio clip | 64 | 41.0 | 41.1 (+0 %) | +1 % |
+
+- **A silent loaded track now costs about 1.1 us per 64-frame block** (was 1.5; the 1 and 16
+  idle-track rows, divided by 15).
+- Checking each track's block for silence is one pass over 2 x 64 samples; on rows where every
+  track plays it did not show above noise.
+
+Not covered: a physical device, the 32/64 build, and projects with mixer automation lanes or open
+sends on silent tracks (those tracks take the full path, as before).
