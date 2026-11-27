@@ -80,7 +80,18 @@ public:
                 // New in the editor: a fresh id in the opened clip, unused by its notes and by every other new note.
                 std::uint32_t fresh = 0;
                 for (const auto& o : known) if (o.source == 0) fresh = std::max(fresh, o.original);
-                known.push_back({note.id, 0, fresh + 1});
+                // Original IDs can reach UINT32_MAX in a valid saved pattern.
+                // Wrap past zero and skip IDs already reserved for this clip,
+                // including notes allocated earlier in this same split.
+                bool available = false;
+                for (std::size_t tries = 0; tries <= known.size(); ++tries) {
+                    if (++fresh == 0) ++fresh;
+                    if (std::none_of(known.begin(),known.end(),[fresh](const Owner& o) { return o.source == 0 && o.original == fresh; })) {
+                        available = true; break;
+                    }
+                }
+                if (!available) return false;
+                known.push_back({note.id, 0, fresh});
                 found = known.end() - 1;
             }
             auto& part = *parts[static_cast<std::size_t>(found->source)];
@@ -88,11 +99,9 @@ public:
             note.id = found->original;
             part.notes[part.count++] = note;
         }
-        out.clear();
-        for (auto& part : parts) {
-            if (!part->valid()) return false;
-            out.push_back(std::move(part));
-        }
+        for (const auto& part : parts) if (!part->valid()) return false;
+        std::vector<std::shared_ptr<const PianoRollPattern>> next(parts.begin(),parts.end());
+        out = std::move(next);
         owners = std::move(known);
         // Forget notes the editor no longer has, so the list does not grow with every delete.
         std::erase_if(owners, [&](const Owner& o) { return edited.find(o.combined) == nullptr; });

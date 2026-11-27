@@ -5,6 +5,7 @@
 #include "PianoRollMultiClip.h"
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 using namespace alien;
@@ -31,6 +32,34 @@ static bool same(const PianoRollPattern& a, const PianoRollPattern& b) {
 static std::uint32_t idOf(const PianoRollPattern& p, int pitch) {
     for (std::size_t i = 0; i < p.count; ++i) if (p.notes[i].pitch == pitch) return p.notes[i].id;
     return 0;
+}
+
+static void wrappedOriginalIds() {
+    auto primary=std::make_shared<PianoRollPattern>(*notes(16,{{40,0},{42,2},{44,4}}));
+    primary->notes[0].id=std::numeric_limits<std::uint32_t>::max();
+    primary->notes[1].id=1; primary->notes[2].id=2;
+    const auto secondary=notes(16,{{60,0}});
+    require(primary->valid(),"maximum and low note IDs are valid together");
+    MultiClipEdit edit;
+    require(edit.begin({{0,0,primary},{1,0,secondary}}),"merge clips with wrapping original IDs");
+    auto edited=edit.combined();
+    const auto first=edited.add(48,6,1), second=edited.add(50,8,1);
+    std::vector<std::shared_ptr<const PianoRollPattern>> parts{secondary};
+    require(first && second && edit.split(edited,parts),"new multi-clip notes allocate valid IDs after uint32 wrap");
+    require(parts.size()==2 && parts[0]->valid() && parts[1]->valid()
+        && parts[0]->find(std::numeric_limits<std::uint32_t>::max())->pitch==40
+        && parts[0]->find(1)->pitch==42 && parts[0]->find(2)->pitch==44 && same(*parts[1],*secondary),
+        "wrap preserves all original note identities and the other clip");
+    const auto firstId=idOf(*parts[0],48), secondId=idOf(*parts[0],50);
+    require(firstId!=0 && secondId!=0 && firstId!=secondId && firstId!=1 && firstId!=2 && secondId!=1 && secondId!=2,
+        "wrapped allocation skips zero, live low IDs and other new notes");
+    require(edited.setVelocity(first,.4f) && edit.split(edited,parts)
+        && idOf(*parts[0],48)==firstId && idOf(*parts[0],50)==secondId
+        && edit.ownerOf(first)==0 && edit.ownerOf(second)==0,"later edits retain wrapped IDs and primary ownership");
+    const auto kept=parts;
+    auto invalid=edited; invalid.notes[0].id=0;
+    require(!edit.split(invalid,parts) && parts==kept,"refused split preserves every caller output pointer");
+    require(edit.split(edited,parts) && idOf(*parts[0],48)==firstId,"refusal preserves the ownership mapping");
 }
 
 static void mergeAndSplit() {
@@ -140,6 +169,7 @@ static void editorSwitch() {
 int main() {
     juce::ScopedJuceInitialiser_GUI juce;
     mergeAndSplit();
+    wrappedOriginalIds();
     whichClips();
     editorSwitch();
     return 0;

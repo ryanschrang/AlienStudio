@@ -231,6 +231,13 @@ static void undoAndPanels() {
     alien::TrackMixerPanel panel(c, engine.tracks, engine.returns, engine.masterControls, engine.buses);
     panel.setSize(1400, 640);
     int sendCommands = 0, returnEdits = 0;
+    // triggerClick() delivers the click through the message queue, so keep dispatching until it has landed
+    // (up to 2 s) rather than for a fixed 20 ms, which a loaded CI runner can miss.
+    const auto dispatchUntil = [](auto&& landed) {
+        for (int waited = 0; !landed() && waited < 2000; waited += 10)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+        return landed();
+    };
     panel.onTrackMixCommandExecuted = [&](int) { ++sendCommands; };
     panel.onStripCommandExecuted = [&] { ++returnEdits; };
     auto* strip = panel.trackStrip(0);
@@ -239,8 +246,8 @@ static void undoAndPanels() {
     require(approx(engine.tracks[0].send[2].load(), 0.5f) && approx(c.document().tracks[0].settings.send[2], 0.5f) && sendCommands == 1 && c.undoLabel() == "Set send level",
             "turning a send knob runs the named command, not the legacy edit");
     strip->sendMode(2).triggerClick();
-    juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
-    require(engine.tracks[0].sendPre[2].load() && c.document().tracks[0].settings.sendPre[2] && c.undoLabel() == "Set send mode", "its switch makes it pre-fader");
+    require(dispatchUntil([&] { return engine.tracks[0].sendPre[2].load() && c.document().tracks[0].settings.sendPre[2] && c.undoLabel() == "Set send mode"; }),
+            "its switch makes it pre-fader");
     {   // One drag of a send knob is one undo step, and Undo reaches the knob.
         const auto label = c.undoLabel();
         strip->sendKnob(3).onDragStart();
@@ -260,8 +267,7 @@ static void undoAndPanels() {
     returnB.balance().setValue(-50.0, juce::sendNotificationSync);
     require(approx(engine.returns[1].pan.load(), -0.5f) && c.undoLabel() == "Set return pan", "its knob sets that return's balance");
     returnB.muteButton().triggerClick();
-    juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
-    require(engine.returns[1].mute.load() && c.undoLabel() == "Set return mute", "its button mutes that return");
+    require(dispatchUntil([&] { return engine.returns[1].mute.load() && c.undoLabel() == "Set return mute"; }), "its button mutes that return");
     {   // A refused edit leaves the document alone and puts the control back.
         const auto steady = c.document();
         c.setExternalBusy(true);
