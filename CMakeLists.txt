@@ -40,7 +40,7 @@ target_link_libraries(AlienPluginCheck PRIVATE juce::juce_audio_processors juce:
 juce_add_console_app(AlienDeviceTiming PRODUCT_NAME "AlienDeviceTiming" COMPANY_NAME "Alien Studio")
 target_sources(AlienDeviceTiming PRIVATE src/DeviceTimingMain.cpp)
 target_include_directories(AlienDeviceTiming PRIVATE src)
-target_compile_definitions(AlienDeviceTiming PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1 JUCE_APPLICATION_NAME_STRING="AlienDeviceTiming" JUCE_APPLICATION_VERSION_STRING="0.1")
+target_compile_definitions(AlienDeviceTiming PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1 JUCE_PLUGINHOST_VST3=1 JUCE_APPLICATION_NAME_STRING="AlienDeviceTiming" JUCE_APPLICATION_VERSION_STRING="0.1")
 target_link_libraries(AlienDeviceTiming PRIVATE juce::juce_audio_processors juce::juce_audio_utils juce::juce_gui_extra Threads::Threads ${CMAKE_DL_LIBS})
 
 if(WIN32)

@@ -36,6 +36,7 @@ build-rel/AlienDeviceTiming_artefacts/Release/AlienDeviceTiming.exe --type "Wind
 | `--workloads 0,1,...` | Which workloads, by number; an unknown option prints the numbered list |
 | `--audible` | Send the rendered audio to the device |
 | `--inputs` | Also open the first two inputs of the type's default input device, for the input-monitoring and recording workloads (D33-D35, below); without it those workloads are skipped |
+| `--plugin FILE.vst3` | A VST3 effect to put on every playing track, for the VST3 workload (D36, below); without it that workload is skipped |
 
 **The output is muted by default.** The engine renders everything, and then the device is given
 silence, so 16 tracks of test chords do not come out of the speakers. With `--audible` they do.
@@ -80,7 +81,8 @@ size only once.
   guarantee, and not a track count anyone can rely on.
 - Long gaps and late callbacks include the driver's and Windows' own scheduling, not only the
   engine's work. A long gap without a long callback points at the system, not the engine.
-- No plugins except the stock EQ and compressor. Streaming from disk is covered since D32 (below),
+- Outside plugins only with `--plugin` (D36, below), one VST3 at a time, loaded in the tool's own
+  process with none of the app's crash protection. Streaming from disk is covered since D32 (below),
   from one file on whatever drive holds the temporary folder. Input monitoring (D33) and recording
   (D34, D35) are covered only with `--inputs`; without it the device is opened with no inputs.
 
@@ -240,3 +242,31 @@ the spread between runs), which fits the design: the callback only fills each ta
 16 writer threads do the disk work. No callback was late or over budget, and the audio thread
 allocated nothing. The folder was removed afterwards. One run on one laptop, on its system drive; a
 slow or busy drive is where a writer could fall behind.
+
+## A VST3 effect on every track (T1-04 D36)
+
+Workload 15, "16 Session MIDI tracks through a VST3 effect", is workload 9 with an outside plugin in
+place of the stock EQ and compressor: one instance of the VST3 given with `--plugin` in each playing
+track's first effect slot, prepared at the device's rate like any slot.
+
+- **It needs `--plugin FILE.vst3`**, and is skipped without it. The tool is built with VST3 hosting
+  for this; the offline report's build is not, so the report leaves the row out.
+- **The plugin runs inside the tool's process.** The app's crash containment and blocklist are not
+  involved, so a plugin that crashes takes the tool with it. Use plugins you trust.
+- **The row fails if any plugin faulted** (the runtime's fault count), as every row does.
+
+First result, on the development laptop (Windows Audio, 48 kHz, 480 frames, muted, 4 s per row), with
+the repository's own test plugin (`Alien Test Plugin`, a simple gain/tone/mix effect built with the tests):
+
+| Workload | p50 us | p95 us | p99 us | max us | p95 / budget % | Over budget | Late | Allocations |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Transport, no clips, 16 tracks | 110.5 | 176.7 | 244.3 | 347.2 | 1.8 | 0 | 0 | 0 |
+| 16 Session MIDI tracks | 309.0 | 503.4 | 549.6 | 672.9 | 5.0 | 0 | 0 | 0 |
+| 16 Session MIDI tracks, stock EQ + compressor | 545.1 | 745.9 | 871.8 | 1040.5 | 7.5 | 0 | 0 | 0 |
+| 16 Session MIDI tracks through a VST3 effect | 402.0 | 576.7 | 645.0 | 760.7 | 5.8 | 0 | 0 | 0 |
+
+16 instances of the test plugin added about 93 us a callback at p50 over the same tracks without it,
+about 6 us an instance per 480-frame block, and no plugin faulted. The test plugin does almost
+nothing, so this is the cost of hosting a VST3 (its bus and parameter handling), not of a real effect.
+Not shown: real third-party plugins, instruments, plugins reporting latency, more than one plugin per
+track.
