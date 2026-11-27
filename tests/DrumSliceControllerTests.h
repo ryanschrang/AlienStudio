@@ -66,7 +66,7 @@ static void drumSliceControllerTests() {
     const auto sessionProject = root.getChildFile("SessionKit.alienstudio");
     {
         ToneEngine engine; alien::ProjectController c(engine); alien::command::routeDrumPadEdits(c);
-        require(c.installAudio(wav, 0, 0, audio), "install Session source");
+        require(alien::command::installDecodedAudio(c,wav, 0, 0, audio).ok, "install Session source");
         const auto bytes = c.availableAudioBytes();
         require(c.sliceSessionAudio(0, 0), "slice the Session source directly");
         checkKit(c);

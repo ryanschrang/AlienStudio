@@ -12,7 +12,7 @@ static void songTakeCommandChecks() {
     auto audio = std::make_shared<alien::SessionAudioClip>();
     audio->sampleRate = 8000; audio->channels = 1; audio->frames = 32000;   // 4 s: two bars at 120 BPM
     audio->left.assign(32000, .2f); audio->buildWaveform();
-    require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("take-command-fixture.wav"), 2, 0, audio), "audio take fixture");
+    require(alien::command::installDecodedAudio(c,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("take-command-fixture.wav"), 2, 0, audio).ok, "audio take fixture");
     tl::Ids takeIds;
     require(c.editTimeline("Take fixture", [&](tl::Timeline& t) {
         tl::Region pass; pass.row = 2; pass.source = 0; pass.length = 2 * bar;

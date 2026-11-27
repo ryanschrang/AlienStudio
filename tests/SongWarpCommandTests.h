@@ -18,7 +18,7 @@ static void songWarpCommandChecks() {
     auto audio = std::make_shared<alien::SessionAudioClip>();
     audio->sampleRate = 8000; audio->channels = 1; audio->frames = 32000;   // 4 s: two bars at 120 BPM
     audio->left.assign(32000, .2f); audio->buildWaveform();
-    require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("warp-command-fixture.wav"), 2, 0, audio), "audio warp fixture");
+    require(alien::command::installDecodedAudio(c,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("warp-command-fixture.wav"), 2, 0, audio).ok, "audio warp fixture");
     require(c.editTimeline("Place clips", [](tl::Timeline& t) { return t.placeBars(2, 0, 0, 2) && t.placeBars(0, 0, 0, 1); }), "place an audio and a MIDI clip");
     c.markAsNewBaseline();
     std::uint32_t id = 0, midi = 0;

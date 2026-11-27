@@ -95,6 +95,23 @@ static void importClipAudioCommandChecks() {
     const auto renamed = commands.batch({first, cmd::RenameTrack{1, "Vocals"}}, "Import vocals");
     require(renamed.changed && c.document().clip(1, 1).audio == audio && c.document().tracks[1].name == "Vocals" && c.undoLabel() == "Import vocals", "import and rename are one step");
     require(c.undo() && alien::sameContent(batchBefore, c.document()), "one Undo reverts the batch");
+    const auto mixedBefore=c.document(); const auto mixedBytes=c.availableAudioBytes(); const auto mixedHistory=historyOf(c);
+    const cmd::ImportClipAudio mixedImport{preparedImport(c,file,2,1,audio)};
+    const std::vector<cmd::Command> mixed{mixedImport,cmd::SetTrackPan{2,.24}};
+    const auto prediction=commands.preview(mixed);
+    require(prediction.ok && prediction.changed && alien::sameContent(mixedBefore,c.document())
+        && historyOf(c)==mixedHistory && c.availableAudioBytes()==mixedBytes,"import/mixer Preview preserves document, history and retained audio budget");
+    require(commands.batch(mixed,"Import and mix").changed && alien::sameContent(prediction.after,c.document())
+        && engine->tracks[2].pan.load()==.24f && c.document().clip(2,1).audio==audio,"import/mixer batch matches Preview and publishes live mix");
+    require(c.undo() && alien::sameContent(mixedBefore,c.document())
+        && engine->tracks[2].pan.load()==static_cast<float>(mixedBefore.tracks[2].settings.pan),"one Undo restores imported content and mix");
+    const auto redo=historyOf(c); const auto refusedBytes=c.availableAudioBytes();
+    const auto late=commands.batch({mixedImport,mixed[1],cmd::SetTrackPan{99,.5}},"Bad import");
+    c.setExternalBusy(true); const auto busy=commands.batch(mixed,"Busy import"); c.setExternalBusy(false);
+    require(!late.ok && late.failedCommand==2 && !busy.ok && alien::sameContent(mixedBefore,c.document())
+        && historyOf(c)==redo && c.availableAudioBytes()==refusedBytes
+        && engine->tracks[2].pan.load()==static_cast<float>(mixedBefore.tracks[2].settings.pan),"late/busy import refusal preserves redo, retention and live mix");
+    require(c.redo() && alien::sameContent(prediction.after,c.document()) && engine->tracks[2].pan.load()==.24f,"one Redo restores accepted import/mixer transaction");
     std::cout << "PASS: ImportClipAudio preview, one undo step, stale refusal, stable destination, empty-only, recording, linked cells and batches\n";
 }
 

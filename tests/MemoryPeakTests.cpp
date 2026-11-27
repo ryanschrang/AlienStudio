@@ -201,7 +201,7 @@ static void projectPeakTests(bool report) {
                 auto clip = toneClip(10.0);
                 std::atomic<bool> cancel{false}; juce::String error;
                 require(alien::writeClipWav(file, *clip, cancel, error), "write an audio file");
-                require(c->installAudio(file, t, 1, clip), "install an audio clip");
+                require(alien::command::installDecodedAudio(*c,file, t, 1, clip).ok, "install an audio clip");
             }
             c->commit("Fill project");
             alien::command::CommandEngine commands(*c);
@@ -328,7 +328,7 @@ static void replacedAudioSafetyTests() {
             const auto file = root.getChildFile("clip" + juce::String(t) + ".wav");
             auto clip = toneClip(2.0);
             std::atomic<bool> cancel{false}; juce::String error;
-            require(alien::writeClipWav(file, *clip, cancel, error) && c->installAudio(file, t, 0, clip), "install audio");
+            require(alien::writeClipWav(file, *clip, cancel, error) && alien::command::installDecodedAudio(*c,file, t, 0, clip).ok, "install audio");
         }
         require(writeProject(*c, song), "save the small project");
     }
@@ -386,7 +386,7 @@ static void unreachableAudioTests() {
         const auto file = root.getChildFile("clip" + juce::String(track) + "-" + juce::String(scene) + ".wav");
         auto clip = toneClip(2.0);
         std::atomic<bool> cancel{false}; juce::String error;
-        require(alien::writeClipWav(file, *clip, cancel, error) && c->installAudio(file, track, scene, clip), "install audio");
+        require(alien::writeClipWav(file, *clip, cancel, error) && alien::command::installDecodedAudio(*c,file, track, scene, clip).ok, "install audio");
         return std::weak_ptr<const alien::SessionAudioClip>(c->document().clip(track, scene).audio);
     };
     while (c->document().trackCount() < 6) require(c->addTrack(), "add a track");

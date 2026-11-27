@@ -38,7 +38,7 @@ static void clipboardClipCommandChecks() {
         && historyOf(c) == linkedHistory, "already-linked paste is a no-op");
     auto audio = std::make_shared<alien::SessionAudioClip>(); audio->sampleRate = 8000; audio->channels = 1; audio->frames = 80;
     audio->left.assign(80, .2f); audio->buildWaveform();
-    require(c.installAudio(juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("clipboard-audio.wav"), 0, 1, audio)
+    require(alien::command::installDecodedAudio(c,juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("clipboard-audio.wav"), 0, 1, audio).ok
         && c.copyCell(0, 1), "audio clipboard fixture");
     auto audioPreview = commands.preview(std::vector<cmd::Command>{cmd::PasteClip{1, 1}, cmd::PasteLinkedClip{2, 1}, cmd::MakeClipUnique{2, 1}});
     require(audioPreview.ok && commands.batch({cmd::PasteClip{1, 1}, cmd::PasteLinkedClip{2, 1}, cmd::MakeClipUnique{2, 1}}, "Audio paste").changed
