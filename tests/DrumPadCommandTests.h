@@ -105,7 +105,18 @@ static void drumPadCommandChecks() {
     c.setExternalBusy(false);
     require(!busy.ok && busy.error.contains("busy") && alien::sameContent(threePads, c.document()), "a busy project refuses, and refusals change nothing");
 
-    // The controller's own drum methods, which the Drums page calls, run the commands once they are routed.
+    // Without the command route, prepared work must not apply or commit directly.
+    const auto unrouted=c.document(); const auto unroutedHistory=historyOf(c); const auto unroutedBytes=c.availableAudioBytes();
+    alien::drum_pad::Edit missing; missing.kind=alien::drum_pad::Kind::clear; missing.track=0; missing.pad=1;
+    require(c.commitDrumPad(missing,"Unrouted clear").isNotEmpty(),"missing drum command route refuses a prepared clear");
+    auto freshAudio=std::make_shared<alien::SessionAudioClip>();
+    freshAudio->sampleRate=8000; freshAudio->channels=1; freshAudio->frames=80; freshAudio->left.assign(80,.2f); freshAudio->buildWaveform();
+    missing.kind=alien::drum_pad::Kind::load; missing.pad=7; missing.path="C:/kit/unrouted.wav"; missing.clip=freshAudio;
+    require(c.commitDrumPad(missing,"Unrouted load").isNotEmpty() && alien::sameContent(unrouted,c.document())
+        && historyOf(c)==unroutedHistory && c.availableAudioBytes()==unroutedBytes
+        && engine->drumKits[0].samples[1].load()==unrouted.tracks[0].drumAssets[1].get()
+        && engine->drumKits[0].samples[7].load()==nullptr,"missing route preserves document, redo, audio budget and engine kit");
+    // The Drums page's controller adapters submit commands once routed.
     cmd::routeDrumPadEdits(c);
     require(c.sliceDrum(0, 1) && c.undoLabel() == "Slice sample to 8 pads" && kit().drumSlices[0] == alien::DrumSlice{20, 20 + 30 / 8} && kit().drumSlices[7].end == 50 && kit().drumPaths[7] == path,
             "the routed equal slice cuts the pad's own range to eight pads");

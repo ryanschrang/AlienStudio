@@ -17,7 +17,7 @@ static void drumTransientControllerTests() {
         require(!c.isBusy(), "auto slice worker finishes");
     };
     {
-        ToneEngine engine; alien::ProjectController c(engine);
+        ToneEngine engine; alien::ProjectController c(engine); alien::command::routeDrumPadEdits(c);
         require(!c.autoSliceDrum(c.drumSliceTarget(0, 0)), "empty auto slice refuses");
         c.loadDrum(file, 0, 0); wait(c); c.loadDrum(file, 0, 1); wait(c);
         const auto original = c.document().tracks[0]; const auto target = c.drumSliceTarget(0, 0);

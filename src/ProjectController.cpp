@@ -1639,13 +1639,7 @@ bool ProjectController::applyDrumPadCommand(const drum_pad::Edit& e) {
 
 juce::String ProjectController::commitDrumPad(const drum_pad::Edit& e, const juce::String& label) {
     if (drumPadCommands) return drumPadCommands(e, label);
-    if (busy) return "The project is busy; try again when it has finished.";
-    auto trial = doc;
-    if (const auto why = drum_pad::apply(trial, e); why.isNotEmpty()) return why;
-    const bool changed = !sameContent(trial, doc);
-    if (!applyDrumPadCommand(e)) return e.kind == drum_pad::Kind::load ? "Session audio storage is full (512 MiB limit)" : "The project could not change the drum pad.";
-    if (changed) commit(label);
-    return {};
+    return "Drum pad command route is not configured.";
 }
 
 int ProjectController::drumTargetTrack(const DrumSliceTarget& target) const {

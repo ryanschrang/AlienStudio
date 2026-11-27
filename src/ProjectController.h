@@ -569,7 +569,7 @@ public:
     bool applyDrumPadCommand(const drum_pad::Edit& e);
     // Set by the app (command::routeDrumPadEdits) so the edits below run as commands. Returns why not, or nothing.
     std::function<juce::String(const drum_pad::Edit&, const juce::String&)> drumPadCommands;
-    // One drum pad edit as one undo step: through the command engine when the app has routed it, directly otherwise.
+    // Prepared edits must use the command engine for validation, publication and history.
     juce::String commitDrumPad(const drum_pad::Edit& e, const juce::String& label);
     // The track a deferred drum pad action was aimed at, if the project, the track and the pad's sample are still
     // the ones it saw; -1 otherwise.

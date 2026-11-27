@@ -16,7 +16,7 @@ static void drumSliceControllerTests() {
         require(!c.isBusy(), "sampler work completes");
     };
     {
-        ToneEngine engine; alien::ProjectController c(engine);
+        ToneEngine engine; alien::ProjectController c(engine); alien::command::routeDrumPadEdits(c);
         require(!c.sliceDrum(0, 0) && !c.sliceDrum(-1, 0) && !c.sliceDrum(0, 8), "missing and invalid slice targets refuse");
         c.loadDrum(wav, 0, 0); require(!c.sliceDrum(0, 0), "busy slice refuses"); wait(c);
         const auto whole = c.document().tracks[0].drumAssets[0]; const auto bytes = c.availableAudioBytes();
@@ -57,7 +57,7 @@ static void drumSliceControllerTests() {
             require(kit.drumAssets[p] && kit.drumAssets[p]->sliceSource == source && kit.drumSlices[p] == alien::DrumSlice{83 * p / 8, 83 * (p + 1) / 8}, "reopened or relinked slices retain shared source and boundaries");
     };
     {
-        ToneEngine engine; alien::ProjectController c(engine); const auto bytes = c.availableAudioBytes();
+        ToneEngine engine; alien::ProjectController c(engine); alien::command::routeDrumPadEdits(c); const auto bytes = c.availableAudioBytes();
         c.openProject(project); wait(c); checkKit(c);
         require(bytes - c.availableAudioBytes() == audio->decodedBytes(), "reopen decodes and charges shared source once");
         require(c.sliceDrum(0, 7), "a selected slice can itself be subdivided");
@@ -65,7 +65,7 @@ static void drumSliceControllerTests() {
     }
     const auto sessionProject = root.getChildFile("SessionKit.alienstudio");
     {
-        ToneEngine engine; alien::ProjectController c(engine);
+        ToneEngine engine; alien::ProjectController c(engine); alien::command::routeDrumPadEdits(c);
         require(c.installAudio(wav, 0, 0, audio), "install Session source");
         const auto bytes = c.availableAudioBytes();
         require(c.sliceSessionAudio(0, 0), "slice the Session source directly");
@@ -82,7 +82,7 @@ static void drumSliceControllerTests() {
         require(done && ok, "save Session clip and derived kit");
     }
     {
-        ToneEngine engine; alien::ProjectController c(engine);
+        ToneEngine engine; alien::ProjectController c(engine); alien::command::routeDrumPadEdits(c);
         const auto bytes = c.availableAudioBytes();
         c.openProject(sessionProject); wait(c); checkKit(c);
         require(c.document().clip(0, 0).audio == c.document().tracks[0].drumAssets[0]->sliceSource &&
@@ -91,7 +91,7 @@ static void drumSliceControllerTests() {
     }
     const auto moved = root.getChildFile("moved"); require(moved.createDirectory().wasOk() && wav.moveFileTo(moved.getChildFile("source.wav")), "move source away");
     {
-        ToneEngine engine; alien::ProjectController c(engine); c.openProject(project); wait(c);
+        ToneEngine engine; alien::ProjectController c(engine); alien::command::routeDrumPadEdits(c); c.openProject(project); wait(c);
         require(!c.document().tracks[0].drumAssets[0] && c.document().tracks[0].drumSlices[0] == alien::DrumSlice{0, 10}, "missing source preserves saved boundaries offline");
         alien::command::relinkMissingAudio(c, moved); wait(c); checkKit(c);
         c.undo(); require(!c.document().tracks[0].drumAssets[0], "relink is one Undo"); c.redo(); checkKit(c);
@@ -99,7 +99,7 @@ static void drumSliceControllerTests() {
     audio->frames = 4; audio->left.resize(4); audio->right.resize(4); audio->buildWaveform();
     require(alien::writeClipWav(moved.getChildFile("source.wav"), *audio, cancel, error), "write shorter relink candidate");
     {
-        ToneEngine engine; alien::ProjectController c(engine); c.openProject(project); wait(c);
+        ToneEngine engine; alien::ProjectController c(engine); alien::command::routeDrumPadEdits(c); c.openProject(project); wait(c);
         const auto bytes = c.availableAudioBytes(); alien::command::relinkMissingAudio(c, moved); wait(c);
         for (const auto& asset : c.document().tracks[0].drumAssets) require(!asset, "shorter relink cannot silently expand or truncate slices");
         require(c.availableAudioBytes() == bytes, "rejected relink does not retain source audio");
@@ -116,7 +116,7 @@ static void drumSliceBoundaryTests() {
     std::atomic<bool> cancel{false}; juce::String error;
     require(alien::writeClipWav(file, *audio, cancel, error), "write boundary source");
     {
-        ToneEngine engine; alien::ProjectController c(engine);
+        ToneEngine engine; alien::ProjectController c(engine); alien::command::routeDrumPadEdits(c);
         const auto wait = [&] { for (int i = 0; i < 400 && c.isBusy(); ++i) pump(10); require(!c.isBusy(), "boundary worker finishes"); };
         require(!c.editDrumSlice(c.drumSliceTarget(0, 0), {1, 2}), "offline boundary edits refuse");
         c.loadDrum(file, 0, 0); wait(); c.loadDrum(file, 0, 1); wait();
