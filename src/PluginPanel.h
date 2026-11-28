@@ -169,7 +169,7 @@ public:
             convolutionSlots.push_back(convolution ? effect.instanceId : 0);
         }
         updateSidechainButton();
-        refreshMacros(rack.macros);
+        refreshMacros(rack.macros.view());
     }
     // The knobs show the rack's macros: a name, its value, and how many parameters it moves.
     void refreshMacros(const RackMacros& macros){

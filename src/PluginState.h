@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -107,11 +108,35 @@ struct RackMacro {
 };
 inline juce::String macroDisplayName(const RackMacro& macro, int index) { return macro.name.isNotEmpty() ? macro.name : "Macro " + juce::String(index + 1); }
 using RackMacros = std::array<RackMacro, rackMacroCount>;
+// A rack's eight macros, kept off the rack itself until one is touched: a project copies its racks often (Preview,
+// Undo), and a Debug build's 1 MB stack holds several projects at once. Reads of untouched macros see defaults;
+// writing makes the rack its own copy first, so copies never share an edit. Message thread only.
+class RackMacroSet {
+public:
+    const RackMacro& operator[](std::size_t i) const { return view()[i]; }
+    RackMacro& operator[](std::size_t i) { return own()[i]; }
+    const RackMacros& view() const { return macros ? *macros : none(); }
+    RackMacros::const_iterator begin() const { return view().begin(); }
+    RackMacros::const_iterator end() const { return view().end(); }
+    RackMacros::iterator begin() { return own().begin(); }
+    RackMacros::iterator end() { return own().end(); }
+    bool touched() const { return std::any_of(begin(), end(), [](const RackMacro& m) { return !m.isDefault(); }); }
+    bool operator==(const RackMacroSet& o) const { return view() == o.view(); }
+    bool operator==(const RackMacros& o) const { return view() == o; }
+private:
+    RackMacros& own() {
+        if (!macros) macros = std::make_shared<RackMacros>();
+        else if (macros.use_count() > 1) macros = std::make_shared<RackMacros>(*macros);
+        return *macros;
+    }
+    static const RackMacros& none() { static const RackMacros defaults{}; return defaults; }
+    std::shared_ptr<RackMacros> macros;
+};
 
 struct PluginRackState {
     PluginState instrument;
     std::vector<PluginState> effects;
-    RackMacros macros{};
+    RackMacroSet macros;
     bool operator==(const PluginRackState&) const = default;
     bool hasDevice(std::uint64_t instance) const {
         if (instance == 0) return false;
@@ -120,6 +145,10 @@ struct PluginRackState {
     }
     // The macros' targets on devices no longer in the rack go (after a device is removed or replaced).
     bool dropStaleMacroTargets() {
+        const auto& current = std::as_const(macros);
+        if (std::none_of(current.begin(), current.end(), [this](const RackMacro& m) {
+                return std::any_of(m.targets.begin(), m.targets.end(), [this](const MacroTarget& t) { return !hasDevice(t.instance); }); }))
+            return false;   // nothing to drop: an untouched rack stays without a copy of its own
         bool changed = false;
         for (auto& macro : macros)
             changed = std::erase_if(macro.targets, [this](const MacroTarget& t) { return !hasDevice(t.instance); }) > 0 || changed;
@@ -178,9 +207,9 @@ inline juce::var rackToVar(const PluginRackState& rack) {
     juce::Array<juce::var> fx; for (const auto& p : rack.effects) fx.add(pluginToVar(p));
     o->setProperty("effects", juce::var(fx));
     // Format 40: written only when a macro is named, moved or mapped.
-    if (std::any_of(rack.macros.begin(), rack.macros.end(), [](const RackMacro& m) { return !m.isDefault(); })) {
+    if (rack.macros.touched()) {
         juce::Array<juce::var> macros;
-        for (const auto& m : rack.macros) {
+        for (const auto& m : rack.macros.view()) {
             auto macro = juce::var(new juce::DynamicObject()); auto* mo = macro.getDynamicObject();
             if (m.name.isNotEmpty()) mo->setProperty("name", m.name);
             mo->setProperty("value", static_cast<double>(m.value));

@@ -27,6 +27,13 @@ static void rackMacroCommandChecks() {
         require(rack.valid() && rack.dropStaleMacroTargets() && rack.macros[1].targets.size() == 1 && !rack.dropStaleMacroTargets(),
                 "targets on a device that is not in the rack can be dropped");
         require(rack.devicesOnly().macros == alien::RackMacros{} && rack.devicesOnly().effects == rack.effects, "the devices without the macros");
+        // A rack keeps its macros off itself until one is touched, and a copy never shares an edit.
+        require(sizeof(alien::RackMacroSet) <= 2 * sizeof(void*), "the macros cost a rack a pointer until used");
+        auto copy = rack;
+        copy.macros[1].value = 0.5f;
+        require(rack.macros[1].value == 0 && copy.macros[1].value == 0.5f && copy != rack, "editing a copy's macros leaves the original alone");
+        const alien::PluginRackState untouched;
+        require(!untouched.macros.touched() && untouched.macros[7].isDefault(), "an untouched rack reads default macros");
         require(alien::macroDisplayName(rack.macros[3], 3) == "Macro 4", "an unnamed macro is called by its number");
     }
 

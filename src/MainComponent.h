@@ -1764,7 +1764,7 @@ private:
     // Sets the loaded plugins' parameters from the document's macros: every rack after the plugins were loaded again
     // (`all`), otherwise only the racks whose macros changed since they were last applied, so a parameter turned in a
     // plugin's own editor is not pulled back by an unrelated edit.
-    std::map<int, alien::RackMacros> appliedMacros;
+    std::map<int, alien::RackMacroSet> appliedMacros;
     void applyMacros(bool all) {
         if (all) appliedMacros.clear();
         for (const auto& [rack, state] : documentRacks()) {
