@@ -63,11 +63,13 @@ inline bool writeSessionProjectFile(const juce::File& target, SessionProjectData
         if (!collectPath(path)) return false;
     // Channel Rack samples: built-in sounds are regenerated, so only files are referenced.
     for (int c = 0; c < project.channelRack.channelCount; ++c) {
-        auto& channel = project.channelRack.info[static_cast<std::size_t>(c)];
-        if (!channel.isFile()) continue;
-        auto path = juce::String::fromUTF8(channel.sample.c_str(), static_cast<int>(channel.sample.size()));
-        if (!collectPath(path)) return false;
-        channel.sample = path.toStdString();
+        bool collected = true;   // its sample and a multisample's files
+        project.channelRack.info[static_cast<std::size_t>(c)].moveFiles([&](const std::string& stored) {
+            auto path = juce::String::fromUTF8(stored.c_str(), static_cast<int>(stored.size()));
+            collected = collected && collectPath(path);
+            return collected ? path.toStdString() : stored;
+        });
+        if (!collected) return false;
     }
     const auto json = serializeSessionProject(project);
     if (json.isNotEmpty() && static_cast<juce::int64>(json.getNumBytesAsUTF8()) > maxProjectFileBytes)

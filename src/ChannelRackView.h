@@ -298,7 +298,7 @@ public:
                   cmdDuplicate = 100, cmdCopyRow, cmdPasteRow, cmdFill2, cmdFill4, cmdFill8,
                   cmdRotateLeft, cmdRotateRight, cmdReverseRow, cmdRepeat4, cmdRepeat8, cmdRepeat16, cmdPianoRoll,
                   synthBase = 200, builtinBase = 20, outputMaster = 40, outputBase = 41, chokeNone = 60, chokeBase = 61,
-                  cmdSlice4 = 170, cmdSlice8, cmdSlice16, cmdSliceAttacks, cmdKeys4, cmdKeys8, cmdKeys16, cmdKeysAttacks, cmdKeysClear, cmdPluginEditor = 190, pluginBase = 1000, starterBase = 50000 };
+                  cmdSlice4 = 170, cmdSlice8, cmdSlice16, cmdSliceAttacks, cmdKeys4, cmdKeys8, cmdKeys16, cmdKeysAttacks, cmdKeysClear, cmdLoadMultisample = 185, cmdPluginEditor = 190, pluginBase = 1000, starterBase = 50000 };
 
     // The name in a plugin channel's saved description (what the instrument list shows).
     static juce::String pluginName(const rack::ChannelInfo& info) {
@@ -330,6 +330,7 @@ public:
         sound.addSubMenu("Starter Pack", starterMenu(info));
         sound.addSeparator();
         sound.addItem(cmdLoadSample, "Load sample file...");
+        sound.addItem(cmdLoadMultisample, "Multisample from files...");   // several files on this channel's keys (T2-01)
         sound.addItem(cmdSilent, "Silent (no sound)", true, info.sample.empty() && !channel.isInstrument());
         menu.addSubMenu("Sound", sound);
         // Slices of the sample (or of this channel's slice) at its attacks or in equal parts, each a new channel
@@ -519,6 +520,7 @@ public:
             changed();
         } else if (id == cmdSilent) { runForRows(rows, plural("Silence channel", rows), [](int r) { return command::SilenceRackChannel{r}; }); changed(); }
         else if (id == cmdLoadSample) chooseSample(row);
+        else if (id == cmdLoadMultisample) chooseMultisample(row);
         else if (id == cmdPluginEditor) { if (onOpenPluginEditor) onOpenPluginEditor(row); }
         else if (id >= starterBase) {
             const auto index = static_cast<std::size_t>(id - starterBase);
@@ -598,6 +600,23 @@ public:
         chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
             [safe, row](const juce::FileChooser& result) {
                 if (safe != nullptr && result.getResult().existsAsFile()) command::loadRackSample(safe->controller, result.getResult(), row);
+            });
+    }
+    // Tests answer the file chooser through this; it gets the files the person picked.
+    std::function<void(std::function<void(std::vector<juce::File>)>)> multisampleChooser;
+    void chooseMultisample(int row) {
+        juce::Component::SafePointer<ChannelRackGrid> safe(this);
+        auto picked = [safe, row](std::vector<juce::File> files) {
+            if (safe != nullptr && !files.empty()) command::loadRackMultisample(safe->controller, std::move(files), row);
+        };
+        if (multisampleChooser) { multisampleChooser(std::move(picked)); return; }
+        chooser = std::make_unique<juce::FileChooser>("Choose 2 to " + juce::String(rack::maxKeyZones)
+            + " samples for this channel's keys (names with a note, like Piano_C4, set each file's key)", juce::File{}, "*.wav;*.mp3");
+        chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::canSelectMultipleItems,
+            [picked](const juce::FileChooser& result) {
+                std::vector<juce::File> files;
+                for (const auto& file : result.getResults()) if (file.existsAsFile()) files.push_back(file);
+                picked(std::move(files));
             });
     }
     void askForName(const juce::String& title, const juce::String& current, std::function<void(const juce::String&)> done) {

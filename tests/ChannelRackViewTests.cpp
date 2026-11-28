@@ -1590,6 +1590,48 @@ static void sliceMenuChecks() {
     std::puts("PASS: slicing a sample channel at attacks and in equal parts");
 }
 
+// ---- several files on one channel's keys (T2-01) ------------------------------------
+static void multisampleMenuChecks() {
+    Rig rig;
+    auto& grid = rig.grid;
+    auto& c = rig.controller;
+    juce::String said;
+    c.onImportStatus = [&](const juce::String& text, const juce::String&) { said = text; };
+    const auto folder = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("alien multisample menu", "");
+    require(folder.createDirectory().wasOk(), "test setup: a folder");
+    std::vector<juce::File> files;
+    for (const char* name : {"Bell_A4.wav", "Bell_A2.wav", "Bell_A3.wav"}) {
+        auto clip = std::make_shared<SessionAudioClip>();
+        clip->sampleRate = 8000; clip->channels = 1; clip->frames = 400; clip->left.assign(400, .3f);
+        clip->buildWaveform();
+        std::atomic<bool> cancel{false}; juce::String error;
+        files.push_back(folder.getChildFile(name));
+        require(alien::writeClipWav(files.back(), *clip, cancel, error), "test setup: a sample file can be written");
+    }
+    const auto menu = entries(grid.channelMenu(0));
+    require(entry(menu, ChannelRackGrid::cmdLoadMultisample) != nullptr && entry(menu, ChannelRackGrid::cmdLoadMultisample)->enabled,
+            "the Sound menu offers a multisample from files");
+    std::function<void(std::vector<juce::File>)> answer;
+    grid.multisampleChooser = [&](std::function<void(std::vector<juce::File>)> picked) { answer = std::move(picked); };
+    grid.runChannelCommand(0, ChannelRackGrid::cmdLoadMultisample);
+    require(answer != nullptr, "it asks for files");
+    answer(files);
+    for (int i = 0; i < 600 && c.isBusy(); ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+    const auto& info = rig.rack().info[0];
+    require(!c.isBusy() && info.name == "Bell" && info.hasZones() && info.zones->size() == 3 && info.sample == files[1].getFullPathName().toStdString()
+            && (*info.zones)[1].root == 57 && (*info.zones)[2].file == files[0].getFullPathName().toStdString() && c.undoLabel() == "Load multisample",
+            "menu: the files go on the channel's keys by their notes, as one Undo step");
+    require(said.contains("3 files on keys") && said.contains("note its name"), "and the status says how they were laid out");
+    require(c.rackChannelAudio(0) != nullptr && c.rackChannelAudio(0)->keyZones->size() == 3, "the channel plays the three files");
+    answer = nullptr;
+    grid.runChannelCommand(0, ChannelRackGrid::cmdLoadMultisample);
+    answer({files[0]});
+    require(!c.isBusy() && said.contains("2 to 16") && rig.rack().info[0].zones->size() == 3, "one file is refused with the reason, and nothing changes");
+    grid.multisampleChooser = nullptr;
+    folder.deleteRecursively();
+    std::puts("PASS: several sample files on one channel's keys");
+}
+
 // ---- slices of a sample on one channel's keys (T2-01) -------------------------------
 static void keysMenuChecks() {
     Rig rig;
@@ -1817,6 +1859,7 @@ int main() {
     pluginInstrumentMenu();
     sliceMenuChecks();
     keysMenuChecks();
+    multisampleMenuChecks();
     starterPackMenu();
     nameColumnChecks();
     channelPianoRollChecks();
