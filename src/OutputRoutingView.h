@@ -6,6 +6,8 @@
 #include <memory>
 #include <vector>
 #include <cmath>
+#include <charconv>
+#include <optional>
 
 namespace alien {
 // A view of the document's output graph, never a second routing model.
@@ -49,6 +51,32 @@ public:
     bool chooseSendMode(const Request& request, int r, bool pre) {
         const int track = sendTrack(request, r);
         return track >= 0 && onSendModeRequested && onSendModeRequested(track, r, pre);
+    }
+    bool editSendLevel(const Request& request, int r) {
+        const int track = sendTrack(request, r);
+        if (track < 0 || controller.isBusy()) return false;
+        const auto initial = juce::String(sendFor(track, r) * 100, 9).trimCharactersAtEnd("0").trimCharactersAtEnd(".");
+        const auto& d = controller.document();
+        auto* window = new juce::AlertWindow("Set send level",
+            d.tracks[static_cast<std::size_t>(track)].name + " to " + d.returns[static_cast<std::size_t>(r)].name
+                + ": enter a percentage from 0 to 100.", juce::MessageBoxIconType::NoIcon, this);
+        window->addTextEditor("percent", initial, "Level (%)");
+        window->getTextEditor("percent")->setName("Send level percent");
+        window->addButton("Apply", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        juce::Component::SafePointer<juce::AlertWindow> dialog(window);
+        window->getTextEditor("percent")->onTextChange = [dialog] {
+            if (dialog) dialog->getButton(0)->setEnabled(sendPercent(dialog->getTextEditorContents("percent")).has_value());
+        };
+        juce::Component::SafePointer<OutputRoutingView> safe(this);
+        window->enterModalState(true, juce::ModalCallbackFunction::create(
+            [safe, dialog, request, r, initial](int result) {
+                if (!safe || !dialog || result != 1) return;
+                const auto text = dialog->getTextEditorContents("percent").trim();
+                if (text == initial) return;
+                if (const auto percent = sendPercent(text)) safe->chooseSend(request, r, *percent / 100.0);
+            }), true);
+        return true;
     }
     double sendFor(int track, int r) const {
         const auto& d = controller.document();
@@ -122,9 +150,17 @@ public:
         node(masterBounds(), "Master");
     }
 private:
+    static std::optional<double> sendPercent(const juce::String& text) {
+        const auto value = text.trim().toStdString();
+        double percent{};
+        const auto parsed = std::from_chars(value.data(), value.data() + value.size(), percent);
+        if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()
+            || !std::isfinite(percent) || percent < 0 || percent > 100) return std::nullopt;
+        return percent;
+    }
     int sendTrack(const Request& request, int r) const {
         const auto& d = controller.document();
-        if (!sendView || !isEnabled() || request.scope != d.identityScope || r < 0 || r >= maxReturns
+        if (!sendView || !isVisible() || !isEnabled() || request.scope != d.identityScope || r < 0 || r >= maxReturns
             || !d.returns[static_cast<std::size_t>(r)].used || !request.returns[static_cast<std::size_t>(r)]
             || request.returns[static_cast<std::size_t>(r)] != d.trackId(TrackRole::returnTrack, r)) return -1;
         return d.trackSlot(request.track, TrackRole::session);
@@ -141,6 +177,7 @@ private:
                 for (int i = 0; i < 4; ++i) send.addItem(1000 + r * 10 + i,
                     i == 0 ? juce::String("Off") : juce::String(levels[static_cast<std::size_t>(i)] * 100, 0) + "%",
                     true, std::abs(sendFor(track, r) - levels[static_cast<std::size_t>(i)]) < .00001);
+                send.addItem(1000 + r * 10 + 6, "Set level...");
                 send.addSeparator();
                 send.addItem(1000 + r * 10 + 4, "Pre-fader", true, settings.sendPre[static_cast<std::size_t>(r)]);
                 send.addItem(1000 + r * 10 + 5, "Post-fader", true, !settings.sendPre[static_cast<std::size_t>(r)]);
@@ -162,6 +199,7 @@ private:
                     const int r = (result - 1000) / 10, action = (result - 1000) % 10;
                     if (action < 4) safe->chooseSend(request, r, std::array<double, 4>{0,.25,.5,1}[static_cast<std::size_t>(action)]);
                     else if (action < 6) safe->chooseSendMode(request, r, action == 4);
+                    else if (action == 6) safe->editSendLevel(request, r);
                 } else if (result != 999) safe->choose(request, result - 2);
             });
     }
