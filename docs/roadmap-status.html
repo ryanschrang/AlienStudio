@@ -119,14 +119,14 @@ ul.plain li{margin:10px 0}
 
 <section class="band" id="tier1"><div class="wrap">
 <h2>Tier 1: the DAW foundation</h2>
-<p class="sub">From the Tier 1 table in ROADMAP.md. "Still to do" is the part of each status that says what remains or is pending; open "Full status" for the whole entry.</p>
-<div class="scroll"><table><thead><tr><th>Workstream</th><th>Status</th><th>Still to do</th></tr></thead><tbody id="t1"></tbody></table></div>
+<p class="sub">From the Tier 1 table in ROADMAP.md. "Finished in code" means the code is done; "Testing" says what still needs a person or hardware (listening, Windows checks). "Still to do" is the part of each status that says what remains or is pending; open "Full status" for the whole entry.</p>
+<div class="scroll"><table><thead><tr><th>Workstream</th><th>Status</th><th>Still to do</th><th>Testing</th></tr></thead><tbody id="t1"></tbody></table></div>
 </div></section>
 
 <section class="band" id="tier2" style="padding-top:0"><div class="wrap">
 <h2>Tier 2: what makes Alien Studio competitive</h2>
 <p class="sub">These come after Tier 1. From the Tier 2 table in ROADMAP.md.</p>
-<div class="scroll"><table><thead><tr><th>Workstream</th><th>Status</th><th>Still to do</th></tr></thead><tbody id="t2"></tbody></table></div>
+<div class="scroll"><table><thead><tr><th>Workstream</th><th>Status</th><th>Still to do</th><th>Testing</th></tr></thead><tbody id="t2"></tbody></table></div>
 </div></section>
 
 <section class="band" id="later" style="padding-top:0"><div class="wrap two">
@@ -215,17 +215,17 @@ const pill = k => `<span class="pill ${PILL[k][0]}">${PILL[k][1]}</span>`;
 const dot = (k, untested) => `<i class="dot ${k === 'plan' ? '' : k}${untested ? ' untested' : ''}"></i>`;
 
 function workstreams(t) {
-  const o = col(t, 'Order'), w = col(t, 'Workstream'), s = col(t, 'Status today'), ids = col(t, 'Checklist IDs');
+  const o = col(t, 'Order'), w = col(t, 'Workstream'), s = col(t, 'Status today'), ids = col(t, 'Checklist IDs'), tests = col(t, 'Testing');
   return t.rows.filter(r => /^T\d-\d+$/.test(r[o])).map(r => {
-    const st = state(r[s]);
-    return {id: r[o], title: r[w].replace(/\s*\(see below\)/, ''), status: r[s], ids: ids >= 0 ? r[ids] : '',
-            st, untested: st === 'done' && pending(r[s])};
+    const st = state(r[s]), testing = tests >= 0 ? r[tests] : '';
+    return {id: r[o], title: r[w].replace(/\s*\(see below\)/, ''), status: r[s], ids: ids >= 0 ? r[ids] : '', testing,
+            st, untested: st === 'done' && (pending(r[s]) || pending(testing))};
   }).sort((a, b) => a.id.localeCompare(b.id, 'en', {numeric: true}));
 }
 function wsRows(list) {
   return list.map(x => `<tr><td>${x.id} ${md(x.title)}${x.ids ? `<div style="font-weight:400;font-size:13px;color:var(--soft)">${esc(x.ids)}</div>` : ''}</td>
     <td>${pill(x.st)}</td><td>${md(todo(x.status) || (x.st === 'done' ? 'Nothing listed' : 'See the full status'))}
-    <details><summary>Full status</summary>${md(x.status)}</details></td></tr>`).join('');
+    <details><summary>Full status</summary>${md(x.status)}</details></td><td>${md(x.testing || 'Not listed')}</td></tr>`).join('');
 }
 function lineMap(lines) {
   return lines.map(l => `<div class="line"><h3>${l.name}<small>${l.sub}</small></h3>
