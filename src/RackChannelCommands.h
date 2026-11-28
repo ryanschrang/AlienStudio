@@ -1,8 +1,10 @@
 #pragma once
 #include "ProjectDocument.h"
 #include "RackSounds.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -10,7 +12,7 @@
 // mixing them. The controller and command Preview share them, so what Preview predicts is
 // what the live edit does. They never touch a plugin; the host rebuilds after the commit.
 namespace alien::rack_channel {
-enum class Kind { add, addSynth, remove, move, duplicate, rename, volume, pan, mute, solo, output, choke, sound, silence, synth, plugin, sample, slice, keys };
+enum class Kind { add, addSynth, remove, move, duplicate, rename, volume, pan, mute, solo, output, choke, sound, silence, synth, plugin, sample, slice, keys, multisample };
 struct Edit {
     Kind kind{Kind::remove};
     int channel{-1};
@@ -21,6 +23,7 @@ struct Edit {
     juce::String text;           // rename: the name; add: a built-in sound id, or empty for an empty sampler; sound: a built-in sound id; plugin, sample: the name
     juce::String description;    // plugin: its description from the plugin list; sample: the file's path
     std::vector<std::int64_t> bounds;   // slice, keys: the slices' edges in the file's frames, ascending; keys: none plays the sample whole
+    std::vector<juce::String> files;    // multisample: the files' paths, laid out on keys by multisampleLayout
 };
 
 inline constexpr int maxSlices = 16;
@@ -41,6 +44,98 @@ inline std::vector<rack::KeyZone> keySlices(const std::vector<std::int64_t>& bou
         zones.push_back({bounds[k], bounds[k + 1], key, key, key});
     }
     return zones;
+}
+
+// The note a sample's file name says it was recorded on, as the app names notes (C4 is note 60): the last letter A to G,
+// not inside a word, with an optional # or b and an octave from -1 to 9 that no other digit follows ("Piano_F#3",
+// "Strings Eb2 soft"). None when the name says no note.
+inline std::optional<int> noteInFileName(const juce::String& stem) {
+    std::optional<int> found;
+    const auto letter = [](juce::juce_wchar c) { return juce::CharacterFunctions::isLetter(c); };
+    const auto digit = [](juce::juce_wchar c) { return c >= '0' && c <= '9'; };
+    const int length = stem.length();
+    for (int i = 0; i < length; ++i) {
+        const auto c = juce::CharacterFunctions::toUpperCase(stem[i]);
+        if (c < 'A' || c > 'G' || (i > 0 && letter(stem[i - 1]))) continue;
+        int at = i + 1, shift = 0;
+        if (at < length && (stem[at] == '#' || stem[at] == 'b')) { shift = stem[at] == '#' ? 1 : -1; ++at; }
+        const bool negative = at < length && stem[at] == '-';
+        if (negative) ++at;
+        if (at >= length || !digit(stem[at]) || (at + 1 < length && digit(stem[at + 1]))) continue;
+        if (negative && stem[at] != '1') continue;
+        const int octave = negative ? -1 : static_cast<int>(stem[at] - '0');
+        static constexpr int classes[] = {9, 11, 0, 2, 4, 5, 7};   // A B C D E F G
+        const int note = (octave + 1) * 12 + classes[c - 'A'] + shift;
+        if (note >= 0 && note <= 127) found = note;
+    }
+    return found;
+}
+
+// Where a multisample's files go on the keys. When every file's name says a note, each file plays at its own pitch
+// on that note, and the keys between two notes are split halfway, the lowest file reaching down to note 0 and the
+// highest up to 127. Otherwise each file gets one key at its own pitch, from C4 up, in name order (a kit).
+struct MultisampleLayout {
+    std::vector<int> order;             // the files, lowest key first
+    std::vector<rack::KeyZone> zones;   // their zones, whole files; the caller names the files
+    bool fromNames{};
+    juce::String error;
+};
+inline MultisampleLayout multisampleLayout(const std::vector<juce::String>& stems) {
+    MultisampleLayout layout;
+    const int count = static_cast<int>(stems.size());
+    if (count < 2 || count > rack::maxKeyZones) { layout.error = "A multisample takes 2 to " + juce::String(rack::maxKeyZones) + " files."; return layout; }
+    std::vector<std::optional<int>> notes;
+    for (const auto& stem : stems) notes.push_back(noteInFileName(stem));
+    layout.fromNames = std::all_of(notes.begin(), notes.end(), [](const auto& n) { return n.has_value(); });
+    for (int i = 0; i < count; ++i) layout.order.push_back(i);
+    const auto before = [&](int a, int b) {
+        if (layout.fromNames && *notes[static_cast<std::size_t>(a)] != *notes[static_cast<std::size_t>(b)])
+            return *notes[static_cast<std::size_t>(a)] < *notes[static_cast<std::size_t>(b)];
+        const int named = stems[static_cast<std::size_t>(a)].compareNatural(stems[static_cast<std::size_t>(b)]);
+        return named != 0 ? named < 0 : a < b;
+    };
+    std::sort(layout.order.begin(), layout.order.end(), before);
+    if (!layout.fromNames) {
+        for (int k = 0; k < count; ++k) layout.zones.push_back({0, 0, rack::stepPitchBaseNote + k, rack::stepPitchBaseNote + k, rack::stepPitchBaseNote + k});
+        return layout;
+    }
+    for (int k = 0; k < count; ++k) {
+        const int root = *notes[static_cast<std::size_t>(layout.order[static_cast<std::size_t>(k)])];
+        if (k > 0 && root == layout.zones.back().root) {
+            layout.error = "\"" + stems[static_cast<std::size_t>(layout.order[static_cast<std::size_t>(k - 1)])] + "\" and \""
+                + stems[static_cast<std::size_t>(layout.order[static_cast<std::size_t>(k)])] + "\" are both on "
+                + juce::MidiMessage::getMidiNoteName(root, true, true, 4) + ".";
+            layout.order.clear(); layout.zones.clear(); return layout;
+        }
+        const int low = k == 0 ? 0 : (layout.zones.back().root + root) / 2 + 1;
+        if (k > 0) layout.zones.back().high = low - 1;
+        layout.zones.push_back({0, 0, low, 127, root});
+    }
+    return layout;
+}
+
+// A multisample channel's name: what its files' names share at the start, without a trailing separator or note
+// ("Piano_C3", "Piano_C4" -> "Piano"), or "Multisample" when they share nothing.
+inline juce::String multisampleName(const std::vector<juce::String>& stems) {
+    if (stems.empty()) return "Multisample";
+    juce::String shared = stems.front();
+    for (const auto& stem : stems) {
+        int n = 0;
+        while (n < shared.length() && n < stem.length() && shared[n] == stem[n]) ++n;
+        shared = shared.substring(0, n);
+    }
+    shared = shared.trimCharactersAtEnd(" _-.#0123456789");
+    // a shared note letter ("Piano_C3", "Piano_C4" share "Piano_C") is not part of the name
+    if (const int n = shared.length(); n > 0 && juce::String("ABCDEFGabcdefg").containsChar(shared[n - 1])
+        && (n == 1 || !juce::CharacterFunctions::isLetter(shared[n - 2])))
+        shared = shared.dropLastCharacters(1).trimCharactersAtEnd(" _-.#");
+    return shared.isNotEmpty() ? shared : juce::String("Multisample");
+}
+
+inline std::vector<juce::String> fileStems(const std::vector<juce::String>& paths) {
+    std::vector<juce::String> stems;
+    for (const auto& path : paths) stems.push_back(juce::File::createFileWithoutCheckingPath(path).getFileNameWithoutExtension());
+    return stems;
 }
 
 inline std::uint64_t freshInstance() {
@@ -109,6 +204,14 @@ inline bool editRack(rack::Project& p, const Edit& e) {
     }
     case Kind::slice: return p.sliceChannel(e.channel, e.bounds);
     case Kind::keys: return p.setKeyZones(e.channel, keySlices(e.bounds, e.value));
+    case Kind::multisample: {
+        auto layout = multisampleLayout(fileStems(e.files));
+        if (layout.error.isNotEmpty()) return false;
+        for (std::size_t k = 0; k < layout.zones.size(); ++k) layout.zones[k].file = e.files[static_cast<std::size_t>(layout.order[k])].toStdString();
+        bool changed = p.setSample(e.channel, layout.zones.front().file);
+        changed = p.setKeyZones(e.channel, std::move(layout.zones)) || changed;
+        return p.renameChannel(e.channel, e.text.toStdString()) || changed;
+    }
     }
     return false;
 }
@@ -184,6 +287,16 @@ inline juce::String refusal(const ProjectDocument& d, const Edit& e) {
             if (e.bounds[i] < 0 || e.bounds[i + 1] <= e.bounds[i]) return "Slice edges must rise from frame 0 or later, each slice at least one frame long.";
         if (!info.wholeSample() && (e.bounds.front() < info.sliceStart || e.bounds.back() > info.sliceEnd))
             return "Slices of a slice stay inside it (frames " + juce::String(info.sliceStart) + " to " + juce::String(info.sliceEnd) + ").";
+        break;
+    }
+    case Kind::multisample: {
+        for (const auto& file : e.files) {
+            if (file.isEmpty() || !juce::File::isAbsolutePath(file)) return "A multisample needs each file's full path.";
+            if (file.toStdString().size() > static_cast<std::size_t>(rack::maxSampleBytes)) return "That file's path is too long to store in a project.";
+            if (std::count(e.files.begin(), e.files.end(), file) > 1) return "A multisample names each file once.";
+        }
+        if (const auto layout = multisampleLayout(fileStems(e.files)); layout.error.isNotEmpty()) return layout.error;
+        if (e.text.trim().isEmpty()) return "A channel name cannot be blank.";
         break;
     }
     case Kind::remove: case Kind::mute: case Kind::solo: case Kind::silence: break;
