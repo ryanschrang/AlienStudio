@@ -3,6 +3,7 @@
 // use (a deleted track, transport stop, device restart) leaves no note sounding, and steady playback at
 // the limits allocates nothing.
 #include "CommandEngine.h"
+#include "PlaceSongClipFixture.h"
 #include "ProjectController.h"
 #include "ViewModes.h"
 #include <algorithm>
@@ -266,8 +267,73 @@ static void structureEditsAtTheLimits() {
             && alien::serializeSessionProject(reopened) == full, "a full grid saves and reopens unchanged");
 }
 
+// T1-04 E3: the clipboard, duplicate and make-unique at the full grid, in the Session and on the Song. The last cell takes a copy, a
+// linked copy and a duplicate like any other, each one undo step; a Song audio placement whose track has no free cell and no scene
+// left is refused its own copy with a reason and nothing changes, and takes the first cell that is freed.
+static void clipboardAtTheLimits() {
+    Engine rig;
+    alien::ProjectController c(*rig.engine);
+    alien::command::CommandEngine commands(c);
+    const auto& d = c.document();
+    const auto saved = [&] { return alien::serializeSessionProject(alien::toProjectData(d)); };
+    while (d.trackCount() < tracks) require(commands.execute(alien::command::CreateTrack{}).ok, "fixture: tracks up to the limit");
+    while (d.sceneCount() < scenes) require(commands.execute(alien::command::CreateScene{}).ok, "fixture: scenes up to the limit");
+    const int lastTrack = tracks - 1, lastScene = scenes - 1;
+
+    // Session: copy, linked copy, make unique and duplicate into the last cell.
+    c.setClipPattern(lastTrack - 1, 0, heldChord(48), false);
+    c.commit("Edit notes", lastTrack - 1, 0);
+    c.selectClip(lastTrack - 1, 0);   // undoing an edit of this clip selects it
+    const auto before = saved();
+    require(c.copyCell(lastTrack - 1, 0), "fixture: copy a clip");
+    require(commands.execute(alien::command::PasteClip{lastTrack, lastScene}).changed && d.clip(lastTrack, lastScene).notes().count == 3
+            && d.linkOf(lastTrack, lastScene) != d.linkOf(lastTrack - 1, 0), "a copy pastes into the last cell, independent of its source");
+    require(c.undo() && saved() == before, "undo empties the last cell again");
+    require(commands.execute(alien::command::PasteLinkedClip{lastTrack, lastScene}).changed
+            && d.linkOf(lastTrack, lastScene) == d.linkOf(lastTrack - 1, 0), "a linked copy pastes into the last cell");
+    c.setClipPattern(lastTrack - 1, 0, heldChord(60), false);
+    c.commit("Edit notes", lastTrack - 1, 0);
+    require(d.clip(lastTrack, lastScene).notes().notes[0].pitch == 60, "an edit of the source reaches the linked last cell");
+    require(commands.execute(alien::command::MakeClipUnique{lastTrack, lastScene}).changed
+            && d.linkOf(lastTrack, lastScene) != d.linkOf(lastTrack - 1, 0), "the last cell is made unique");
+    require(c.undo() && d.linkOf(lastTrack, lastScene) == d.linkOf(lastTrack - 1, 0), "undo links the last cell again");
+    require(c.undo() && d.clip(lastTrack, lastScene).notes().notes[0].pitch == 48, "undo takes back the source edit in both cells");
+    require(c.undo() && d.clip(lastTrack, lastScene).notes().count == 0, "undo empties the last cell");
+    require(saved() == before, "each step undoes on its own, back to the project before the paste");
+    require(commands.execute(alien::command::DuplicateClip{lastTrack - 1, 0, lastTrack, lastScene}).changed
+            && d.clip(lastTrack, lastScene).notes().count == 3 && d.linkOf(lastTrack, lastScene) != d.linkOf(lastTrack - 1, 0),
+            "a clip duplicates into the last cell");
+    require(commands.execute(alien::command::DuplicateClip{lastTrack, lastScene, 0, lastScene}).changed && d.clip(0, lastScene).notes().count == 3,
+            "and out of it");
+    require(c.undo() && c.undo() && saved() == before, "undo removes both duplicates");
+
+    // Song: an audio placement needs a free cell of its own track to be made unique.
+    auto audio = std::make_shared<alien::SessionAudioClip>();
+    audio->sampleRate = 48000; audio->channels = 1; audio->frames = 4800;
+    audio->left.assign(4800, 0.2f); audio->buildWaveform();
+    const auto file = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("capacity-clipboard.wav");
+    require(alien::command::installDecodedAudio(c, file, lastTrack, 0, audio).ok, "fixture: audio in the last track's first cell");
+    for (int s = 1; s < scenes; ++s) c.setClipPattern(lastTrack, s, heldChord(36), false);
+    c.commit("Fill the last track");
+    std::uint32_t placed = 0;
+    require(alien::test::placeSongClip(c, lastTrack, 0, 0, &placed) && placed != 0
+            && alien::test::placeSongClip(c, lastTrack, 0, 4 * 3840), "fixture: the audio clip placed twice on the Song");
+    const auto full = saved();
+    const auto label = c.undoLabel();
+    const auto refused = commands.execute(alien::command::MakeSongClipUnique{placed});
+    require(!refused.ok && refused.error.contains("no room") && saved() == full && c.undoLabel() == label,
+            "with every cell of its track in use and no scene left, the placement is refused its own copy and nothing changes");
+    const int freed = scenes / 2;
+    require(commands.execute(alien::command::DeleteClip{lastTrack, freed}).changed, "free one cell of the last track");
+    require(commands.execute(alien::command::MakeSongClipUnique{placed}).changed && d.timeline.find(placed) != nullptr
+            && d.timeline.find(placed)->source == freed && d.clip(lastTrack, freed).audio == audio && d.sceneCount() == scenes,
+            "then the placement takes the freed cell, adding no scene");
+    require(c.undo() && d.timeline.find(placed)->source == 0 && d.clip(lastTrack, freed).audio == nullptr, "undo gives it back its shared cell");
+}
+
 int main() {
     structureEditsAtTheLimits();
+    clipboardAtTheLimits();
     everyTrackAndSceneLaunches();
     slotsLeavingUseFallSilent();
     deviceRestartAtTheLimit();

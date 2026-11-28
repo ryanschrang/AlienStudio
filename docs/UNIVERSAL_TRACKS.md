@@ -2200,7 +2200,7 @@ New tests:
 | Portable | `SessionProjectTests` `capacityRefusalTests`: a project past the build's limits is refused with both counts, the open project kept | Projects past 16/32 open only in a build that large: shipping one supported profile ends that |
 | Undo | E1 (delete, move, reorder, recording); `ProjectControllerTests` structure undo | - |
 | Launch every supported scene | `TrackCapacityTests` `everyTrackAndSceneLaunches` (the last scene on every track, the whole synchronized-launch mask) | MIDI controllers map scene buttons 1-4 only (`MidiControllerMappings::sceneCount`, by design) |
-| Duplicate/reorder/delete | E1; `ProjectControllerTests` add/delete/move to the limit | Copy/paste across the last cell is covered only by the ordinary clipboard tests |
+| Duplicate/reorder/delete | E1; E3 (copy, linked copy, make unique and duplicate into and out of the last cell; a Song placement made unique at the full grid); `ProjectControllerTests` add/delete/move to the limit | - |
 | Audio stress | `TrackCapacityTests` (no allocation with every track playing, slots leaving use, device restart); `RackIntegrationTests --capacity-report` | - |
 | Recording | E1 (MIDI in the last cell); E2 (an audio take on the last track of a full project, and one with nowhere to go refused); D34/D35 Song takes on every track | - |
 | Export | `MemoryPeakTests` (stems of every track at the limit, freeze at the scene limit refused before rendering) | - |
@@ -2234,3 +2234,22 @@ build):
 
 Still open from E1's audit: ASIO and other buffer sizes (`AlienDeviceTiming --buffers` already times
 several), a second machine, the 32 Surge XT overrun, and hands-on use of a 32-track grid.
+
+## Increment E3: the clipboard at the compiled limits
+
+E1's audit left copy and paste across the last cell covered only by the ordinary clipboard tests, which run
+in the first few cells. `TrackCapacityTests` `clipboardAtTheLimits` runs them at the full grid, through
+`CommandEngine` as the UI does (32 tracks / 64 scenes in CI's 32/64 build):
+
+- a copy pastes into the last cell independent of its source, and undo empties it again;
+- a linked copy pastes into the last cell, an edit of the source reaches it, and Make unique detaches it;
+  each step undoes on its own, back to the project before the paste;
+- a clip duplicates into the last cell and out of it, and undo removes both;
+- a Song audio placement whose track has every cell in use, in a project with no scene left, is refused
+  its own copy ("The Session has no room for another scene.") and nothing changes, not even the undo
+  history; once one cell of the track is freed, Make unique uses that cell and adds no scene, and undo
+  gives the placement back its shared cell.
+
+No code changed: the existing refusals and cell searches held at the limit. What is left of E needs
+hardware or a decision: ASIO and other buffer sizes, a second machine, the 32 Surge XT overrun, hands-on
+use of a 32-track grid, and the release itself.
