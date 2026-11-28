@@ -134,9 +134,31 @@ static void restoredDetachedLayoutChecks() {
         require(tracker.refreshDisplays({reduced}) && live.isFullScreen(), "work-area changes preserve maximized state");
         require(live.getBounds() == maximizedBounds && reduced.contains(live.getPeer()->getNonFullScreenBounds()),
             "recovery updates only the restore bounds while the OS manages the maximized frame");
+        const auto restoredBounds=live.getPeer()->getNonFullScreenBounds();
         live.setFullScreen(false);
+        require(tracker.capture().bounds==restoredBounds,"capture preserves recovered bounds during the native restore transition");
+        live.setVisible(false); const auto hiddenBounds=live.getBounds();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
+        require(!live.isVisible() && live.getBounds()==hiddenBounds,"pending restore recovery does not move or show a hidden window");
+        live.setVisible(true);
+        for (int i=0;i<40 && live.getBounds()!=restoredBounds;++i) juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+        // Showing can already restore the right rectangle. Dispatch the queued
+        // correction as well before testing a subsequent independent user move.
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
         require(reduced.contains(live.getBounds()) && tracker.capture().bounds.getWidth() <= normal.getWidth(),
             "unmaximizing returns to the recovered normal bounds");
+        require(live.getBounds()==restoredBounds,"normal restoration uses the recovered client rectangle");
+        // A one-logical-pixel move may round back at fractional Windows DPI.
+        // Move far enough to distinguish recovery overriding it from rounding.
+        const auto moved=restoredBounds.translated(-16,16);
+        live.setBounds(moved); juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
+        const auto actual=live.getBounds();
+        const bool movedAsRequested=std::abs(actual.getX()-moved.getX())<=1 && std::abs(actual.getY()-moved.getY())<=1
+            && actual.getWidth()==moved.getWidth() && actual.getHeight()==moved.getHeight();
+        if (!movedAsRequested || tracker.capture().bounds!=actual)
+            std::cerr << "recovery move expected=" << moved.toString() << " actual=" << live.getBounds().toString()
+                      << " captured=" << tracker.capture().bounds.toString() << '\n';
+        require(movedAsRequested && tracker.capture().bounds==actual,"completed recovery does not override a later manual move");
         require(live.getContentComponent() == &content && static_cast<int>(content.getProperties()["shared"]) == 91,
             "display recovery preserves the editor and its state");
         live.clearContentComponent();

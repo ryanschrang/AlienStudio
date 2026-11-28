@@ -113,19 +113,19 @@ inline void apply(juce::DocumentWindow& window, const WindowState& state, Limits
 }
 // Track normal geometry while maximized/minimized, so restart never treats a
 // maximized screen rectangle as the user's normal window size.
-class Tracker final : private juce::ComponentListener, private juce::Timer {
+class Tracker final : private juce::ComponentListener, private juce::Timer, private juce::AsyncUpdater {
 public:
     explicit Tracker(juce::DocumentWindow& w, Limits sizeLimits = mainLimits)
         : window(w), limits(sizeLimits), knownDisplays(displays()) {
         window.addComponentListener(this); startTimerHz(2);
     }
-    ~Tracker() override { stopTimer(); window.removeComponentListener(this); }
+    ~Tracker() override { stopTimer(); cancelPendingUpdate(); window.removeComponentListener(this); }
     // Message thread. Defer hidden/minimized windows without acknowledging the
     // topology change, so restoring them recovers geometry without stealing focus.
     bool refreshDisplays(const std::vector<juce::Rectangle<int>>& screens) {
         if (screens == knownDisplays || !window.isShowing() || window.isMinimised()) return false;
         auto state = normal;
-        if (!window.isFullScreen()) state.bounds = window.getBounds();
+        if (!window.isFullScreen()) state.bounds = pendingRestore.value_or(window.getBounds());
         state.maximized = window.isFullScreen();
         const auto area = survivingArea(state.workArea, screens);
         bool needsFit = state.workArea != area || fit(state, screens, limits) != state.bounds;
@@ -140,13 +140,17 @@ public:
                 normal.bounds = fittedBounds(window, state, limits, screens);
                 normal.workArea = area;
                 peer->setNonFullScreenBounds(normal.bounds);
+                pendingRestore = normal.bounds;
             }
-        } else apply(window, state, limits, screens);
+        } else {
+            pendingRestore.reset(); cancelPendingUpdate();
+            apply(window, state, limits, screens);
+        }
         return true;
     }
     WindowState capture() const {
         auto state = normal;
-        if (!window.isFullScreen() && !window.isMinimised() && validRect(window.getBounds())) {
+        if (!pendingRestore && !window.isFullScreen() && !window.isMinimised() && validRect(window.getBounds())) {
             state.bounds = window.getBounds(); state.workArea = areaFor(state.bounds);
         }
         if (window.isFullScreen() && !window.isMinimised()) {
@@ -158,8 +162,22 @@ public:
         state.maximized = window.isFullScreen(); return state;
     }
 private:
-    void timerCallback() override { refreshDisplays(displays()); }
+    void scheduleRestore() {
+        if (pendingRestore && window.isShowing() && !window.isFullScreen() && !window.isMinimised()) triggerAsyncUpdate();
+    }
+    void handleAsyncUpdate() override {
+        if (!pendingRestore || !window.isShowing() || window.isFullScreen() || window.isMinimised()) return;
+        const auto bounds = *pendingRestore;
+        pendingRestore.reset();
+        // ResizableWindow reapplies its own cached normal bounds after its peer
+        // restores. Finish after that stack unwinds, without a maximize toggle.
+        window.setResizeLimits(juce::jmin(limits.minWidth,bounds.getWidth()),juce::jmin(limits.minHeight,bounds.getHeight()),limits.maxWidth,limits.maxHeight);
+        window.setBounds(bounds);
+    }
+    void timerCallback() override { refreshDisplays(displays()); scheduleRestore(); }
+    void componentVisibilityChanged(juce::Component&) override { scheduleRestore(); }
     void componentMovedOrResized(juce::Component&, bool, bool) override {
+        if (pendingRestore) { scheduleRestore(); return; }
         if (!window.isFullScreen() && !window.isMinimised() && validRect(window.getBounds())) {
             normal.bounds = window.getBounds(); normal.workArea = areaFor(normal.bounds);
         }
@@ -168,6 +186,7 @@ private:
     Limits limits;
     std::vector<juce::Rectangle<int>> knownDisplays;
     WindowState normal;
+    std::optional<juce::Rectangle<int>> pendingRestore;
 };
 inline juce::var rectToVar(juce::Rectangle<int> r) {
     juce::Array<juce::var> values; for (int n : {r.getX(), r.getY(), r.getWidth(), r.getHeight()}) values.add(n);
