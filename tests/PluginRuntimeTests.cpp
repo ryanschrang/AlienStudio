@@ -3,6 +3,8 @@
 #include <iostream>
 #include <vector>
 #include <cstdlib>
+#include <algorithm>
+#include <functional>
 
 static thread_local std::size_t allocations{};
 void* operator new(std::size_t n){++allocations;if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
@@ -50,7 +52,104 @@ public:
     void setStateInformation(const void* data,int n) override{if(n==sizeof(factor))std::memcpy(&factor,data,n);}
     std::array<bool,17> sustain{}; bool held{},synth{},active{},sawTempo{};float factor;int delay{},position{},noteChannel{},controlChannel{},lastController{-1},lastWheel{};std::array<float,16> ring{};
 };
+// T1-09: plugins whose buses are not plain stereo, as the check tool found on Windows (Blue Cat's mono effects, BFD
+// Player's instrument with a sidechain input it cannot switch off and 32 outputs). `accepts` says which layouts the
+// plugin takes; it scales its input by `gain` (an effect) or plays a constant 0.25 (an instrument).
+class BusTestProcessor final : public juce::AudioProcessor {
+public:
+    using Accepts = std::function<bool(const BusesLayout&)>;
+    using Buses = juce::AudioProcessor::BusesProperties;
+    BusTestProcessor(BusesProperties buses, Accepts acceptsLayout, bool instrument, float gain = 2)
+        : juce::AudioProcessor(std::move(buses)), accepts(std::move(acceptsLayout)), synth(instrument), factor(gain) {}
+    bool isBusesLayoutSupported(const BusesLayout& layout) const override { return accepts(layout); }
+    void prepareToPlay(double,int) override {}
+    void releaseResources() override {}
+    void processBlock(juce::AudioBuffer<float>& b, juce::MidiBuffer&) override {
+        const int channels = std::max(getTotalNumInputChannels(), getTotalNumOutputChannels());
+        for (int c = 0; c < std::min(channels, b.getNumChannels()); ++c)
+            for (int i = 0; i < b.getNumSamples(); ++i) b.setSample(c, i, synth ? 0.25f : b.getSample(c, i) * factor);
+    }
+    const juce::String getName() const override { return "Bus test processor"; }
+    bool acceptsMidi() const override { return synth; } bool producesMidi() const override { return false; }
+    double getTailLengthSeconds() const override { return 0; }
+    int getNumPrograms() override { return 1; } int getCurrentProgram() override { return 0; } void setCurrentProgram(int) override {}
+    const juce::String getProgramName(int) override { return {}; } void changeProgramName(int,const juce::String&) override {}
+    bool hasEditor() const override { return false; } juce::AudioProcessorEditor* createEditor() override { return nullptr; }
+    void getStateInformation(juce::MemoryBlock&) override {} void setStateInformation(const void*,int) override {}
+    Accepts accepts; bool synth; float factor;
+};
+static void busLayoutChecks() {
+    using Set = juce::AudioChannelSet;
+    using Layout = juce::AudioProcessor::BusesLayout;
+    const auto monoOnly = [] { return std::make_unique<BusTestProcessor>(BusTestProcessor::Buses().withInput("In", Set::mono(), true).withOutput("Out", Set::mono(), true),
+        [](const Layout& l) { return l.getMainInputChannelSet() == Set::mono() && l.getMainOutputChannelSet() == Set::mono(); }, false); };
+    const auto monoToStereo = [] { return std::make_unique<BusTestProcessor>(BusTestProcessor::Buses().withInput("In", Set::mono(), true).withOutput("Out", Set::stereo(), true),
+        [](const Layout& l) { return l.getMainInputChannelSet() == Set::mono() && l.getMainOutputChannelSet() == Set::stereo(); }, false); };
+    // An instrument with a stereo sidechain input that must stay on, and three more stereo outputs it lets go of.
+    const auto drums = [] { return std::make_unique<BusTestProcessor>(BusTestProcessor::Buses().withInput("Sidechain Input", Set::stereo(), true)
+            .withOutput("Main", Set::stereo(), true).withOutput("Stereo 2", Set::stereo(), true).withOutput("Stereo 3", Set::stereo(), true).withOutput("Stereo 4", Set::stereo(), true),
+        [](const Layout& l) { return l.getMainInputChannelSet() == Set::stereo() && l.getMainOutputChannelSet() == Set::stereo(); }, true); };
+    // An instrument that refuses any change to its buses (as BFD Player does): a stereo input and eight stereo outputs.
+    const auto wideKit = [] {
+        auto buses = BusTestProcessor::Buses().withInput("Sidechain Input", Set::stereo(), true);
+        for (int o = 0; o < 8; ++o) buses = buses.withOutput("Out " + juce::String(o + 1), Set::stereo(), true);
+        return std::make_unique<BusTestProcessor>(buses, [](const Layout& l) {
+            if (l.inputBuses.size() != 1 || l.inputBuses[0] != Set::stereo() || l.outputBuses.size() != 8) return false;
+            return std::all_of(l.outputBuses.begin(), l.outputBuses.end(), [](const Set& o) { return o == Set::stereo(); }); }, true); };
+    const auto quadOnly = [] { return std::make_unique<BusTestProcessor>(BusTestProcessor::Buses().withInput("In", Set::quadraphonic(), true).withOutput("Out", Set::quadraphonic(), true),
+        [](const Layout& l) { return l.getMainInputChannelSet() == Set::quadraphonic() && l.getMainOutputChannelSet() == Set::quadraphonic(); }, false); };
+
+    juce::String error;
+    auto mono = monoOnly();
+    require(alien::detail::configureVst3(*mono, {}, false, error) && mono->getTotalNumInputChannels() == 1 && mono->getTotalNumOutputChannels() == 1,
+            "a mono-only effect is hosted with one input and one output");
+    auto widening = monoToStereo();
+    require(alien::detail::configureVst3(*widening, {}, false, error) && widening->getTotalNumInputChannels() == 1 && widening->getTotalNumOutputChannels() == 2,
+            "a mono-to-stereo effect is hosted as it is");
+    auto kit = drums();
+    require(alien::detail::configureVst3(*kit, {}, true, error) && kit->getTotalNumInputChannels() == 2 && kit->getTotalNumOutputChannels() == 2,
+            "an instrument whose input cannot be switched off keeps it, and its extra outputs are switched off");
+    auto wide = wideKit();
+    require(alien::detail::configureVst3(*wide, {}, true, error) && wide->getTotalNumInputChannels() == 2 && wide->getTotalNumOutputChannels() == 16,
+            "an instrument that keeps all its outputs is hosted as it comes");
+    auto quad = quadOnly();
+    require(!alien::detail::configureVst3(*quad, {}, false, error) && error.contains("mono or stereo"), "a plugin with no mono or stereo layout is refused with the reason");
+    auto stereoInstrument = monoOnly();
+    require(!alien::detail::configureVst3(*stereoInstrument, {}, true, error), "an instrument needs a stereo output");
+
+    // Played by the runtime: a mono effect hears L+R and plays on both sides; the instrument fills both sides.
+    alien::PluginRuntime runtime;
+    runtime.prepare(48000);
+    runtime.useTracks(4);
+    const auto put = [&](int track, std::unique_ptr<juce::AudioProcessor> processor, bool instrument) {
+        auto& rack = runtime.racks[static_cast<std::size_t>(track)];
+        auto& slot = instrument ? rack.instrument : rack.effects[0];
+        slot.processor = std::move(processor);
+        runtime.prepareSlot(slot, track, instrument ? -1 : 0);
+        if (instrument) rack.instrumentAssigned = true; else rack.effectCount = 1;
+    };
+    put(0, std::move(mono), false);
+    put(1, std::move(widening), false);
+    put(2, std::move(kit), true);
+    put(3, std::move(wide), true);
+    constexpr int samples = 256;
+    runtime.instruments(samples);
+    for (int t = 0; t < 2; ++t)
+        for (int i = 0; i < samples; ++i) { runtime.tracks[static_cast<std::size_t>(t)].setSample(0, i, 0.4f); runtime.tracks[static_cast<std::size_t>(t)].setSample(1, i, 0.2f); }
+    const auto before = allocations;
+    runtime.effectsAndAlign(samples);
+    require(allocations == before, "mono effects run without allocating");
+    for (int t = 0; t < 2; ++t)
+        for (int c = 0; c < 2; ++c)
+            require(std::abs(runtime.tracks[static_cast<std::size_t>(t)].getSample(c, 100) - 0.6f) < 1e-6f, "a mono effect hears L+R and both sides play its output");
+    require(runtime.tracks[2].getSample(0, 100) == 0.25f && runtime.tracks[2].getSample(1, 100) == 0.25f, "the instrument with a sidechain input plays on both sides");
+    require(runtime.tracks[3].getSample(0, 100) == 0.25f && runtime.tracks[3].getSample(1, 100) == 0.25f && !runtime.racks[3].instrument.faulted.get(),
+            "the instrument with 16 outputs is heard on its first two");
+    require(!runtime.racks[0].effects[0].faulted.get() && !runtime.racks[2].instrument.faulted.get(), "nothing was switched off");
+    std::puts("PASS: mono effects and instruments with extra buses are hosted");
+}
 int main(){
+    busLayoutChecks();
     auto engine=std::make_unique<ToneEngine>();engine->prepare(48000);engine->patternMode.store(1);engine->launchQuantizationSteps.store(4);
     auto& rack=engine->plugins->racks[0];rack.instrumentAssigned=true;
     auto instrument=std::make_unique<TestProcessor>(true);auto* raw=instrument.get();rack.instrument.processor=std::move(instrument);engine->plugins->prepareSlot(rack.instrument);
