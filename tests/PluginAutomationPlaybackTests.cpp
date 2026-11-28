@@ -332,10 +332,45 @@ static void editor() {
     std::puts("PASS: the automation editor offers and draws plugin parameter lanes");
 }
 
+// RACK-01: a rack's macros set the parameters mapped to them on the loaded plugins, each across its own range, by
+// instance and parameter ID; a target that is not loaded is skipped, and a plugin that crashes on it is switched off.
+static void macros() {
+    auto rt = std::make_unique<PluginRuntime>();
+    rt->prepare(48000);
+    PluginHost host(*rt, {}, factory());
+    std::vector<PluginRackState> racks(2); PluginRackState master;
+    racks[0].effects = {effect("first"), effect("second")};
+    racks[1].effects = {effect("broken")};
+    require(host.restore(racks, master, 48000).isEmpty(), "the test effects load");
+    const auto first = racks[0].effects[0].instanceId, second = racks[0].effects[1].instanceId, broken = racks[1].effects[0].instanceId;
+    require(std::abs(host.parameterValue(0, first, "cutoff") - 0.5f) < 1e-6f && host.parameterValue(0, first, "nothing") < 0
+            && host.parameterValue(0, 12345, "cutoff") < 0, "a loaded parameter's value can be read, by instance and ID");
+
+    auto& macro = racks[0].macros[0];
+    macro.value = 0.25f;
+    macro.targets = {{second, "cutoff", 0, 1}, {first, "mix", 1, 0}, {12345, "cutoff", 0, 1}, {first, "nothing", 0, 1}};
+    racks[0].macros[1].value = 1; racks[0].macros[1].targets = {{first, "cutoff", 0.2f, 0.6f}};
+    require(racks[0].valid(), "two macros on different parameters");
+    require(host.applyMacros(0, racks[0]) == 3, "each loaded target is set once; a missing device or parameter is skipped");
+    require(std::abs(effectAt(*rt, 0, 1).cutoff->get() - 0.25f) < 1e-6f && std::abs(effectAt(*rt, 0, 0).mix->get() - 0.75f) < 1e-6f
+            && std::abs(effectAt(*rt, 0, 0).cutoff->get() - 0.6f) < 1e-6f, "each parameter goes to its place in its target's range, reversed ones too");
+    macro.value = 1;
+    host.applyMacros(0, racks[0]);
+    require(effectAt(*rt, 0, 1).cutoff->get() == 1.0f && effectAt(*rt, 0, 0).mix->get() == 0.0f, "the macro at its top sets each range's end");
+    require(host.applyMacros(1, racks[0]) == 0, "on another rack the targets' devices are not there, so nothing is set");
+    require(host.applyMacros(-1, racks[0]) == 0 && host.applyMacros(PluginRuntime::rackCount, racks[0]) == 0, "a rack number out of range sets nothing");
+
+    racks[1].macros[0].targets = {{broken, "broken", 0, 1}};
+    require(host.applyMacros(1, racks[1]) == 0 && rt->racks[1].effects[0].faulted.get(), "a plugin that crashes when a macro sets it is switched off");
+    require(host.applyMacros(1, racks[1]) == 0, "and it is not called again");
+    std::puts("PASS: rack macros set their mapped plugin parameters by instance and ID");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     lookups();
     runtime();
+    macros();
     engine();
     rackAndMaster();
     editor();
