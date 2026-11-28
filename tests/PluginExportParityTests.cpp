@@ -3,6 +3,7 @@
 // WAV exactly as it plays live (sample for sample, after the mix's latency), and a frozen track holds exactly what
 // that track plays live before its fader. Rack instruments are told they are rendering offline, as track plugins are.
 #include "PluginHost.h"
+#include "StockEffects.h"
 #include "ToneEngine.h"
 #include "WavExport.h"
 #include <cstdlib>
@@ -104,6 +105,40 @@ struct LatentInstrument final : juce::AudioProcessor {
     bool offline{};
 };
 
+// An effect that rings on for `seconds` after its input stops, like a long reverb, but declares no tail (as Valhalla
+// Supermassive does: it declares 0 s and rings for about 7 s).
+struct RingingEffect final : juce::AudioProcessor {
+    explicit RingingEffect(double ringSeconds)
+        : juce::AudioProcessor(BusesProperties().withInput("In", juce::AudioChannelSet::stereo()).withOutput("Out", juce::AudioChannelSet::stereo())), seconds(ringSeconds) {}
+    const juce::String getName() const override { return "Ringing effect"; }
+    void prepareToPlay(double sampleRate, int) override { rate = sampleRate; left = 0; phase = 0; }
+    void releaseResources() override {}
+    bool isBusesLayoutSupported(const BusesLayout&) const override { return true; }
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override {
+        for (int i = 0; i < buffer.getNumSamples(); ++i) {
+            if (buffer.getSample(0, i) != 0.0f || buffer.getSample(1, i) != 0.0f) left = static_cast<std::int64_t>(seconds * rate);
+            const float ring = left > 0 ? 0.05f * static_cast<float>(std::sin(phase)) : 0.0f;
+            if (left > 0) --left;
+            phase += 0.05;
+            for (int c = 0; c < 2; ++c) buffer.setSample(c, i, buffer.getSample(c, i) + ring);
+        }
+    }
+    double getTailLengthSeconds() const override { return 0; }
+    bool acceptsMidi() const override { return false; }
+    bool producesMidi() const override { return false; }
+    juce::AudioProcessorEditor* createEditor() override { return nullptr; }
+    bool hasEditor() const override { return false; }
+    int getNumPrograms() override { return 1; }
+    int getCurrentProgram() override { return 0; }
+    void setCurrentProgram(int) override {}
+    const juce::String getProgramName(int) override { return {}; }
+    void changeProgramName(int, const juce::String&) override {}
+    void getStateInformation(juce::MemoryBlock&) override {}
+    void setStateInformation(const void*, int) override {}
+    double seconds{}, rate{48000}, phase{};
+    std::int64_t left{};
+};
+
 static juce::String description(const juce::String& id, bool instrument) {
     juce::PluginDescription d; d.name = id; d.pluginFormatName = "VST3"; d.fileOrIdentifier = id; d.isInstrument = instrument;
     return d.createXml()->toString();
@@ -112,6 +147,7 @@ static juce::String description(const juce::String& id, bool instrument) {
 static PluginFactory factory() {
     return [](const juce::PluginDescription& d, double, int, juce::String&) -> std::unique_ptr<juce::AudioProcessor> {
         const int latency = d.fileOrIdentifier.fromFirstOccurrenceOf(":", false, false).getIntValue();
+        if (d.fileOrIdentifier.startsWith("ring")) return std::make_unique<RingingEffect>(latency);
         if (d.fileOrIdentifier.startsWith("fx")) return std::make_unique<LatentEffect>(latency);
         return std::make_unique<LatentInstrument>(latency);
     };
@@ -282,9 +318,47 @@ static void rackInstrumentNeedsPreparedEngine() {
     std::puts("PASS: an export never silently drops a rack instrument");
 }
 
+// T1-09: an outside plugin that rings past the tail it declares is exported until it falls silent, at most 30 s past
+// the end; without one the export is as long as before.
+static void exportMeasuresUndeclaredTails() {
+    const auto exportOf = [](const Song& song) {
+        Rig render(song);
+        const auto file = temporary("alien-plugin-tail");
+        juce::String error; std::atomic<bool> never{false}; DrumSamplePointers noDrums{};
+        require(exportArrangementWav(file, *song.project, *song.playback, noDrums, never, error, render.engine.get(), WavExportOptions{}), error.toRawUTF8());
+        auto wav = readWav(file);
+        file.deleteFile();
+        return wav;
+    };
+    const auto lastSound = [](const juce::AudioBuffer<float>& wav) {
+        int last = 0;
+        for (int i = 0; i < wav.getNumSamples(); ++i) if (std::abs(wav.getSample(0, i)) > 1.0e-4f) last = i;
+        return last;
+    };
+    require(std::string_view(PluginRuntime::stockFormatName) == stock::formatName, "the runtime knows a stock effect by the stock format's name");
+    Song plain(false, false);
+    const int plainFrames = exportOf(plain).getNumSamples();
+
+    Song ringing(false, false);
+    ringing.project->masterPlugins.effects = {PluginState(description("ring:3", false), {})};
+    const auto rung = exportOf(ringing);
+    const int last = lastSound(rung);
+    require(last > songFrames + 48000, "the undeclared tail rings on in the export, past the end of the song");
+    require(rung.getNumSamples() > last && rung.getNumSamples() - last < static_cast<int>((exportQuietSeconds + 0.1) * 48000),
+            "and the export ends soon after it falls silent");
+    require(plainFrames < songFrames + 48000, "without an outside plugin that rings, the export is as long as before");
+
+    Song endless(false, false);
+    endless.project->masterPlugins.effects = {PluginState(description("ring:60", false), {})};
+    const int capped = exportOf(endless).getNumSamples();
+    require(capped >= songFrames + 30 * 48000 - 512 && capped <= songFrames + 30 * 48000 + 1024, "a tail that never ends stops at the 30 s maximum");
+    std::puts("PASS: an export rings out an outside plugin's undeclared tail, up to 30 s");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     exportMatchesLive();
+    exportMeasuresUndeclaredTails();
     freezeMatchesLive();
     rackInstrumentNeedsPreparedEngine();
     return 0;

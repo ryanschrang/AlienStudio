@@ -464,7 +464,9 @@ NOT RUN. Needs a VST3 instrument that reports latency (many samplers and some sy
 - NOT RUN (T1-09 part 7, export/freeze against live): on one track put a VST3 instrument and Valhalla Supermassive (or another VST3 effect), automate a Supermassive parameter, put a latent plugin (a look-ahead limiter or linear-phase EQ) on the master and a VST3 instrument on a Channel Rack channel. Export WAV, then record the live output (or play both in another DAW): the file lines up with what you hear live, starts on the first note with no added silence, and has the same automation moves and tails. Freeze the track, play: no change in timing or sound; unfreeze: the same. Repeat at 44.1 and 96 kHz device rates (export is always 48 kHz).
 
 ## Real-plugin sign-off for T1-09 (part 8)
-NOT RUN. This is the one list to run on Windows 11 before T1-09 can be called verified with real plugins. It gathers the
+Step 1 RUN (28 Nov 2026, commit c7062fa, development laptop): every installed VST3 through the check tool, results in
+docs/PLUGIN_COMPATIBILITY.md. It found Supermassive's undeclared 6.9 s tail, which exports cut off (fixed for export). Steps 2 to 10 are
+NOT RUN: they need a person listening. This is the one list to run on Windows 11 before T1-09 can be called verified with real plugins. It gathers the
 manual checks from parts 2 to 7 above into one session; record each result in docs/PLUGIN_COMPATIBILITY.md
 ("Valhalla Supermassive placements" and "Coverage") with the plugin versions, the Alien Studio commit and the audio device.
 Needs: Valhalla Supermassive, one VST3 instrument (ideally one that reports latency, see part 4), one latent VST3 effect

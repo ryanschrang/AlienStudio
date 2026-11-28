@@ -550,6 +550,25 @@ public:
         for (int t = 0; t < maxSessionTracks; ++t) maximum = std::max(maximum,rackLatency(racks[t]));
         return rackChannelLatency() + maximum + busLatency() + returnLatency() + rackLatency(racks[masterIndex]);
     }
+    // Whether any loaded, working plugin is from outside Alien Studio (not a stock effect). Stock effects declare
+    // their real tails; outside ones often declare none (Valhalla Supermassive declares 0 s and rings for about 7 s),
+    // so an export measures how long they actually ring. Message thread.
+    bool hasOutsidePlugins() const {
+        const auto outside = [](const Slot& slot) {
+            if (!slot.processor || slot.faulted.get()) return false;
+            juce::PluginDescription d;
+            const auto xml = juce::parseXML(slot.description);
+            return !(xml && d.loadFromXml(*xml) && d.pluginFormatName == stockFormatName);
+        };
+        for (const auto& rack : racks) {
+            if (rack.frozen) continue;
+            if (outside(rack.instrument)) return true;
+            for (int i = 0; i < rack.effectCount; ++i) if (outside(rack.effects[static_cast<std::size_t>(i)])) return true;
+        }
+        for (const auto& slot : rackChannels) if (outside(slot)) return true;
+        return false;
+    }
+    static constexpr const char* stockFormatName = "AlienStock";
     // Asks each plugin how long it rings on. A plugin that fails the question is disabled like any other.
     double tailSeconds() {
         auto slotTail = [this](Slot& slot,int rack,int index) {

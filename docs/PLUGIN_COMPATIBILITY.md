@@ -95,7 +95,36 @@ to say why, the report keeps every step that finished before it and names the st
 
 | Plugin | Role | Version | Windows build tested | Result | Notes |
 | --- | --- | --- | --- | --- | --- |
-| **Valhalla Supermassive** (Valhalla DSP) | Stereo FX, reverb/delay | not recorded | none | **NOT RUN** | Needs `AlienPluginCheck check --name Supermassive` on Windows, then the in-app checklist below. |
+| **Valhalla Supermassive** (Valhalla DSP) | Stereo FX, reverb/delay | 5.0.0 | development laptop, commit c7062fa | **Compatible with warnings** | 16 checks pass, damaged state survived, editor opens and closes. Declares a 0 s tail but rings for 6.92 s: exports cut it off until this PR (see below). In-app placements below still need a person. |
+| TAL-Reverb-4 (TAL) | Stereo FX, reverb | 4.0.4 | same | Compatible with warnings | Produces output from silent input (its noise floor, about -22 dBFS). Ran on 32 tracks in D39 with nothing over budget. |
+| Surge XT (Surge Synth Team) | Instrument | 1.3.4 | same | Compatible with warnings | State round trip: two scene parameters differ after restore. One-off spike about 4 s after playback starts (D39). |
+| Surge XT Effects | Stereo FX | 1.3.4 | same | Compatible with warnings | One parameter (FX Type) differs after a state round trip. |
+| Vital (Vital Audio) | Instrument | 1.6.4 | same | **Not compatible** | Hangs for 180 s when given damaged saved state, so a project whose Vital state is corrupt would hang on open. Everything else passes; one parameter (BPM) differs after a state round trip. |
+| Retrologue (Steinberg) | Instrument | 2.5.0 | same | Compatible with warnings | Sounds with no notes playing (about -20 dBFS). |
+| Omnivocal Beta (Yamaha) | Instrument | 1.2.5 | same | Compatible with warnings | Transpose differs after a state round trip. |
+| Padshop (Steinberg) | Instrument | 2.3.0 | same | Not compatible | State round trip hangs for 180 s. |
+| HALion Sonic (Steinberg) | Instrument | 7.5.0 | same | **Crashed** | Access violation on the audio thread at 44.1 kHz / 64 samples (in VCRUNTIME140.dll); contained, the check carried on. |
+| Groove Agent SE (Steinberg) | Instrument | - | same | **Crashed** | Crashed while its class list was read (access violation); contained by the scan. |
+| WaveLab (Steinberg) | FX | 13.0.0 | same | Not compatible | Hangs on load (180 s). |
+| Helm (Matt Tytel) | Instrument | 0.9.0 | same | Not compatible | The editor hangs while opening (180 s). A second copy in the VST3 folder is a 32-bit file and is refused. |
+| BFD Player (BFD Drums) | Instrument | 1.2.3 | same | **Crashed** | 32 outputs and a sidechain input; refused by the stereo-only bus check, then crashed on the audio thread with odd block sizes (contained). |
+| Ample Guitar M Lite (Ample Sound) | Instrument | 4.0.0 | same | **Crashed** | Crashed when given damaged saved state (contained). |
+| Blue Cat freeware pack, stereo and dual versions (Triple EQ 4, Phaser 3, Gain 3, Flanger 3, Chorus 4, Free Amp 2) | FX | 2.0-4.6 | same | **Compatible** | Every check passes. FreqAnalyst 2 and Freeceiver pass with warnings (no audible output by design). |
+| Blue Cat freeware pack, mono versions | FX | 2.6-4.6 | same | Not compatible | Mono-only buses: this host takes stereo FX. Expected. |
+
+`AlienPluginCheck check` over every VST3 on the development laptop (31 plugins; 16 compatible, 15 with problems), run
+by Claude on 28 Nov 2026 at commit c7062fa. Every crash and hang stayed in its own process: the run finished and
+reported each. What it found that the host has to handle:
+
+- **Undeclared tails.** Supermassive declares 0 s and rings for 6.92 s. Export and freeze used the tails plugins
+  declare, so an exported mix cut a Supermassive tail off at the end. An export with any outside plugin now keeps
+  rendering until the output has been below -100 dBFS for 0.25 s, at most 30 s past the end (the host's existing
+  maximum); a project with only stock effects, which declare their real tails, renders exactly as before
+  (PluginExportParityTests). A freeze still uses the declared tail, because its Song length is set before it renders.
+- **Hangs on damaged state** (Vital, Padshop's state round trip): the app loads plugins in its own process, so a project
+  whose saved state for one of these is corrupt would hang while opening. Not handled; it needs the plugin vendor or
+  out-of-process loading.
+- **Multi-output and mono plugins** are refused by the bus check, as designed.
 
 ### Valhalla Supermassive placements (T1-09)
 

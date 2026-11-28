@@ -15,6 +15,10 @@ namespace alien {
 using DrumSamplePointers = std::array<std::array<const SessionAudioClip*, drumPadCount>, maxSessionTracks>;
 
 // What to render besides the Session clips: the Channel Rack's sounds, and which part of the song.
+// T1-09: an export with an outside plugin ends once its output has stayed below this level (-100 dBFS) for this long.
+inline constexpr float exportSilence = 1.0e-5f;
+inline constexpr double exportQuietSeconds = 0.25;
+
 struct WavExportOptions {
     std::int64_t fromTick{0};   // timeline ticks (960 to a quarter note)
     std::int64_t toTick{-1};    // -1: the end of the song
@@ -289,16 +293,25 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         error="Export duration is too long."; return false;
     }
     const auto total=frames+latency+tail;
+    // T1-09: an outside plugin's declared tail is not trusted (Valhalla Supermassive declares none and rings for about
+    // 7 s), so an export with one keeps rendering past it until the output has been below exportSilence for
+    // exportQuietSeconds, at most the host's 30 s past the end. Stock effects declare their real tails, so a project
+    // with none renders exactly as long as before. A freeze keeps the declared tail: its Song length is set first.
+    const bool measureTail = !freezing && engine->plugins->hasOutsidePlugins();
+    const auto renderedSongEnd = frames + latency;
+    const auto tailLimit = measureTail ? std::max(total, renderedSongEnd + static_cast<std::int64_t>(std::ceil(30.0 * exportRate))) : total;
+    const auto quietWindow = static_cast<std::int64_t>(std::ceil(exportQuietSeconds * exportRate));
+    std::int64_t quietFor = 0, rendered = 0;
     const bool measureMaster = masterLevels && !capture;
     bool finiteMaster = true;
     double peak = 0, squares = 0;
     std::array<TruePeak48k, 2> truePeak;
     IntegratedLoudness48k loudness;
-    for(std::int64_t offset=0;offset<total;offset+=block) {
+    for(std::int64_t offset=0;offset<total || (offset<tailLimit && quietFor<quietWindow);offset+=block) {
         if(cancelled.load()) {
             error=options.stems ? "Stem export cancelled; no folder published." : "Export cancelled; existing file unchanged.";return false;
         }
-        const auto count=static_cast<int>(std::min<std::int64_t>(block,total-offset));
+        const auto count=static_cast<int>(std::min<std::int64_t>(block,(offset<total?total:tailLimit)-offset));
         buffer.clear();
         float* outputs[]{buffer.getWritePointer(0),buffer.getWritePointer(1)};
         engine->audioDeviceIOCallbackWithContext(nullptr,0,outputs,2,count,{});
@@ -322,6 +335,18 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
             error="A plugin's latency grew during export, so the tracks were not lined up; no output published. Export again.";
             return false;
         }
+        if (measureTail) {   // what this block wrote: the master, or every stem
+            float level = 0;
+            const auto louder = [&](const juce::AudioBuffer<float>& b) {
+                for (int c = 0; c < 2; ++c) level = std::max(level, b.getMagnitude(c, start, count - start));
+            };
+            if (count > start) {
+                if (options.stems) for (const int bus : stemBuses) louder(engine->stemCapture->buses[static_cast<std::size_t>(bus)]);
+                else louder(buffer);
+            }
+            quietFor = offset + count <= renderedSongEnd ? 0 : !(level < exportSilence) ? 0 : quietFor + count;
+        }
+        rendered = offset + count;
         if (count > start) {
             if (options.stems) {
                 for (std::size_t b=0; b<stemWriters.size(); ++b) {
@@ -378,7 +403,7 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
         error=options.stems ? "Cannot publish stem folder; destination may already exist." : "Cannot replace destination WAV.";return false;
     }
     if (measureMaster && finiteMaster)
-        *masterLevels = MasterExportLevels{peak, std::sqrt(squares / (2.0 * static_cast<double>(frames + tail))),
+        *masterLevels = MasterExportLevels{peak, std::sqrt(squares / (2.0 * static_cast<double>(std::max<std::int64_t>(1, rendered - latency)))),
             std::max(truePeak[0].peak(), truePeak[1].peak()), loudness.lufs()};
     error.clear();return true;
 }
