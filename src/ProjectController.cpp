@@ -311,49 +311,49 @@ bool ProjectController::setTrackColour(int track, int colour) {
     return true;
 }
 
+bool ProjectController::applySceneCommand(const scene_edit::Edit& edit) {
+    if (busy) return false;
+    {
+        object_ids::PreviewScope identities;
+        auto candidate = doc;
+        if (scene_edit::apply(candidate, edit).isNotEmpty()) return false;
+        if (sameContent(candidate, doc)) return true;
+    }
+    const bool structural = edit.kind != scene_edit::Kind::rename;
+    const bool renumbers = edit.kind == scene_edit::Kind::move || edit.kind == scene_edit::Kind::remove
+        || (edit.kind == scene_edit::Kind::duplicate && edit.scene + 1 < doc.sceneCount());
+    if (structural && beforeStructureEdit) beforeStructureEdit();
+    // The host may have captured dirty plugin state. Reduce from that refreshed
+    // document, and allocate real identities only for the accepted edit.
+    auto next = doc;
+    if (scene_edit::apply(next, edit).isNotEmpty()) return false;
+    const bool rackChanged = next.channelRack != doc.channelRack;
+    if (renumbers) stopEverySlot();
+    doc = std::move(next);
+    if (rackChanged) pushRackToEngine();
+    return true;
+}
+
+bool ProjectController::addScene() {
+    return applySceneCommand({scene_edit::Kind::create});
+}
+
 bool ProjectController::duplicateScene(int scene) {
-    if (scene < 0 || scene >= doc.sceneCount()) return false;
-    return insertScene(scene + 1, &doc.cells[static_cast<std::size_t>(scene)]);
+    return applySceneCommand({scene_edit::Kind::duplicate, scene});
 }
 
 bool ProjectController::deleteScene(int scene) {
-    if (busy) return false;
-    for(const auto& track:doc.tracks)if(track.settings.freezeScene==scene)return false;
-    for(const auto& region:doc.timeline.frozenOriginals)if(region.source==scene)return false;
-    if (beforeStructureEdit) beforeStructureEdit();
-    if (doc.sceneCount() <= 1 || scene < 0 || scene >= doc.sceneCount()) return false;
-    stopEverySlot();
-    doc.timeline.sceneDeleted(scene);
-    for(auto& track:doc.tracks)if(track.settings.freezeScene>scene)--track.settings.freezeScene;
-    doc.scenes.erase(doc.scenes.begin() + scene);
-    doc.cells.erase(doc.cells.begin() + scene);
-    doc.prune();
-    if (doc.selectedScene > scene) --doc.selectedScene;
-    doc.clampSelection();
-    return true;
+    return applySceneCommand({scene_edit::Kind::remove, scene});
 }
 
 bool ProjectController::moveScene(int scene, int delta) {
-    if (busy) return false;
-    if (beforeStructureEdit) beforeStructureEdit();
-    const int target = scene + delta;
-    if (scene < 0 || scene >= doc.sceneCount() || target < 0 || target >= doc.sceneCount()) return false;
-    stopEverySlot();
-    doc.timeline.scenesSwapped(scene, target);
-    for(auto& track:doc.tracks){auto& frozen=track.settings.freezeScene;if(frozen==scene)frozen=target;else if(frozen==target)frozen=scene;}
-    std::swap(doc.scenes[static_cast<std::size_t>(scene)], doc.scenes[static_cast<std::size_t>(target)]);
-    std::swap(doc.cells[static_cast<std::size_t>(scene)], doc.cells[static_cast<std::size_t>(target)]);
-    if (doc.selectedScene == scene) doc.selectedScene = target;
-    else if (doc.selectedScene == target) doc.selectedScene = scene;
-    return true;
+    // Validate before adding so malformed direct calls cannot overflow.
+    if (scene < 0 || scene >= doc.sceneCount() || delta < -scene || delta >= doc.sceneCount() - scene) return false;
+    return applySceneCommand({scene_edit::Kind::move, scene, scene + delta});
 }
 
 bool ProjectController::renameScene(int scene, const juce::String& name) {
-    if (busy) return false;
-    const auto trimmed = name.trim().substring(0, 64);
-    if (scene < 0 || scene >= doc.sceneCount() || trimmed.isEmpty()) return false;
-    doc.scenes[static_cast<std::size_t>(scene)].name = trimmed;
-    return true;
+    return applySceneCommand({scene_edit::Kind::rename, scene, -1, name});
 }
 
 bool ProjectController::setMasterVolume(double gain) {
@@ -1551,7 +1551,7 @@ int ProjectController::addRecordedTakes(const std::vector<RecordedTake>& takes, 
         if (isTrackFrozen(row) || row < 0 || row >= doc.trackCount() || !take.clip || !take.placement.valid) return fail();
         int scene = freeTakeScene(doc, next, row);
         if (scene < 0) {
-            if (!doc.canAddScene() || !insertScene(doc.sceneCount(), nullptr)) return fail();
+            if (!doc.canAddScene() || !addScene()) return fail();
             scene = doc.sceneCount() - 1;
         }
         if (!retain(take.clip)) return fail();
@@ -2721,50 +2721,6 @@ void ProjectController::publishStop(std::size_t track) {
     stopped.pattern.clear();
     stopped.clipIndex = -1;
     engine.pianoRollLaunches[track].publish(stopped);
-}
-
-bool ProjectController::insertScene(int index, const std::vector<library::ClipId>* copyFrom) {
-    if (busy) return false;
-    if (beforeStructureEdit) beforeStructureEdit();
-    if (!doc.canAddScene() || index < 0 || index > doc.sceneCount()) return false;
-    // Inserting before existing scenes renumbers them.
-    if (index < doc.sceneCount()) stopEverySlot();
-    std::vector<library::ClipId> row(static_cast<std::size_t>(doc.trackCount()));
-    if (copyFrom != nullptr) {
-        const auto saved = doc;
-        auto next = doc.channelRack;
-        std::map<std::uint64_t, int> copies;
-        for (std::size_t t = 0; t < row.size() && t < copyFrom->size(); ++t) {
-            const auto id = (*copyFrom)[t];
-            if (!id) continue;
-            const int p = doc.rackPatternForClip(id.value);
-            if (p < 0) continue;
-            else if (!copies.contains(id.value)) {
-                const int slot = next.patternCount;
-                if (!next.addPattern(p)) { doc = saved; return false; }
-                copies[id.value] = slot;
-            }
-        }
-        if (!copies.empty()) {
-            next.selectedPattern = doc.channelRack.selectedPattern;
-            if (!doc.setRack(std::move(next))) { doc = saved; return false; }
-            for (std::size_t t = 0; t < row.size() && t < copyFrom->size(); ++t)
-                if (const auto found = copies.find((*copyFrom)[t].value); found != copies.end())
-                    row[t] = library::ClipId{doc.channelRack.clips[static_cast<std::size_t>(found->second)]};
-            pushRackToEngine();
-        }
-        // setRack prunes unused clips: allocate ordinary cell copies only after it finishes.
-        for (std::size_t t = 0; t < row.size() && t < copyFrom->size(); ++t)
-            if (!row[t] && (*copyFrom)[t]) row[t] = doc.library.duplicateClip((*copyFrom)[t]);
-    }
-    const auto name = copyFrom != nullptr ? doc.scenes[static_cast<std::size_t>(index - 1)].name + " copy"
-                                          : doc.nextSceneName();
-    doc.timeline.sceneInserted(index);
-    for(auto& track:doc.tracks)if(track.settings.freezeScene>=index)++track.settings.freezeScene;
-    doc.scenes.insert(doc.scenes.begin() + index, SessionScene{name});
-    doc.cells.insert(doc.cells.begin() + index, row);
-    if (doc.selectedScene >= index && index < doc.sceneCount() - 1) ++doc.selectedScene;
-    return true;
 }
 
 void ProjectController::stopEverySlot() {

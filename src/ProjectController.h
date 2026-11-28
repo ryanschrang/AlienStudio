@@ -1,6 +1,7 @@
 #pragma once
 #include <span>
 #include "ProjectDocument.h"
+#include "SceneCommands.h"
 #include "MidiClipCommands.h"
 #include "ClipboardClipCommands.h"
 #include "SessionClipCommands.h"
@@ -208,7 +209,11 @@ public:
     static constexpr int trackColourCount = 8;
     bool setTrackColour(int track, int colour);
 
-    bool addScene() { return insertScene(doc.sceneCount(), nullptr); }
+    bool addScene();
+
+    // Shared document reducer; live effects happen only after a complete valid candidate.
+    // CommandEngine owns history. The direct scene adapters also use this boundary.
+    bool applySceneCommand(const scene_edit::Edit& edit);
 
     bool duplicateScene(int scene);
 
@@ -809,10 +814,6 @@ private:
     bool prepareRackChannels(int channels, const juce::String& action);
 
     void publishStop(std::size_t track);
-
-    // `copyFrom`: a scene to copy. Its clips are copied as independent clips (an edit of one copy
-    // does not reach the other), as Duplicate scene always did.
-    bool insertScene(int index, const std::vector<library::ClipId>* copyFrom);
 
     void stopEverySlot();
 
