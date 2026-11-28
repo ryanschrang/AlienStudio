@@ -22,7 +22,10 @@ public:
     ~TypingPianoRouter() override {
         juce::Desktop::getInstance().removeFocusChangeListener(this);
         root.removeComponentListener(this);
-        if (eventSource != nullptr) eventSource->removeKeyListener(this);
+        if (eventSource != nullptr) {
+            eventSource->removeKeyListener(this);
+            if (eventSource != &root) eventSource->removeComponentListener(&hostObserver);
+        }
         for(auto& window:auxiliaryRoots)if(window) { window->removeKeyListener(this); window->removeComponentListener(this); }
         release();
     }
@@ -45,13 +48,29 @@ public:
         for (std::size_t i = 0; i < watched.size(); ++i) blocked[i] = isDown(watched[i]);
     }
 private:
+    // A distinct listener keeps the native parent's lifecycle independent of
+    // root/auxiliary registration, even when those roles share one window.
+    struct HostObserver final : juce::ComponentListener {
+        explicit HostObserver(TypingPianoRouter& owner) : router(owner) {}
+        void componentVisibilityChanged(juce::Component& c) override { router.componentVisibilityChanged(c); }
+        void componentEnablementChanged(juce::Component& c) override { router.componentEnablementChanged(c); }
+        void componentBeingDeleted(juce::Component& c) override {
+            if (router.ownsTyping(c)) { router.release(); router.target = nullptr; router.hadFocusTarget = false; }
+        }
+        TypingPianoRouter& router;
+    };
     static constexpr std::array<int, 14> watched{'A','W','S','E','D','F','T','G','Y','H','U','J','Z','X'};
     void attachToWindow() {
         auto* window = root.getTopLevelComponent();
         if (window == eventSource.getComponent()) return;
-        if (eventSource != nullptr) eventSource->removeKeyListener(this);
+        if (eventSource != nullptr) {
+            if (typingWindow == eventSource) { release(); target = nullptr; hadFocusTarget = false; }
+            eventSource->removeKeyListener(this);
+            if (eventSource != &root) eventSource->removeComponentListener(&hostObserver);
+        }
         eventSource = window;
         window->addKeyListener(this);
+        if (window != &root) window->addComponentListener(&hostObserver);
     }
     void componentParentHierarchyChanged(juce::Component& component) override { if (&component == &root) attachToWindow(); }
     bool ownsTyping(const juce::Component& component) const {
@@ -123,6 +142,7 @@ private:
     juce::MidiKeyboardState& state;
     KeyDown isDown;
     juce::Component::SafePointer<juce::Component> target, eventSource, typingWindow;
+    HostObserver hostObserver{*this};
     bool hadFocusTarget{};
     std::vector<juce::Component::SafePointer<juce::Component>> auxiliaryRoots;
     std::array<bool, watched.size()> blocked{};

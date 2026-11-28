@@ -893,9 +893,9 @@ static void detachedWindowLifecycleChecks() {
 }
 
 static void disabledHostNoteChecks() {
-    juce::Component shell, root, floating;
+    juce::Component shell, root, floating, replacement;
     shell.addAndMakeVisible(root); root.setBounds(0,0,300,150); root.setWantsKeyboardFocus(true);
-    for (auto* host : {&shell,&floating}) {
+    for (auto* host : {&shell,&floating,&replacement}) {
         host->setBounds(10,10,300,150); host->setWantsKeyboardFocus(true); host->addToDesktop(0); host->setVisible(true);
     }
     juce::MidiKeyboardState notes; std::set<int> held; Counter count; notes.addListener(&count);
@@ -905,7 +905,7 @@ static void disabledHostNoteChecks() {
         const auto focus=[](juce::Component& host) { host.getPeer()->handleFocusGain(); host.grabKeyboardFocus(); pump(); };
         const auto press=[&](juce::Component& host) { held.insert('A'); host.getPeer()->handleKeyPress(juce::KeyPress('a',{},'a')); };
         const auto lift=[&](juce::Component& host) { held.clear(); host.getPeer()->handleKeyUpOrDown(false); };
-        for (auto* host : {&root,&floating}) {
+        for (auto* host : {&root,&shell,&floating}) {
             focus(*host); press(*host); require(notes.isNoteOn(2,60),"enabled host starts a typing note");
             const int offs=count.offs;
             host->setEnabled(false);
@@ -914,15 +914,35 @@ static void disabledHostNoteChecks() {
             host->setEnabled(true); focus(*host); press(*host);
             require(!notes.isNoteOn(2,60),"re-enabling cannot restart a key held through disabling");
             lift(*host); press(*host); require(notes.isNoteOn(2,60),"fresh press after re-enable starts a note");
-            auto& other=host==&root?floating:root;
+            auto& other=host==&floating?root:floating;
             other.setEnabled(false); require(notes.isNoteOn(2,60),"disabling an unrelated host preserves the source note");
             other.setEnabled(true); lift(*host);
             require(count.ons==count.offs,"disable lifecycle balances note-ons and note-offs");
         }
+        focus(root); press(root); shell.setVisible(false);
+        require(root.isVisible() && !notes.isNoteOn(2,60),"hiding native parent releases notes before focus dispatch while root's visible flag stays set");
+        shell.setVisible(true); focus(root); press(root);
+        require(!notes.isNoteOn(2,60),"showing native parent does not restart a held key");
+        lift(root); press(root); require(notes.isNoteOn(2,60),"fresh press after native parent show works"); lift(root);
+        focus(floating); press(floating); shell.setVisible(false);
+        require(notes.isNoteOn(2,60),"hiding unrelated native parent preserves auxiliary notes");
+        shell.setVisible(true); lift(floating);
+        require(count.ons==count.offs,"parent lifecycle balances note-offs");
+        focus(root); press(root); replacement.addAndMakeVisible(root);
+        require(!notes.isNoteOn(2,60),"changing native parent releases the previous host's note synchronously");
+        held.clear(); focus(root); press(root); require(notes.isNoteOn(2,60),"replacement native parent can play");
+        shell.setEnabled(false); require(notes.isNoteOn(2,60),"old native parent no longer owns notes after reparenting"); shell.setEnabled(true);
+        replacement.setVisible(false); require(!notes.isNoteOn(2,60),"replacement parent lifecycle is observed");
+        replacement.setVisible(true); lift(root);
+        focus(floating); press(floating); shell.addAndMakeVisible(root);
+        require(notes.isNoteOn(2,60),"reparenting the main root preserves auxiliary notes"); lift(floating);
+        require(count.ons==count.offs,"reparenting balances note ownership");
     }
     floating.setEnabled(false); // surviving host must no longer call a destroyed router
+    shell.setEnabled(false); shell.setVisible(false);
+    replacement.setEnabled(false); replacement.setVisible(false);
     notes.removeListener(&count);
-    floating.removeFromDesktop(); shell.removeFromDesktop();
+    floating.removeFromDesktop(); shell.removeFromDesktop(); replacement.removeFromDesktop();
 }
 
 static void noFocusTypingFallbackChecks() {
