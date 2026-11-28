@@ -142,12 +142,23 @@ static void restoredDetachedLayoutChecks() {
         require(!live.isVisible() && live.getBounds()==hiddenBounds,"pending restore recovery does not move or show a hidden window");
         live.setVisible(true);
         for (int i=0;i<40 && live.getBounds()!=restoredBounds;++i) juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+        // Showing can already restore the right rectangle. Dispatch the queued
+        // correction as well before testing a subsequent independent user move.
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
         require(reduced.contains(live.getBounds()) && tracker.capture().bounds.getWidth() <= normal.getWidth(),
             "unmaximizing returns to the recovered normal bounds");
         require(live.getBounds()==restoredBounds,"normal restoration uses the recovered client rectangle");
-        const auto moved=restoredBounds.translated(1,1);
+        // A one-logical-pixel move may round back at fractional Windows DPI.
+        // Move far enough to distinguish recovery overriding it from rounding.
+        const auto moved=restoredBounds.translated(-16,16);
         live.setBounds(moved); juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
-        require(live.getBounds()==moved && tracker.capture().bounds==moved,"completed recovery does not override a later manual move");
+        const auto actual=live.getBounds();
+        const bool movedAsRequested=std::abs(actual.getX()-moved.getX())<=1 && std::abs(actual.getY()-moved.getY())<=1
+            && actual.getWidth()==moved.getWidth() && actual.getHeight()==moved.getHeight();
+        if (!movedAsRequested || tracker.capture().bounds!=actual)
+            std::cerr << "recovery move expected=" << moved.toString() << " actual=" << live.getBounds().toString()
+                      << " captured=" << tracker.capture().bounds.toString() << '\n';
+        require(movedAsRequested && tracker.capture().bounds==actual,"completed recovery does not override a later manual move");
         require(live.getContentComponent() == &content && static_cast<int>(content.getProperties()["shared"]) == 91,
             "display recovery preserves the editor and its state");
         live.clearContentComponent();
