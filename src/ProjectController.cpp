@@ -244,71 +244,47 @@ void ProjectController::pushDocumentToEngine() {
     publishArrangement();
 }
 
-bool ProjectController::addTrack() {
+bool ProjectController::applyTrackStructureCommand(const track_structure::Edit& edit) {
     if (busy) return false;
-    if (beforeStructureEdit) beforeStructureEdit();
-    if (!doc.canAddTrack() || !doc.trackRegistry.canAllocate()) return false;
-    if (!prepareEngineTracks(doc.trackCount() + 1, "Could not add a track")) return false;
-    doc.tracks.push_back({doc.nextTrackName(), {}, doc.nextTrackColour()});
-    for (auto& scene : doc.cells) scene.emplace_back();
-    publishStop(static_cast<std::size_t>(doc.trackCount() - 1));
-    pushDocumentToEngine();
+    {
+        object_ids::PreviewScope identities;
+        auto candidate = doc;
+        if (track_structure::apply(candidate,edit).isNotEmpty()) return false;
+        if (sameContent(candidate,doc)) return true;
+    }
+    using Kind = track_structure::Kind;
+    const bool structural = edit.kind == Kind::create || edit.kind == Kind::remove || edit.kind == Kind::move;
+    if (edit.kind == Kind::create && !prepareEngineTracks(doc.trackCount()+1,"Could not add a track")) return false;
+    if (structural && beforeStructureEdit) beforeStructureEdit();
+    auto next = doc; // retain freshly captured plugin state
+    if (track_structure::apply(next,edit).isNotEmpty()) return false;
+    if (edit.kind == Kind::remove || edit.kind == Kind::move) {
+        stopEverySlot();
+        int route = engine.liveDrumTrack.load();
+        if (edit.kind == Kind::remove) {
+            if (route == edit.track) route=-1; else if (route > edit.track) --route;
+        } else if (route == edit.track) route=edit.to;
+        else if (edit.track < edit.to && route > edit.track && route <= edit.to) --route;
+        else if (edit.to < edit.track && route >= edit.to && route < edit.track) ++route;
+        engine.liveDrumTrack.store(route);
+    }
+    doc = std::move(next);
+    if (edit.kind == Kind::create) publishStop(static_cast<std::size_t>(doc.trackCount()-1));
+    if (structural) pushDocumentToEngine();
     return true;
 }
 
-bool ProjectController::deleteTrack(int track) {
-    if (busy) return false;
-    if (beforeStructureEdit) beforeStructureEdit();
-    if (doc.trackCount() <= 1 || track < 0 || track >= doc.trackCount()) return false;
-    stopEverySlot();
-    const int route = engine.liveDrumTrack.load();
-    if (route == track) engine.liveDrumTrack.store(-1);
-    else if (route > track) engine.liveDrumTrack.store(route - 1);
-    doc.timeline.trackDeleted(track);
-    doc.channelRack.trackDeleted(track); // channels routed there fall back to the master bus
-    doc.sidechainTrackDeleted(track);    // effects keyed by it lose their key
-    doc.tracks.erase(doc.tracks.begin() + track);
-    for (auto& scene : doc.cells) scene.erase(scene.begin() + track);
-    doc.prune();
-    if (doc.selectedTrack > track) --doc.selectedTrack;
-    doc.clampSelection();
-    pushDocumentToEngine();
-    return true;
-}
-
+bool ProjectController::addTrack() { return applyTrackStructureCommand({track_structure::Kind::create}); }
+bool ProjectController::deleteTrack(int track) { return applyTrackStructureCommand({track_structure::Kind::remove,track}); }
 bool ProjectController::moveTrack(int track, int delta) {
-    if (busy) return false;
-    if (beforeStructureEdit) beforeStructureEdit();
-    const int target = track + delta;
-    if (track < 0 || track >= doc.trackCount() || target < 0 || target >= doc.trackCount()) return false;
-    stopEverySlot();
-    const int route = engine.liveDrumTrack.load();
-    if (route == track) engine.liveDrumTrack.store(target);
-    else if (route == target) engine.liveDrumTrack.store(track);
-    doc.timeline.tracksSwapped(track, target);
-    doc.channelRack.tracksSwapped(track, target); // channel routes follow their tracks
-    doc.sidechainTracksSwapped(track, target);
-    std::swap(doc.tracks[static_cast<std::size_t>(track)], doc.tracks[static_cast<std::size_t>(target)]);
-    for (auto& scene : doc.cells)
-        std::swap(scene[static_cast<std::size_t>(track)], scene[static_cast<std::size_t>(target)]);
-    if (doc.selectedTrack == track) doc.selectedTrack = target;
-    else if (doc.selectedTrack == target) doc.selectedTrack = track;
-    pushDocumentToEngine();
-    return true;
+    if (track < 0 || track >= doc.trackCount() || delta < -track || delta >= doc.trackCount()-track) return false;
+    return applyTrackStructureCommand({track_structure::Kind::move,track,track+delta});
 }
-
 bool ProjectController::renameTrack(int track, const juce::String& name) {
-    if (busy) return false;
-    const auto trimmed = name.trim().substring(0, 64);
-    if (track < 0 || track >= doc.trackCount() || trimmed.isEmpty()) return false;
-    doc.tracks[static_cast<std::size_t>(track)].name = trimmed;
-    return true;
+    return applyTrackStructureCommand({track_structure::Kind::rename,track,-1,name});
 }
-
 bool ProjectController::setTrackColour(int track, int colour) {
-    if (busy || track < 0 || track >= doc.trackCount() || colour < 0 || colour >= trackColourCount) return false;
-    doc.tracks[static_cast<std::size_t>(track)].colour = colour;
-    return true;
+    return applyTrackStructureCommand({track_structure::Kind::colour,track,-1,{},colour});
 }
 
 bool ProjectController::applySceneCommand(const scene_edit::Edit& edit) {

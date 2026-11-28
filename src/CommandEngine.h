@@ -298,18 +298,7 @@ inline std::optional<timeline::FadeEdge> fadeEdgeNamed(const juce::String& name)
 }
 
 // The name the controller stores for `name` (it trims and caps track names).
-inline juce::String trackName(const juce::String& name) { return name.trim().substring(0, 64); }
-
-// The document side of ProjectController::moveTrack(track, +-1).
-inline void swapTracks(ProjectDocument& d, int a, int b) {
-    d.timeline.tracksSwapped(a, b);
-    d.channelRack.tracksSwapped(a, b);
-    d.sidechainTracksSwapped(a, b);
-    std::swap(d.tracks[static_cast<std::size_t>(a)], d.tracks[static_cast<std::size_t>(b)]);
-    for (auto& scene : d.cells) std::swap(scene[static_cast<std::size_t>(a)], scene[static_cast<std::size_t>(b)]);
-    if (d.selectedTrack == a) d.selectedTrack = b;
-    else if (d.selectedTrack == b) d.selectedTrack = a;
-}
+inline juce::String trackName(const juce::String& name) { return track_structure::name(name); }
 
 inline juce::String trackTitle(const ProjectDocument& d, int track) {
     return "track " + juce::String(track + 1) + " \"" + d.tracks[static_cast<std::size_t>(track)].name + "\"";
@@ -569,6 +558,15 @@ inline std::optional<rack_pattern::Edit> rackPatternEdit(const Command& command)
     return std::nullopt;
 }
 
+inline std::optional<track_structure::Edit> trackStructureEdit(const Command& command) {
+    using Kind = track_structure::Kind;
+    if (std::holds_alternative<CreateTrack>(command)) return track_structure::Edit{Kind::create};
+    if (const auto* c = std::get_if<DeleteTrack>(&command)) return track_structure::Edit{Kind::remove,c->track};
+    if (const auto* c = std::get_if<MoveTrack>(&command)) return track_structure::Edit{Kind::move,c->track,c->to};
+    if (const auto* c = std::get_if<RenameTrack>(&command)) return track_structure::Edit{Kind::rename,c->track,-1,c->name};
+    if (const auto* c = std::get_if<ColorTrack>(&command)) return track_structure::Edit{Kind::colour,c->track,-1,{},c->colour};
+    return std::nullopt;
+}
 inline std::optional<scene_edit::Edit> sceneEdit(const Command& command) {
     using Kind = scene_edit::Kind;
     if (std::holds_alternative<CreateScene>(command)) return scene_edit::Edit{Kind::create};
@@ -601,22 +599,7 @@ inline juce::String refusal(const ProjectDocument& d, const Command& command, co
         return t >= 0 && t < d.trackCount() ? juce::String{}
             : "There is no track " + juce::String(t + 1) + " (the project has " + juce::String(d.trackCount()) + ").";
     };
-    if (std::holds_alternative<CreateTrack>(command)) {
-        if (!d.trackRegistry.canAllocate()) return "The project cannot allocate another track identity.";
-        return d.canAddTrack() ? juce::String{} : "The project already has the most tracks allowed (" + juce::String(maxSessionTracks) + ").";
-    }
-    if (const auto* c = std::get_if<DeleteTrack>(&command)) {
-        if (const auto why = track(c->track); why.isNotEmpty()) return why;
-        return d.trackCount() > 1 ? juce::String{} : "The last track cannot be deleted.";
-    }
-    if (const auto* c = std::get_if<MoveTrack>(&command)) {
-        if (const auto why = track(c->track); why.isNotEmpty()) return why;
-        return track(c->to);
-    }
-    if (const auto* c = std::get_if<RenameTrack>(&command)) {
-        if (const auto why = track(c->track); why.isNotEmpty()) return why;
-        return detail::trackName(c->name).isNotEmpty() ? juce::String{} : "A track name cannot be blank.";
-    }
+    if (const auto edit = trackStructureEdit(command)) return track_structure::refusal(d,*edit);
     if (const auto edit = returnEdit(command)) return return_edit::refusal(d, *edit);
     auto send = [&](int t, int slot) -> juce::String {
         if (const auto why = track(t); why.isNotEmpty()) return why;
@@ -722,10 +705,7 @@ inline juce::String refusal(const ProjectDocument& d, const Command& command, co
     }
     if (const auto* c = std::get_if<SetTrackMute>(&command)) return track(c->track);
     if (const auto* c = std::get_if<SetTrackSolo>(&command)) return track(c->track);
-    const auto& c = std::get<ColorTrack>(command);
-    if (const auto why = track(c.track); why.isNotEmpty()) return why;
-    return c.colour >= 0 && c.colour < ProjectController::trackColourCount ? juce::String{}
-        : "Track colours are numbered 0 to " + juce::String(ProjectController::trackColourCount - 1) + ".";
+    return "That command has no validation adapter.";
 }
 
 // One line saying what `command` does to `d` (call before applying it).
@@ -1089,24 +1069,8 @@ inline juce::String applyTo(ProjectDocument& d, const Command& command, const cl
     if (const auto* c = std::get_if<DeleteClip>(&command)) return session_clip::remove(d, c->track, c->scene) ? juce::String{} : "The Session clip could not be deleted.";
     if (const auto edit = sceneEdit(command)) return scene_edit::apply(d, *edit);
     if(const auto edit=midiEdit(command)) return midi_clip::apply(d,*edit)?juce::String{}:"The MIDI clip edit could not be applied.";
-    if (std::holds_alternative<CreateTrack>(command)) {
-        d.tracks.push_back({d.nextTrackName(), {}, d.nextTrackColour()});
-        for (auto& scene : d.cells) scene.emplace_back();
-    } else if (const auto* c = std::get_if<DeleteTrack>(&command)) {
-        d.timeline.trackDeleted(c->track);
-        d.channelRack.trackDeleted(c->track);
-        d.sidechainTrackDeleted(c->track);
-        d.tracks.erase(d.tracks.begin() + c->track);
-        for (auto& scene : d.cells) scene.erase(scene.begin() + c->track);
-        d.prune();
-        if (d.selectedTrack > c->track) --d.selectedTrack;
-        d.clampSelection();
-    } else if (const auto* c = std::get_if<MoveTrack>(&command)) {
-        const int step = c->to > c->track ? 1 : -1;
-        for (int t = c->track; t != c->to; t += step) detail::swapTracks(d, t, t + step);
-    } else if (const auto* c = std::get_if<RenameTrack>(&command)) {
-        d.tracks[static_cast<std::size_t>(c->track)].name = detail::trackName(c->name);
-    } else if (const auto* c = std::get_if<SetTrackVolume>(&command)) {
+    if (const auto edit = trackStructureEdit(command)) return track_structure::apply(d,*edit);
+    if (const auto* c = std::get_if<SetTrackVolume>(&command)) {
         d.tracks[static_cast<std::size_t>(c->track)].settings.gain = static_cast<float>(c->gain);
     } else if (const auto* c = std::get_if<SetTrackPan>(&command)) {
         d.tracks[static_cast<std::size_t>(c->track)].settings.pan = static_cast<float>(c->pan);
@@ -1114,10 +1078,7 @@ inline juce::String applyTo(ProjectDocument& d, const Command& command, const cl
         d.tracks[static_cast<std::size_t>(c->track)].settings.mute = c->muted;
     } else if (const auto* c = std::get_if<SetTrackSolo>(&command)) {
         d.tracks[static_cast<std::size_t>(c->track)].settings.solo = c->soloed;
-    } else {
-        const auto& colour = std::get<ColorTrack>(command);
-        d.tracks[static_cast<std::size_t>(colour.track)].colour = colour.colour;
-    }
+    } else return "That command has no document adapter.";
     if (!d.synchronizeTrackRegistry()) return "The project cannot resolve its track identities.";
     return {};
 }
@@ -2124,20 +2085,12 @@ private:
         if (const auto edit = sceneEdit(command)) return controller.applySceneCommand(*edit);
         if (const auto* c = std::get_if<DeleteClip>(&command)) return controller.applyDeleteClipCommand(c->track, c->scene);
         if(const auto edit=midiEdit(command)) return controller.applyMidiClipCommand(*edit);
-        if (std::holds_alternative<CreateTrack>(command)) return controller.addTrack();
-        if (const auto* c = std::get_if<DeleteTrack>(&command)) return controller.deleteTrack(c->track);
-        if (const auto* c = std::get_if<MoveTrack>(&command)) {
-            const int step = c->to > c->track ? 1 : -1;
-            for (int t = c->track; t != c->to; t += step) if (!controller.moveTrack(t, step)) return false;
-            return true;
-        }
-        if (const auto* c = std::get_if<RenameTrack>(&command)) return controller.renameTrack(c->track, c->name);
+        if (const auto edit = trackStructureEdit(command)) return controller.applyTrackStructureCommand(*edit);
         if (const auto* c = std::get_if<SetTrackVolume>(&command)) return controller.setTrackVolume(c->track, c->gain);
         if (const auto* c = std::get_if<SetTrackPan>(&command)) return controller.setTrackPan(c->track, c->pan);
         if (const auto* c = std::get_if<SetTrackMute>(&command)) return controller.setTrackMute(c->track, c->muted);
         if (const auto* c = std::get_if<SetTrackSolo>(&command)) return controller.setTrackSolo(c->track, c->soloed);
-        const auto& c = std::get<ColorTrack>(command);
-        return controller.setTrackColour(c.track, c.colour);
+        return false;
     }
 
     ProjectController& controller;

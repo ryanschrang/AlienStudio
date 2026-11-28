@@ -579,6 +579,7 @@ static void relinkAudioCommandChecks() {
 #include "SongLengthCommandTests.h"
 #include "SongTakeCommandTests.h"
 #include "SceneCommandTests.h"
+#include "TrackStructureCommandTests.h"
 
 static void freezeCommandChecks() {
     auto engine = std::make_unique<ToneEngine>();
@@ -669,6 +670,7 @@ int main() {
     deleteClipCommandChecks();
     sceneCommandChecks();
     sceneReductionBoundaryChecks();
+    trackStructureBoundaryChecks();
     midiClipCommandChecks();
     continuousCommandTests();
     nameTests();

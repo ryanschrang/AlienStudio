@@ -5,6 +5,15 @@
 This section replaces the older ordering below as the source of truth for what to work on next.
 The sections after it are kept as history.
 
+**Tier 1 code completion and manual acceptance are separate tracks (2026-11-28).**
+Finish the remaining Tier 1 implementation and automated acceptance work without
+waiting for listening checks. The owner will perform listening checks separately;
+hardware, real-plugin and physical display acceptance remain explicitly unverified
+until their results are recorded. Open workstream claims still prevent overlapping
+branches; continue a workstream in its existing PR where appropriate. Do not treat
+an outstanding listening check as evidence that its code is incomplete, or passing
+automated checks as evidence that listening/hardware acceptance is complete.
+
 **Rule: Tier 1 comes first.** Tier 1 is the DAW foundation and is the priority until each row is
 complete. After that, expand the Tier 2 items that are only partly done. Tier 3 and Tier 4 are
 not scheduled; they must not pull effort away from the foundation. Status for every ID lives in
