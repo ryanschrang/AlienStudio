@@ -72,7 +72,7 @@ inline juce::String pluginDisplayName(const PluginState& p) {
     }
     return "an unnamed plugin";
 }
-// A rack macro (RACK-01, T2-02, format 39): one knob that moves parameters of the rack's devices together. Each
+// A rack macro (RACK-01, T2-02, format 40): one knob that moves parameters of the rack's devices together. Each
 // target is a device in the same rack, by identity, and one of its parameters by persistent ID; the macro's value 0
 // to 1 sets that parameter to `from` + value x (`to` - `from`), in the parameter's own 0 to 1 range, so a target
 // can also run backwards. A target whose device has left the rack does nothing.
@@ -177,7 +177,7 @@ inline juce::var rackToVar(const PluginRackState& rack) {
     o->setProperty("instrument", pluginToVar(rack.instrument));
     juce::Array<juce::var> fx; for (const auto& p : rack.effects) fx.add(pluginToVar(p));
     o->setProperty("effects", juce::var(fx));
-    // Format 39: written only when a macro is named, moved or mapped.
+    // Format 40: written only when a macro is named, moved or mapped.
     if (std::any_of(rack.macros.begin(), rack.macros.end(), [](const RackMacro& m) { return !m.isDefault(); })) {
         juce::Array<juce::var> macros;
         for (const auto& m : rack.macros) {
@@ -227,7 +227,7 @@ inline bool rackFromVar(const juce::var& value, PluginRackState& rack) {
     const auto effects = o->getProperty("effects"); const auto* list = effects.getArray();
     if (!list || list->size() > 8) return false;
     for (const auto& v : *list) { PluginState p; if (!pluginFromVar(v,p)) return false; rack.effects.push_back(std::move(p)); }
-    if (o->hasProperty("macros")) {   // absent before format 39, and when every macro is untouched
+    if (o->hasProperty("macros")) {   // absent before format 40, and when every macro is untouched
         const auto* saved = o->getProperty("macros").getArray();
         if (!saved || saved->size() != rackMacroCount) return false;
         const auto number = [](const juce::var& v, float& out) {

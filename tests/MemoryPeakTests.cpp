@@ -681,12 +681,79 @@ static void rackQueueTests() {
     root.deleteRecursively();
 }
 
+// T2-01: a multisample's own files are opened, counted, listed when missing, relinked and collected like a channel's
+// sample, and the channel keeps its key zones through all of it.
+static void rackMultisampleFileTests() {
+    const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("alien-multisample", "");
+    require(root.createDirectory().wasOk(), "scratch folder");
+    const auto low = root.getChildFile("Keys_C3.wav"), high = root.getChildFile("Keys_C4.wav"), song = root.getChildFile("Keys.alienstudio");
+    std::atomic<bool> cancel{false}; juce::String error;
+    require(alien::writeClipWav(low, *toneClip(0.5), cancel, error) && alien::writeClipWav(high, *toneClip(0.25), cancel, error), "write two samples");
+    const auto bytes = [](double seconds) { return static_cast<std::size_t>(seconds * 48000) * 2 * sizeof(float); };
+    const auto pathOf = [](const juce::File& f) { return f.getFullPathName().toStdString(); };
+    {
+        auto engine = std::make_unique<ToneEngine>(); engine->prepare(48000);
+        auto c = std::make_unique<alien::ProjectController>(*engine);
+        c->pushDocumentToEngine();
+        alien::command::loadRackMultisample(*c, {high, low}, 0); waitIdle(*c);
+        const auto& info = c->channelRack().info[0];
+        require(info.hasZones() && info.zones->size() == 2 && info.sample == pathOf(low) && (*info.zones)[1].file == pathOf(high)
+                && (*info.zones)[0].high == 54 && (*info.zones)[1].low == 55, "the two files go on the keys by the notes in their names");
+        require(writeProject(*c, song), "save the multisample");
+        c.reset(); engine.reset();
+    }
+    auto engine = std::make_unique<ToneEngine>(); engine->prepare(48000);
+    auto c = std::make_unique<alien::ProjectController>(*engine);
+    const auto empty = c->availableAudioBytes();
+    c->openProject(song); waitIdle(*c); settle(*engine, *c);
+    const auto zonesPlaying = [&] { const auto* map = c->rackChannelAudio(0); return map != nullptr && map->keyZones ? map->keyZones->size() : std::size_t{}; };
+    require(c->channelRack().info[0].zones->size() == 2 && zonesPlaying() == 2 && !c->rackChannelOffline(0) && c->missingMedia().empty(),
+            "the multisample opens with both files playing");
+    require(empty - c->availableAudioBytes() == bytes(0.5) + bytes(0.25), "both files are decoded and counted once");
+
+    // The higher file goes missing: the channel keeps both zones, says which file is missing, and the other still plays.
+    const auto found = root.getChildFile("found");
+    require(found.createDirectory().wasOk() && high.moveFileTo(found.getChildFile(high.getFileName())), "move a file away");
+    c.reset(); engine.reset();   // a fresh start, as the open project above still holds the file's decoded audio
+    engine = std::make_unique<ToneEngine>(); engine->prepare(48000);
+    c = std::make_unique<alien::ProjectController>(*engine);
+    c->openProject(song); waitIdle(*c); settle(*engine, *c);
+    const auto missing = c->missingMedia();
+    require(c->channelRack().info[0].zones->size() == 2 && c->rackChannelOffline(0) && missing.size() == 1 && missing[0].rackChannel
+            && missing[0].path == high.getFullPathName(), "a missing zone file is listed, and the channel keeps its zones");
+    require(zonesPlaying() == 1 && (*c->rackChannelAudio(0)->keyZones)[0].high == 54, "the file that is there still plays");
+    require(empty - c->availableAudioBytes() == bytes(0.5), "only the file that opened is counted");
+
+    // Relinking finds it, keeps the zones, and plays both again.
+    alien::command::relinkMissingAudio(*c, found); waitIdle(*c); settle(*engine, *c);
+    const auto& relinked = c->channelRack().info[0];
+    require(relinked.zones->size() == 2 && (*relinked.zones)[1].file == pathOf(found.getChildFile(high.getFileName())) && relinked.sample == pathOf(low)
+            && !c->rackChannelOffline(0) && zonesPlaying() == 2, "relinking a zone's file keeps the zones and plays it again");
+    require(c->undo() && c->channelRack().info[0].zones->size() == 2 && c->rackChannelOffline(0) && c->redo() && !c->rackChannelOffline(0),
+            "the relink is one Undo step");
+
+    // Save with samples copies both files next to the project, and the copy opens with both.
+    const auto portable = root.getChildFile("Portable").getChildFile("Keys.alienstudio");
+    require(portable.getParentDirectory().createDirectory().wasOk(), "portable folder");
+    bool done = false, ok = false;
+    c->writeProject(portable, true, [&](bool r) { ok = r; done = true; });
+    for (int i = 0; i < 3000 && !done; ++i) pump();
+    require(done && ok, "save the multisample with its samples");
+    for (const auto& path : c->channelRack().info[0].files())
+        require(juce::File(juce::String::fromUTF8(path.c_str())).isAChildOf(portable.getParentDirectory()), "each file now points at its collected copy");
+    c->openProject(portable); waitIdle(*c); settle(*engine, *c);
+    require(c->channelRack().info[0].files().size() == 2 && zonesPlaying() == 2 && c->missingMedia().empty(), "the collected project opens with both files");
+    c.reset(); engine.reset();
+    root.deleteRecursively();
+}
+
 int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI juce;
     const bool report = argc == 2 && std::string_view(argv[1]) == "--report";
     trackerTests();
     replacedAudioSafetyTests();
     rackCacheTests();
+    rackMultisampleFileTests();
     unreachableAudioTests();
     resourceRefusalTests();
     rackQueueTests();

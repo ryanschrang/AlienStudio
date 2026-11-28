@@ -1,6 +1,6 @@
 #pragma once
 // A plugin rack's eight macros (RACK-01, T2-02) as named commands: move, rename, map and unmap, with Preview, Undo,
-// saving (format 39), what a removed device does to its targets, refusals and script forms. PluginAutomationPlaybackTests
+// saving (format 40), what a removed device does to its targets, refusals and script forms. PluginAutomationPlaybackTests
 // checks that the host sets the mapped parameters of loaded plugins; PluginPanelTests the knobs.
 static void rackMacroCommandChecks() {
     using alien::RackStage;

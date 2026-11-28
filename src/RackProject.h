@@ -64,6 +64,7 @@ inline juce::var rackToVar(const Project& project, bool identities = false) {
                 auto* o = zone.getDynamicObject();
                 o->setProperty("start", static_cast<juce::int64>(z.start)); o->setProperty("end", static_cast<juce::int64>(z.end));
                 o->setProperty("low", z.low); o->setProperty("high", z.high); o->setProperty("root", z.root);
+                if (!z.file.empty()) o->setProperty("file", detail::text(z.file));   // a multisample's own file (format 39)
                 zones.add(zone);
             }
             channel->setProperty("zones", zones);
@@ -204,7 +205,9 @@ inline bool rackFromVar(const juce::var& value, Project& out, juce::String& erro
                     if (whole) n[k] = static_cast<std::int64_t>(static_cast<juce::int64>(v));
                 }
                 if (!whole || n[2] < 0 || n[2] > 127 || n[3] < 0 || n[3] > 127 || n[4] < 0 || n[4] > 127) { whole = false; break; }
-                zones.push_back({n[0], n[1], static_cast<int>(n[2]), static_cast<int>(n[3]), static_cast<int>(n[4])});
+                const auto file = o->getProperty("file");
+                if (!file.isVoid() && (!file.isString() || file.toString().isEmpty())) { whole = false; break; }
+                zones.push_back({n[0], n[1], static_cast<int>(n[2]), static_cast<int>(n[3]), static_cast<int>(n[4]), file.toString().toStdString()});
             }
             if (!whole || !parsed.setKeyZones(parsed.channelCount - 1, std::move(zones))) return fail("A Channel Rack sample's key zones are invalid.");
         }

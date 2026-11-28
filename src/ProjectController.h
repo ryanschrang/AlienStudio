@@ -1,6 +1,7 @@
 #pragma once
 #include <span>
 #include "ProjectDocument.h"
+#include "SceneCommands.h"
 #include "MidiClipCommands.h"
 #include "ClipboardClipCommands.h"
 #include "SessionClipCommands.h"
@@ -209,7 +210,11 @@ public:
     static constexpr int trackColourCount = 8;
     bool setTrackColour(int track, int colour);
 
-    bool addScene() { return insertScene(doc.sceneCount(), nullptr); }
+    bool addScene();
+
+    // Shared document reducer; live effects happen only after a complete valid candidate.
+    // CommandEngine owns history. The direct scene adapters also use this boundary.
+    bool applySceneCommand(const scene_edit::Edit& edit);
 
     bool duplicateScene(int scene);
 
@@ -613,6 +618,8 @@ public:
     bool applyRackPatternCommand(const rack_pattern::Edit& e);
     // Live side of LoadRackSample. The file's decoded audio becomes available as the channel starts naming it.
     bool applyRackSampleCommand(const rack_channel::Edit& e, const std::shared_ptr<SessionAudioClip>& clip);
+    // Live side of LoadRackMultisample (T2-01): `clips` are the decoded `e.files`, in the same order.
+    bool applyRackMultisampleCommand(const rack_channel::Edit& e, const std::vector<std::shared_ptr<SessionAudioClip>>& clips);
     // A new decode of a file the channel already names: no edit and no Undo step, but it is what plays from now on.
     bool replaceRackSampleAudio(const std::string& path, const std::shared_ptr<SessionAudioClip>& clip);
     // After a commit: the host rebuilds if which channel holds which plugin has changed.
@@ -634,6 +641,8 @@ public:
     // Rack samples arrive through command::loadRackSample: decode off the message
     // thread, then run LoadRackSample on the result. The project is busy until then.
     void decodeRackSample(const juce::File& file, std::function<void(const AudioClipImportResult&)> done);
+    // The same for several files, in order, on one worker job (a multisample).
+    void decodeRackSamples(std::vector<juce::File> files, std::function<void(const std::vector<AudioClipImportResult>&)> done);
     // What the person sees once the command has run or been refused.
     void rackSampleFinished(const juce::File& file, const juce::String& refused);
     // True when the channel names a file that is not loaded (moved or deleted).
@@ -675,7 +684,8 @@ private:
     // open project's samples are (an open lets go of the rest once the engine has, D14), and shared by every channel playing that slice. A slice
     // past the end of its file, or of audio that is streamed, plays nothing.
     // A channel with key zones (T2-01) plays a key map: a clip with no audio of its own that names the slice for each
-    // key. Maps are kept like the slice views, one for each file, range and set of zones.
+    // key. Maps are kept like the slice views, one for each file, range and set of zones. A zone may play a file of its
+    // own (a multisample, format 39); a zone whose file is not loaded is left out, so the rest still play.
     std::shared_ptr<const SessionAudioClip> rackAsset(const rack::ChannelInfo& info) const;
     // The audio a channel's sample gives before any key zones: the whole file, or the channel's slice of it.
     std::shared_ptr<const SessionAudioClip> rackRangeAsset(const rack::ChannelInfo& info) const;
@@ -813,10 +823,6 @@ private:
 
     void publishStop(std::size_t track);
 
-    // `copyFrom`: a scene to copy. Its clips are copied as independent clips (an edit of one copy
-    // does not reach the other), as Duplicate scene always did.
-    bool insertScene(int index, const std::vector<library::ClipId>* copyFrom);
-
     void stopEverySlot();
 
     void setBusy(bool b) { busy = b; if (onBusyChanged) onBusyChanged(b); }
@@ -896,6 +902,8 @@ private:
     struct RackKeyMap {
         std::shared_ptr<const SessionAudioClip> file, base;
         std::vector<rack::KeyZone> zones;
+        std::vector<std::shared_ptr<const SessionAudioClip>> views;   // each zone's audio, null where its file is not loaded
+        std::vector<const SessionAudioClip*> sources;                 // the decoded files under them
         std::shared_ptr<const SessionAudioClip> map;
     };
     mutable std::vector<RackKeyMap> rackKeyMaps;   // kept, as the engine may still be playing one, until an open (D14)

@@ -18,7 +18,8 @@ inline juce::String refusal(const ProjectDocument& d, const Edit& e) {
     }
     return {};
 }
-// Same document semantics as the controller, with no playback/history callbacks.
+// Authoritative scene document reduction for Preview and live adapters.
+// No playback/history callbacks.
 inline juce::String apply(ProjectDocument& d, const Edit& e) {
     if (const auto why = refusal(d, e); why.isNotEmpty()) return why;
     if (e.kind == Kind::rename) { d.scenes[static_cast<std::size_t>(e.scene)].name = e.name.trim().substring(0, 64); return {}; }

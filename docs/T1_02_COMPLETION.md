@@ -19,7 +19,7 @@ audition, and saving a file are separate lifecycle actions, not snapshot edits.
 | --- | --- | --- |
 | Command contract | Typed arguments, stable names, Execute, Preview, Batch, Undo/Redo, grouping, no-op/redo preservation | Cross-family acceptance with dirty plugin state, asynchronous work and runtime failure; document refusal must precede every live side effect |
 | Track structure | Create/delete/move/rename/colour; Session track menus; SetTrackArmed/SetTrackInput/SetTrackMonitor with the Song track header's arm button and recording menu; UnfreezeTrack with the Song track menu's Unfreeze (the controller's direct `unfreezeTrack` is removed) | Audit other entry points for direct mutations and duplicate commits |
-| Session scenes | Create/duplicate/move/rename/delete and Session add/menu/name UI | Native interaction/acceptance; shared reducer remains a follow-up to remove controller/Preview duplication |
+| Session scenes | Create/duplicate/move/rename/delete and Session add/menu/name UI | Native interaction/acceptance; live execution and Preview share scene_edit::apply (claim #475) |
 | Session clips | Empty MIDI creation, all-type independent duplication (claim #196), MIDI make-independent; all-type Session cell delete/clear; PasteClip/PasteLinkedClip and all-type MakeClipUnique; identity-preserving MoveClip and destination menu; CreateRackPattern/AssignRackClip and existing UI adoption (claim #198); RemoveClipAudio and Remove audio button (claim #203); ImportClipAudio with the Import audio button, browser and Explorer drops on Session cells, finished takes and tempo renders (import plan/result boundary, claim #205); AddRackChannel, AddRackSynthChannel, RemoveRackChannel, MoveRackChannel, DuplicateRackChannel, RenameRackChannel and SetRackChannelVolume/Pan/Mute/Solo/Output/Choke with the Channel Rack menus, buttons and knobs; SetRackStep, SetRackStepValue, FillRackSteps, RotateRackSteps, ReverseRackSteps, RepeatRackSteps, ClearRackSteps, SetRackPatternLength, SetRackSwing, CloneRackPattern, ClearRackPattern, RenameRackPattern and DeleteRackPattern with the step grid, value graph, length and swing controls and menus; SetRackChannelSound, SilenceRackChannel, SetRackChannelSynth, SetRackChannelPlugin and PasteRackSteps with the channel menu | Native interaction/acceptance; the old rack controller methods go in the final route cleanup |
 | Mixer parameters/routing | Session/Mixer track volume/pan/mute/solo; SetMasterVolume and master-fader gestures; SetTrackSend/SetTrackSendMode with the Mixer send knobs and switches; CreateReturn/RenameReturn/DeleteReturn with the Add return button and return menu (claim #223); SetReturnVolume/SetReturnPan/SetReturnMute and SetBusVolume/SetBusPan/SetBusMute/SetBusSolo with the Mixer strips; CreateBus/RenameBus/DeleteBus with the Add bus button and bus menu (claim #226); SetTrackOutput with the Mixer output menu (a track's bus is also its group) and SetSidechain with the Plugins sidechain menu (claim #234) | Audit other entry points for direct mutations; native acceptance |
 | Devices | InsertDevice/RemoveDevice/MoveDevice/SetDeviceBypass with the Plugins Add, Remove, Move and Bypass buttons and a shared capture, execute and rebuild flow (claim #242) | Runtime load failure stays a status message, not a refusal; rack-channel instrument commands; native acceptance |
@@ -228,3 +228,21 @@ Prepared drum loads and slices now require the configured Command Engine route. 
 Song placement now uses only `PlaceSongClip`; the obsolete `placeRegion` controller commit route is removed. Fixtures submit the command and read accepted placement IDs through a test-only metadata helper, retaining source ownership, freeze, timeline, clipboard and memory checks. Placement/mixer batch coverage checks pure Preview, Song snapshots, live mix, one-step Undo/Redo and late/busy refusal preserving redo (claim #448). Other controller cleanup and native acceptance remain pending.
 
 Decoded Session audio installation now uses only `command::installDecodedAudio` / `ImportClipAudio`; the fixture-only controller `installAudio` commit wrapper is removed. All media, recording, timeline, Session, command and memory fixtures use the same adapter as finished takes and tempo renders. Import/mixer batch coverage checks pure Preview, accepted content/live pan, one-step Undo/Redo and late/busy refusal preserving retention and redo (claim #455). Other controller cleanup and native acceptance remain pending.
+
+
+## Shared scene reduction (claim #475)
+
+Create, duplicate, move, rename and delete scenes now use the same pure reducer
+for Preview and live execution. The controller first validates a candidate in a
+local identity scope, then captures host state and reduces from the refreshed
+document. A multi-position move crosses the structural callback once, before any
+renumbering; invalid and unchanged direct adapters do not capture plugins or stop
+Session launches. Scene creation for finished Song takes uses this boundary too.
+The duplicated insertion/copy/remapping implementation is removed.
+
+CommandEngineTests covers long-move Preview/live agreement, source and selection
+remapping, scene identity, queued-launch termination, one-step Undo/Redo, no-op
+and invalid-path redo/launch preservation, and freshly captured plugin state.
+Existing scene tests retain audio/rack copying, capacity, frozen sources and
+recording guards. Exact build/test results belong in the PR. Physical Windows
+interaction and listening remain pending; CMD-01 is not complete.

@@ -830,6 +830,16 @@ key higher, each at its own pitch. Other keys are silent. Empty `bounds` plays t
 as above, except that it needs no room in the rack, and when the keys would pass note 127. The channel menu's "Slices
 on keys" runs it, under the Undo name "Slices on keys".
 
+`LoadRackMultisample {channel, paths, name, clips}` puts 2 to 16 decoded files on one channel's keys, `clips[k]` being
+the audio of `paths[k]` (T2-01, format 39). When every file's name says a note (C4 is note 60) each file plays at its own
+pitch on that note, the keys between two notes split halfway and the outer files reaching to notes 0 and 127; otherwise
+each file gets one key from C4 up, in natural name order. The lowest file becomes the channel's sample; the other zones
+name their own files. It carries decoded audio, so it has no script form, and the batch counts every file against the
+audio limit. Refused: a clip missing or not valid for any path, streamed audio, a path that is not a full one, too long
+or given twice, fewer than 2 or more than 16 files, two files on one note, and a blank name. The channel menu's
+"Sound > Multisample from files..." decodes the chosen files on a worker and runs it, under the Undo name
+"Load multisample".
+
 ## Song take commands
 
 `CompSongTake {take, start, end}` plays ticks `start` to `end` of a recorded take on its track, over what is there, as a
@@ -958,7 +968,7 @@ gestures. ProjectControllerTests retains master gain persistence/render coverage
 
 ## Rack macro commands
 
-Every plugin rack (a track, bus, return or the master) has eight macros (RACK-01, format 39). A macro has a name (empty
+Every plugin rack (a track, bus, return or the master) has eight macros (RACK-01, format 40). A macro has a name (empty
 shows "Macro N"), a value from 0 to 1, and up to 16 targets. Each target is a device in the same rack, named by its
 identity, and one of its parameters, named by its persistent ID, with a range `from` to `to` inside the parameter's own
 0 to 1 range; `from` above `to` runs it backwards. One parameter follows one macro at most.

@@ -173,11 +173,14 @@ struct Channel {
 };
 
 // A part of a channel's file on a range of keys (T2-01, format 38): source frames `start` to `end` (end exclusive)
-// play for notes `low` to `high`, at their own pitch on `root`.
+// play for notes `low` to `high`, at their own pitch on `root`. A zone may play a file of its own instead (a
+// multisample, format 39): `file` names it, and is empty for the channel's own sample. Frames {0, 0} are the whole file.
 inline constexpr int maxKeyZones = 16;
 struct KeyZone {
     std::int64_t start{}, end{};
     int low{}, high{}, root{};
+    std::string file;
+    bool wholeFile() const noexcept { return start == 0 && end == 0; }
     bool operator==(const KeyZone&) const = default;
 };
 // One to sixteen zones, each on keys above the one before, so a note finds at most one.
@@ -185,8 +188,9 @@ inline bool validKeyZones(const std::vector<KeyZone>& zones) noexcept {
     if (zones.empty() || zones.size() > static_cast<std::size_t>(maxKeyZones)) return false;
     for (std::size_t i = 0; i < zones.size(); ++i) {
         const auto& z = zones[i];
-        if (z.start < 0 || z.end <= z.start || z.low < 0 || z.high > 127 || z.low > z.high || z.root < 0 || z.root > 127
-            || (i > 0 && z.low <= zones[i - 1].high)) return false;
+        if (z.start < 0 || (z.end <= z.start && !z.wholeFile()) || z.low < 0 || z.high > 127 || z.low > z.high || z.root < 0 || z.root > 127
+            || (i > 0 && z.low <= zones[i - 1].high) || z.file.size() > static_cast<std::size_t>(maxSampleBytes)
+            || z.file.rfind("builtin:", 0) == 0) return false;
     }
     return true;
 }
@@ -227,6 +231,29 @@ public:
     bool isBuiltin() const { return sample.rfind("builtin:", 0) == 0; }
     bool isFile() const { return !sample.empty() && !isBuiltin(); }
     std::string builtinId() const { return isBuiltin() ? sample.substr(8) : std::string{}; }
+    // Every audio file the channel names: its sample, then each key zone's own file (a multisample), in key order.
+    std::vector<std::string> files() const {
+        std::vector<std::string> out;
+        if (isFile()) out.push_back(sample);
+        if (zones) for (const auto& z : *zones) if (!z.file.empty() && std::find(out.begin(), out.end(), z.file) == out.end()) out.push_back(z.file);
+        return out;
+    }
+    // Moves every file the channel names to where `to` says (`to` answers the path unchanged to leave one), keeping its
+    // slice and key zones. A zone moved onto the channel's own sample names it by an empty file again.
+    template <class To> bool moveFiles(To&& to) {
+        if (!isFile()) return false;
+        bool changed = false;
+        if (auto moved = std::string(to(sample)); moved != sample) { sample = std::move(moved); changed = true; }
+        if (!zones) return changed;
+        auto next = *zones;
+        for (auto& z : next) {
+            if (!z.file.empty()) z.file = to(z.file);
+            if (z.file == sample) z.file.clear();
+        }
+        if (next == *zones) return changed;
+        zones = std::make_shared<const std::vector<KeyZone>>(std::move(next));
+        return true;
+    }
 };
 
 // The immutable view of a project that the audio thread plays from.
@@ -549,9 +576,18 @@ struct Project {
             if (!info[c].hasZones()) return false;
             info[c].zones.reset(); return true;
         }
+        for (auto& z : zones) if (z.file == info[c].sample) z.file.clear();   // the channel's own sample has no name of its own
         if (!info[c].isFile() || channels[c].isInstrument() || !validKeyZones(zones) || (info[c].hasZones() && *info[c].zones == zones)) return false;
         info[c].zones = std::make_shared<const std::vector<KeyZone>>(std::move(zones));
         return true;
+    }
+    // Points every channel naming `from` (as its sample or a zone's file) at `to`, keeping slices and key zones.
+    bool moveFile(const std::string& from, const std::string& to) {
+        if (from.empty() || to.empty() || to.size() > maxSampleBytes) return false;
+        bool changed = false;
+        for (int c = 0; c < channelCount; ++c)
+            changed = info[static_cast<std::size_t>(c)].moveFiles([&](const std::string& path) { return path == from ? to : path; }) || changed;
+        return changed;
     }
     // Adds a channel after `index` for each slice between consecutive `bounds` (source frames, ascending, at least two
     // slices): each plays that part of the channel's file, with the channel's mix settings and no steps or notes. The

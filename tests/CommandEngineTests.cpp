@@ -566,6 +566,7 @@ static void relinkAudioCommandChecks() {
 #include "ClipNotesCommandTests.h"
 #include "RackSliceCommandTests.h"
 #include "RackKeySliceCommandTests.h"
+#include "RackMultisampleCommandTests.h"
 #include "ProjectSettingCommandTests.h"
 #include "StepCommandTests.h"
 #include "TrackSoundCommandTests.h"
@@ -631,6 +632,7 @@ int main() {
     clipNotesCommandChecks();
     rackSliceCommandChecks();
     rackKeySliceCommandChecks();
+    rackMultisampleCommandChecks();
     projectSettingCommandChecks();
     stepCommandChecks();
     trackSoundCommandChecks();
@@ -666,6 +668,7 @@ int main() {
     clipboardClipCommandChecks();
     deleteClipCommandChecks();
     sceneCommandChecks();
+    sceneReductionBoundaryChecks();
     midiClipCommandChecks();
     continuousCommandTests();
     nameTests();
