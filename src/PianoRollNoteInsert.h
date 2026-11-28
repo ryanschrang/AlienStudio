@@ -57,6 +57,9 @@ inline NoteInsertResult insertNotes(PianoRollPattern& pattern, std::span<const P
         const auto id = pattern.add(note.pitch, PianoRollPattern::fromTicks(start), PianoRollPattern::fromTicks(kept),
                                     note.velocity, note.probability);
         if (id == 0) { ++result.skipped; continue; }
+        // Inserting a source block preserves valid expression, including values
+        // below add()'s minimum for newly drawn notes. Keep its invalid-value sanitization.
+        if (note.velocity > 0 && note.velocity <= 1) pattern.find(id)->velocity = note.velocity;
         result.selection.add(id);
         ++result.added;
     }

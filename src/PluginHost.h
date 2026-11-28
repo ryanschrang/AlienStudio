@@ -34,23 +34,45 @@ inline std::unique_ptr<juce::AudioProcessor> createVst3Instance(const juce::Plug
 }
 namespace detail {
 // Everything here runs code that belongs to the plugin, so the caller wraps it in a FaultGuard.
-// True when the plugin accepted the host's stereo layout and its saved state.
+// The channels the runtime can run (PluginRuntime::process): an instrument with a stereo output (and an input it
+// cannot switch off, fed silence), or an effect with a mono or stereo input and output (a mono one runs on L+R).
+// An instrument that keeps more outputs than it lets the host switch off (BFD Player keeps all 32) is run with all of
+// them and heard on its first two, up to PluginRuntime::maxPluginChannels.
+inline bool supportedChannels(int inputs, int outputs, bool instrument) noexcept {
+    if (instrument) return outputs >= 2 && outputs <= PluginRuntime::maxPluginChannels && inputs >= 0 && inputs <= PluginRuntime::maxPluginChannels;
+    return (outputs == 1 || outputs == 2) && (inputs == 1 || inputs == 2);
+}
+inline constexpr const char* unsupportedLayout =
+    "Alien Studio hosts instruments with a stereo output and effects with a mono or stereo input and output; this plugin offers none of these";
+// True when the plugin accepted one of the host's layouts and its saved state. Extra buses (sidechains, more outputs)
+// are switched off. Instruments try no input, then a stereo input they cannot switch off (BFD Player); effects try
+// stereo, then mono in and out, then mono in and stereo out (a mono-only effect).
 inline bool configureVst3(juce::AudioProcessor& plugin, const PluginState& state, bool instrument, juce::String& error) {
     plugin.enableAllBuses();
-    auto layout = plugin.getBusesLayout();
-    for (int i=1;i<layout.inputBuses.size();++i) layout.inputBuses.getReference(i)=juce::AudioChannelSet::disabled();
-    for (int i=1;i<layout.outputBuses.size();++i) layout.outputBuses.getReference(i)=juce::AudioChannelSet::disabled();
-    if (!layout.inputBuses.isEmpty()) layout.inputBuses.getReference(0)=instrument ? juce::AudioChannelSet::disabled() : juce::AudioChannelSet::stereo();
-    if (!layout.outputBuses.isEmpty()) layout.outputBuses.getReference(0)=juce::AudioChannelSet::stereo();
-    if (!plugin.setBusesLayout(layout) || plugin.getTotalNumOutputChannels()!=2 || plugin.getTotalNumInputChannels()!=(instrument?0:2)) {
-        error="This first host supports stereo-output instruments and stereo FX without sidechains"; return false;
-    }
+    const auto original = plugin.getBusesLayout();
+    const auto accepts = [&](const juce::AudioChannelSet& in, const juce::AudioChannelSet& out) {
+        auto layout = original;
+        for (int i=1;i<layout.inputBuses.size();++i) layout.inputBuses.getReference(i)=juce::AudioChannelSet::disabled();
+        for (int i=1;i<layout.outputBuses.size();++i) layout.outputBuses.getReference(i)=juce::AudioChannelSet::disabled();
+        if (!layout.inputBuses.isEmpty()) layout.inputBuses.getReference(0)=in;
+        if (!layout.outputBuses.isEmpty()) layout.outputBuses.getReference(0)=out;
+        return plugin.setBusesLayout(layout) && supportedChannels(plugin.getTotalNumInputChannels(), plugin.getTotalNumOutputChannels(), instrument);
+    };
+    // Last, an instrument as it comes, if its main output is stereo: some refuse any change to their buses.
+    const auto asItIs = [&] {
+        return original.getMainOutputChannelSet() == juce::AudioChannelSet::stereo() && plugin.setBusesLayout(original)
+            && supportedChannels(plugin.getTotalNumInputChannels(), plugin.getTotalNumOutputChannels(), true);
+    };
+    const auto stereo = juce::AudioChannelSet::stereo(), mono = juce::AudioChannelSet::mono(), none = juce::AudioChannelSet::disabled();
+    const bool accepted = instrument ? accepts(none, stereo) || accepts(stereo, stereo) || asItIs()
+                                     : accepts(stereo, stereo) || accepts(mono, mono) || accepts(mono, stereo);
+    if (!accepted) { error=unsupportedLayout; return false; }
     juce::MemoryBlock bytes;
     if (state.stateBase64.isNotEmpty()) {
         if (!bytes.fromBase64Encoding(state.stateBase64)) { error="Invalid plugin state data"; return false; }
         plugin.setStateInformation(bytes.getData(),static_cast<int>(bytes.getSize()));
     }
-    if (plugin.getTotalNumOutputChannels()!=2 || plugin.getTotalNumInputChannels()!=(instrument?0:2)) { error="Plugin state requested an unsupported bus layout"; return false; }
+    if (!supportedChannels(plugin.getTotalNumInputChannels(), plugin.getTotalNumOutputChannels(), instrument)) { error="Plugin state requested an unsupported bus layout"; return false; }
     if (plugin.getLatencySamples() > PluginRuntime::maxDelay) { error="Plugin latency exceeds the 96,000-sample host limit"; return false; }
     return true;
 }
