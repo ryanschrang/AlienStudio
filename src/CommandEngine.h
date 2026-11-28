@@ -2027,15 +2027,7 @@ private:
         if (const auto edit = duplicateEdit(command)) return controller.applyDuplicateClipCommand(*edit);
         if (const auto edit = moveEdit(command)) return controller.applyMoveClipCommand(*edit);
         if (const auto edit = clipboardEdit(command)) return controller.applyClipboardClipCommand(*edit, clipboard);
-        if (std::holds_alternative<CreateScene>(command)) return controller.addScene();
-        if (const auto* c = std::get_if<DuplicateScene>(&command)) return controller.duplicateScene(c->scene);
-        if (const auto* c = std::get_if<DeleteScene>(&command)) return controller.deleteScene(c->scene);
-        if (const auto* c = std::get_if<RenameScene>(&command)) return controller.renameScene(c->scene, c->name);
-        if (const auto* c = std::get_if<MoveScene>(&command)) {
-            const int delta = c->to > c->scene ? 1 : -1;
-            for (int s = c->scene; s != c->to; s += delta) if (!controller.moveScene(s, delta)) return false;
-            return true;
-        }
+        if (const auto edit = sceneEdit(command)) return controller.applySceneCommand(*edit);
         if (const auto* c = std::get_if<DeleteClip>(&command)) return controller.applyDeleteClipCommand(c->track, c->scene);
         if(const auto edit=midiEdit(command)) return controller.applyMidiClipCommand(*edit);
         if (std::holds_alternative<CreateTrack>(command)) return controller.addTrack();

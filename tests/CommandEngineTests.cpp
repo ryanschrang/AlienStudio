@@ -664,6 +664,7 @@ int main() {
     clipboardClipCommandChecks();
     deleteClipCommandChecks();
     sceneCommandChecks();
+    sceneReductionBoundaryChecks();
     midiClipCommandChecks();
     continuousCommandTests();
     nameTests();
