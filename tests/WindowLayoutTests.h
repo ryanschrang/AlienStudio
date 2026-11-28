@@ -134,9 +134,20 @@ static void restoredDetachedLayoutChecks() {
         require(tracker.refreshDisplays({reduced}) && live.isFullScreen(), "work-area changes preserve maximized state");
         require(live.getBounds() == maximizedBounds && reduced.contains(live.getPeer()->getNonFullScreenBounds()),
             "recovery updates only the restore bounds while the OS manages the maximized frame");
+        const auto restoredBounds=live.getPeer()->getNonFullScreenBounds();
         live.setFullScreen(false);
+        require(tracker.capture().bounds==restoredBounds,"capture preserves recovered bounds during the native restore transition");
+        live.setVisible(false); const auto hiddenBounds=live.getBounds();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
+        require(!live.isVisible() && live.getBounds()==hiddenBounds,"pending restore recovery does not move or show a hidden window");
+        live.setVisible(true);
+        for (int i=0;i<40 && live.getBounds()!=restoredBounds;++i) juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
         require(reduced.contains(live.getBounds()) && tracker.capture().bounds.getWidth() <= normal.getWidth(),
             "unmaximizing returns to the recovered normal bounds");
+        require(live.getBounds()==restoredBounds,"normal restoration uses the recovered client rectangle");
+        const auto moved=restoredBounds.translated(1,1);
+        live.setBounds(moved); juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
+        require(live.getBounds()==moved && tracker.capture().bounds==moved,"completed recovery does not override a later manual move");
         require(live.getContentComponent() == &content && static_cast<int>(content.getProperties()["shared"]) == 91,
             "display recovery preserves the editor and its state");
         live.clearContentComponent();
