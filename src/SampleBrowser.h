@@ -22,7 +22,7 @@ public:
         dragDestination.setTooltip("Dragging a sample reveals this editor. Drop it onto an empty Session cell or a free Song lane position.");
         list.setTooltip("Drag a sample to import it. Choose Session or Song above; the editor opens when dragging starts. Drag a MIDI clip into the piano roll, or a drum groove onto the Channel Rack.");
         matchTempo.setButtonText("Match tempo"); matchTempo.setName("Match sample preview tempo");
-        matchTempo.setTooltip("Match the project tempo, or the tempo at the Song playhead (cursor while stopped). While playing, start on the next quarter-note beat. When the tempo changes during a preview, it is matched again at the new tempo.");
+        matchTempo.setTooltip("Match the project tempo, or the tempo at the Song playhead (cursor while stopped). While playing, start on the next quarter-note beat. When the tempo, the project key or the Song position changes during a preview, it is matched again.");
         matchTempo.onClick = [this] { stop(); updateButtons(); };
         sourceTempo.setName("Sample source BPM"); sourceTempo.setRange(30, 300, .1); sourceTempo.setValue(120);
         sourceTempo.setSliderStyle(juce::Slider::IncDecButtons); sourceTempo.setTextBoxStyle(juce::Slider::TextBoxLeft, false, 65, 24);
@@ -89,14 +89,9 @@ public:
         const juce::String context = songTempo ? "Song" : "Project";
         tempoLabel.setText("Source BPM   |   " + context + ": " + juce::String(projectTempo, 1) + " BPM", juce::dontSendNotification);
         if (tempoChanged && matchTempo.getToggleState()) {
-            const bool live = rematch && (previewPending || (previewSounding && previewSounding()));
-            if (live && previewProblem().isEmpty() && selectedIsSample()) {
-                audition(false);
-                setStatus(context + " tempo changed to " + juce::String(projectTempo, 1) + " BPM. Matching the preview again...");
-            } else {
-                stop();
-                setStatus(context + " tempo changed. " + (live ? previewProblem() : juce::String("Press Preview to hear the new tempo.")));
-            }
+            if (rematch) matchAgainOrStop(context + " tempo changed to " + juce::String(projectTempo, 1) + " BPM. Matching the preview again...",
+                                          context + " tempo changed. ", "Press Preview to hear the new tempo.", false);
+            else stop();
         }
         updateButtons();
     }
@@ -105,15 +100,15 @@ public:
         if (projectRoot == root) return;
         projectRoot = root;
         if (followsProjectKey()) {
-            stop();
-            setStatus(projectRoot ? "Project key changed. Press Preview to hear the new key." : missingProjectKey);
+            if (projectRoot) matchAgainOrStop("Project key changed. Matching the preview again...", "Project key changed. ", "Press Preview to hear the new key.", true);
+            else { stop(); setStatus(missingProjectKey); }
         }
         updateButtons();
     }
     void focusSearch() { search.grabKeyboardFocus(); }
     void transportSeek() {
         if (!matchTempo.getToggleState()) return;
-        stop(); setStatus("Song position changed. Press Preview to align to the new position.");
+        matchAgainOrStop("Song position changed. Aligning the preview again...", "Song position changed. ", "Press Preview to align to the new position.", true);
     }
     // Browses the Starter Pack that ships with Alien Studio; tests point it at another folder.
     void setStarterFolder(const juce::File& root) { starterFolder = root; updateButtons(); }
@@ -233,6 +228,16 @@ private:
                 browser.setStatus("Estimated " + juce::String(previewKeyNames[key.root]) + (key.minor ? " minor" : " major") + ". It can be the relative "
                     + previewKeyNames[key.relativeRoot()] + (key.minor ? " major" : " minor") + " instead, so check it by ear.");
             });
+    }
+    // A change that a sounding (or rendering) matched preview no longer fits: render it again, or, with nothing
+    // sounding or a new setting it cannot meet, stop and say so.
+    bool previewLive() const { return previewPending || (previewSounding && previewSounding()); }
+    void matchAgainOrStop(const juce::String& again, const juce::String& changed, const juce::String& idle, bool refreshTempo) {
+        const bool live = previewLive();
+        if (refreshTempo && live && tempoForPreview) setTransportTempo(tempoForPreview(), false);
+        if (live && previewProblem().isEmpty() && selectedIsSample()) { audition(false); setStatus(again); return; }
+        stop();
+        setStatus(changed + (live && previewProblem().isNotEmpty() ? previewProblem() : idle));
     }
     void audition(bool refreshTempo = true) {
         if (refreshTempo && tempoForPreview) setTransportTempo(tempoForPreview(), false);
