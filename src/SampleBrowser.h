@@ -22,7 +22,7 @@ public:
         dragDestination.setTooltip("Dragging a sample reveals this editor. Drop it onto an empty Session cell or a free Song lane position.");
         list.setTooltip("Drag a sample to import it. Choose Session or Song above; the editor opens when dragging starts. Drag a MIDI clip into the piano roll, or a drum groove onto the Channel Rack.");
         matchTempo.setButtonText("Match tempo"); matchTempo.setName("Match sample preview tempo");
-        matchTempo.setTooltip("Match the project tempo, or the tempo at the Song playhead (cursor while stopped). While playing, start on the next quarter-note beat. When the tempo, the project key or the Song position changes during a preview, it is matched again.");
+        matchTempo.setTooltip("Match the project tempo, or the tempo at the Song playhead (cursor while stopped). While playing, start on the next quarter-note beat. In the Song, a preview follows the tempo changes in its five seconds. When the tempo, the project key or the Song position changes during a preview, it is matched again.");
         matchTempo.onClick = [this] { stop(); updateButtons(); };
         sourceTempo.setName("Sample source BPM"); sourceTempo.setRange(30, 300, .1); sourceTempo.setValue(120);
         sourceTempo.setSliderStyle(juce::Slider::IncDecButtons); sourceTempo.setTextBoxStyle(juce::Slider::TextBoxLeft, false, 65, 24);
@@ -83,7 +83,21 @@ public:
     void setTransportTempo(sample_preview::TempoTarget target) { setTransportTempo(target, true); }
     void setTransportTempo(sample_preview::TempoTarget target, bool rematch) {
         const bool tempoChanged = target.bpm != projectTempo;
+        // A preview following the Song's tempo course plays through the map's changes by itself; only an
+        // edit of the map or loop (a new fingerprint) needs it matched again.
+        const bool mapEdited = target.song && songTempo && target.map != latestMap;
+        const bool matchedLive = previewLive() && matchTempo.getToggleState(), courseLive = followingCourse && matchedLive;
+        latestCourse = std::move(target.course); latestMap = target.map;
+        if (matchedLive && mapEdited && rematch && !tempoChanged) {
+            matchAgainOrStop("Song tempo map changed. Matching the preview again...", "Song tempo map changed. ", "Press Preview to hear the new tempo.", false);
+            return;
+        }
         if (!tempoChanged && target.song == songTempo) return;
+        if (courseLive && target.song == songTempo && !mapEdited) {
+            projectTempo = target.bpm;
+            tempoLabel.setText("Source BPM   |   Song: " + juce::String(projectTempo, 1) + " BPM", juce::dontSendNotification);
+            return;
+        }
         projectTempo = target.bpm;
         songTempo = target.song;
         const juce::String context = songTempo ? "Song" : "Project";
@@ -125,7 +139,7 @@ public:
     int resultCount() const { return static_cast<int>(matches.size()); }
     void setStatus(const juce::String& text) { status.setText(text, juce::dontSendNotification); }
     void stop() {
-        previewCancelled->store(true); ++previewGeneration; previewPending = false; if (onStop) onStop();
+        previewCancelled->store(true); ++previewGeneration; previewPending = false; followingCourse = false; if (onStop) onStop();
         if (detecting.isNotEmpty()) { setStatus(detecting + " detection stopped."); detecting.clear(); updateButtons(); }
     }
     void visibilityChanged() override { if (!isShowing()) stop(); }
@@ -239,7 +253,10 @@ private:
         stop();
         setStatus(changed + (live && previewProblem().isNotEmpty() ? previewProblem() : idle));
     }
-    void audition(bool refreshTempo = true) {
+    // A Song preview whose course has tempo changes is rendered for the beat it was expected to start on;
+    // if the render took long enough that it would now start later, it is rendered again (twice at most).
+    static constexpr int maxCourseRetries = 2;
+    void audition(bool refreshTempo = true, int attempt = 0) {
         if (refreshTempo && tempoForPreview) setTransportTempo(tempoForPreview(), false);
         const auto file = selectedFile(); stop(); if (file == juce::File{}) return;
         if (mididrag::supported(file)) { setStatus(midiHint); return; }
@@ -252,15 +269,25 @@ private:
         if (semitones != 0 || followsProjectKey()) keyText = juce::String(previewKeyNames[sourceKey.getSelectedId() - 1]) + " to " + previewKeyNames[targetPitchClass()]
                                       + " (" + (semitones > 0 ? "+" : "") + juce::String(semitones) + " semitones)";
         juce::Component::SafePointer<SampleBrowser> safe(this);
-        previewPending = true;
-        pool.addJob([safe, file, generation, cancel, sync, sourceBpm, targetBpm, semitones, keyText] {
+        auto course = sync && songTempo ? latestCourse : std::vector<sample_preview::TempoSpan>{};
+        previewPending = true; followingCourse = course.size() > 1;
+        pool.addJob([safe, file, generation, cancel, sync, sourceBpm, targetBpm, semitones, keyText, course, attempt] {
             if (cancel->load()) return;
-            auto result = std::make_shared<AudioClipImportResult>(renderSamplePreview(file, sync, sourceBpm, targetBpm, *cancel, semitones));
-            juce::MessageManager::callAsync([safe, generation, result, sync, sourceBpm, targetBpm, keyText] {
+            bool stoppedAtTempo = false;
+            auto result = std::make_shared<AudioClipImportResult>(course.size() > 1
+                ? renderSamplePreview(file, sourceBpm, course, *cancel, semitones, stoppedAtTempo)
+                : renderSamplePreview(file, sync, sourceBpm, course.empty() ? targetBpm : course.front().bpm, *cancel, semitones));
+            juce::MessageManager::callAsync([safe, generation, result, sync, sourceBpm, targetBpm, keyText, course, attempt, stoppedAtTempo] {
                 if (!safe || generation != safe->previewGeneration || !safe->isShowing()) return;
                 safe->previewPending = false;
                 if (!result->clip) { safe->setStatus(result->error); return; }
-                const auto tempoText = sync ? juce::String(sourceBpm, 1) + " to " + juce::String(targetBpm, 1) + " BPM" : juce::String("original tempo");
+                if (course.size() > 1 && safe->latestCourse != course && attempt < maxCourseRetries) { safe->audition(false, attempt + 1); return; }
+                auto low = targetBpm, high = targetBpm;
+                if (!course.empty()) { low = high = course.front().bpm; for (const auto& span : course) { low = std::min(low, span.bpm); high = std::max(high, span.bpm); } }
+                const auto tempoText = !sync ? juce::String("original tempo")
+                    : course.size() > 1 ? juce::String(sourceBpm, 1) + " BPM following the Song tempo (" + juce::String(low, 1) + " to " + juce::String(high, 1) + " BPM)"
+                        + (stoppedAtTempo ? juce::String(", ending at a tempo it cannot stretch to") : juce::String())
+                    : juce::String(sourceBpm, 1) + " to " + juce::String(course.empty() ? targetBpm : course.front().bpm, 1) + " BPM";
                 safe->setStatus(keyText.isNotEmpty() ? "Preview: " + tempoText + "; key " + keyText + " (up to 5s)."
                     : sync ? "Preview: " + tempoText + "; pitch preserved (up to 5s)." : "Preview: first five seconds at original pitch and tempo.");
                 if (safe->onPreview) safe->onPreview(*result->clip, sync);
@@ -300,6 +327,11 @@ private:
     std::optional<int> projectRoot;
     double projectTempo{120};
     bool songTempo{};
+    // The Song tempo course a preview handed over now would play through, and the one the current
+    // preview was rendered with (more than one span: it follows tempo changes by itself).
+    std::vector<sample_preview::TempoSpan> latestCourse;
+    std::uint64_t latestMap{};
+    bool followingCourse{};
     juce::ComboBox dragDestination;
     static constexpr const char* midiHint = "MIDI clip: drag it into the piano roll to add its notes at the drop point, or a drum groove onto the Channel Rack.";
     juce::TextEditor search; juce::ListBox list; juce::Label status, empty;
