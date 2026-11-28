@@ -148,9 +148,20 @@ static void restoredDetachedLayoutChecks() {
         require(reduced.contains(live.getBounds()) && tracker.capture().bounds.getWidth() <= normal.getWidth(),
             "unmaximizing returns to the recovered normal bounds");
         require(live.getBounds()==restoredBounds,"normal restoration uses the recovered client rectangle");
-        // A one-logical-pixel move may round back at fractional Windows DPI.
-        // Move far enough to distinguish recovery overriding it from rounding.
-        const auto moved=restoredBounds.translated(-16,16);
+        // The client rectangle excludes the native frame. On a 1024-wide
+        // desktop the restored client can be only eight pixels from that edge;
+        // blindly moving left by sixteen asks for an offscreen frame, which the
+        // next display refresh is supposed to recover. Choose a reachable move
+        // so this checks stale restore work, not offscreen recovery or DPI rounding.
+        auto clientArea=reduced;
+        if (const auto frame=live.getPeer()->getFrameSizeIfPresent()) clientArea=frame->subtractedFrom(reduced);
+        const int dx=restoredBounds.getX()-clientArea.getX()>=8 ? -8
+            : clientArea.getRight()-restoredBounds.getRight()>=8 ? 8 : 0;
+        const int dy=restoredBounds.getY()-clientArea.getY()>=16 ? -16
+            : clientArea.getBottom()-restoredBounds.getBottom()>=16 ? 16 : 0;
+        const auto moved=restoredBounds.translated(dx,dy);
+        require(moved!=restoredBounds && clientArea.contains(moved),
+            "manual-move fixture leaves the complete native frame reachable");
         live.setBounds(moved); juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
         const auto actual=live.getBounds();
         const bool movedAsRequested=std::abs(actual.getX()-moved.getX())<=1 && std::abs(actual.getY()-moved.getY())<=1
