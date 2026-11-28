@@ -42,6 +42,8 @@ window sizes remain in force; maximized windows are then maximized on that displ
 
 Open main and detached editor windows also check for changed usable display areas twice a second on the message thread. A monitor removal, taskbar/work-area change or changed logical display size reuses the same fitting policy, including native title bars. A topology change leaves an already reachable window on an unchanged display alone. Recovery preserves maximized state: the OS manages the maximized frame while the tracker repairs its normal restore rectangle without restoring/re-maximizing the window. Hidden or minimized windows defer recovery until shown/restored. It never raises a window, changes editor ownership, writes preferences or touches the audio engine. Reconnecting a display does not move a recovered window back to its old monitor (claim #375).
 
+When a maximized window has recovered restore bounds, the tracker retains that rectangle through unmaximizing. JUCE also maintains a window-level normal-bounds cache, so a deferred message-thread correction runs after native restoration finishes; repairing the peer cache alone is insufficient. Capture retains the corrected rectangle during that transition. Hidden/minimized windows defer correction, and completion relinquishes geometry to ordinary user moves/resizes. Shutdown cancels pending correction (claim #470).
+
 Version 1 requires valid integer rectangles, booleans and known view bindings.
 Missing, unsupported, oversized (over 64 KiB), or damaged preferences fall back to
 the default layout. Parsing is transactional. Saving validates first and uses a
