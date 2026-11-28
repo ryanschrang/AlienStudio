@@ -359,3 +359,50 @@ xruns.
 
 Not shown: other buffer sizes, an audio interface, real effects that do work, allocations inside
 plugins (see D37).
+
+## Other buffer sizes, a real effect, and the Surge XT spike (T1-04 D39)
+
+D38 left three device questions open: other buffer sizes, real effects that do work, and the one over-budget
+callback with 32 Surge XT instances (#460). These runs answer what this machine can: the development laptop
+(Intel Core Ultra 9 288V), its built-in Realtek output, muted, at commit c7062fa. TAL-Reverb-4 is the effect
+(it does real work: a stereo plate on every track) and Surge XT (default patch) the instrument.
+
+**Buffer sizes.** The built-in Realtek driver opens only at 480 frames in shared and Low Latency mode, whatever size
+is asked for; Windows Audio (Exclusive Mode) also offers 256 and 512, at 44.1 kHz. Asked for 64 or 128 frames, every
+mode opened at 480, so smaller buffers need another audio device. The 16/32 build, every workload that needs no
+input (`--type "Windows Audio (Exclusive Mode)" --buffers 128,256,512 --seconds 4`), microseconds:
+
+| Workload (16 tracks) | 256 p50 | 256 p95 | 256 max | 480 p50 | 480 p95 | 480 max | 512 p50 | 512 p95 | 512 max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Transport, no clips | 57.3 | 123.8 | 214.4 | 100.9 | 153.2 | 218.4 | 106.1 | 152.6 | 233.5 |
+| Session MIDI tracks | 157.5 | 254.1 | 372.0 | 281.6 | 423.9 | 568.6 | 301.8 | 450.5 | 618.5 |
+| MIDI, sends to 4 returns | 190.1 | 283.9 | 390.9 | 341.6 | 484.4 | 618.4 | 398.2 | 561.5 | 704.1 |
+| MIDI, stock EQ + compressor | 286.2 | 366.8 | 473.2 | 503.4 | 625.4 | 846.2 | 540.8 | 686.7 | 928.5 |
+| Audio clips streamed from disk | 118.7 | 161.0 | 281.0 | 206.4 | 248.7 | 299.7 | 222.3 | 280.7 | 353.1 |
+| MIDI through TAL-Reverb-4 | 641.6 | 749.2 | 886.4 | 1167.8 | 1322.7 | 1521.1 | 1238.6 | 1410.2 | 1563.1 |
+| MIDI playing Surge XT | 685.9 | 854.6 | 5059.6 | 1212.8 | 1416.4 | 5438.1 | 1276.4 | 1486.6 | 5226.1 |
+
+Every row at every size played with no over-budget or late callback, no xrun and no allocation in the callback; the
+budget is 5,805 us at 256 frames, 10,884 at 480 and 11,610 at 512. Cost per callback falls about in proportion to the
+buffer, so the share of the period used stays about the same (the heaviest, Surge XT, 14.7 % at p95 at 256 frames).
+The other rows (drums, rack occurrences, Session audio) behaved the same; the full output is in the PR.
+
+**A real effect at 32 tracks.** In the 32/64 build, 32 instances of TAL-Reverb-4 (workload 29), three runs of 8 s at
+the shared 480 frames and 48 kHz: p50 2,394-2,420 us, p95 2,641-2,721, max at most 3,371 (27 % of the period at p95),
+never over budget; at 256 frames in exclusive mode p50 1,243, p95 1,435, max 1,750.
+
+**The Surge XT spike is a one-off, not a steady cost.** 32 Surge XT instances (workload 30) went over budget exactly
+once in each of three 8 s runs at 480 frames (max 10,363-10,884 us against a 10,000 us period), while p99 stayed at
+3,408-3,780 us; at 256 frames three callbacks went over and one was late (max 8,917 us). The timing tool now says which
+callback was longest and which went over (on stderr; `CallbackTimingTests` checks it). That puts the spike at the same
+moment every time: about 4.0 s after playback starts, with 1 s or 3 s of warm-up, for 16 instances (about 5.2 ms) and 32
+(about 10.8 ms). Over 12 s of recording it does not come back. The test MIDI repeats every bar (2 s), so the spike is not
+a cost of the notes; it is a one-time event inside Surge XT, about 0.3 ms per instance, landing in one callback. Neither
+TAL-Reverb-4 nor Vital (D38) shows it.
+
+What this means for the 32/64 profile: steady 32-instance Surge XT playback uses about 30 % of a 480-frame period at
+p95, and a project that starts 32 instances at once can drop one block about 4 s after playback starts. That is
+Surge XT's behaviour rather than the engine's; the app cannot remove it, short of starting the instruments before
+playback.
+
+Not shown: buffers under 256 frames, an audio interface or ASIO (the app is not built with ASIO), and a second machine.
