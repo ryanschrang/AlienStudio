@@ -5,6 +5,21 @@
 
 namespace alien {
 
+namespace {
+// The scene whose cell on `row` a recorded take can use: empty, and named by no region or take of the
+// timeline. -1 when the track has none (a scene must then be added).
+int freeTakeScene(const ProjectDocument& doc, const timeline::Timeline& timeline, int row) {
+    for (int s = 0; s < doc.sceneCount(); ++s) {
+        if (doc.cellClip(row, s)) continue;
+        bool used = false;
+        for (const auto& r : timeline.takes) used = used || (r.row == row && r.source == s);
+        for (const auto& r : timeline.regions) used = used || (r.row == row && r.source == s);
+        if (!used) return s;
+    }
+    return -1;
+}
+} // namespace
+
 ProjectController::ProjectController(ToneEngine& toneEngine) : engine(toneEngine), doc(ProjectDocument::createDefault()) {
     runtimeDirty = false;
     history.reset(doc);
@@ -794,6 +809,13 @@ ProjectController::RecordStart ProjectController::startSongTake(const juce::File
                                 : "Arm a track in the Song view (the button on its header) to record onto it."};
     if (doc.timeline.takes.size() + armed.size() > timeline::maxTakes)
         return {false, "The recording take list is full. Forget unused takes in the Takes panel before recording."};
+    // Refused now rather than after the take: a track whose every cell is in use needs a new scene,
+    // and a project at its scene limit cannot add one (T1-04 E2).
+    if (!doc.canAddScene())
+        for (const int t : armed)
+            if (freeTakeScene(doc, doc.timeline, t) < 0)
+                return {false, doc.tracks[static_cast<std::size_t>(t)].name + " has no free clip slot for the take, and the project has "
+                               + juce::String(doc.sceneCount()) + " scenes, the most it can hold. Delete a clip or scene on it, or disarm it."};
     if (!folder.createDirectory().wasOk()) return {false, "Cannot create the folder for takes: " + folder.getFullPathName()};
 
     SongTake next;
@@ -1527,14 +1549,7 @@ int ProjectController::addRecordedTakes(const std::vector<RecordedTake>& takes, 
     for (const auto& take : takes) {
         const int row = take.track;
         if (isTrackFrozen(row) || row < 0 || row >= doc.trackCount() || !take.clip || !take.placement.valid) return fail();
-        const auto usedByTimeline = [&](int scene) {
-            for (const auto& r : next.takes) if (r.row == row && r.source == scene) return true;
-            for (const auto& r : next.regions) if (r.row == row && r.source == scene) return true;
-            return false;
-        };
-        int scene = -1;
-        for (int s = 0; s < doc.sceneCount() && scene < 0; ++s)
-            if (!doc.cellClip(row, s) && !usedByTimeline(s)) scene = s;
+        int scene = freeTakeScene(doc, next, row);
         if (scene < 0) {
             if (!doc.canAddScene() || !insertScene(doc.sceneCount(), nullptr)) return fail();
             scene = doc.sceneCount() - 1;
