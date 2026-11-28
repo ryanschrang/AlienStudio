@@ -90,6 +90,7 @@ inline juce::String apply(ProjectDocument& d, const Edit& e) {
         (e.slot == instrumentSlot ? rack.instrument : rack.effects[static_cast<std::size_t>(e.slot)]).bypass = e.bypassed;
         break;
     }
+    rack.dropStaleMacroTargets();   // a removed or replaced device takes its macro targets with it
     return {};
 }
 struct ConvolutionResponseEdit {
