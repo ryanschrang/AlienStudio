@@ -112,11 +112,30 @@ static void browserTests() {
     PluginPanel narrow; narrow.setSize(900, 700); narrow.refresh({"Track 1"}, rack, known);
     check(narrow.pluginBrowser().getWidth() > 0 && narrow.pluginBrowser().getRight() <= narrow.getWidth()
           && narrow.pluginBrowser().getBottom() < button(narrow, "Use instrument")->getY(), "a narrow panel shows the browser above the add buttons");
-    // The stacked browser takes the spare height, leaving three lines of status under the slot buttons.
-    const int spare = narrow.getHeight() - 20 - (button(narrow, "Remove")->getBottom() + 16);
-    check(spare >= 72 && spare < 80 && narrow.pluginBrowser().getHeight() > 300,
+    // The rack's macro knobs (RACK-01) sit under the slot buttons, in order.
+    check(narrow.macroKnob(0).getY() > button(narrow, "Remove")->getBottom() && narrow.macroKnob(7).getRight() <= narrow.getWidth()
+          && narrow.macroKnob(0).getRight() <= narrow.macroKnob(1).getX() && narrow.macroName(0).getY() >= narrow.macroKnob(0).getBottom(),
+          "the eight macro knobs sit under the slot buttons, each over its name");
+    // The stacked browser takes the spare height, leaving three lines of status under the macros.
+    const int spare = narrow.getHeight() - 20 - (narrow.macroName(0).getBottom() + 16);
+    check(spare >= 72 && spare < 80 && narrow.pluginBrowser().getHeight() > 200,
           "a tall narrow panel grows the browser, not the empty space below the status (" + juce::String(spare) + " px left, list "
           + juce::String(narrow.pluginBrowser().getHeight()) + " px)");
+
+    // The knobs show the rack's macros, and say what they do.
+    auto withMacros = rack;
+    withMacros.macros[1].name = "Tone"; withMacros.macros[1].value = 0.4f; withMacros.macros[1].targets = {{7, "cutoff"}, {7, "mix"}};
+    std::vector<std::pair<int, double>> moved; std::vector<juce::String> gestures; int menu = -1;
+    narrow.onMacroValue = [&](int m, double v, const juce::String& gesture) { moved.push_back({m, v}); gestures.push_back(gesture); };
+    narrow.onMacroMenu = [&](int m) { menu = m; };
+    narrow.refresh({"Track 1"}, withMacros, known);
+    check(moved.empty() && std::abs(narrow.macroKnob(1).getValue() - 40.0) < 1e-6 && narrow.macroName(1).getButtonText() == "Tone"
+          && narrow.macroName(0).getButtonText() == "Macro 1" && narrow.macroKnob(1).getTooltip().contains("2 parameters")
+          && narrow.macroKnob(0).getTooltip().contains("Not mapped"), "the knobs show each macro's name, value and targets, without calling back");
+    narrow.macroKnob(1).setValue(75.0, juce::sendNotificationSync);
+    check(moved.size() == 1 && moved[0].first == 1 && std::abs(moved[0].second - 0.75) < 1e-9 && gestures[0].isEmpty(), "moving a knob reports its macro and value");
+    narrow.macroName(1).onClick();
+    check(menu == 1, "a macro's name opens its menu");
 }
 
 #include "PluginPresetTests.h"

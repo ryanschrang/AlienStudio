@@ -61,6 +61,18 @@ public:
         impulse.setButtonText("Impulse response…");
         impulse.onClick=[this]{showImpulseMenu();};
         slot.onChange=[this]{updateSidechainButton();};
+        // RACK-01: the rack's eight macros. A knob moves the parameters mapped to it; its name opens its menu.
+        for(int m=0;m<rackMacroCount;++m){
+            auto& knob=macroKnobs[static_cast<std::size_t>(m)]; auto& label=macroNames[static_cast<std::size_t>(m)];
+            addAndMakeVisible(knob); addAndMakeVisible(label);
+            knob.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag); knob.setTextBoxStyle(juce::Slider::TextBoxBelow,false,52,16);
+            knob.setRange(0,100,0.1); knob.setNumDecimalPlacesToDisplay(0); knob.setTextValueSuffix(" %");
+            knob.setName("Macro "+juce::String(m+1));
+            knob.onDragStart=[this,m]{macroGesture="macro-drag-"+juce::String(++nextMacroGesture)+"-"+juce::String(m);};
+            knob.onValueChange=[this,m]{if(onMacroValue)onMacroValue(m,macroKnobs[static_cast<std::size_t>(m)].getValue()/100.0,macroGesture);};
+            knob.onDragEnd=[this]{macroGesture.clear();};
+            label.onClick=[this,m]{if(onMacroMenu)onMacroMenu(m);};
+        }
         setStatus("Pick a destination and add one of Alien Studio's stock effects (EQ, compressor, saturator, reverb, delay, limiter, filter), or scan a 64-bit .vst3 bundle for an instrument or FX. Choose a Live MIDI destination below to play an instrument with your MIDI controller or piano keyboard.");
     }
     std::function<void(ScanCommand)> onScanCommand;
@@ -96,6 +108,10 @@ public:
     std::function<void(int)> onPresets;   // the slot whose plugin presets to browse (-1 instrument, 0.. FX)
     juce::Component& presetsButton() noexcept { return presets; }
     std::function<void(int,std::uint64_t,bool)> onImpulseResponse;
+    // A macro knob moved (macro, value 0 to 1, the drag's coalescing key or empty for a single change), and a
+    // macro's name clicked, to open its menu (rename, map parameters).
+    std::function<void(int,double,const juce::String&)> onMacroValue;
+    std::function<void(int)> onMacroMenu;
     // Whether the effect in (destination, effect index) has a sidechain input; and the choice of key:
     // (effect index, what kind of key, its track, bus or return slot, or -1 for none).
     std::function<bool(int,int)> hasSidechainInput;
@@ -153,7 +169,25 @@ public:
             convolutionSlots.push_back(convolution ? effect.instanceId : 0);
         }
         updateSidechainButton();
+        refreshMacros(rack.macros);
     }
+    // The knobs show the rack's macros: a name, its value, and how many parameters it moves.
+    void refreshMacros(const RackMacros& macros){
+        for(int m=0;m<rackMacroCount;++m){
+            const auto& macro=macros[static_cast<std::size_t>(m)];
+            auto& knob=macroKnobs[static_cast<std::size_t>(m)]; auto& label=macroNames[static_cast<std::size_t>(m)];
+            if(!knob.isMouseButtonDown())knob.setValue(macro.value*100.0,juce::dontSendNotification);
+            const int count=static_cast<int>(macro.targets.size());
+            label.setButtonText(macroDisplayName(macro,m));
+            knob.setTooltip(count==0?"Not mapped yet: click its name to choose the parameters it moves."
+                                    :"Moves "+juce::String(count)+(count==1?" parameter":" parameters")+". Click its name to change them.");
+            label.setTooltip(macroDisplayName(macro,m)+": rename it, or choose which plugin parameters it moves.");
+            knob.setAlpha(count==0?0.55f:1.0f);
+        }
+    }
+    const juce::Slider& macroKnob(int m) const { return macroKnobs[static_cast<std::size_t>(m)]; }
+    juce::Slider& macroKnob(int m) { return macroKnobs[static_cast<std::size_t>(m)]; }
+    juce::TextButton& macroName(int m) { return macroNames[static_cast<std::size_t>(m)]; }
     // The menu of keys for the selected effect: Off, then what the mix has made by the time this rack runs.
     // A track's FX hear other tracks before their FX; a bus's FX also tracks after their faders; a return's FX
     // also the buses; the master's FX also the returns.
@@ -270,6 +304,13 @@ public:
         r.removeFromTop(12);row=r.removeFromTop(32);
         for(auto* b:{&open,&bypass,&sidechain,&up,&down,&remove}){b->setBounds(row.removeFromLeft(118));row.removeFromLeft(8);}
         impulse.setBounds(sidechain.getBounds());
+        r.removeFromTop(14);row=r.removeFromTop(macroRowHeight);
+        const int macroWidth=juce::jmin(92,row.getWidth()/rackMacroCount);
+        for(int m=0;m<rackMacroCount;++m){
+            auto cell=row.removeFromLeft(macroWidth).reduced(3,0);
+            macroNames[static_cast<std::size_t>(m)].setBounds(cell.removeFromBottom(22));
+            macroKnobs[static_cast<std::size_t>(m)].setBounds(cell);
+        }
         r.removeFromTop(16);status.setBounds(r.removeFromTop(110));
     }
 private:
@@ -312,11 +353,16 @@ private:
     static constexpr int controlsWidth=780;
     // Under a stacked browser: the add row (12+32), slot (20+30), slot buttons (12+32), and a gap (16)
     // with three lines of status (72). The browser grows into everything else.
-    static constexpr int belowStackedBrowser=12+32+20+30+12+32+16+72;
+    static constexpr int macroRowHeight=86;
+    static constexpr int belowStackedBrowser=12+32+20+30+12+32+14+macroRowHeight+16+72;
     juce::ComboBox target,slot,liveInput;
     PluginBrowser browser;
     juce::TextButton scan,cancelScan,addInstrument,addEffect,open,bypass,sidechain,impulse,up,down,remove,presets,mastering;
     std::vector<std::uint64_t> convolutionSlots;
+    std::array<juce::Slider,rackMacroCount> macroKnobs;
+    std::array<juce::TextButton,rackMacroCount> macroNames;
+    juce::String macroGesture;
+    int nextMacroGesture{};
     juce::String keyName(KeySource from,int i) const {
         const auto slotName=[&](const auto& names,const juce::String& fallback){
             const auto& n=names[static_cast<std::size_t>(i)]; return n.isNotEmpty()?n:fallback; };

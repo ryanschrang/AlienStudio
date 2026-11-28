@@ -1,7 +1,9 @@
 #pragma once
 #include "SessionCapacity.h"
 #include <juce_core/juce_core.h>
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -70,13 +72,72 @@ inline juce::String pluginDisplayName(const PluginState& p) {
     }
     return "an unnamed plugin";
 }
+// A rack macro (RACK-01, T2-02, format 39): one knob that moves parameters of the rack's devices together. Each
+// target is a device in the same rack, by identity, and one of its parameters by persistent ID; the macro's value 0
+// to 1 sets that parameter to `from` + value x (`to` - `from`), in the parameter's own 0 to 1 range, so a target
+// can also run backwards. A target whose device has left the rack does nothing.
+inline constexpr int rackMacroCount = 8, maxMacroTargets = 16, maxMacroNameChars = 32, maxParameterIdChars = 256;
+struct MacroTarget {
+    std::uint64_t instance{};
+    juce::String parameterId;
+    float from{0}, to{1};
+    bool operator==(const MacroTarget&) const = default;
+    bool valid() const {
+        return instance != 0 && parameterId.isNotEmpty() && parameterId.length() <= maxParameterIdChars
+            && std::isfinite(from) && std::isfinite(to) && from >= 0 && from <= 1 && to >= 0 && to <= 1;
+    }
+    float valueAt(float macro) const noexcept { return from + std::clamp(macro, 0.0f, 1.0f) * (to - from); }
+};
+struct RackMacro {
+    juce::String name;   // empty: "Macro N"
+    float value{};
+    std::vector<MacroTarget> targets;
+    bool operator==(const RackMacro&) const = default;
+    bool isDefault() const { return name.isEmpty() && value == 0 && targets.empty(); }
+    bool valid() const {
+        if (name.length() > maxMacroNameChars || !std::isfinite(value) || value < 0 || value > 1
+            || targets.size() > static_cast<std::size_t>(maxMacroTargets)) return false;
+        for (std::size_t i = 0; i < targets.size(); ++i) {
+            if (!targets[i].valid()) return false;
+            for (std::size_t j = 0; j < i; ++j)
+                if (targets[j].instance == targets[i].instance && targets[j].parameterId == targets[i].parameterId) return false;
+        }
+        return true;
+    }
+};
+inline juce::String macroDisplayName(const RackMacro& macro, int index) { return macro.name.isNotEmpty() ? macro.name : "Macro " + juce::String(index + 1); }
+using RackMacros = std::array<RackMacro, rackMacroCount>;
+
 struct PluginRackState {
     PluginState instrument;
     std::vector<PluginState> effects;
+    RackMacros macros{};
     bool operator==(const PluginRackState&) const = default;
+    bool hasDevice(std::uint64_t instance) const {
+        if (instance == 0) return false;
+        if (instrument.instanceId == instance) return true;
+        return std::any_of(effects.begin(), effects.end(), [instance](const PluginState& e) { return e.instanceId == instance; });
+    }
+    // The macros' targets on devices no longer in the rack go (after a device is removed or replaced).
+    bool dropStaleMacroTargets() {
+        bool changed = false;
+        for (auto& macro : macros)
+            changed = std::erase_if(macro.targets, [this](const MacroTarget& t) { return !hasDevice(t.instance); }) > 0 || changed;
+        return changed;
+    }
+    // The same rack without its macros: what the plugin host loads (macros are applied to the loaded plugins after).
+    PluginRackState devicesOnly() const { auto copy = *this; copy.macros = {}; return copy; }
     bool valid() const {
         if (!instrument.valid() || effects.size() > 8) return false;
         for (const auto& effect : effects) if (!effect.valid() || effect.descriptionXml.isEmpty()) return false;
+        for (int m = 0; m < rackMacroCount; ++m) {
+            const auto& macro = macros[static_cast<std::size_t>(m)];
+            if (!macro.valid()) return false;
+            // One parameter follows one macro at most, so two knobs never fight over it.
+            for (int n = 0; n < m; ++n)
+                for (const auto& a : macros[static_cast<std::size_t>(n)].targets)
+                    for (const auto& b : macro.targets) if (a.instance == b.instance && a.parameterId == b.parameterId) return false;
+        }
         return true;
     }
 };
@@ -115,7 +176,27 @@ inline juce::var rackToVar(const PluginRackState& rack) {
     auto value = juce::var(new juce::DynamicObject()); auto* o = value.getDynamicObject();
     o->setProperty("instrument", pluginToVar(rack.instrument));
     juce::Array<juce::var> fx; for (const auto& p : rack.effects) fx.add(pluginToVar(p));
-    o->setProperty("effects", juce::var(fx)); return value;
+    o->setProperty("effects", juce::var(fx));
+    // Format 39: written only when a macro is named, moved or mapped.
+    if (std::any_of(rack.macros.begin(), rack.macros.end(), [](const RackMacro& m) { return !m.isDefault(); })) {
+        juce::Array<juce::var> macros;
+        for (const auto& m : rack.macros) {
+            auto macro = juce::var(new juce::DynamicObject()); auto* mo = macro.getDynamicObject();
+            if (m.name.isNotEmpty()) mo->setProperty("name", m.name);
+            mo->setProperty("value", static_cast<double>(m.value));
+            juce::Array<juce::var> targets;
+            for (const auto& t : m.targets) {
+                auto target = juce::var(new juce::DynamicObject()); auto* to = target.getDynamicObject();
+                to->setProperty("instance", instanceIdString(t.instance)); to->setProperty("parameter", t.parameterId);
+                to->setProperty("from", static_cast<double>(t.from)); to->setProperty("to", static_cast<double>(t.to));
+                targets.add(target);
+            }
+            mo->setProperty("targets", targets);
+            macros.add(macro);
+        }
+        o->setProperty("macros", macros);
+    }
+    return value;
 }
 inline bool pluginFromVar(const juce::var& value, PluginState& p) {
     const auto* o = value.getDynamicObject(); if (!o) return false;
@@ -146,6 +227,34 @@ inline bool rackFromVar(const juce::var& value, PluginRackState& rack) {
     const auto effects = o->getProperty("effects"); const auto* list = effects.getArray();
     if (!list || list->size() > 8) return false;
     for (const auto& v : *list) { PluginState p; if (!pluginFromVar(v,p)) return false; rack.effects.push_back(std::move(p)); }
+    if (o->hasProperty("macros")) {   // absent before format 39, and when every macro is untouched
+        const auto* saved = o->getProperty("macros").getArray();
+        if (!saved || saved->size() != rackMacroCount) return false;
+        const auto number = [](const juce::var& v, float& out) {
+            if (!(v.isDouble() || v.isInt() || v.isInt64())) return false;
+            out = static_cast<float>(static_cast<double>(v)); return true;
+        };
+        for (int m = 0; m < rackMacroCount; ++m) {
+            const auto* mo = (*saved)[m].getDynamicObject();
+            if (!mo) return false;
+            auto& macro = rack.macros[static_cast<std::size_t>(m)];
+            if (mo->hasProperty("name")) {
+                if (!mo->getProperty("name").isString()) return false;
+                macro.name = mo->getProperty("name").toString();
+            }
+            if (!number(mo->getProperty("value"), macro.value)) return false;
+            const auto* targets = mo->getProperty("targets").getArray();
+            if (!targets) return false;
+            for (const auto& tv : *targets) {
+                const auto* to = tv.getDynamicObject();
+                MacroTarget t;
+                if (!to || !parseInstanceId(to->getProperty("instance"), t.instance) || !to->getProperty("parameter").isString()
+                    || !number(to->getProperty("from"), t.from) || !number(to->getProperty("to"), t.to)) return false;
+                t.parameterId = to->getProperty("parameter").toString();
+                macro.targets.push_back(std::move(t));
+            }
+        }
+    }
     return rack.valid();
 }
 }

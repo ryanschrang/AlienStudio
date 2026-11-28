@@ -320,7 +320,7 @@ records what that profile costs. Raising the supported limit is still D and E.
   prints both capacity reports. It uploads nothing: that build is for evidence, not release.
 - **Saved files do not depend on the profile.** Session cells are saved as nested lists, Song
   rack lanes as their own number (C2), returns and buses by their slot, and plugin automation by
-  plugin instance ID. A 32/64 build reads and writes the same format 38 as a 16/32 build.
+  plugin instance ID. A 32/64 build reads and writes the same format 39 as a 16/32 build.
 - **Too many tracks or scenes is refused, not truncated.** A build that opens a project with more
   tracks or scenes than it was compiled for now says how many the project has and how many the
   build supports; the open project is kept (`SessionProjectTests`, `capacityRefusalTests`). A 16/32

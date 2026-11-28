@@ -198,6 +198,51 @@ public:
         for (int i = 0; i < r.effectCount; ++i) collect(r.effects[static_cast<std::size_t>(i)], i);
         return choices;
     }
+    // Sets every macro target of `state` (RACK-01) on rack `rack`'s loaded plugins: each mapped parameter to its place
+    // in the target's range for the macro's value. A device or parameter that is not loaded is skipped. Message
+    // thread; the calls into the plugins are contained. Answers how many parameters were set.
+    int applyMacros(int rack, const PluginRackState& state) {
+        if (rack < 0 || rack >= PluginRuntime::rackCount) return 0;
+        int set = 0;
+        auto apply = [&](PluginRuntime::Slot& slot, int index) {
+            if (!slot.processor || slot.faulted.get() || slot.instanceId == 0) return;
+            fault::Fault fault;
+            if (!fault::guarded([&] {
+                for (const auto& macro : state.macros)
+                    for (const auto& target : macro.targets) {
+                        if (target.instance != slot.instanceId) continue;
+                        for (auto* p : slot.processor->getParameters()) {
+                            auto* hosted = dynamic_cast<juce::HostedAudioProcessorParameter*>(p);
+                            if (hosted == nullptr || hosted->getParameterID() != target.parameterId) continue;
+                            hosted->setValueNotifyingHost(target.valueAt(macro.value));
+                            ++set;
+                            break;
+                        }
+                    }
+            }, fault)) runtime.markFaulted(slot, rack, index, PluginPhase::automation, fault);
+        };
+        auto& r = runtime.racks[static_cast<std::size_t>(rack)];
+        apply(r.instrument, -1);
+        for (int i = 0; i < r.effectCount; ++i) apply(r.effects[static_cast<std::size_t>(i)], i);
+        return set;
+    }
+    // The current value (0 to 1) of a loaded device's parameter, for a new macro target's range. -1 when not loaded.
+    float parameterValue(int rack, std::uint64_t instance, const juce::String& parameterId) {
+        if (rack < 0 || rack >= PluginRuntime::rackCount || instance == 0) return -1;
+        auto& r = runtime.racks[static_cast<std::size_t>(rack)];
+        float value = -1;
+        auto read = [&](PluginRuntime::Slot& slot, int index) {
+            if (!slot.processor || slot.faulted.get() || slot.instanceId != instance) return;
+            fault::Fault fault;
+            if (!fault::guarded([&] {
+                for (auto* p : slot.processor->getParameters())
+                    if (auto* hosted = dynamic_cast<juce::HostedAudioProcessorParameter*>(p); hosted != nullptr && hosted->getParameterID() == parameterId) value = p->getValue();
+            }, fault)) runtime.markFaulted(slot, rack, index, PluginPhase::query, fault);
+        };
+        read(r.instrument, -1);
+        for (int i = 0; i < r.effectCount; ++i) read(r.effects[static_cast<std::size_t>(i)], i);
+        return value;
+    }
     // The places besides the tracks whose plugins the automation editor offers (T1-09), by rack number for
     // parameterChoices, with a name: the master, each return and group bus in use, and the Channel Rack.
     template <class Document>

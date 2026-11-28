@@ -9,6 +9,7 @@
 #include "BusCommands.h"
 #include "SidechainCommands.h"
 #include "DeviceCommands.h"
+#include "MacroCommands.h"
 #include "TempoCommands.h"
 #include "FreezeCommands.h"
 #include "SongMarkerCommands.h"
@@ -255,6 +256,8 @@ public:
     // Writes the key to the document only. The caller commits, and the host rebuilds the plugin racks.
     bool applySidechainCommand(const sidechain_edit::Edit& edit) { return !busy && sidechain_edit::apply(doc, edit).isEmpty(); }
     bool applyDeviceCommand(const device_edit::Edit& edit) { return !busy && device_edit::apply(doc, edit).isEmpty(); }
+    // Live side of the macro commands: the document only; the app then sets the mapped plugin parameters.
+    bool applyMacroCommand(const macro_edit::Edit& edit) { return !busy && macro_edit::apply(doc, edit).isEmpty(); }
     bool applyConvolutionResponseCommand(const device_edit::ConvolutionResponseEdit& edit);
 
     // Message-thread command setters. Only the addressed control changes; the

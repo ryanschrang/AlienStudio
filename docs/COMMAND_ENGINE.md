@@ -955,3 +955,22 @@ CommandEngineTests and SessionViewTests cover Preview/live values, bounds/nonfin
 arguments, strict parsing, atomic mixed-batch refusal, no-op/redo behavior, busy
 refusal, real master-fader long/separate/no-op drags, timed edits and stale-project
 gestures. ProjectControllerTests retains master gain persistence/render coverage.
+
+## Rack macro commands
+
+Every plugin rack (a track, bus, return or the master) has eight macros (RACK-01, format 39). A macro has a name (empty
+shows "Macro N"), a value from 0 to 1, and up to 16 targets. Each target is a device in the same rack, named by its
+identity, and one of its parameters, named by its persistent ID, with a range `from` to `to` inside the parameter's own
+0 to 1 range; `from` above `to` runs it backwards. One parameter follows one macro at most.
+
+- `SetRackMacro {stage, rack, macro, value}` moves the macro; the UI's drag is one Undo step ("Move macro").
+- `RenameRackMacro {stage, rack, macro, name}` names it, trimmed; an empty name gives it its number again.
+- `MapRackMacro {stage, rack, macro, instance, parameter, from, to}` adds the parameter, or changes its range when the
+  macro already moves it. `instance` is the device identity as 16 hex digits in script form.
+- `UnmapRackMacro {stage, rack, macro, instance, parameter}` lets it go.
+
+Refused: a rack that does not exist, a macro outside 0 to 7, a value outside 0 to 1, a frozen track, a device not in the
+rack, a parameter another macro moves, a target with no parameter ID or a range outside 0 to 1, a 17th target, a name
+over 32 characters, and unmapping a parameter the macro does not move. Removing or replacing a device drops its targets
+from every macro. The commands change only the document; the app then sets the mapped parameters of the loaded plugins
+(`PluginHost::applyMacros`), and sets them again whenever the plugins are loaded from their saved state.
