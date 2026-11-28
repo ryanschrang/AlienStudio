@@ -95,6 +95,22 @@ also follows its zones' files: opening a project (each file is resolved and deco
 missing audio, Save with samples (each file is collected), and the caches a project open lets go of. A zone whose file
 is missing stays in the project and is listed as missing, while the channel's other zones still play.
 
+## Channel Rack key zone editor
+
+**Edit key zones...** in a channel's menu, under **Slices on keys**, opens a small panel for a channel with key zones
+(slices on keys or a multisample). Each zone is a row: what it plays (its own file, the channel's file, or "Slice,
+frames a to b"), then pickers for its low key, high key and root, and **Remove**. A new key or root is one Undo step
+("Edit key zone"); a zone that would reach into the keys of the zone below or above is refused, the panel says which
+zone and keys it would overlap, and the picker goes back. **Remove** takes the zone away as one Undo step ("Remove key
+zone"), leaving its keys silent; with every zone removed, the channel plays its sample on every key again. The root may
+lie outside the zone's keys (the zone is then pitched from it). The panel follows Undo and edits made elsewhere. A
+zone's frame range is not edited here yet.
+
+It is the `SetRackChannelKeyZone {channel, zone, low, high, root}` and `RemoveRackChannelKeyZone {channel, zone}`
+commands (zones counted from 0). `CommandEngineTests` covers Preview, Undo, refusals and the script form, and
+`ChannelRackViewTests` the menu item and the panel's pickers and buttons. It has not been clicked through or listened
+to in the app.
+
 Relinking used to give the channel its file back through the same edit as loading a new sound, which also dropped the
 channel's slice range and key zones; it now moves the path and keeps them, for slice channels and key slices too.
 
