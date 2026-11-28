@@ -676,9 +676,10 @@ static void exactSendDialogChecks() {
         require(juce::ModalComponentManager::getInstance()->getNumModalComponents() == 0, "send dialog closes cleanly");
     };
     finish(open(), " 37.5 ");
-    require(graph.sendFor(0,0) == .375 && engine->tracks[0].send[0].load() == .375f
-        && panel->trackStrip(0)->sendKnob(0).getValue() == 37.5 && notified == 1 && lastTrack == 0
-        && c.undoLabel() == "Set send level", "exact graph level updates document, live control, strip and one command notification");
+    require(graph.sendFor(0,0) == .375 && engine->tracks[0].send[0].load() == .375f,
+        "exact graph level updates document and live control");
+    require(panel->trackStrip(0)->sendKnob(0).getValue() == 37.5, "strip retains the exact graph-entered percentage");
+    require(notified == 1 && lastTrack == 0 && c.undoLabel() == "Set send level", "exact graph send emits one command notification");
     require(c.undo() && graph.sendFor(0,0) == 0 && !c.canUndo(), "exact send undoes in one step");
     panel->refreshSettings();
     require(c.redo() && graph.sendFor(0,0) == .375, "exact send redoes");

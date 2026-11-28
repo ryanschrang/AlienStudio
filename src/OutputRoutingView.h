@@ -61,7 +61,7 @@ public:
             d.tracks[static_cast<std::size_t>(track)].name + " to " + d.returns[static_cast<std::size_t>(r)].name
                 + ": enter a percentage from 0 to 100.", juce::MessageBoxIconType::NoIcon, this);
         window->addTextEditor("percent", initial, "Level (%)");
-        window->getTextEditor("percent")->setName("Send level percent");
+        window->getTextEditor("percent")->setTitle("Send level percent");
         window->addButton("Apply", 1, juce::KeyPress(juce::KeyPress::returnKey));
         window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
         juce::Component::SafePointer<juce::AlertWindow> dialog(window);
