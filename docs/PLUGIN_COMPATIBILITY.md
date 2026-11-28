@@ -160,6 +160,12 @@ For each plugin you care about, on Windows 11:
 
 These came out of running the machinery against a real VST3 binary rather than against in-process fakes, and they shaped the design:
 
+* **Not every plugin is plain stereo** (the battery over the development laptop's 31 VST3s, T1-09). The host used to refuse anything else. Now:
+  * mono-only effects (Blue Cat's mono versions) run with one input and one output: they hear L+R and play on both sides;
+  * a mono-in, stereo-out effect runs as it is;
+  * an instrument whose input it will not switch off is fed silence on it;
+  * an instrument that refuses any change to its buses, like BFD Player (a sidechain input and 32 outputs), runs with all of its channels and is heard on its first two, up to 64 channels, on scratch channels reserved up front.
+  * The check tool gives each plugin a buffer as wide as its channels. BFD Player's crash with odd block sizes came from a two-channel buffer, narrower than its 32 outputs; with a wide one it passes every check.
 * **Scanning does not necessarily create the plugin.** JUCE's VST3 host reads the class list from `moduleinfo.json` when a plugin ships one, without running the plugin's constructor. A plugin that crashes in its constructor therefore scans as OK. This is why the safety check exists and why it runs the plugin's code in a separate process before the first load.
 * **A VST3 plugin must be prepared on the message thread.** JUCE's VST3 host takes the message-manager lock inside `prepareToPlay`, so preparing a plugin from a worker thread while the main thread waits for it deadlocks. The check battery therefore runs every control call (create, prepare, release, destroy, state) on the main thread and only audio processing on its own audio thread, as the application does.
 * **Parameter changes reach a VST3 plugin's processor with the next audio block.** A state round trip that saves immediately after changing parameters sees the old values. The battery plays a few blocks first.

@@ -25,6 +25,7 @@ class PluginRuntime {
 public:
     // Racks: one per Session track, then the master, then the return slots (A-H), then the group buses.
     static constexpr int blockSize = 512, maxDelay = 96000, masterIndex = maxSessionTracks;
+    static constexpr int maxPluginChannels = 64;   // the most channels a hosted instrument may keep (T1-09)
     static constexpr int returnBase = masterIndex + 1, busBase = returnBase + maxReturns, rackCount = busBase + maxBuses;
     static constexpr int returnIndex(int r) noexcept { return returnBase + r; }
     // Channel Rack channels played by plugin instruments (T1-09): one slot per channel, reported in faults as
@@ -691,18 +692,29 @@ private:
         // Only a key the mix has made by the time this rack runs is handed over.
         const auto* key=index>=0 && slot.keyIndex>=0 && slot.keyIndex<keySlots(slot.keyFrom) && keyReady(stageOf(rack),slot.keyFrom)
             ? &keyFor(slot.keyFrom,slot.keyIndex) : nullptr;
-        const bool keyed=key!=nullptr && slot.processor->getTotalNumInputChannels()==4;
-        if (slot.processor->getTotalNumOutputChannels()!=2 || (slot.processor->getTotalNumInputChannels()>2 && !keyed)) return;
-        samples=std::min(samples,blockSize);
-        // Stack view, no heap or channel-pointer allocation for stereo buffers.
-        float* pointers[]{buffer.getWritePointer(0),buffer.getWritePointer(1),keyScratch[0].data(),keyScratch[1].data()};
+        const int inputs=slot.processor->getTotalNumInputChannels(), outputs=slot.processor->getTotalNumOutputChannels();
+        const bool keyed=key!=nullptr && inputs==4;
         const bool effect=index>=0;
+        // An instrument with more channels than two (T1-09: BFD Player keeps 32 outputs) runs on scratch channels past
+        // the first two, cleared each block; only the first two are heard.
+        const int wide=effect ? 0 : std::max(inputs,outputs);
+        if (effect ? (outputs<1 || outputs>2 || (inputs>2 && !keyed)) : (outputs<2 || wide>maxPluginChannels)) return;
+        samples=std::min(samples,blockSize);
+        // Stack view, no heap or channel-pointer allocation.
+        std::array<float*,maxPluginChannels> pointers{buffer.getWritePointer(0),buffer.getWritePointer(1),keyScratch[0].data(),keyScratch[1].data()};
+        for (int c=2;c<wide;++c) {
+            pointers[static_cast<std::size_t>(c)]=wideScratch[static_cast<std::size_t>(c-2)].data();
+            std::memset(pointers[static_cast<std::size_t>(c)],0,sizeof(float)*static_cast<std::size_t>(samples));
+        }
         if (effect) for (int c=0;c<2;++c) std::memcpy(dry[static_cast<std::size_t>(c)].data(),pointers[c],sizeof(float)*static_cast<std::size_t>(samples));
         if (keyed) for (int c=0;c<2;++c)
             std::memcpy(keyScratch[static_cast<std::size_t>(c)].data(),(*key)[static_cast<std::size_t>(c)].data(),sizeof(float)*static_cast<std::size_t>(samples));
-        juce::AudioBuffer<float> view(pointers,keyed?4:2,samples);
+        // A mono effect (one input or one output, T1-09) hears L+R on channel 0, and what it writes there plays on both.
+        if (effect && inputs==1) for (int i=0;i<samples;++i) pointers[0][i]=pointers[1][i]=0.5f*(pointers[0][i]+pointers[1][i]);
+        juce::AudioBuffer<float> view(pointers.data(),keyed?4:std::max(2,wide),samples);
         fault::Fault fault;
         const bool completed=fault::guarded([&]{ slot.processor->processBlock(view,messages); },fault);
+        if (completed && outputs==1) std::memcpy(pointers[1],pointers[0],sizeof(float)*static_cast<std::size_t>(samples));
         const bool producedGarbage=completed && !(alien::allFinite(pointers[0],samples) && alien::allFinite(pointers[1],samples));
         if (completed && !producedGarbage) return;
         markFaulted(slot,rack,index,PluginPhase::process,fault,producedGarbage);
@@ -740,6 +752,7 @@ private:
     std::array<Key,maxBuses> busKeys{};            // each bus after its strip
     std::array<Key,maxReturns> returnKeys{};       // each return after its strip
     std::array<std::array<float,blockSize>,2> keyScratch{};
+    std::array<std::array<float,blockSize>,maxPluginChannels-2> wideScratch{};   // an instrument's channels past two
     std::array<Delay,maxSessionTracks+1> delays;
     std::array<Delay,maxReturns> returnDelays;
     std::array<Delay,maxBuses> busDelays;
