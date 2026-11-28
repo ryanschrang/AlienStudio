@@ -170,6 +170,84 @@ static void insertAtCursor() {
     std::puts("PASS: a clip inserts at the cursor without leaving the loop");
 }
 
+static void insertedExpressionChecks() {
+    for (const float velocity : {.001f, .005f, 1.0f / 127.0f, 1.0f})
+        for (const float probability : {0.0f, .4f, 1.0f}) {
+            const std::array<PianoRollNote, 3> source{{{99,60,.25,1.5,velocity,probability},
+                {100,64,1.75,2.25,velocity,probability}, {101,67,3,1,velocity,probability}}};
+            auto pattern = std::make_unique<PianoRollPattern>(); pattern->loopSteps = 16;
+            const auto existing = pattern->add(48,0,4,.8f,.6f);
+            const auto before = *pattern;
+            const auto result = insertNotes(*pattern,source,14.0);
+            require(result.added == 2 && result.trimmed == 1 && result.skipped == 1
+                && result.selection.count == 2 && pattern->valid(), "expression fixture inserts and trims at the loop boundary");
+            for (std::size_t i=0; i<result.selection.count; ++i) {
+                const auto* note = pattern->find(result.selection.ids[i]);
+                require(note && note->velocity == velocity && note->probability == probability
+                    && note->pitch == source[i].pitch, "insert preserves exact valid source expression");
+            }
+            require(pattern->find(result.selection.ids[0])->startStep == 14.25
+                && pattern->find(result.selection.ids[1])->lengthSteps == .25
+                && pattern->find(existing)->velocity == before.find(existing)->velocity
+                && pattern->find(existing)->startStep == 0 && pattern->find(existing)->lengthSteps == 4,
+                "expression preservation keeps cursor offset, trimmed timing and existing notes");
+            *pattern = before;
+            const LoopGrowth grow{4};
+            const auto grown = insertNotes(*pattern,source,15,&grow);
+            require(grown.added == 3 && grown.trimmed == 0 && grown.grewLoop() && pattern->loopSteps == 32
+                && pattern->valid(), "expression insert can grow the loop");
+            for (std::size_t i=0; i<grown.selection.count; ++i) {
+                const auto* note = pattern->find(grown.selection.ids[i]);
+                require(note->velocity == velocity && note->probability == probability
+                    && note->startStep == 15 + source[i].startStep && note->lengthSteps == source[i].lengthSteps,
+                    "grown insert retains exact expression and timing");
+            }
+        }
+    auto full = std::make_unique<PianoRollPattern>(); full->loopSteps = 16;
+    for (std::size_t i=0; i<PianoRollPattern::maxNotes-1; ++i) full->add(48,0,1);
+    const std::array<PianoRollNote,2> quiet{{{99,60,0,1,.001f,.4f},{100,64,1,1,.005f,0}}};
+    const auto last = insertNotes(*full,quiet,0);
+    require(last.added == 1 && last.skipped == 1 && full->valid()
+        && full->find(last.selection.ids[0])->velocity == .001f, "last capacity slot keeps quiet expression");
+    const auto before = *full; const LoopGrowth growth{4};
+    const auto refused = insertNotes(*full,quiet,16,&growth);
+    require(!refused.changed() && refused.skipped == 2 && refused.selection.count == 0
+        && samePianoRollPattern(before,*full), "full insertion refuses without growth or note changes");
+    // Preserve add()'s existing sanitization for values outside the valid model range.
+    const std::array<PianoRollNote,3> bounded{{{0,60,0,1,0,1},{0,61,1,1,-.5f,1},{0,62,2,1,2,1}}};
+    auto sanitized = std::make_unique<PianoRollPattern>();
+    const auto inserted = insertNotes(*sanitized,bounded,0);
+    require(inserted.added == 3 && sanitized->valid()
+        && sanitized->notes[0].velocity == 1.0f/127.0f && sanitized->notes[1].velocity == 1.0f/127.0f
+        && sanitized->notes[2].velocity == 1, "invalid source velocities retain creation sanitization");
+}
+
+static void editorInsertedExpressionChecks() {
+    PianoRollEditor editor; editor.setSize(900,500);
+    PianoRollPattern before; before.loopSteps = 16; const auto old = before.add(48,0,4,.8f,.6f);
+    editor.setPattern(before); editor.setSelection(std::array{old}); editor.setInsertionStep(15);
+    int commits = 0; editor.onEditCommitted = [&] { ++commits; };
+    const std::array<PianoRollNote,2> source{{{99,60,0,2,.001f,0},{100,64,2,2,.005f,.4f}}};
+    const LoopGrowth growth{4}; const auto result = editor.importNotes(source,&growth);
+    const auto after = editor.getPattern();
+    const auto selected = editor.getSelectedIds();
+    const std::vector<std::uint32_t> ids(selected.begin(),selected.end());
+    require(result.added == 2 && after.loopSteps == 32 && commits == 1 && ids.size() == 2,
+        "quiet block import and loop growth commit as one selected edit");
+    for (std::size_t i=0; i<ids.size(); ++i)
+        require(after.find(ids[i])->velocity == source[i].velocity && after.find(ids[i])->probability == source[i].probability,
+            "editor insertion keeps each source velocity and probability");
+    editor.undo();
+    require(samePianoRollPattern(editor.getPattern(),before) && !editor.canUndo() && editor.canRedo()
+        && commits == 2, "one Undo restores pre-insert notes and loop");
+    editor.redo();
+    require(samePianoRollPattern(editor.getPattern(),after) && std::ranges::equal(editor.getSelectedIds(),ids) && commits == 3,
+        "one Redo restores quiet block, exact expression and selected identities");
+    editor.setLocked(true);
+    require(!editor.importNotes(source).changed() && samePianoRollPattern(editor.getPattern(),after)
+        && commits == 3, "locked editor refuses insertion without changing expression or history");
+}
+
 static void insertGrowsTheLoop() {
     const std::array<PianoRollNote, 3> notes{{{0, 60, 0.0, 2.0, 0.5f, 1.0f}, {0, 62, 3.0, 6.0, 0.5f, 1.0f}, {0, 64, 9.0, 1.0, 0.5f, 1.0f}}};
     const LoopGrowth fourFour{10.0};
@@ -479,6 +557,8 @@ int main() {
     noStuckNotes();
     tempoIsReportedNotApplied();
     insertAtCursor();
+    insertedExpressionChecks();
+    editorInsertedExpressionChecks();
     insertGrowsTheLoop();
     timeSignatureSetsTheBar();
     editorImportIsOneUndoableEdit();
