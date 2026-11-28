@@ -120,7 +120,7 @@ reported each. What it found that the host has to handle:
   declare, so an exported mix cut a Supermassive tail off at the end. An export with any outside plugin now keeps
   rendering until the output has been below -100 dBFS for 0.25 s, at most 30 s past the end (the host's existing
   maximum); a project with only stock effects, which declare their real tails, renders exactly as before
-  (PluginExportParityTests). A freeze still uses the declared tail, because its Song length is set before it renders.
+  (PluginExportParityTests). A freeze does the same for the frozen track: the render's own Song runs on up to 30 s past the end, and the frozen audio ends once the track is quiet (it keeps the declared tail only when the Song has no room left before its longest length).
 - **Hangs on damaged state** (Vital, Padshop's state round trip): the app loads plugins in its own process, so a project
   whose saved state for one of these is corrupt would hang while opening. Not handled; it needs the plugin vendor or
   out-of-process loading.

@@ -318,8 +318,8 @@ static void rackInstrumentNeedsPreparedEngine() {
     std::puts("PASS: an export never silently drops a rack instrument");
 }
 
-// T1-09: an outside plugin that rings past the tail it declares is exported until it falls silent, at most 30 s past
-// the end; without one the export is as long as before.
+// T1-09: an outside plugin that rings past the tail it declares is exported (or frozen) until it falls silent, at
+// most 30 s past the end; without one the export is as long as before.
 static void exportMeasuresUndeclaredTails() {
     const auto exportOf = [](const Song& song) {
         Rig render(song);
@@ -352,6 +352,20 @@ static void exportMeasuresUndeclaredTails() {
     endless.project->masterPlugins.effects = {PluginState(description("ring:60", false), {})};
     const int capped = exportOf(endless).getNumSamples();
     require(capped >= songFrames + 30 * 48000 - 512 && capped <= songFrames + 30 * 48000 + 1024, "a tail that never ends stops at the 30 s maximum");
+
+    // A frozen track rings out the same way: its own effect's undeclared tail is in the frozen audio.
+    Song frozenRing(false, false);
+    frozenRing.project->plugins[0].effects.push_back(PluginState(description("ring:3", false), {}));
+    Rig freezer(frozenRing, true);
+    WavExportOptions freeze; freeze.freezeTrack = 0; freeze.toTick = 2 * timeline::ticksPerBar;
+    const auto frozenFile = temporary("alien-plugin-freeze-tail");
+    juce::String error; std::atomic<bool> never{false}; DrumSamplePointers noDrums{};
+    require(exportArrangementWav(frozenFile, *frozenRing.project, *frozenRing.playback, noDrums, never, error, freezer.engine.get(), freeze), error.toRawUTF8());
+    const auto frozen = readWav(frozenFile);
+    frozenFile.deleteFile();
+    const int frozenLast = lastSound(frozen);
+    require(frozenLast > songFrames + 48000, "a frozen track keeps its effect's undeclared tail");
+    require(frozen.getNumSamples() - frozenLast < static_cast<int>((exportQuietSeconds + 0.1) * 48000), "and the frozen audio ends soon after it falls silent");
     std::puts("PASS: an export rings out an outside plugin's undeclared tail, up to 30 s");
 }
 

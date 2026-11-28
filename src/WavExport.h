@@ -208,6 +208,8 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
             engine->drumKits[t].samples[p].store(drums[t][p]);
     }
     double tailSeconds=engine->plugins->tailSeconds();
+    // How long past the end an outside plugin's undeclared tail may ring before the render stops (T1-09), or 0 for none.
+    double measuredTailSeconds = engine->plugins->hasOutsidePlugins() ? 30.0 : 0.0;
     if(freezing) {
         if(project.plugins[static_cast<std::size_t>(options.freezeTrack)].instrument.descriptionXml.isEmpty()) {
             const auto& settings=project.trackSettings[static_cast<std::size_t>(options.freezeTrack)];
@@ -217,8 +219,13 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
             tailSeconds+=sourceTail;
         }
         tailSeconds=std::min(30.0,tailSeconds);
-        const auto tailTicks=static_cast<std::int64_t>(std::ceil(song->timeline.tickAfter(static_cast<double>(to),tailSeconds)-static_cast<double>(to)));
-        const auto end=to+tailTicks+timeline::ticksPerStep;
+        // The render's own Song runs on long enough for the frozen track to ring out; the frozen clip is only as long
+        // as what is rendered. With no room for that before the longest Song, the declared tail is kept.
+        const auto endFor=[&](double seconds){
+            return to+static_cast<std::int64_t>(std::ceil(song->timeline.tickAfter(static_cast<double>(to),seconds)-static_cast<double>(to)))+timeline::ticksPerStep;
+        };
+        if(measuredTailSeconds>0 && endFor(std::max(tailSeconds,measuredTailSeconds))>timeline::maxLength)measuredTailSeconds=0;
+        const auto end=endFor(std::max(tailSeconds,measuredTailSeconds));
         if(end>timeline::maxLength){error="Frozen tail exceeds the supported song length.";return false;}
         song->timeline.lengthBars=std::max(song->timeline.lengthBars,static_cast<int>(song->timeline.meterMap().barsCovering(end)));
     }
@@ -294,12 +301,12 @@ inline bool exportArrangementWav(const juce::File& target, const SessionProjectD
     }
     const auto total=frames+latency+tail;
     // T1-09: an outside plugin's declared tail is not trusted (Valhalla Supermassive declares none and rings for about
-    // 7 s), so an export with one keeps rendering past it until the output has been below exportSilence for
-    // exportQuietSeconds, at most the host's 30 s past the end. Stock effects declare their real tails, so a project
-    // with none renders exactly as long as before. A freeze keeps the declared tail: its Song length is set first.
-    const bool measureTail = !freezing && engine->plugins->hasOutsidePlugins();
+    // 7 s), so an export or freeze with one keeps rendering past it until the output (the master, every stem, or the
+    // frozen track) has been below exportSilence for exportQuietSeconds, at most 30 s past the end. Stock effects declare
+    // their real tails, so a project with none renders exactly as long as before.
+    const bool measureTail = measuredTailSeconds > 0;
     const auto renderedSongEnd = frames + latency;
-    const auto tailLimit = measureTail ? std::max(total, renderedSongEnd + static_cast<std::int64_t>(std::ceil(30.0 * exportRate))) : total;
+    const auto tailLimit = measureTail ? std::max(total, renderedSongEnd + static_cast<std::int64_t>(std::ceil(measuredTailSeconds * exportRate))) : total;
     const auto quietWindow = static_cast<std::int64_t>(std::ceil(exportQuietSeconds * exportRate));
     std::int64_t quietFor = 0, rendered = 0;
     const bool measureMaster = masterLevels && !capture;
