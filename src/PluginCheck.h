@@ -291,7 +291,9 @@ private:
         return s;
     }
     template <class Fill> Stats blocksImpl(juce::AudioProcessor& p, int blocks, int blockSize, Fill&& fill) {
-        Stats s; juce::AudioBuffer<float> buffer(2, juce::jmax(1, blockSize)); juce::MidiBuffer midi;
+        // As wide as the plugin's channels, as the host gives it (an instrument may keep more than two outputs).
+        const int channels = std::max({2, p.getTotalNumInputChannels(), p.getTotalNumOutputChannels()});
+        Stats s; juce::AudioBuffer<float> buffer(channels, juce::jmax(1, blockSize)); juce::MidiBuffer midi;
         for (int b = 0; b < blocks; ++b) {
             buffer.clear(); midi.clear();
             fill(b, buffer, midi);
@@ -359,7 +361,7 @@ private:
                 if (b == 0) m.addEvent(juce::MidiMessage::noteOn(1, 60, static_cast<juce::uint8>(100)), 0);
                 if (b == sourceBlocks / 2) m.addEvent(juce::MidiMessage::noteOff(1, 60), 0);
             });
-            for (int ch = 1; ch <= 16; ++ch) { juce::MidiBuffer m; m.addEvent(juce::MidiMessage::allNotesOff(ch), 0); juce::AudioBuffer<float> b2(2, block); b2.clear(); plugin->processBlock(b2, m); }
+            for (int ch = 1; ch <= 16; ++ch) { juce::MidiBuffer m; m.addEvent(juce::MidiMessage::allNotesOff(ch), 0); juce::AudioBuffer<float> b2(std::max({2, plugin->getTotalNumInputChannels(), plugin->getTotalNumOutputChannels()}), block); b2.clear(); plugin->processBlock(b2, m); }
         } else {
             signal = runBlocks(*plugin, sourceBlocks, block, [&](int, juce::AudioBuffer<float>& b, juce::MidiBuffer&) { noise(b); });
         }

@@ -116,7 +116,7 @@ public:
             addAndMakeVisible(knob);
             knob.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
             knob.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-            knob.setRange(0, 100, 1);
+            knob.setRange(0, 100, 0); // Retain exact graph-entered send percentages when refreshing.
             knob.setSkewFactorFromMidPoint(25.0);
             knob.setDoubleClickReturnValue(true, 0.0);
             knob.textFromValueFunction = [](double v) { return mixer_text::gainToText(v); };

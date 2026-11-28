@@ -655,6 +655,88 @@ static void sendRoutingViewChecks(const juce::File& preview) {
     require(!graph.isVisible() && panel.addBusControl().isVisible() && panel.addReturnControl().isVisible(), "Strips restores the existing mixer controls");
 }
 
+static void exactSendDialogChecks() {
+    auto engine = std::make_unique<ToneEngine>();
+    alien::ProjectController c(*engine); c.pushDocumentToEngine();
+    auto panel = std::make_unique<alien::TrackMixerPanel>(c, engine->tracks, engine->returns, engine->masterControls, engine->buses);
+    panel->setSize(960,650); panel->showSendRouting(true);
+    auto& graph = panel->outputRoutingView();
+    int notified = 0, lastTrack = -1;
+    panel->onTrackMixCommandExecuted = [&](int t) { ++notified; lastTrack = t; };
+    const auto pump = [] { juce::MessageManager::getInstance()->runDispatchLoopUntil(30); };
+    const auto open = [&]() {
+        require(graph.editSendLevel(graph.requestFor(0), 0), "open native send percentage editor");
+        auto* dialog = dynamic_cast<juce::AlertWindow*>(juce::ModalComponentManager::getInstance()->getModalComponent(0));
+        require(dialog && dialog->getTextEditor("percent"), "send editor exposes a labelled percentage field");
+        return dialog;
+    };
+    const auto finish = [&](juce::AlertWindow* dialog, const juce::String& text, int result = 1) {
+        dialog->getTextEditor("percent")->setText(text); pump();
+        dialog->exitModalState(result); pump();
+        require(juce::ModalComponentManager::getInstance()->getNumModalComponents() == 0, "send dialog closes cleanly");
+    };
+    finish(open(), " 37.5 ");
+    require(graph.sendFor(0,0) == .375 && engine->tracks[0].send[0].load() == .375f,
+        "exact graph level updates document and live control");
+    require(panel->trackStrip(0)->sendKnob(0).getValue() == 37.5, "strip retains the exact graph-entered percentage");
+    require(notified == 1 && lastTrack == 0 && c.undoLabel() == "Set send level", "exact graph send emits one command notification");
+    require(c.undo() && graph.sendFor(0,0) == 0 && !c.canUndo(), "exact send undoes in one step");
+    panel->refreshSettings();
+    require(c.redo() && graph.sendFor(0,0) == .375, "exact send redoes");
+    panel->refreshSettings();
+    // A redo entry makes unintended zero/unchanged commits observable.
+    require(alien::command::CommandEngine(c).execute(alien::command::SetTrackPan{0,.2}).changed && c.undo(), "prepare redo for refused dialog input");
+    const auto before = c.document(); const auto undo = c.undoLabel(), redo = c.redoLabel();
+    const auto unchanged = [&] {
+        require(alien::sameContent(before,c.document()) && c.undoLabel() == undo && c.redoLabel() == redo
+            && c.canRedo() && notified == 1 && engine->tracks[0].send[0].load() == .375f,
+            "cancel, unchanged and invalid input preserve document, history, live level and notifications");
+    };
+    auto* dialog = open(); finish(dialog, dialog->getTextEditorContents("percent")); unchanged();
+    finish(open(), "37.5000"); unchanged();
+    finish(open(), "91", 0); unchanged();
+    for (const char* invalid : {"", "-1", "100.1", "nan", "inf", "35junk", "37,5", "1e999"}) {
+        dialog = open(); dialog->getTextEditor("percent")->setText(invalid); pump();
+        require(!dialog->getButton(0)->isEnabled(), "Apply is disabled for invalid or out-of-range percentages");
+        dialog->exitModalState(1); pump(); unchanged();
+    }
+    for (const auto text : {"0", "100"}) {
+        finish(open(), text);
+        require(graph.sendFor(0,0) == (juce::String(text).getDoubleValue() / 100.0), "percentage endpoints are accepted");
+        require(c.undo() && graph.sendFor(0,0) == .375, "endpoint has one Undo step"); panel->refreshSettings();
+    }
+    // Keep the dialog open through real document/visibility changes.
+    dialog = open();
+    require(alien::command::CommandEngine(c).execute(alien::command::MoveTrack{0,1}).changed, "reorder while exact send dialog is open");
+    panel->rebuild(); finish(dialog, "23.125");
+    require(lastTrack == 1 && graph.sendFor(1,0) == .23125f && graph.sendFor(0,0) == 0,
+        "deferred percentage follows its source identity through reorder");
+    const auto refusal = [&](const std::function<void()>& change) {
+        auto* box = open(); change();
+        const auto document = c.document(); const auto label = c.undoLabel(); const auto count = notified;
+        finish(box, "12.5");
+        require(alien::sameContent(document,c.document()) && c.undoLabel() == label && notified == count,
+            "stale or unavailable exact send destination refuses without edits");
+    };
+    refusal([&] { c.setExternalBusy(true); }); c.setExternalBusy(false);
+    refusal([&] { panel->setEnabled(false); }); panel->setEnabled(true);
+    refusal([&] { panel->showRouting(false); }); panel->showSendRouting(true);
+    refusal([&] { graph.showSends(false); }); graph.showSends(true);
+    refusal([&] { require(panel->deleteReturn(0) && panel->addReturn() == 0, "replace return during exact send dialog"); });
+    refusal([&] { require(alien::command::CommandEngine(c).execute(alien::command::DeleteTrack{0}).changed, "delete exact send source"); panel->rebuild(); });
+    refusal([&] { c.newProject(); panel->rebuild(); });
+    for (const auto phase : {alien::RecordControls::countIn, alien::RecordControls::recording}) {
+        engine->recording.phase.store(phase);
+        finish(open(), phase == alien::RecordControls::countIn ? "13.5" : "17.5");
+        require(graph.sendFor(0,0) == (phase == alien::RecordControls::countIn ? .135f : .175f),
+            "exact sends remain editable during count-in and recording like strip sends");
+    }
+    engine->recording.phase.store(alien::RecordControls::idle);
+    dialog = open(); const auto document = c.document(); const auto count = notified;
+    panel.reset(); finish(dialog, "44");
+    require(alien::sameContent(document,c.document()) && notified == count, "destroyed graph safely ignores deferred dialog completion");
+}
+
 int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI juce;
     returnsBeyondD();
@@ -665,6 +747,7 @@ int main(int argc, char** argv) {
     projectFormat();
     panels();
     sendRoutingViewChecks(argc > 1 ? juce::File::getCurrentWorkingDirectory().getChildFile(argv[1]) : juce::File{});
+    exactSendDialogChecks();
     stems();
     freezeIgnoresReturns();
     measureCost();
