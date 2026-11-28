@@ -20,6 +20,8 @@ struct CallbackTimingSummary {
     std::size_t overBudget{};             // callbacks that took longer than one period
     std::size_t late{};                   // callbacks that started more than 1.5 periods after the previous one
     double maxIntervalUs{};               // longest time between two callback starts
+    std::size_t longest{};                // which callback took longest (0 is the first recorded)
+    std::vector<std::size_t> overBudgetAt;   // which callbacks went over budget, in order
     double p95BudgetPercent() const noexcept { return periodUs > 0 ? p95 / periodUs * 100.0 : 0.0; }
 };
 
@@ -61,7 +63,8 @@ public:
         std::sort(sorted.begin(), sorted.end());
         s.p50 = rank(sorted, 0.50); s.p95 = rank(sorted, 0.95); s.p99 = rank(sorted, 0.99); s.max = sorted.back();
         for (std::size_t i = 0; i < n; ++i) {
-            if (durations[i] > periodUs) ++s.overBudget;
+            if (durations[i] > durations[s.longest]) s.longest = i;
+            if (durations[i] > periodUs) { ++s.overBudget; s.overBudgetAt.push_back(i); }
             if (intervals[i] < 0) continue;   // the first callback after arming has no previous start
             s.maxIntervalUs = std::max(s.maxIntervalUs, intervals[i]);
             if (intervals[i] > 1.5 * periodUs) ++s.late;

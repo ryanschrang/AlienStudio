@@ -41,6 +41,7 @@ int main() {
     require(s.callbacks == 100 && s.dropped == 1, "callbacks that do not fit are counted, and nothing after disarming");
     require(s.p50 == 49.0 && s.p95 == 94.0 && s.p99 == 98.0 && s.max == 1500.0, "duration percentiles and maximum");
     require(s.overBudget == 1, "one callback took longer than its period");
+    require(s.longest == 98 && s.overBudgetAt == std::vector<std::size_t>{98}, "the summary says which callback was longest and which went over");
     require(s.late == 1 && s.maxIntervalUs == 2000.0, "one callback started late, and the longest gap is measured");
     require(std::abs(s.p95BudgetPercent() - 9.4) < 1e-9, "p95 as a share of the period");
 
