@@ -112,15 +112,13 @@ static void sampleBrowserChecks() {
         require(preview->isEnabled(), "defining the project key enables preview");
         preview->onClick();
         browser.setProjectScale({true, 4, alien::ScaleType::naturalMinor});
-        for (int i = 0; i < 10; ++i) pump();
-        require(previews == 5, "changing the project root cancels an in-flight preview");
-        preview->onClick();
         for (int i = 0; i < 400 && previews == 5; ++i) pump();
+        for (int i = 0; i < 10; ++i) pump();
         bool projectKeyStatus = false;
         for (auto* child : browser.getChildren())
             if (auto* label = dynamic_cast<juce::Label*>(child); label && label->getText().contains("key C to E (+4 semitones)"))
                 projectKeyStatus = true;
-        require(previews == 6 && imports == 0 && projectKeyStatus, "preview uses the updated project root and reports the shift");
+        require(previews == 6 && imports == 0 && projectKeyStatus, "a project root change during a render renders the preview once, at the new root, and reports the shift");
         browser.setProjectScale({});
         require(!preview->isEnabled(), "clearing the project key disables the followed target");
         targetKey->setSelectedId(3, juce::sendNotificationSync);
@@ -339,8 +337,19 @@ static void sampleBrowserChecks() {
         browser.transportSeek();
         require(stops == previousStops + 1 && hasLabel("Song position changed"), "explicit same-tempo seek stops a matched audition");
         preview->onClick(); browser.transportSeek();
-        for (int i = 0; i < 30; ++i) pump();
-        require(previews == 4 && imports == 0 && hasLabel("Song position changed"), "seek invalidates matched worker results before publication");
+        for (int i = 0; i < 400 && previews == 4; ++i) pump();
+        for (int i = 0; i < 10; ++i) pump();
+        require(previews == 5 && imports == 0, "a seek during a render renders the preview once more, aligned to the new position");
+        bool stillSounding = true;
+        browser.previewSounding = [&] { return stillSounding; };
+        browser.transportSeek();
+        require(hasLabel("Aligning the preview again"), "a seek while the preview sounds aligns it again");
+        for (int i = 0; i < 400 && previews == 5; ++i) pump();
+        require(previews == 6 && imports == 0, "and the realigned preview is handed to the engine");
+        stillSounding = false; previousStops = stops;
+        browser.transportSeek();
+        require(stops == previousStops + 1 && hasLabel("Press Preview to align"), "a finished preview is not restarted by a seek");
+        browser.previewSounding = nullptr;
         match->setToggleState(false, juce::dontSendNotification); match->onClick();
         previousStops = stops;
         browser.setTransportTempo(target(false, true, 1920, 0));
