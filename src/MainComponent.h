@@ -801,6 +801,7 @@ private:
         };
         devicesView.samples().onStop = [this] { engine.samplePreview.stop(); };
         devicesView.samples().tempoForPreview = [this] { return samplePreviewTempoTarget(); };
+        devicesView.samples().previewSounding = [this] { return engine.samplePreview.sounding(); };
         devicesView.samples().onImport = [this](const juce::File& file, bool song) {
             const auto& d = controller.document();
             if (projectBusy || controller.isBusy() || controller.isRecording() || activeCapture || (!song && d.cellClip(d.selectedTrack, d.selectedScene)) || controller.isTrackFrozen(d.selectedTrack)) return;

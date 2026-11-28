@@ -48,6 +48,16 @@ public:
         return false;
     }
     void stop() noexcept { generation.fetch_add(1, std::memory_order_acq_rel); }
+    // GUI thread: whether the latest request is still queued, waiting for its beat or playing. A slot the
+    // audio thread has finished with, or one a later stop has superseded, does not count.
+    bool sounding() const noexcept {
+        const auto current = generation.load(std::memory_order_acquire);
+        for (const auto& slot : *slots) {
+            const auto state = slot.state.load(std::memory_order_acquire);
+            if ((state == ready || state == playing) && slot.generation == current) return true;
+        }
+        return false;
+    }
     // Audio thread: an explicit transport jump invalidates beat-aligned work,
     // including a GUI producer still copying into a writing slot. Independent
     // immediate auditions keep playing; slot storage is reclaimed off callback.

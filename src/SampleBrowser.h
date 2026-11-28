@@ -22,7 +22,7 @@ public:
         dragDestination.setTooltip("Dragging a sample reveals this editor. Drop it onto an empty Session cell or a free Song lane position.");
         list.setTooltip("Drag a sample to import it. Choose Session or Song above; the editor opens when dragging starts. Drag a MIDI clip into the piano roll, or a drum groove onto the Channel Rack.");
         matchTempo.setButtonText("Match tempo"); matchTempo.setName("Match sample preview tempo");
-        matchTempo.setTooltip("Match the project tempo, or the tempo at the Song playhead (cursor while stopped). While playing, start on the next quarter-note beat. A tempo change stops preview; press Preview again to match it.");
+        matchTempo.setTooltip("Match the project tempo, or the tempo at the Song playhead (cursor while stopped). While playing, start on the next quarter-note beat. When the tempo changes during a preview, it is matched again at the new tempo.");
         matchTempo.onClick = [this] { stop(); updateButtons(); };
         sourceTempo.setName("Sample source BPM"); sourceTempo.setRange(30, 300, .1); sourceTempo.setValue(120);
         sourceTempo.setSliderStyle(juce::Slider::IncDecButtons); sourceTempo.setTextBoxStyle(juce::Slider::TextBoxLeft, false, 65, 24);
@@ -72,17 +72,32 @@ public:
     std::function<void(const juce::File&, bool)> onImport;
     // Refresh at the click/Enter event as well as on the owner's regular UI tick.
     std::function<sample_preview::TempoTarget()> tempoForPreview;
+    // Whether the preview last handed to onPreview is still queued or playing (the engine's SamplePreview).
+    std::function<bool()> previewSounding;
     void setProjectTempo(double bpm) {
         setTransportTempo({bpm, false});
     }
-    void setTransportTempo(sample_preview::TempoTarget target) {
+    // A tempo change while a matched preview is rendering or sounding renders it again at the new tempo
+    // (it restarts from the sample's start, on the next beat while playing); with nothing sounding, the
+    // next Preview uses the new tempo.
+    void setTransportTempo(sample_preview::TempoTarget target) { setTransportTempo(target, true); }
+    void setTransportTempo(sample_preview::TempoTarget target, bool rematch) {
         const bool tempoChanged = target.bpm != projectTempo;
         if (!tempoChanged && target.song == songTempo) return;
         projectTempo = target.bpm;
         songTempo = target.song;
         const juce::String context = songTempo ? "Song" : "Project";
         tempoLabel.setText("Source BPM   |   " + context + ": " + juce::String(projectTempo, 1) + " BPM", juce::dontSendNotification);
-        if (tempoChanged && matchTempo.getToggleState()) { stop(); setStatus(context + " tempo changed. Press Preview to hear the new tempo."); }
+        if (tempoChanged && matchTempo.getToggleState()) {
+            const bool live = rematch && (previewPending || (previewSounding && previewSounding()));
+            if (live && previewProblem().isEmpty() && selectedIsSample()) {
+                audition(false);
+                setStatus(context + " tempo changed to " + juce::String(projectTempo, 1) + " BPM. Matching the preview again...");
+            } else {
+                stop();
+                setStatus(context + " tempo changed. " + (live ? previewProblem() : juce::String("Press Preview to hear the new tempo.")));
+            }
+        }
         updateButtons();
     }
     void setProjectScale(const ProjectMusicalScale& scale) {
@@ -115,7 +130,7 @@ public:
     int resultCount() const { return static_cast<int>(matches.size()); }
     void setStatus(const juce::String& text) { status.setText(text, juce::dontSendNotification); }
     void stop() {
-        previewCancelled->store(true); ++previewGeneration; if (onStop) onStop();
+        previewCancelled->store(true); ++previewGeneration; previewPending = false; if (onStop) onStop();
         if (detecting.isNotEmpty()) { setStatus(detecting + " detection stopped."); detecting.clear(); updateButtons(); }
     }
     void visibilityChanged() override { if (!isShowing()) stop(); }
@@ -219,8 +234,8 @@ private:
                     + previewKeyNames[key.relativeRoot()] + (key.minor ? " major" : " minor") + " instead, so check it by ear.");
             });
     }
-    void audition() {
-        if (tempoForPreview) setTransportTempo(tempoForPreview());
+    void audition(bool refreshTempo = true) {
+        if (refreshTempo && tempoForPreview) setTransportTempo(tempoForPreview(), false);
         const auto file = selectedFile(); stop(); if (file == juce::File{}) return;
         if (mididrag::supported(file)) { setStatus(midiHint); return; }
         if (const auto problem = previewProblem(); problem.isNotEmpty()) { setStatus(problem); return; }
@@ -232,11 +247,13 @@ private:
         if (semitones != 0 || followsProjectKey()) keyText = juce::String(previewKeyNames[sourceKey.getSelectedId() - 1]) + " to " + previewKeyNames[targetPitchClass()]
                                       + " (" + (semitones > 0 ? "+" : "") + juce::String(semitones) + " semitones)";
         juce::Component::SafePointer<SampleBrowser> safe(this);
+        previewPending = true;
         pool.addJob([safe, file, generation, cancel, sync, sourceBpm, targetBpm, semitones, keyText] {
             if (cancel->load()) return;
             auto result = std::make_shared<AudioClipImportResult>(renderSamplePreview(file, sync, sourceBpm, targetBpm, *cancel, semitones));
             juce::MessageManager::callAsync([safe, generation, result, sync, sourceBpm, targetBpm, keyText] {
                 if (!safe || generation != safe->previewGeneration || !safe->isShowing()) return;
+                safe->previewPending = false;
                 if (!result->clip) { safe->setStatus(result->error); return; }
                 const auto tempoText = sync ? juce::String(sourceBpm, 1) + " to " + juce::String(targetBpm, 1) + " BPM" : juce::String("original tempo");
                 safe->setStatus(keyText.isNotEmpty() ? "Preview: " + tempoText + "; key " + keyText + " (up to 5s)."
@@ -285,6 +302,6 @@ private:
     std::unique_ptr<juce::FileChooser> chooser; juce::ThreadPool pool{1};
     std::shared_ptr<std::atomic<bool>> cancelled{std::make_shared<std::atomic<bool>>(false)};
     std::shared_ptr<std::atomic<bool>> previewCancelled{std::make_shared<std::atomic<bool>>(false)};
-    unsigned previewGeneration{}; bool canImport{}, canImportSong{}; juce::String detecting;   // "Tempo" or "Key" while detecting
+    unsigned previewGeneration{}; bool previewPending{}, canImport{}, canImportSong{}; juce::String detecting;   // "Tempo" or "Key" while detecting
 };
 } // namespace alien

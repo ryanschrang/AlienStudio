@@ -75,7 +75,8 @@ static void sampleBrowserChecks() {
         sourceBpm->setValue(240, juce::dontSendNotification); sourceBpm->onValueChange();
         browser.onPreview = [&](const alien::SessionAudioClip& sample, bool matched) { require(matched && sample.frames == 40000, "slower preview stays within five-second playback cap"); ++previews; };
         preview->onClick(); for (int i = 0; i < 400 && previews == 2; ++i) pump(); require(previews == 3, "slower preview rendered");
-        preview->onClick(); browser.setProjectTempo(140); for (int i = 0; i < 10; ++i) pump(); require(previews == 3, "project tempo change cancels pending preview");
+        preview->onClick(); browser.setProjectTempo(140); for (int i = 0; i < 400 && previews == 3; ++i) pump();
+        require(previews == 4, "a project tempo change during a render renders the preview again at the new tempo, once");
         sourceBpm->setValue(30, juce::dontSendNotification); sourceBpm->onValueChange(); require(!preview->isEnabled(), "unsupported BPM ratio disables preview");
         sync->setToggleState(false, juce::dontSendNotification); sync->onClick(); require(preview->isEnabled(), "original-tempo preview remains available");
         juce::ToggleButton* matchKey = nullptr; juce::ComboBox* sourceKey = nullptr; juce::ComboBox* targetKey = nullptr;
@@ -88,7 +89,7 @@ static void sampleBrowserChecks() {
         targetKey->setSelectedId(3, juce::sendNotificationSync); require(preview->isEnabled() && !matchKey->getToggleState(), "key controls change nothing until Match key is on");
         matchKey->setToggleState(true, juce::dontSendNotification); matchKey->onClick();
         browser.onPreview = [&](const alien::SessionAudioClip& sample, bool matched) { require(!matched && sample.frames == 40000, "key-shifted preview keeps its length"); ++previews; };
-        preview->onClick(); for (int i = 0; i < 400 && previews == 3; ++i) pump(); require(previews == 4 && imports == 0, "key-shifted preview rendered without importing");
+        preview->onClick(); for (int i = 0; i < 400 && previews == 4; ++i) pump(); require(previews == 5 && imports == 0, "key-shifted preview rendered without importing");
         bool keyStatus = false;
         for (auto* child : browser.getChildren()) if (auto* l = dynamic_cast<juce::Label*>(child); l && l->getText().contains("key C to D (+2 semitones)")) keyStatus = true;
         require(keyStatus, "status line names the key shift");
@@ -106,20 +107,20 @@ static void sampleBrowserChecks() {
         matchKey->setToggleState(true, juce::dontSendNotification); matchKey->onClick();
         require(!preview->isEnabled() && preview->getTooltip().contains("Set a project key"), "undefined project key explains why Preview is unavailable");
         search->onReturnKey();
-        require(previews == 4, "keyboard audition also refuses an undefined project key");
+        require(previews == 5, "keyboard audition also refuses an undefined project key");
         browser.setProjectScale({true, 2, alien::ScaleType::major});
         require(preview->isEnabled(), "defining the project key enables preview");
         preview->onClick();
         browser.setProjectScale({true, 4, alien::ScaleType::naturalMinor});
         for (int i = 0; i < 10; ++i) pump();
-        require(previews == 4, "changing the project root cancels an in-flight preview");
+        require(previews == 5, "changing the project root cancels an in-flight preview");
         preview->onClick();
-        for (int i = 0; i < 400 && previews == 4; ++i) pump();
+        for (int i = 0; i < 400 && previews == 5; ++i) pump();
         bool projectKeyStatus = false;
         for (auto* child : browser.getChildren())
             if (auto* label = dynamic_cast<juce::Label*>(child); label && label->getText().contains("key C to E (+4 semitones)"))
                 projectKeyStatus = true;
-        require(previews == 5 && imports == 0 && projectKeyStatus, "preview uses the updated project root and reports the shift");
+        require(previews == 6 && imports == 0 && projectKeyStatus, "preview uses the updated project root and reports the shift");
         browser.setProjectScale({});
         require(!preview->isEnabled(), "clearing the project key disables the followed target");
         targetKey->setSelectedId(3, juce::sendNotificationSync);
@@ -310,18 +311,36 @@ static void sampleBrowserChecks() {
         browser.setTransportTempo(target(true, true, 1920, 0));
         require(stops == previousStops + 1 && hasLabel("Song tempo changed"), "a map boundary stops an active matched preview");
         preview->onClick(); browser.setTransportTempo(target(true, true, 0, 0));
+        for (int i = 0; i < 400 && previews == 1; ++i) pump();
+        for (int i = 0; i < 10; ++i) pump();
+        require(previews == 2 && frames == 30000 && hasLabel("Song: 120.0 BPM"),
+            "a loop wrap during a render renders the preview for the new segment, never the previous one");
+        // The engine still playing the preview: a boundary matches it again instead of stopping it.
+        bool sounding = true;
+        browser.previewSounding = [&] { return sounding; };
+        browser.setTransportTempo(target(true, true, 960, 0));
+        require(hasLabel("Song tempo changed to 180.0 BPM. Matching the preview again"), "a boundary during a sounding preview says it is matched again");
+        for (int i = 0; i < 400 && previews == 2; ++i) pump();
+        require(previews == 3 && frames == 20000 && imports == 0, "and the preview is rendered again at the new segment's 180 BPM");
+        sounding = false; previousStops = stops;
+        browser.setTransportTempo(target(true, true, 1920, 0));
+        require(stops == previousStops + 1 && hasLabel("Press Preview"), "a preview that has finished is not started again by a tempo change");
+        sounding = true; source->setValue(30, juce::sendNotificationSync); previousStops = stops;
+        browser.setTransportTempo(target(true, true, 960, 0));
         for (int i = 0; i < 30; ++i) pump();
-        require(previews == 1 && hasLabel("Song: 120.0 BPM"), "a loop wrap cancels a pending preview for the previous segment");
+        require(previews == 3 && stops > previousStops && hasLabel("ratio"), "a new tempo outside the stretch range stops the preview with the reason");
+        source->setValue(90, juce::sendNotificationSync);
+        browser.previewSounding = nullptr;
         browser.setTransportTempo(target(true, false, 0, 1920));
         preview->onClick();
-        for (int i = 0; i < 400 && previews == 1; ++i) pump();
-        require(previews == 2 && frames == 40000 && imports == 0, "stopped Song preview renders at the cursor's 90 BPM");
+        for (int i = 0; i < 400 && previews == 3; ++i) pump();
+        require(previews == 4 && frames == 40000 && imports == 0, "stopped Song preview renders at the cursor's 90 BPM");
         previousStops = stops;
         browser.transportSeek();
         require(stops == previousStops + 1 && hasLabel("Song position changed"), "explicit same-tempo seek stops a matched audition");
         preview->onClick(); browser.transportSeek();
         for (int i = 0; i < 30; ++i) pump();
-        require(previews == 2 && imports == 0 && hasLabel("Song position changed"), "seek invalidates matched worker results before publication");
+        require(previews == 4 && imports == 0 && hasLabel("Song position changed"), "seek invalidates matched worker results before publication");
         match->setToggleState(false, juce::dontSendNotification); match->onClick();
         previousStops = stops;
         browser.setTransportTempo(target(false, true, 1920, 0));

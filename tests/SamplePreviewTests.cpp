@@ -119,6 +119,23 @@ int main() {
         for (int i=0;i<300;++i) inflight.nextSample();
         require(inflight.nextSample()[0]>.39f,"fresh playback works after in-flight cancellation");
     }
+    {   // T1-10: the browser asks whether its preview is still sounding, so a tempo change can match it again.
+        alien::SamplePreview sounding; sounding.prepare(48000);
+        require(!sounding.sounding(), "nothing previewed: not sounding");
+        require(sounding.request(audio.data(), nullptr, 480, 48000) && sounding.sounding(), "a queued preview is sounding");
+        sounding.beginBlock();
+        require(sounding.sounding() && sounding.nextSample()[0] >= 0.0f, "a playing preview is sounding");
+        for (int i = 0; i < 600; ++i) sounding.nextSample();
+        require(!sounding.sounding(), "a preview that played to its end is not");
+        require(sounding.request(audio.data(), nullptr, 4800, 48000, true), "queue an aligned preview");
+        sounding.beginBlock(); sounding.nextSample(true, .5, step);
+        require(sounding.waitingForBeat() && sounding.sounding(), "a preview waiting for its beat is sounding");
+        sounding.stop();
+        require(!sounding.sounding(), "Stop ends it at once, before the audio thread lets the slot go");
+        sounding.beginBlock();
+        require(!sounding.sounding() && sounding.request(audio.data(), nullptr, 4800, 48000) && sounding.sounding(),
+                "a request after Stop is sounding again");
+    }
     std::vector<float> stereoLeft(9600,.8f), stereoRight(9600,-.4f);
     for (const int failure : {1,2}) for (const bool aligned : {false,true}) {
         alien::SamplePreview recovery; recovery.prepare(48000);
