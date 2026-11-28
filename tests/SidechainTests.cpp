@@ -140,9 +140,10 @@ static void projectTests() {
     states[1].effects.push_back(compressorState(4));
     c.setPluginRacks(states, c.document().masterPlugins, c.returnRacks(), c.busRacks());
     const auto keyOf = [&](int track) { return c.document().tracks[static_cast<std::size_t>(track)].plugins.effects[0].sidechain; };
-    // Swap tracks 3 and 1: track 0's key follows its track to 1; track 1's effect, now on track 3, keeps key 4.
-    require(c.moveTrack(3, -2) && keyOf(0) == 1 && keyOf(3) == 4, "moving the key track moves the key with it");
-    require(c.deleteTrack(2) && keyOf(0) == 1 && keyOf(2) == 3, "deleting an earlier track renumbers the key");
+    // Move track 3 to slot 1 (tracks 1 and 2 shift down one): track 0's key follows its track to 1; track 1's
+    // effect, now on track 2, keeps key 4, which did not move.
+    require(c.moveTrack(3, -2) && keyOf(0) == 1 && keyOf(2) == 4, "moving the key track moves the key with it");
+    require(c.deleteTrack(3) && keyOf(0) == 1 && keyOf(2) == 3, "deleting an earlier track renumbers the key");
     require(c.deleteTrack(3) && keyOf(2) == -1 && keyOf(0) == 1, "deleting the key track removes the key, never re-points it");
     require(alien::toProjectData(c.document()).valid(), "the project stays valid");
 }
