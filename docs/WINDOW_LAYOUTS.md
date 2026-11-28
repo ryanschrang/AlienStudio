@@ -55,6 +55,8 @@ When a focused control is destroyed inside a surviving window, its safe focus po
 
 Disabling a registered main or detached typing host releases its notes synchronously, before desktop focus dispatch. Disabled targets refuse typing. Re-enabling requires a held key to be lifted before it can start a fresh note, and disabling an unrelated host preserves the source window's notes. This uses the existing message-thread component listener; no audio callback is changed (claim #421).
 
+A native main window distinct from the workspace root is observed separately for hide/disable/destruction. Its owned typing notes are released synchronously, and changing the root's top-level host removes the old host listener and releases its notes. Auxiliary notes remain independent. Shutdown removes the native-parent listener before the router disappears (claim #465).
+
 ## Verification
 
 SongFlowTests covers schema round trips, damaged-state refusal, negative monitor
