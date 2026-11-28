@@ -12,7 +12,7 @@
 // mixing them. The controller and command Preview share them, so what Preview predicts is
 // what the live edit does. They never touch a plugin; the host rebuilds after the commit.
 namespace alien::rack_channel {
-enum class Kind { add, addSynth, remove, move, duplicate, rename, volume, pan, mute, solo, output, choke, sound, silence, synth, plugin, sample, slice, keys, multisample };
+enum class Kind { add, addSynth, remove, move, duplicate, rename, volume, pan, mute, solo, output, choke, sound, silence, synth, plugin, sample, slice, keys, multisample, zone, removeZone };
 struct Edit {
     Kind kind{Kind::remove};
     int channel{-1};
@@ -24,6 +24,8 @@ struct Edit {
     juce::String description;    // plugin: its description from the plugin list; sample: the file's path
     std::vector<std::int64_t> bounds;   // slice, keys: the slices' edges in the file's frames, ascending; keys: none plays the sample whole
     std::vector<juce::String> files;    // multisample: the files' paths, laid out on keys by multisampleLayout
+    int zone{-1};                       // zone, removeZone: which key zone, from 0
+    int low{}, high{}, root{};          // zone: its new keys and root
 };
 
 inline constexpr int maxSlices = 16;
@@ -212,6 +214,14 @@ inline bool editRack(rack::Project& p, const Edit& e) {
         changed = p.setKeyZones(e.channel, std::move(layout.zones)) || changed;
         return p.renameChannel(e.channel, e.text.toStdString()) || changed;
     }
+    case Kind::zone: case Kind::removeZone: {
+        const auto& info = p.info[static_cast<std::size_t>(e.channel)];
+        if (!info.hasZones() || e.zone < 0 || e.zone >= static_cast<int>(info.zones->size())) return false;
+        auto zones = *info.zones;
+        if (e.kind == Kind::removeZone) zones.erase(zones.begin() + e.zone);
+        else { auto& z = zones[static_cast<std::size_t>(e.zone)]; z.low = e.low; z.high = e.high; z.root = e.root; }
+        return p.setKeyZones(e.channel, std::move(zones));   // no zones left: the sample plays on every key
+    }
     }
     return false;
 }
@@ -297,6 +307,25 @@ inline juce::String refusal(const ProjectDocument& d, const Edit& e) {
         }
         if (const auto layout = multisampleLayout(fileStems(e.files)); layout.error.isNotEmpty()) return layout.error;
         if (e.text.trim().isEmpty()) return "A channel name cannot be blank.";
+        break;
+    }
+    case Kind::zone: case Kind::removeZone: {
+        const auto& info = p.info[static_cast<std::size_t>(e.channel)];
+        if (!info.hasZones()) return "Channel " + juce::String(e.channel + 1) + " has no key zones.";
+        const auto& zones = *info.zones;
+        const int count = static_cast<int>(zones.size());
+        if (e.zone < 0 || e.zone >= count) return "There is no key zone " + juce::String(e.zone + 1) + " on this channel (it has " + juce::String(count) + ").";
+        if (e.kind == Kind::removeZone) break;
+        if (e.low < 0 || e.high > 127 || e.root < 0 || e.root > 127 || e.high < 0 || e.low > 127) return "A zone's keys and root must be notes 0 to 127.";
+        if (e.low > e.high) return "A zone's low key cannot be above its high key.";
+        const auto note = [](int n) { return juce::MidiMessage::getMidiNoteName(n, true, true, 4); };
+        const auto clash = [&](int other) {
+            const auto& o = zones[static_cast<std::size_t>(other)];
+            return "Zone " + juce::String(e.zone + 1) + "'s keys (" + note(e.low) + " to " + note(e.high) + ") would overlap zone "
+                + juce::String(other + 1) + " (" + note(o.low) + " to " + note(o.high) + ").";
+        };
+        if (e.zone > 0 && e.low <= zones[static_cast<std::size_t>(e.zone - 1)].high) return clash(e.zone - 1);
+        if (e.zone + 1 < count && e.high >= zones[static_cast<std::size_t>(e.zone + 1)].low) return clash(e.zone + 1);
         break;
     }
     case Kind::remove: case Kind::mute: case Kind::solo: case Kind::silence: break;
