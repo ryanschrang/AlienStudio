@@ -566,6 +566,7 @@ static void relinkAudioCommandChecks() {
 #include "RackSliceCommandTests.h"
 #include "RackKeySliceCommandTests.h"
 #include "RackMultisampleCommandTests.h"
+#include "RackKeyZoneCommandTests.h"
 #include "ProjectSettingCommandTests.h"
 #include "StepCommandTests.h"
 #include "TrackSoundCommandTests.h"
@@ -632,6 +633,7 @@ int main() {
     rackSliceCommandChecks();
     rackKeySliceCommandChecks();
     rackMultisampleCommandChecks();
+    rackKeyZoneCommandChecks();
     projectSettingCommandChecks();
     stepCommandChecks();
     trackSoundCommandChecks();

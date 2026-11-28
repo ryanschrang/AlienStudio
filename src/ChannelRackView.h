@@ -12,6 +12,7 @@
 #include "MidiClipDrag.h"
 #include "ProjectController.h"
 #include "CommandEngine.h"
+#include "KeyZoneEditor.h"
 #include "RackGrooveImport.h"
 #include "RackScale.h"
 #include "StarterPack.h"
@@ -54,6 +55,8 @@ public:
     // answer for the user (a real window needs a display).
     std::function<void(juce::PopupMenu, juce::Rectangle<int>, std::function<void(int)>)> menuLauncher;
     std::function<void(const juce::String&, const juce::String&, std::function<void(const juce::String&)>)> nameRequester;
+    // How the key zone editor is shown: left empty, in a call-out next to the channel's name; tests take the panel.
+    std::function<void(std::unique_ptr<KeyZoneEditor>, juce::Rectangle<int>)> zoneEditorLauncher;
 
     // ---- state ---------------------------------------------------------------
     // The selected channel is the one the graph editor shows. Several channels can be selected as in FL Studio
@@ -298,7 +301,7 @@ public:
                   cmdDuplicate = 100, cmdCopyRow, cmdPasteRow, cmdFill2, cmdFill4, cmdFill8,
                   cmdRotateLeft, cmdRotateRight, cmdReverseRow, cmdRepeat4, cmdRepeat8, cmdRepeat16, cmdPianoRoll,
                   synthBase = 200, builtinBase = 20, outputMaster = 40, outputBase = 41, chokeNone = 60, chokeBase = 61,
-                  cmdSlice4 = 170, cmdSlice8, cmdSlice16, cmdSliceAttacks, cmdKeys4, cmdKeys8, cmdKeys16, cmdKeysAttacks, cmdKeysClear, cmdLoadMultisample = 185, cmdPluginEditor = 190, pluginBase = 1000, starterBase = 50000 };
+                  cmdSlice4 = 170, cmdSlice8, cmdSlice16, cmdSliceAttacks, cmdKeys4, cmdKeys8, cmdKeys16, cmdKeysAttacks, cmdKeysClear, cmdLoadMultisample = 185, cmdEditZones = 186, cmdPluginEditor = 190, pluginBase = 1000, starterBase = 50000 };
 
     // The name in a plugin channel's saved description (what the instrument list shows).
     static juce::String pluginName(const rack::ChannelInfo& info) {
@@ -353,6 +356,7 @@ public:
         keys.addSeparator();
         keys.addItem(cmdKeysClear, "Play the whole sample on every key", info.hasZones(), !info.hasZones() && sliceable);
         menu.addSubMenu("Slices on keys", keys, sliceable || info.hasZones(), nullptr, info.hasZones());
+        menu.addItem(cmdEditZones, "Edit key zones...", info.hasZones());   // each zone's keys and root, or remove it (T2-01)
         juce::PopupMenu output;
         output.addItem(outputMaster, "Master", true, channel.output == rack::masterOutput);
         const auto& doc = controller.document();
@@ -444,6 +448,15 @@ public:
                 safe->runCommands({command::SetRackChannelKeySlices{row, bounds}}, "Slices on keys");
                 safe->changed();
             }, false);
+            return;
+        }
+        if (id == cmdEditZones) {
+            if (!project().info[static_cast<std::size_t>(row)].hasZones()) return;
+            auto editor = std::make_unique<KeyZoneEditor>(controller, row);
+            juce::Component::SafePointer<ChannelRackGrid> safe(this);
+            editor->onChanged = [safe] { if (safe != nullptr) safe->changed(); };
+            if (zoneEditorLauncher) { zoneEditorLauncher(std::move(editor), nameRect(row)); return; }
+            juce::CallOutBox::launchAsynchronously(std::move(editor), localAreaToGlobal(nameRect(row)), nullptr);
             return;
         }
         if (id == cmdKeys4 || id == cmdKeys8 || id == cmdKeys16 || id == cmdKeysClear) {

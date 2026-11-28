@@ -1849,6 +1849,58 @@ static void grooveDrop() {
     std::puts("PASS: a MIDI clip dropped on the Channel Rack imports as a drum groove");
 }
 
+// ---- the key zone editor (T2-01) ----------------------------------------------------
+static void zoneEditorChecks() {
+    Rig rig;
+    auto& grid = rig.grid;
+    auto& c = rig.controller;
+    auto clip = std::make_shared<SessionAudioClip>();
+    clip->sampleRate = 8000; clip->channels = 1; clip->frames = 4000; clip->left.assign(4000, .3f);
+    clip->buildWaveform();
+    require(command::loadDecodedRackSample(c, juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("rack zone editor.wav"), 1, clip).changed,
+            "a decoded sample on channel 2");
+    std::unique_ptr<KeyZoneEditor> editor;
+    grid.zoneEditorLauncher = [&](std::unique_ptr<KeyZoneEditor> shown, juce::Rectangle<int>) { editor = std::move(shown); };
+    require(!entry(entries(grid.channelMenu(1)), ChannelRackGrid::cmdEditZones)->enabled && !entry(entries(grid.channelMenu(0)), ChannelRackGrid::cmdEditZones)->enabled,
+            "a channel without key zones has none to edit");
+    grid.runChannelCommand(1, ChannelRackGrid::cmdEditZones);
+    require(editor == nullptr, "and opens no editor");
+    grid.runChannelCommand(1, ChannelRackGrid::cmdKeys4);
+    require(entry(entries(grid.channelMenu(1)), ChannelRackGrid::cmdEditZones)->enabled, "slices on keys can be edited");
+    grid.runChannelCommand(1, ChannelRackGrid::cmdEditZones);
+    require(editor != nullptr && editor->channel() == 1 && editor->zoneCount() == 4 && editor->zoneName(1).contains("Slice, frames 1000 to 2000")
+            && editor->lowBox(1).getSelectedId() == 62 && editor->highBox(1).getSelectedId() == 62 && editor->rootBox(1).getSelectedId() == 62
+            && editor->lowBox(1).getText() == "C#4" && editor->removeButton(3).isVisible() && !editor->removeButton(4).isVisible(),
+            "the editor lists each zone with its slice, keys and root");
+    const auto zones = [&] { return rig.rack().info[1].zones; };
+
+    // A key picker that would overlap the next zone is refused, says why, and goes back.
+    const auto before = c.document();
+    editor->highBox(1).setSelectedId(63, juce::sendNotificationSync);
+    require(sameContent(before, c.document()) && editor->message().contains("would overlap zone 3") && editor->highBox(1).getSelectedId() == 62,
+            "an overlap is refused with a clear message, and the picker shows the zone's key again");
+    // A root picker gives the zone a new root, as one Undo step.
+    editor->rootBox(0).setSelectedId(49, juce::sendNotificationSync);
+    require((*zones())[0].root == 48 && (*zones())[0].low == 60 && c.undoLabel() == "Edit key zone" && editor->message().isEmpty(), "picker: a new root, one Undo step");
+    // Remove takes the zone away; the next zone's keys can then reach into the gap.
+    editor->removeButton(2).onClick();
+    require(zones()->size() == 3 && editor->zoneCount() == 3 && (*zones())[2].low == 63 && c.undoLabel() == "Remove key zone" && !editor->removeButton(3).isVisible(),
+            "Remove takes the zone away as one Undo step");
+    editor->highBox(1).setSelectedId(63, juce::sendNotificationSync);
+    require((*zones())[1].high == 62 && (*zones())[1].low == 61, "picker: the zone takes the freed key");
+    require(editor->setZone(1, 61, 61, 61) && c.undo(), "setZone runs the same command");
+    require(c.undo() && c.undo() && c.undo() && zones()->size() == 4 && (*zones())[0].root == 60, "each edit is undone on its own");
+    editor->refresh();
+    require(editor->zoneCount() == 4 && editor->highBox(1).getSelectedId() == 62 && editor->rootBox(0).getSelectedId() == 61, "the editor follows Undo");
+    // Removing every zone leaves the sample on every key.
+    for (int z = 3; z >= 0; --z) editor->removeButton(z).onClick();
+    require(zones() == nullptr && editor->zoneCount() == 0 && !editor->removeButton(0).isVisible() && c.rackChannelAudio(1)->keyZones == nullptr,
+            "with every zone removed the whole sample plays on every key");
+    editor.reset();
+    grid.zoneEditorLauncher = nullptr;
+    std::puts("PASS: the key zone editor");
+}
+
 int main() {
     juce::ScopedJuceInitialiser_GUI gui;
     starterGrooveImport();
@@ -1859,6 +1911,7 @@ int main() {
     pluginInstrumentMenu();
     sliceMenuChecks();
     keysMenuChecks();
+    zoneEditorChecks();
     multisampleMenuChecks();
     starterPackMenu();
     nameColumnChecks();

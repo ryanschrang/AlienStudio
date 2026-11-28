@@ -840,6 +840,14 @@ or given twice, fewer than 2 or more than 16 files, two files on one note, and a
 "Sound > Multisample from files..." decodes the chosen files on a worker and runs it, under the Undo name
 "Load multisample".
 
+`SetRackChannelKeyZone {channel, zone, low, high, root}` gives key zone `zone` (from 0) of a channel with key zones
+new lowest and highest keys and a new root, keeping its file or slice (T2-01 zone editor). Zones stay in order, so the
+zone's keys may not reach the zone below's highest key or the zone above's lowest. Refused: a channel without key zones,
+a zone that does not exist, keys or a root outside notes 0 to 127, a low key above the high key, and an overlap, which
+names the other zone and both key ranges. `RemoveRackChannelKeyZone {channel, zone}` takes a zone away; with none left
+the channel plays its sample on every key. Refused for a channel without zones or a zone that does not exist. The
+channel menu's "Edit key zones..." panel runs them, under the Undo names "Edit key zone" and "Remove key zone".
+
 ## Song take commands
 
 `CompSongTake {take, start, end}` plays ticks `start` to `end` of a recorded take on its track, over what is there, as a
