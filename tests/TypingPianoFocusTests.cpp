@@ -426,6 +426,18 @@ static void checkPianoRollProcessing() {
     require(!keyboard.isNoteOn(2, 60) && notes.ons == notes.offs,
         "typing note-off remains balanced after processing shortcuts");
 
+    alien::PianoRollPattern quiet;
+    const auto quietId=quiet.add(60,1.25,1.25,.8f,.4f); quiet.find(quietId)->velocity=.001f;
+    roll.setPattern(quiet); const std::array quietSelection{quietId}; roll.setSelection(quietSelection);
+    roll.grabKeyboardFocus(); shortcut('u',juce::ModifierKeys::altModifier);
+    setValue("Chop slice ticks",120); setValue("Chop gate percent",50); click("Apply piano roll processing");
+    const auto quietChopped=roll.getPattern();
+    require(quietChopped.count==3 && roll.getSelectedIds().size()==3,"low velocity Chop creates and selects all fragments");
+    for (std::size_t i=0;i<quietChopped.count;++i)
+        require(quietChopped.notes[i].velocity==.001f && quietChopped.notes[i].probability==.4f,"Chop UI preserves quiet expression");
+    roll.undo(); require(alien::samePianoRollPattern(roll.getPattern(),quiet) && roll.getSelectedIds().size()==1,"one Chop Undo restores quiet source and selection");
+    roll.redo(); require(alien::samePianoRollPattern(roll.getPattern(),quietChopped) && roll.getSelectedIds().size()==3,"one Chop Redo preserves fragment IDs and expression");
+
     alien::PianoRollPattern full;
     // Fill the clip to capacity (128 pitches x 8 bars of 4-step notes at 1,024 notes).
     for (std::size_t i = 0; i < alien::PianoRollPattern::maxNotes; ++i)

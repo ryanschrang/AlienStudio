@@ -287,6 +287,9 @@ inline ProcessingResult processChop(PianoRollPattern& pattern, const PianoRollSe
                                            pattern.fromTicks(gated), original.velocity, original.probability);
                 if (id == 0 || !selected.add(id))
                     return result(ProcessingStatus::capacityExceeded, pattern, selection);
+                // Chop changes timing/gate, not the source note's expression.
+                // Preserve valid velocities below add()'s creation minimum.
+                edited.find(id)->velocity = original.velocity;
             }
         }
     }

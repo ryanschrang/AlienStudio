@@ -83,6 +83,31 @@ static void strumTests() {
         "strum at the final clip edge preserves duration without invalid times");
 }
 
+static void chopExpressionTests() {
+    for (float velocity : {.001f,.005f,1.0f/127.0f}) for (float probability : {0.0f,.4f,1.0f}) {
+        PianoRollPattern pattern;
+        const auto original=pattern.add(60,1.25,1.25,.8f,probability);
+        pattern.find(original)->velocity=velocity;
+        const auto other=pattern.add(72,0,4);
+        const auto untouched=*pattern.find(other);
+        require(pattern.valid(),"external low velocity is a valid Chop input");
+        PianoRollSelection selected; selected.add(original);
+        ChopSettings settings; settings.divisionSteps=.5; settings.gate=.5;
+        const auto result=processChop(pattern,selected,settings);
+        require(result.changed() && result.selection.count==3 && pattern.count==4 && pattern.valid()
+            && sameNote(*pattern.find(other),untouched),"Chop retains selection, unique IDs and unselected content");
+        int fragment=0;
+        for (std::size_t i=0;i<pattern.count;++i) if (result.selection.contains(pattern.notes[i].id)) {
+            const auto& note=pattern.notes[i];
+            require(note.velocity==velocity && note.probability==probability && note.pitch==60,
+                "all Chop fragments preserve exact source expression");
+            require(note.startStep==1.25+fragment*.5 && note.lengthSteps==(fragment==2?.125:.25),"gate and partial tail keep exact timing");
+            ++fragment;
+        }
+        require(pattern.find(original)->startStep==1.25,"first Chop fragment keeps original identity");
+    }
+}
+
 static void chopTests() {
     PianoRollPattern pattern;
     const auto id = pattern.add(60, 2, 2.5, .6f);
@@ -448,7 +473,7 @@ int main() {
     euclideanTests();
     splitTests();
     transposeTests();
-    selectionTests(); strumTests(); chopTests(); randomizeTests(); quantizeTests();
+    selectionTests(); strumTests(); chopTests(); chopExpressionTests(); randomizeTests(); quantizeTests();
     performanceTransformTests(); invalidAndEmptyTests();
     std::cout << "Piano-roll selected-note processing tests passed\n";
 }
