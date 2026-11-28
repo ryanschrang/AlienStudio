@@ -73,6 +73,37 @@ int main(){
     check(alien::validPreviewSettings(true, 60, 120, 1) && !alien::validPreviewSettings(true, 60, 120, -1) && !alien::validPreviewSettings(false, 120, 120, 7)
           && !alien::validPreviewSettings(true, 240, 120, 1), "key shift and tempo ratio together stay inside the stretch range");
     check(!alien::renderSamplePreview(file, true, 60, 120, cancel, -1).clip, "too-far combined stretch refuses preview");
+    {   // T1-10: a Song preview follows the tempo changes in its five seconds, in one continuous stretch.
+        using Span = alien::sample_preview::TempoSpan; bool stopped = false;
+        const auto pitchOf = [](const std::vector<float>& data, std::size_t begin, std::size_t end) {
+            int crosses = 0; for (std::size_t i = begin; i < end; ++i) if (data[i-1] <= 0 && data[i] > 0) ++crosses;
+            return crosses * 48000.0 / (end - begin);
+        };
+        // The 1 s fixture at 120 BPM is two beats: one at 120 BPM (0.5 s), one at 60 BPM (1 s).
+        auto followed = alien::renderSamplePreview(file, 120, {Span{1, 120}, Span{8, 60}}, cancel, 0, stopped);
+        check(followed.clip && followed.clip->valid() && followed.clip->frames == 72000 && !stopped, "a tempo course sets each beat's length");
+        if (followed.clip) {
+            const auto& data = followed.clip->left;
+            check(std::abs(pitchOf(data, 2400, 21600) - 440) < 5 && std::abs(pitchOf(data, 28800, 67200) - 440) < 5, "pitch holds on both sides of the change");
+            float join = 0; for (std::size_t i = 23000; i < 25000; ++i) join = std::max(join, std::abs(data[i]));
+            check(join > .1f && join < 1.2f, "no gap or spike where the tempo changes");
+            bool linked = true; for (std::size_t i = 2400; i < 67200; ++i) linked = linked && std::abs(data[i] + followed.clip->right[i]) < 1e-5;
+            check(linked, "a followed course keeps stereo phase linked");
+        }
+        auto ended = alien::renderSamplePreview(file, 120, {Span{1, 120}, Span{4, 30}}, cancel, 0, stopped);
+        check(ended.clip && ended.clip->frames == 24000 && stopped, "a tempo the sample cannot stretch to ends the preview there");
+        check(!alien::renderSamplePreview(file, 120, {Span{1, 30}, Span{4, 120}}, cancel, 0, stopped).clip, "a first tempo out of range refuses the preview");
+        auto keyed = alien::renderSamplePreview(file, 120, {Span{1, 120}, Span{8, 90}}, cancel, 2, stopped);
+        check(keyed.clip && keyed.clip->frames == 56000 && !stopped, "a key-shifted course keeps each beat's length");
+        if (keyed.clip) check(std::abs(pitchOf(keyed.clip->left, 2400, 21600) - 440 * std::pow(2.0, 2 / 12.0)) < 8
+                              && std::abs(pitchOf(keyed.clip->left, 26400, 52800) - 440 * std::pow(2.0, 2 / 12.0)) < 8, "and shifts the key on both sides");
+        auto single = alien::renderSamplePreview(file, 120, {Span{10, 180}}, cancel, 0, stopped);
+        auto fixed = alien::renderSamplePreview(file, true, 120, 180, cancel);
+        check(single.clip && fixed.clip && single.clip->left == fixed.clip->left, "a one-tempo course is the fixed-tempo preview");
+        cancel.store(true);
+        check(!alien::renderSamplePreview(file, 120, {Span{1, 120}, Span{8, 60}}, cancel, 0, stopped).clip, "a cancelled course returns no partial asset");
+        cancel.store(false);
+    }
     cancel.store(true); check(!alien::renderSamplePreview(file, true, 180, 120, cancel).clip, "cancelled preview returns no partial asset");
     check(!alien::renderSamplePreview(file, false, 0, 0, cancel, 3).clip, "cancelled key-shifted preview returns no partial asset");
     file.loadFileAsData(after); check(before == after, "tempo preview preserves source file byte-for-byte"); file.deleteFile();

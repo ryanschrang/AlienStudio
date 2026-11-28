@@ -17,6 +17,39 @@ static void sampleBrowserChecks() {
         "stopped Song and an unpublished playhead use the insertion cursor");
     require(target(true, true, 0, 1920).bpm == 120 && target(true, false, 1920, -1).bpm == 120,
         "loop wraps and negative cursor fallback return to the base tempo");
+    {   // T1-10: the tempo course a preview plays through, from the beat it would start on.
+        namespace sp = alien::sample_preview;
+        const auto sameValue = [](double a, double b) { return std::abs(a - b) < 1.0e-9; };
+        require(sp::previewStartTick(tempoSong, true, 0, 500) == 960 && sp::previewStartTick(tempoSong, true, 959, 0) == 960
+            && sp::previewStartTick(tempoSong, true, 960, 0) == 1920 && sp::previewStartTick(tempoSong, false, 960, 500) == 500
+            && sp::previewStartTick(tempoSong, true, -1, 700) == 700, "a playing preview starts on the next quarter note, a stopped one at the cursor");
+        auto course = sp::tempoCourse(tempoSong, 120, 0);
+        require(course.size() == 3 && course[0] == sp::TempoSpan{1, 120} && course[1] == sp::TempoSpan{1, 180}
+            && course[2].bpm == 90 && sameValue(course[2].beats, (5 - .5 - 1.0 / 3) * 1.5), "a course splits at each change and lasts five seconds");
+        course = sp::tempoCourse(tempoSong, 120, 1920);
+        require(course.size() == 1 && course[0].bpm == 90 && sameValue(course[0].beats, 7.5), "after the last change the course is one tempo");
+        require(target(true, true, 0, 0).course.size() == 2 && target(true, true, 0, 0).startTick == 960 && target(true, true, 960, 0).course.size() == 1
+            && target(true, true, 960, 0).startTick == 1920 && target(false, true, 0, 0).course.empty(),
+            "the Song target carries the course from the beat it would start on; Session has none");
+        auto looped = tempoSong; looped.loopEnabled = true; looped.loopStart = 0; looped.loopEnd = 1920;
+        require(sp::previewStartTick(looped, true, 1500, 0) == 0 && sp::previewStartTick(looped, true, 2000, 0) == 2880,
+            "the next beat at the loop end is the loop start");
+        course = sp::tempoCourse(looped, 120, 960);
+        double seconds = 0; for (const auto& span : course) seconds += span.beats * 60 / span.bpm;
+        require(course.size() > 4 && course[0] == sp::TempoSpan{1, 180} && course[1] == sp::TempoSpan{1, 120}
+            && course[2] == sp::TempoSpan{1, 180} && sameValue(seconds, 5), "a loop sends the course back to the loop start");
+        auto edited = tempoSong; require(edited.setTempoChange(2880, 100), "edit the tempo map");
+        require(sp::tempoMapFingerprint(edited, 120) != sp::tempoMapFingerprint(tempoSong, 120)
+            && sp::tempoMapFingerprint(looped, 120) != sp::tempoMapFingerprint(tempoSong, 120)
+            && sp::tempoMapFingerprint(tempoSong, 125) != sp::tempoMapFingerprint(tempoSong, 120)
+            && sp::tempoMapFingerprint(tempoSong, 120) == sp::tempoMapFingerprint(alien::timeline::Timeline(tempoSong), 120),
+            "the map fingerprint changes with any tempo change, the loop or the project tempo, and only then");
+        alien::timeline::Timeline dense; dense.loopEnabled = true; dense.loopStart = 0; dense.loopEnd = 240;
+        require(dense.setTempoChange(60, 200) && dense.setTempoChange(120, 199) && dense.setTempoChange(180, 200), "dense loop fixture");
+        course = sp::tempoCourse(dense, 199, 0);
+        seconds = 0; for (const auto& span : course) seconds += span.beats * 60 / span.bpm;
+        require(course.size() == sp::maxCourseSpans && sameValue(seconds, 5), "a dense loop stops splitting at the span limit and still lasts five seconds");
+    }
     const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("AlienSampleBrowser", "", false);
     require(root.createDirectory().wasOk(), "sample browser fixture directory");
     alien::SessionAudioClip clip; clip.sampleRate = 8000; clip.channels = 1; clip.frames = 8000 * 6; clip.left.assign(clip.frames, .2f); clip.buildWaveform();
@@ -301,8 +334,8 @@ static void sampleBrowserChecks() {
         preview->onClick();
         browser.tempoForPreview = nullptr;
         for (int i = 0; i < 400 && previews == 0; ++i) pump();
-        require(previews == 1 && frames == 20000 && imports == 0 && hasLabel("Song: 180.0 BPM"),
-            "preview refreshes its target at the click and renders at the map's 180 BPM without importing");
+        require(previews == 1 && frames == 40000 && imports == 0 && hasLabel("Song: 180.0 BPM") && hasLabel("90.0 to 90.0 BPM"),
+            "preview refreshes its target at the click and renders for the beat it starts on (90 BPM after the next beat) without importing");
         auto previousStops = stops;
         browser.setTransportTempo(target(true, true, 1200, 0));
         require(stops == previousStops, "movement inside a tempo segment does not stop the preview");
@@ -311,41 +344,60 @@ static void sampleBrowserChecks() {
         preview->onClick(); browser.setTransportTempo(target(true, true, 0, 0));
         for (int i = 0; i < 400 && previews == 1; ++i) pump();
         for (int i = 0; i < 10; ++i) pump();
-        require(previews == 2 && frames == 30000 && hasLabel("Song: 120.0 BPM"),
-            "a loop wrap during a render renders the preview for the new segment, never the previous one");
-        // The engine still playing the preview: a boundary matches it again instead of stopping it.
+        require(previews == 2 && frames == 40000 && hasLabel("Song: 120.0 BPM") && hasLabel("following the Song tempo (90.0 to 180.0 BPM)"),
+            "a loop wrap during a render renders the preview for the new position, following the tempo changes ahead of it");
+        // The engine still playing that preview: it plays through the change by itself.
         bool sounding = true;
         browser.previewSounding = [&] { return sounding; };
+        previousStops = stops;
         browser.setTransportTempo(target(true, true, 960, 0));
-        require(hasLabel("Song tempo changed to 180.0 BPM. Matching the preview again"), "a boundary during a sounding preview says it is matched again");
+        for (int i = 0; i < 10; ++i) pump();
+        require(previews == 2 && stops == previousStops && hasLabel("Song: 180.0 BPM") && hasLabel("following the Song tempo"),
+            "a preview following the Song tempo is not restarted when the playhead crosses a change");
+        // Editing the map is not the playhead crossing it: the preview is matched again.
+        require(tempoSong.setTempoChange(2880, 100), "edit the tempo map during a preview");
+        browser.setTransportTempo(target(true, true, 960, 0));
+        require(hasLabel("Song tempo map changed. Matching the preview again"), "a tempo map edit during a sounding preview matches it again");
         for (int i = 0; i < 400 && previews == 2; ++i) pump();
-        require(previews == 3 && frames == 20000 && imports == 0, "and the preview is rendered again at the new segment's 180 BPM");
+        require(previews == 3 && imports == 0 && hasLabel("(90.0 to 100.0 BPM)"), "and the new preview follows the edited map");
+        require(tempoSong.removeTempoChange(2880), "restore the tempo map");
+        browser.setTransportTempo(target(true, true, 960, 0));
+        for (int i = 0; i < 400 && previews == 3; ++i) pump();
+        require(previews == 4, "restoring the map matches it again too");
+        // A render that would now start on a later beat with a different course is rendered again for that beat.
+        browser.tempoForPreview = [&] { return target(true, true, 0, 0); };
+        preview->onClick();
+        browser.tempoForPreview = nullptr;
+        browser.setTransportTempo(target(true, true, 1000, 0));
+        for (int i = 0; i < 400 && previews == 4; ++i) pump();
+        for (int i = 0; i < 10; ++i) pump();
+        require(previews == 5 && hasLabel("90.0 to 90.0 BPM"), "a late render is rendered again for the beat it will start on, once");
         sounding = false; previousStops = stops;
         browser.setTransportTempo(target(true, true, 1920, 0));
         require(stops == previousStops + 1 && hasLabel("Press Preview"), "a preview that has finished is not started again by a tempo change");
         sounding = true; source->setValue(30, juce::sendNotificationSync); previousStops = stops;
         browser.setTransportTempo(target(true, true, 960, 0));
         for (int i = 0; i < 30; ++i) pump();
-        require(previews == 3 && stops > previousStops && hasLabel("ratio"), "a new tempo outside the stretch range stops the preview with the reason");
+        require(previews == 5 && stops > previousStops && hasLabel("ratio"), "a new tempo outside the stretch range stops the preview with the reason");
         source->setValue(90, juce::sendNotificationSync);
         browser.previewSounding = nullptr;
         browser.setTransportTempo(target(true, false, 0, 1920));
         preview->onClick();
-        for (int i = 0; i < 400 && previews == 3; ++i) pump();
-        require(previews == 4 && frames == 40000 && imports == 0, "stopped Song preview renders at the cursor's 90 BPM");
+        for (int i = 0; i < 400 && previews == 5; ++i) pump();
+        require(previews == 6 && frames == 40000 && imports == 0, "stopped Song preview renders at the cursor's 90 BPM");
         previousStops = stops;
         browser.transportSeek();
         require(stops == previousStops + 1 && hasLabel("Song position changed"), "explicit same-tempo seek stops a matched audition");
         preview->onClick(); browser.transportSeek();
-        for (int i = 0; i < 400 && previews == 4; ++i) pump();
+        for (int i = 0; i < 400 && previews == 6; ++i) pump();
         for (int i = 0; i < 10; ++i) pump();
-        require(previews == 5 && imports == 0, "a seek during a render renders the preview once more, aligned to the new position");
+        require(previews == 7 && imports == 0, "a seek during a render renders the preview once more, aligned to the new position");
         bool stillSounding = true;
         browser.previewSounding = [&] { return stillSounding; };
         browser.transportSeek();
         require(hasLabel("Aligning the preview again"), "a seek while the preview sounds aligns it again");
-        for (int i = 0; i < 400 && previews == 5; ++i) pump();
-        require(previews == 6 && imports == 0, "and the realigned preview is handed to the engine");
+        for (int i = 0; i < 400 && previews == 7; ++i) pump();
+        require(previews == 8 && imports == 0, "and the realigned preview is handed to the engine");
         stillSounding = false; previousStops = stops;
         browser.transportSeek();
         require(stops == previousStops + 1 && hasLabel("Press Preview to align"), "a finished preview is not restarted by a seek");
