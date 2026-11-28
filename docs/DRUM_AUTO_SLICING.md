@@ -70,12 +70,37 @@ goes back. Each choice is one Undo step, and none needs room in the rack.
 It is the `SetRackChannelKeySlices {channel, bounds, firstKey}` command; empty bounds plays the sample whole again.
 The channel saves its key zones (format 38): for each, the file's frame range, its lowest and highest key and its root
 key. The command puts each slice on a single key at its own root; the saved form and the engine also take a zone that
-spans several keys and is pitched from its root, which nothing in the app makes yet. All zones are parts of the
-channel's one file: zones from different files (a multisample of separate recordings) are a later increment. A new
-sound on the channel, or slicing it into channels, plays whole on every key.
+spans several keys and is pitched from its root; a multisample (below) makes those. A new sound on the channel, or
+slicing it into channels, plays whole on every key.
 
 `CommandEngineTests`, `RackEngineTests` and `ChannelRackViewTests` cover the command, the shared audio, saving,
 playback of each zone, the menu and the attack search. It has not been listened to in the app.
+
+## Channel Rack multisamples from several files
+
+**Sound > Multisample from files...** on a channel puts 2 to 16 separate recordings on that channel's keys. When every
+file's name says the note it was recorded on (`Piano_C4`, `Strings Eb2 soft`, `pad_F#3`; C4 is note 60, as the app
+names notes), each file plays at its own pitch on that note and the keys between two notes are split halfway, the lowest
+file reaching down to note 0 and the highest up to 127, so the whole keyboard plays. When any name says no note, each
+file gets one key at its own pitch from C4 up, in natural name order, like a kit. Two files on one note are refused.
+The channel is named for what the files' names share ("Piano"), and plays the lowest file as its sample. It is one
+Undo step, and the status bar says how the files were laid out. Files are decoded on a worker first; a file that
+cannot be decoded, or is too long to keep in memory, refuses the whole load with its name.
+
+It is the `LoadRackMultisample {channel, paths, name, clips}` command (decoded audio, so no script form), laid out by
+`rack_channel::multisampleLayout`. A key zone may now name a file of its own (format 39): the zone's `file`, absent for
+the channel's own sample, with frames {0, 0} for the whole file. Each file is decoded once and counted against the
+audio limit; each zone plays its own file at that file's sample rate. Every place a channel's sample path is followed
+also follows its zones' files: opening a project (each file is resolved and decoded), the missing-audio list, Relink
+missing audio, Save with samples (each file is collected), and the caches a project open lets go of. A zone whose file
+is missing stays in the project and is listed as missing, while the channel's other zones still play.
+
+Relinking used to give the channel its file back through the same edit as loading a new sound, which also dropped the
+channel's slice range and key zones; it now moves the path and keeps them, for slice channels and key slices too.
+
+`CommandEngineTests` (note names, the layout, the command, Undo, saving, moved files, refusals), `MemoryPeakTests`
+(open, a missing zone file, relink, Save with samples, memory counted) and `ChannelRackViewTests` (the menu) cover it.
+It has not been listened to in the app, and the note-name rule has only been tried on made-up names.
 
 ## Session audio to drum pads
 

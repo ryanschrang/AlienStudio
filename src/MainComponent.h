@@ -168,6 +168,8 @@ public:
         pluginPanel.onAction = [this](int op,int slot) { pluginAction(op,slot); };
         pluginPanel.onMasteringChain = [this] { addMasteringChain(); };
         pluginPanel.onPresets = [this](int slot) { showPluginPresets(slot); };
+        pluginPanel.onMacroValue = [this](int macro, double value, const juce::String& gesture) { setMacro(macro, value, gesture); };
+        pluginPanel.onMacroMenu = [this](int macro) { showMacroMenu(macro); };
         pluginPanel.onImpulseResponse = [this](int slot, std::uint64_t instance, bool chamber) {
             chooseConvolutionResponse(slot, instance, chamber);
         };
@@ -1585,6 +1587,8 @@ private:
         for(std::size_t t=0;t<exportRacks.size();++t)if(controller.isTrackFrozen(static_cast<int>(t)))exportRacks[t]={};
         { auto errors=renderHost->restore(exportRacks,stems ? alien::PluginRackState{} : controller.document().masterPlugins,controller.returnRacks(),controller.busRacks(),48000);
           errors+=renderHost->restoreRackChannels(controller.rackPlugins(),48000);
+          for (const auto& [rack, state] : documentRacks())   // the render's plugins follow the macros too
+              if (!(stems && rack == alien::PluginRuntime::masterIndex)) renderHost->applyMacros(rack, state);
 
           if(errors.isNotEmpty()){ timelineView.setStatus("Export stopped: " + errors);return; } }
         auto assets = controller.document();
@@ -1734,11 +1738,41 @@ private:
     // its saved state or bypass flag differs. Tracks past the end count as empty.
     static bool sameRacks(const std::vector<alien::PluginRackState>& a, const alien::PluginRackState& masterA,
                           const std::vector<alien::PluginRackState>& b, const alien::PluginRackState& masterB) {
-        if (masterA != masterB) return false;
+        if (masterA.devicesOnly() != masterB.devicesOnly()) return false;
         const alien::PluginRackState empty;
         for (std::size_t i = 0; i < std::max(a.size(), b.size()); ++i)
-            if ((i < a.size() ? a[i] : empty) != (i < b.size() ? b[i] : empty)) return false;
+            if ((i < a.size() ? a[i] : empty).devicesOnly() != (i < b.size() ? b[i] : empty).devicesOnly()) return false;
         return true;
+    }
+    // Macros (RACK-01) are not plugins to load: a change to one sets the mapped parameters instead of reloading.
+    template <std::size_t N>
+    static bool sameDevices(const std::array<alien::PluginRackState, N>& a, const std::array<alien::PluginRackState, N>& b) {
+        for (std::size_t i = 0; i < N; ++i) if (a[i].devicesOnly() != b[i].devicesOnly()) return false;
+        return true;
+    }
+    // Every rack the plugin host runs, by its rack number, from the document.
+    std::vector<std::pair<int, alien::PluginRackState>> documentRacks() const {
+        std::vector<std::pair<int, alien::PluginRackState>> racks;
+        const auto& d = controller.document();
+        for (int t = 0; t < d.trackCount(); ++t) if (!controller.isTrackFrozen(t)) racks.push_back({t, d.tracks[static_cast<std::size_t>(t)].plugins});
+        racks.push_back({alien::PluginRuntime::masterIndex, d.masterPlugins});
+        const auto returns = controller.returnRacks(); const auto buses = controller.busRacks();
+        for (int r = 0; r < alien::maxReturns; ++r) racks.push_back({alien::PluginRuntime::returnIndex(r), returns[static_cast<std::size_t>(r)]});
+        for (int b = 0; b < alien::maxBuses; ++b) racks.push_back({alien::PluginRuntime::busIndex(b), buses[static_cast<std::size_t>(b)]});
+        return racks;
+    }
+    // Sets the loaded plugins' parameters from the document's macros: every rack after the plugins were loaded again
+    // (`all`), otherwise only the racks whose macros changed since they were last applied, so a parameter turned in a
+    // plugin's own editor is not pulled back by an unrelated edit.
+    std::map<int, alien::RackMacroSet> appliedMacros;
+    void applyMacros(bool all) {
+        if (all) appliedMacros.clear();
+        for (const auto& [rack, state] : documentRacks()) {
+            const auto found = appliedMacros.find(rack);
+            if (found != appliedMacros.end() && found->second == state.macros) continue;
+            pluginHost.applyMacros(rack, state);
+            appliedMacros[rack] = state.macros;
+        }
     }
     // Rebuilds the plugin instances from the document. Restoring detaches the
     // audio callback, so it is skipped when the loaded racks already match, for
@@ -1752,8 +1786,8 @@ private:
         std::vector<int> frozen;
         for(const auto& track:controller.document().tracks)frozen.push_back(track.settings.freezeScene);
         const auto rackIds = rackPluginIdentities();
-        if (!force && frozen==loadedFrozen && returns == loadedReturns && buses == loadedBuses && rackIds == loadedRackPlugins
-            && sameRacks(states, master, loadedRacks, loadedMaster)) { refreshPlugins(); return; }
+        if (!force && frozen==loadedFrozen && sameDevices(returns, loadedReturns) && sameDevices(buses, loadedBuses) && rackIds == loadedRackPlugins
+            && sameRacks(states, master, loadedRacks, loadedMaster)) { applyMacros(false); refreshPlugins(); return; }
 
         const bool freezeChanged=frozen!=loadedFrozen;
         const auto position=engine.timelinePosition.load();const bool playing=engine.playing.load();
@@ -1768,6 +1802,7 @@ private:
         audio.addAudioCallback(&engine);
         if(freezeChanged && position>=0){engine.timelineSeek.store(position);engine.playing.store(playing);}
         loadedRacks = states; loadedMaster = master; loadedReturns = returns; loadedBuses = buses;
+        applyMacros(true);   // the plugins were loaded from their saved state; the macros set their parameters again
 
         pluginPanel.setStatus(errors.isEmpty()?"Plugin racks restored. Select a slot to open its editor.":"Missing or unsupported plugins (saved state preserved):\n"+errors);
         refreshPlugins();
@@ -1790,6 +1825,95 @@ private:
         const auto* shown=alien::sidechain_edit::rackOf(controller.document(),stage,rack);
         const int slot=instrument?alien::device_edit::instrumentSlot:shown?static_cast<int>(shown->effects.size()):0;
         runPluginCommand(alien::command::InsertDevice{stage,rack,slot,alien::PluginState{chosen.createXml()->toString(),{},false}});
+    }
+
+    // RACK-01: a macro knob moved. A drag is one Undo step; the mapped parameters follow at once.
+    void setMacro(int macro, double value, const juce::String& gesture) {
+        if (projectBusy || controller.isBusy()) return;
+        const auto [stage, rack] = pluginRackAddress();
+        const auto result = alien::command::CommandEngine(controller).execute(alien::command::SetRackMacro{stage, rack, macro, value}, gesture, gesture.isNotEmpty());
+        if (!result.ok) pluginPanel.setStatus(result.error);
+        applyMacros(false);
+        if (!result.ok) refreshPlugins();
+    }
+    void runMacroCommands(const std::vector<alien::command::Command>& commands, const juce::String& label) {
+        if (projectBusy || controller.isBusy()) return;
+        const auto result = alien::command::CommandEngine(controller).batch(commands, label);
+        if (!result.ok) pluginPanel.setStatus(result.error);
+        applyMacros(false);
+        refreshPlugins();
+    }
+    // A macro's menu: rename it, and choose the rack's parameters it moves (each over its whole range, or reversed).
+    // The first parameter a macro takes keeps its sound: the macro starts at that parameter's current value.
+    void showMacroMenu(int macro) {
+        const auto [stage, rack] = pluginRackAddress();
+        const auto* state = alien::sidechain_edit::rackOf(controller.document(), stage, rack);
+        if (state == nullptr || macro < 0 || macro >= alien::rackMacroCount) return;
+        const auto current = state->macros[static_cast<std::size_t>(macro)];
+        const int where = pluginTarget();
+        const auto choices = pluginHost.parameterChoices(where);
+        const auto mappedHere = [&](const alien::automation::ParameterTarget& t) {
+            return std::find_if(current.targets.begin(), current.targets.end(), [&](const alien::MacroTarget& m) {
+                return m.instance == t.instance && m.parameterId.toStdString() == t.parameterId; });
+        };
+        juce::PopupMenu menu, map, plugin;
+        menu.addItem(1, "Rename...");
+        juce::String pluginName;
+        for (std::size_t i = 0; i < choices.size(); ++i) {
+            if (choices[i].plugin != pluginName) {
+                if (pluginName.isNotEmpty()) map.addSubMenu(pluginName, plugin);
+                plugin = {}; pluginName = choices[i].plugin;
+            }
+            plugin.addItem(1000 + static_cast<int>(i), choices[i].parameter, true, mappedHere(choices[i].target) != current.targets.end());
+        }
+        if (pluginName.isNotEmpty()) map.addSubMenu(pluginName, plugin);
+        if (choices.empty()) map.addItem(-1, "No loaded plugin in this rack has automatable parameters", false);
+        menu.addSubMenu("Move a parameter", map);
+        if (!current.targets.empty()) {
+            juce::PopupMenu reverse, stop;
+            for (std::size_t i = 0; i < current.targets.size(); ++i) {
+                const auto& t = current.targets[i];
+                juce::String label = t.parameterId;
+                for (const auto& c : choices) if (c.target.instance == t.instance && c.target.parameterId == t.parameterId.toStdString()) label = c.plugin + ": " + c.parameter;
+                reverse.addItem(3000 + static_cast<int>(i), label, true, t.from > t.to);
+                stop.addItem(4000 + static_cast<int>(i), label);
+            }
+            menu.addSubMenu("Reverse a parameter's range", reverse);
+            menu.addSubMenu("Stop moving", stop);
+        }
+        juce::Component::SafePointer<MainComponent> safe(this);
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&pluginPanel.macroName(macro)),
+            [safe, macro, stage, rack, where, choices, current](int id) {
+            if (safe == nullptr || id == 0 || safe->pluginTarget() != where) return;
+            namespace cmd = alien::command;
+            if (id == 1) {
+                auto* window = new juce::AlertWindow("Rename macro", "", juce::MessageBoxIconType::NoIcon, safe.getComponent());
+                window->addTextEditor("name", current.name);
+                window->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
+                window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+                window->enterModalState(true, juce::ModalCallbackFunction::create([safe, window, macro, stage, rack](int ok) {
+                    if (safe != nullptr && ok == 1) safe->runMacroCommands({cmd::RenameRackMacro{stage, rack, macro, window->getTextEditorContents("name")}}, "Rename macro");
+                }), true);
+                return;
+            }
+            if (id >= 4000) {
+                const auto& t = current.targets[static_cast<std::size_t>(id - 4000)];
+                safe->runMacroCommands({cmd::UnmapRackMacro{stage, rack, macro, t.instance, t.parameterId}}, "Unmap macro");
+            } else if (id >= 3000) {
+                const auto& t = current.targets[static_cast<std::size_t>(id - 3000)];
+                safe->runMacroCommands({cmd::MapRackMacro{stage, rack, macro, t.instance, t.parameterId, t.to, t.from}}, "Map macro");
+            } else if (id >= 1000) {
+                const auto& choice = choices[static_cast<std::size_t>(id - 1000)];
+                const auto parameter = juce::String(choice.target.parameterId);
+                const bool mapped = std::any_of(current.targets.begin(), current.targets.end(), [&](const alien::MacroTarget& m) {
+                    return m.instance == choice.target.instance && m.parameterId == parameter; });
+                if (mapped) { safe->runMacroCommands({cmd::UnmapRackMacro{stage, rack, macro, choice.target.instance, parameter}}, "Unmap macro"); return; }
+                std::vector<cmd::Command> edits{cmd::MapRackMacro{stage, rack, macro, choice.target.instance, parameter, 0, 1}};
+                const float now = safe->pluginHost.parameterValue(where, choice.target.instance, parameter);
+                if (current.targets.empty() && now >= 0) edits.push_back(cmd::SetRackMacro{stage, rack, macro, now});
+                safe->runMacroCommands(edits, "Map macro");
+            }
+        });
     }
 
     // The rack the Plugins page shows, as commands name it.

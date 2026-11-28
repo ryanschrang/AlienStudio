@@ -11,6 +11,7 @@
 #include "BusCommands.h"
 #include "SidechainCommands.h"
 #include "DeviceCommands.h"
+#include "MacroCommands.h"
 #include "TempoCommands.h"
 #include "FreezeCommands.h"
 #include "SongMarkerCommands.h"
@@ -262,6 +263,8 @@ public:
     // Writes the key to the document only. The caller commits, and the host rebuilds the plugin racks.
     bool applySidechainCommand(const sidechain_edit::Edit& edit) { return !busy && sidechain_edit::apply(doc, edit).isEmpty(); }
     bool applyDeviceCommand(const device_edit::Edit& edit) { return !busy && device_edit::apply(doc, edit).isEmpty(); }
+    // Live side of the macro commands: the document only; the app then sets the mapped plugin parameters.
+    bool applyMacroCommand(const macro_edit::Edit& edit) { return !busy && macro_edit::apply(doc, edit).isEmpty(); }
     bool applyConvolutionResponseCommand(const device_edit::ConvolutionResponseEdit& edit);
 
     // Message-thread command setters. Only the addressed control changes; the
@@ -617,6 +620,8 @@ public:
     bool applyRackPatternCommand(const rack_pattern::Edit& e);
     // Live side of LoadRackSample. The file's decoded audio becomes available as the channel starts naming it.
     bool applyRackSampleCommand(const rack_channel::Edit& e, const std::shared_ptr<SessionAudioClip>& clip);
+    // Live side of LoadRackMultisample (T2-01): `clips` are the decoded `e.files`, in the same order.
+    bool applyRackMultisampleCommand(const rack_channel::Edit& e, const std::vector<std::shared_ptr<SessionAudioClip>>& clips);
     // A new decode of a file the channel already names: no edit and no Undo step, but it is what plays from now on.
     bool replaceRackSampleAudio(const std::string& path, const std::shared_ptr<SessionAudioClip>& clip);
     // After a commit: the host rebuilds if which channel holds which plugin has changed.
@@ -638,6 +643,8 @@ public:
     // Rack samples arrive through command::loadRackSample: decode off the message
     // thread, then run LoadRackSample on the result. The project is busy until then.
     void decodeRackSample(const juce::File& file, std::function<void(const AudioClipImportResult&)> done);
+    // The same for several files, in order, on one worker job (a multisample).
+    void decodeRackSamples(std::vector<juce::File> files, std::function<void(const std::vector<AudioClipImportResult>&)> done);
     // What the person sees once the command has run or been refused.
     void rackSampleFinished(const juce::File& file, const juce::String& refused);
     // True when the channel names a file that is not loaded (moved or deleted).
@@ -679,7 +686,8 @@ private:
     // open project's samples are (an open lets go of the rest once the engine has, D14), and shared by every channel playing that slice. A slice
     // past the end of its file, or of audio that is streamed, plays nothing.
     // A channel with key zones (T2-01) plays a key map: a clip with no audio of its own that names the slice for each
-    // key. Maps are kept like the slice views, one for each file, range and set of zones.
+    // key. Maps are kept like the slice views, one for each file, range and set of zones. A zone may play a file of its
+    // own (a multisample, format 39); a zone whose file is not loaded is left out, so the rest still play.
     std::shared_ptr<const SessionAudioClip> rackAsset(const rack::ChannelInfo& info) const;
     // The audio a channel's sample gives before any key zones: the whole file, or the channel's slice of it.
     std::shared_ptr<const SessionAudioClip> rackRangeAsset(const rack::ChannelInfo& info) const;
@@ -896,6 +904,8 @@ private:
     struct RackKeyMap {
         std::shared_ptr<const SessionAudioClip> file, base;
         std::vector<rack::KeyZone> zones;
+        std::vector<std::shared_ptr<const SessionAudioClip>> views;   // each zone's audio, null where its file is not loaded
+        std::vector<const SessionAudioClip*> sources;                 // the decoded files under them
         std::shared_ptr<const SessionAudioClip> map;
     };
     mutable std::vector<RackKeyMap> rackKeyMaps;   // kept, as the engine may still be playing one, until an open (D14)

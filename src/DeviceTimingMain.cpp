@@ -341,6 +341,15 @@ int main(int argc, char* argv[]) {
                 << s.maxIntervalUs << " | " << (xrunsBefore < 0 || xrunsAfter < 0 ? std::string("n/a") : std::to_string(xrunsAfter - xrunsBefore))
                 << " | " << callbackAllocations.load() << " |" << std::endl;
             if (s.dropped != 0) std::cerr << c.name << ": " << s.dropped << " callbacks arrived with the recorder full\n";
+            if (s.callbacks != 0) {   // where a spike fell, so a regular one can be told from a one-off
+                std::cerr << c.name << ": longest callback #" << s.longest << " of " << s.callbacks << " ("
+                          << s.longest * periodUs / 1000.0 << " ms into the recording)";
+                if (!s.overBudgetAt.empty()) {
+                    std::cerr << "; over budget at #";
+                    for (std::size_t k = 0; k < s.overBudgetAt.size(); ++k) std::cerr << (k ? ", #" : "") << s.overBudgetAt[k];
+                }
+                std::cerr << '\n';
+            }
             if (s.callbacks == 0) { std::cerr << c.name << ": no callbacks arrived\n"; ++failures; }
             if (stopped != nullptr) { std::cerr << c.name << ": " << stopped << '\n'; ++failures; }
             if (unfinished != nullptr) { std::cerr << c.name << ": " << unfinished << '\n'; ++failures; }

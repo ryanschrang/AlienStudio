@@ -320,7 +320,7 @@ records what that profile costs. Raising the supported limit is still D and E.
   prints both capacity reports. It uploads nothing: that build is for evidence, not release.
 - **Saved files do not depend on the profile.** Session cells are saved as nested lists, Song
   rack lanes as their own number (C2), returns and buses by their slot, and plugin automation by
-  plugin instance ID. A 32/64 build reads and writes the same format 38 as a 16/32 build.
+  plugin instance ID. A 32/64 build reads and writes the same format 40 as a 16/32 build.
 - **Too many tracks or scenes is refused, not truncated.** A build that opens a project with more
   tracks or scenes than it was compiled for now says how many the project has and how many the
   build supports; the open project is kept (`SessionProjectTests`, `capacityRefusalTests`). A 16/32
@@ -2204,7 +2204,7 @@ New tests:
 | Audio stress | `TrackCapacityTests` (no allocation with every track playing, slots leaving use, device restart); `RackIntegrationTests --capacity-report` | - |
 | Recording | E1 (MIDI in the last cell); E2 (an audio take on the last track of a full project, and one with nowhere to go refused); D34/D35 Song takes on every track | - |
 | Export | `MemoryPeakTests` (stems of every track at the limit, freeze at the scene limit refused before rendering) | - |
-| Windows hardware evidence | D31-D38 on the development laptop (see [DEVICE_TIMING.md](DEVICE_TIMING.md)) | An audio interface (ASIO), other buffer sizes, more than one machine; at 480 frames 32 Surge XT instances overran one callback (D38, #460) |
+| Windows hardware evidence | D31-D39 on the development laptop (see [DEVICE_TIMING.md](DEVICE_TIMING.md)): 256, 480 and 512 frames, a real effect on 32 tracks | An audio interface (ASIO; the app is not built with ASIO), buffers under 256 frames, more than one machine. The 32 Surge XT overrun (D38, #460) is a one-off event inside Surge XT about 4 s after playback starts (D39), not a steady cost |
 | UI | `SessionViewTests`, `TimelineViewTests` pass at 32/64 (C3: the grid and the Song view scroll) | Hands-on use of a 32-track grid and mixer on a Windows display |
 
 What E1 does not decide: which profile to release, and whether the laptop evidence is enough. A

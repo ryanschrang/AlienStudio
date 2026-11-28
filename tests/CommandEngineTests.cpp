@@ -549,6 +549,7 @@ static void relinkAudioCommandChecks() {
 #include "StripBusCommandTests.h"
 #include "RoutingCommandTests.h"
 #include "DeviceCommandTests.h"
+#include "RackMacroCommandTests.h"
 #include "MasteringChainTests.h"
 #include "MasterVolumeCommandTests.h"
 #include "TempoCommandTests.h"
@@ -565,6 +566,7 @@ static void relinkAudioCommandChecks() {
 #include "ClipNotesCommandTests.h"
 #include "RackSliceCommandTests.h"
 #include "RackKeySliceCommandTests.h"
+#include "RackMultisampleCommandTests.h"
 #include "ProjectSettingCommandTests.h"
 #include "StepCommandTests.h"
 #include "TrackSoundCommandTests.h"
@@ -631,6 +633,7 @@ int main() {
     clipNotesCommandChecks();
     rackSliceCommandChecks();
     rackKeySliceCommandChecks();
+    rackMultisampleCommandChecks();
     projectSettingCommandChecks();
     stepCommandChecks();
     trackSoundCommandChecks();
@@ -652,6 +655,7 @@ int main() {
     trackOutputCommandChecks();
     sidechainCommandChecks();
     deviceCommandChecks();
+    rackMacroCommandChecks();
     convolutionResponseCommandChecks();
     masteringChainChecks();
     relinkAudioCommandChecks();

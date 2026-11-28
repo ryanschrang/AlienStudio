@@ -1206,18 +1206,19 @@ void ProjectController::writeProject(juce::File file, bool portable, std::functi
                     relocated[project.drumPaths[t][pad]] = resolveProjectAudio(target, saved->drumPaths[t][pad]).getFullPathName();
             std::map<std::string, std::string> relocatedRack;
             for (int c = 0; c < project.channelRack.channelCount; ++c) {
-                const auto& old = project.channelRack.info[static_cast<std::size_t>(c)];
-                if (!old.isFile()) continue;
-                const auto& written = saved->channelRack.info[static_cast<std::size_t>(c)].sample;
-                relocatedRack[old.sample] = resolveProjectAudio(target, juce::String::fromUTF8(written.c_str(), static_cast<int>(written.size()))).getFullPathName().toStdString();
+                const auto old = project.channelRack.info[static_cast<std::size_t>(c)].files();
+                const auto written = saved->channelRack.info[static_cast<std::size_t>(c)].files();
+                for (std::size_t k = 0; k < old.size() && old.size() == written.size(); ++k)
+                    relocatedRack[old[k]] = resolveProjectAudio(target, juce::String::fromUTF8(written[k].c_str(), static_cast<int>(written[k].size()))).getFullPathName().toStdString();
             }
             for (const auto& [from, to] : relocatedRack)   // the decoded audio follows its new path
                 if (auto clip = rackAudio.find(from); clip != rackAudio.end() && rackAudio.find(to) == rackAudio.end()) rackAudio[to] = clip->second;
             auto relocate = [&](ProjectDocument& document) {
-                for (int c = 0; c < document.channelRack.channelCount; ++c) {
-                    auto& sample = document.channelRack.info[static_cast<std::size_t>(c)].sample;
-                    if (auto found = relocatedRack.find(sample); found != relocatedRack.end()) sample = found->second;
-                }
+                for (int c = 0; c < document.channelRack.channelCount; ++c)
+                    document.channelRack.info[static_cast<std::size_t>(c)].moveFiles([&](const std::string& path) {
+                        const auto found = relocatedRack.find(path);
+                        return found != relocatedRack.end() ? found->second : path;
+                    });
                 for (auto& track : document.tracks) for (auto& path : track.drumPaths)
                     if (auto found = relocated.find(path); found != relocated.end()) path = found->second;
                 for (auto& [id, media] : document.media)   // a file moved, not new content
@@ -1856,6 +1857,21 @@ bool ProjectController::applyRackSampleCommand(const rack_channel::Edit& e, cons
     return true;
 }
 
+bool ProjectController::applyRackMultisampleCommand(const rack_channel::Edit& e, const std::vector<std::shared_ptr<SessionAudioClip>>& clips) {
+    if (busy || e.kind != rack_channel::Kind::multisample || clips.size() != e.files.size() || rack_channel::refusal(doc, e).isNotEmpty()) return false;
+    std::size_t bytes = 0;
+    for (const auto& clip : clips) {
+        if (clip == nullptr || clip->streamed()) return false;
+        bytes += clip->decodedBytes();
+    }
+    if (bytes > availableAudioBytes()) return false;
+    for (const auto& clip : clips) if (!retain(clip)) return false;
+    if (rack_channel::apply(doc, e).isNotEmpty()) return false;
+    for (std::size_t k = 0; k < clips.size(); ++k) rackAudio[e.files[k].toStdString()] = clips[k];
+    pushRackToEngine();
+    return true;
+}
+
 bool ProjectController::replaceRackSampleAudio(const std::string& path, const std::shared_ptr<SessionAudioClip>& clip) {
     if (clip == nullptr || !retain(clip)) return false;
     rackAudio[path] = clip;
@@ -1911,6 +1927,23 @@ void ProjectController::decodeRackSample(const juce::File& file, std::function<v
     pool.addJob(std::move(job));
 }
 
+void ProjectController::decodeRackSamples(std::vector<juce::File> files, std::function<void(const std::vector<AudioClipImportResult>&)> done) {
+    setBusy(true);
+    std::weak_ptr<int> token = alive;
+    std::function<juce::ThreadPoolJob::JobStatus()> job = [this, token, files = std::move(files), done = std::move(done)] {
+        auto results = std::make_shared<std::vector<AudioClipImportResult>>();
+        for (const auto& file : files) {
+            results->push_back(decodeSessionAudioClip(file));
+            if (!results->back().clip) break;   // the first file that fails says why; the rest need not be read
+        }
+        juce::MessageManager::callAsync([this, token, results, done] {
+            if (token.lock()) { setBusy(false); done(*results); }
+        });
+        return juce::ThreadPoolJob::jobHasFinished;
+    };
+    pool.addJob(std::move(job));
+}
+
 void ProjectController::rackSampleFinished(const juce::File& file, const juce::String& refused) {
     importStatus(refused.isNotEmpty() ? refused : "Loaded " + file.getFileName(), file.getFullPathName());
     if (refused.isEmpty() && onDocumentRestored) onDocumentRestored();
@@ -1922,8 +1955,8 @@ const SessionAudioClip* ProjectController::rackChannelAudio(int channel) const {
 
 bool ProjectController::rackChannelOffline(int channel) const {
     if (!doc.channelRack.validChannel(channel)) return false;
-    const auto& info = doc.channelRack.info[static_cast<std::size_t>(channel)];
-    return info.isFile() && rackAudio.find(info.sample) == rackAudio.end();
+    const auto files = doc.channelRack.info[static_cast<std::size_t>(channel)].files();
+    return std::any_of(files.begin(), files.end(), [&](const std::string& path) { return rackAudio.find(path) == rackAudio.end(); });
 }
 
 
@@ -1942,9 +1975,9 @@ std::vector<MissingMedia> ProjectController::missingMedia() const {
         }
     std::set<std::string> listed; // one entry per missing file, however many channels use it
     for (int c = 0; c < doc.channelRack.channelCount; ++c) {
-        const auto& info = doc.channelRack.info[static_cast<std::size_t>(c)];
-        if (info.isFile() && rackAudio.find(info.sample) == rackAudio.end() && listed.insert(info.sample).second)
-            result.push_back({false, c, 0, juce::String::fromUTF8(info.sample.c_str(), static_cast<int>(info.sample.size())), {}, true});
+        for (const auto& path : doc.channelRack.info[static_cast<std::size_t>(c)].files())   // a multisample's zones name files too
+            if (rackAudio.find(path) == rackAudio.end() && listed.insert(path).second)
+                result.push_back({false, c, 0, juce::String::fromUTF8(path.c_str(), static_cast<int>(path.size())), {}, true});
     }
     return result;
 }
@@ -2000,21 +2033,31 @@ std::shared_ptr<const SessionAudioClip> ProjectController::rackAsset(const rack:
     auto base = rackRangeAsset(info);
     if (base == nullptr || !info.hasZones()) return base;
     const auto& file = rackAudio.find(info.sample)->second;
-    for (const auto& made : rackKeyMaps)
-        if (made.file == file && made.base == base && made.zones == *info.zones) return made.map;
-    auto zones = std::make_shared<std::vector<SampleKeyZone>>();
+    std::vector<std::shared_ptr<const SessionAudioClip>> views;
+    std::vector<const SessionAudioClip*> sources;
     for (const auto& z : *info.zones) {
+        const auto& path = z.file.empty() ? info.sample : z.file;
+        const auto source = rackAudio.find(path);
+        if (source == rackAudio.end()) { views.emplace_back(); continue; }   // its own file is offline: the other zones still play
+        if (source->second->streamed()) return {};
+        sources.push_back(source->second.get());
         rack::ChannelInfo part;
-        part.sample = info.sample; part.sliceStart = z.start; part.sliceEnd = z.end;
-        auto view = z.start == 0 && z.end == static_cast<std::int64_t>(file->frames) ? file : rackRangeAsset(part);
+        part.sample = path; part.sliceStart = z.start; part.sliceEnd = z.end;
+        const bool whole = z.wholeFile() || (z.start == 0 && z.end == static_cast<std::int64_t>(source->second->frames));
+        auto view = whole ? source->second : rackRangeAsset(part);
         if (view == nullptr) return {};   // a zone past the end of its file plays nothing
-        zones->push_back({z.low, z.high, z.root, std::move(view)});
+        views.push_back(std::move(view));
     }
+    for (const auto& made : rackKeyMaps)
+        if (made.file == file && made.base == base && made.zones == *info.zones && made.views == views) return made.map;
+    auto zones = std::make_shared<std::vector<SampleKeyZone>>();
+    for (std::size_t k = 0; k < views.size(); ++k)
+        if (views[k]) zones->push_back({(*info.zones)[k].low, (*info.zones)[k].high, (*info.zones)[k].root, views[k]});
     auto map = std::make_shared<SessionAudioClip>();
     map->sampleRate = base->sampleRate; map->channels = base->channels; map->frames = base->frames;
     map->waveform = base->waveform; map->waveformCount = base->waveformCount;
     map->keyZones = std::move(zones);
-    rackKeyMaps.push_back({file, base, *info.zones, map});
+    rackKeyMaps.push_back({file, base, *info.zones, std::move(views), std::move(sources), map});
     return map;
 }
 
@@ -2119,7 +2162,7 @@ ProjectController::ReplacedAudio ProjectController::setAsideRetainedAudio(std::v
 
 void ProjectController::addRackFiles(const rack::Project& rackProject, std::set<std::string>& files) {
     for (int c = 0; c < rackProject.channelCount; ++c)
-        if (const auto& info = rackProject.info[static_cast<std::size_t>(c)]; info.isFile()) files.insert(info.sample);
+        for (auto& path : rackProject.info[static_cast<std::size_t>(c)].files()) files.insert(std::move(path));
 }
 
 std::vector<std::shared_ptr<const SessionAudioClip>> ProjectController::forgetUnusedRackAudio(std::set<std::string> used) {
@@ -2140,7 +2183,7 @@ std::vector<std::shared_ptr<const SessionAudioClip>> ProjectController::forgetUn
     std::set<const SessionAudioClip*> files;
     for (const auto& [path, file] : rackAudio) files.insert(file.get());
     for (auto it = rackKeyMaps.begin(); it != rackKeyMaps.end();) {
-        if (files.contains(it->file.get())) { ++it; continue; }
+        if (files.contains(it->file.get()) && std::all_of(it->sources.begin(), it->sources.end(), [&](const auto* s) { return files.contains(s); })) { ++it; continue; }
         dropped.push_back(std::move(it->map)); it = rackKeyMaps.erase(it);
     }
     // Views handed to the engine that no kept cache entry uses any more go the same way (including the zones
@@ -2268,8 +2311,10 @@ ProjectController::RelinkPlan ProjectController::planRelink(const PreparedRelink
             if (!found.clip || !found.clip->valid() || found.file == juce::File{}) { plan.stillOffline.addIfNotAlreadyThere(want.item.fileName()); continue; }
             const auto oldPath = want.item.path.toStdString();
             bool stillWanted = false; // skip anything the user changed while the search ran
-            for (int c = 0; c < plan.after.channelRack.channelCount; ++c)
-                stillWanted = stillWanted || (plan.after.channelRack.info[static_cast<std::size_t>(c)].sample == oldPath && rackAudio.find(oldPath) == rackAudio.end());
+            for (int c = 0; c < plan.after.channelRack.channelCount; ++c) {
+                const auto files = plan.after.channelRack.info[static_cast<std::size_t>(c)].files();
+                stillWanted = stillWanted || (std::find(files.begin(), files.end(), oldPath) != files.end() && rackAudio.find(oldPath) == rackAudio.end());
+            }
             if (!stillWanted) continue;
             const auto newPath = found.file.getFullPathName().toStdString();
             if (newPath.size() > static_cast<std::size_t>(rack::maxSampleBytes)) {
@@ -2284,8 +2329,7 @@ ProjectController::RelinkPlan ProjectController::planRelink(const PreparedRelink
                 }
                 plan.rackAssets.emplace(newPath, found.clip);
             }
-            for (int c = 0; c < plan.after.channelRack.channelCount; ++c)
-                if (plan.after.channelRack.info[static_cast<std::size_t>(c)].sample == oldPath) plan.after.channelRack.setSample(c, newPath);
+            plan.after.channelRack.moveFile(oldPath, newPath);   // keeps the channels' slices and key zones
             ++plan.relinked;
             continue;
         }
@@ -2443,18 +2487,18 @@ ProjectController::LoadResult ProjectController::loadProjectFile(const juce::Fil
     }
     std::set<std::string> attempted; // a sample used by several channels is decoded once
     for (int c = 0; c < result.project.channelRack.channelCount; ++c) {
-        const auto& info = result.project.channelRack.info[static_cast<std::size_t>(c)];
-        if (!info.isFile()) continue;
-        const auto stored = juce::String::fromUTF8(info.sample.c_str(), static_cast<int>(info.sample.size()));
-        const auto location = resolveProjectAudio(file, stored);
-        const auto key = (location == juce::File{} ? stored : location.getFullPathName());
-        if (!attempted.insert(key.toStdString()).second) continue;
-        const auto decoded = location == juce::File{} ? AudioClipImportResult{{}, "The saved audio location is not valid."}
-                                                      : decodeSessionAudioClip(location);
-        if (!decoded.clip) { result.missing.push_back({false, c, 0, key, decoded.error, true}); continue; }
-        const auto bytes = decoded.clip->decodedBytes();
-        if (bytes > maxSessionAudioBytes - result.decodedBytes) { result.error = "Channel Rack audio exceeds memory limit"; return result; }
-        result.decodedBytes += bytes; result.rackClips.emplace_back(key.toStdString(), decoded.clip);
+        for (const auto& path : result.project.channelRack.info[static_cast<std::size_t>(c)].files()) {   // its sample and a multisample's files
+            const auto stored = juce::String::fromUTF8(path.c_str(), static_cast<int>(path.size()));
+            const auto location = resolveProjectAudio(file, stored);
+            const auto key = (location == juce::File{} ? stored : location.getFullPathName());
+            if (!attempted.insert(key.toStdString()).second) continue;
+            const auto decoded = location == juce::File{} ? AudioClipImportResult{{}, "The saved audio location is not valid."}
+                                                          : decodeSessionAudioClip(location);
+            if (!decoded.clip) { result.missing.push_back({false, c, 0, key, decoded.error, true}); continue; }
+            const auto bytes = decoded.clip->decodedBytes();
+            if (bytes > maxSessionAudioBytes - result.decodedBytes) { result.error = "Channel Rack audio exceeds memory limit"; return result; }
+            result.decodedBytes += bytes; result.rackClips.emplace_back(key.toStdString(), decoded.clip);
+        }
     }
     return result;
 }
@@ -2516,11 +2560,11 @@ void ProjectController::finishLoad(const juce::File& file, const LoadResult& res
         if (result.drums[t][p]) retained.push_back(result.drums[t][p]);
     }
     for (int c = 0; c < loaded.channelRack.channelCount; ++c) {   // point rack samples at where they were found
-        auto& info = loaded.channelRack.info[static_cast<std::size_t>(c)];
-        if (!info.isFile()) continue;
-        const auto resolved = resolveProjectAudio(file, juce::String::fromUTF8(info.sample.c_str(), static_cast<int>(info.sample.size())));
-        const auto absolute = resolved.getFullPathName().toStdString();
-        if (resolved != juce::File{} && absolute.size() <= static_cast<std::size_t>(rack::maxSampleBytes)) info.sample = absolute;
+        loaded.channelRack.info[static_cast<std::size_t>(c)].moveFiles([&](const std::string& path) {
+            const auto resolved = resolveProjectAudio(file, juce::String::fromUTF8(path.c_str(), static_cast<int>(path.size())));
+            const auto absolute = resolved.getFullPathName().toStdString();
+            return resolved != juce::File{} && absolute.size() <= static_cast<std::size_t>(rack::maxSampleBytes) ? absolute : path;
+        });
     }
     for (const auto& [path, clip] : result.rackClips) { rackAudio[path] = clip; retained.push_back(clip); }
     retainedBytes += result.decodedBytes;
