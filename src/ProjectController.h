@@ -2,6 +2,7 @@
 #include <span>
 #include "ProjectDocument.h"
 #include "SceneCommands.h"
+#include "TrackStructureCommands.h"
 #include "MidiClipCommands.h"
 #include "ClipboardClipCommands.h"
 #include "SessionClipCommands.h"
@@ -197,6 +198,7 @@ public:
     // Appending never disturbs playback. Any other structural edit renumbers
     // tracks or scenes, so Session playback is stopped first; this keeps the
     // engine's per-track slots and clip indices consistent with the document.
+    bool applyTrackStructureCommand(const track_structure::Edit& edit);
     bool addTrack();
 
     bool deleteTrack(int track);
@@ -206,7 +208,7 @@ public:
     bool renameTrack(int track, const juce::String& name);
 
     // Number of colours in the track palette (ui::trackColour).
-    static constexpr int trackColourCount = 8;
+    static constexpr int trackColourCount = track_structure::colourCount;
     bool setTrackColour(int track, int colour);
 
     bool addScene();

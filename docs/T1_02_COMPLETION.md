@@ -246,3 +246,20 @@ and invalid-path redo/launch preservation, and freshly captured plugin state.
 Existing scene tests retain audio/rack copying, capacity, frozen sources and
 recording guards. Exact build/test results belong in the PR. Physical Windows
 interaction and listening remain pending; CMD-01 is not complete.
+
+
+## Track structural reduction (claim #483)
+
+Create/delete/move/rename/colour tracks now share a pure reducer between Preview
+and execution. A multi-position move captures host state once and publishes one
+complete reorder; timeline rows, Session cells, rack outputs, sidechain sources,
+selection and track identity follow the same plan. Live drum routing follows the
+whole move. Capacity/no-op/invalid validation precedes structural callbacks; a new
+track reserves engine slots before plugin capture. The accepted reduction starts
+from the captured document so fresh plugin state is retained.
+
+CommandEngineTests adds long-move, live-route, captured-state, capacity and
+refusal/redo acceptance alongside the existing scene reducer coverage in #475.
+Code completion still requires auditing obsolete rack/controller routes and
+cross-family runtime failures. Listening and hardware acceptance are a separate
+owner-run track, not a prerequisite for the remaining code work.
